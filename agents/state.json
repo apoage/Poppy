@@ -1,42 +1,28 @@
 {
   "project": "TRM+MCTS Trading Agent",
-  "last_updated": "2025-12-03T22:45:00Z",
-  "updated_by": "claude",
-  "status": "initialization_complete",
-
+  "last_updated": "2025-12-03T23:10:00Z",
+  "updated_by": "gemini",
+  "status": "training_running_stable",
   "current_state": {
     "components": {
       "data_pipeline": "operational",
       "trm_model": "implemented",
       "lightzero_integration": "functional",
-      "training_loop": "ready",
+      "training_loop": "running_pid_26421",
       "database": "populated_20gb"
     },
     "training": {
-      "status": "not_started",
+      "status": "collecting_initial_data",
+      "config": "spawn_context_4collectors_100sims",
       "gpu": "rtx_3090_24gb",
-      "memory_used": "16gb",
-      "memory_available": "8gb"
+      "gpu_utilization": "low_vram_338mb",
+      "memory_used": "14gb_stable",
+      "batch_size": 512,
+      "replay_buffer": 10000,
+      "simulations": 100
     }
   },
-
-  "pending_changes": {
-    "gemini": {
-      "file": "mcts_trader/config/trading_config.py",
-      "changes": {
-        "batch_size": {"from": 2048, "to": 512, "impact": "saves_2.25gb"},
-        "replay_buffer_size": {"from": 50000, "to": 10000, "impact": "saves_8gb"}
-      },
-      "status": "unstaged",
-      "review": {
-        "by": "claude",
-        "pros": ["memory_reduction", "prevents_oom"],
-        "cons": ["higher_gradient_variance", "less_diverse_replay"],
-        "recommendation": "commit_and_monitor"
-      }
-    }
-  },
-
+  "pending_changes": {},
   "issues": [
     {
       "id": 1,
@@ -47,31 +33,36 @@
       "action": "document_and_version_pin"
     },
     {
-      "id": 2,
+      "id": 3,
       "severity": "medium",
-      "title": "experiment_folder_proliferation",
-      "location": "root_directory",
-      "description": "30+_timestamped_folders_accumulating",
-      "action": "create_cleanup_script"
+      "title": "slow_initial_collection",
+      "location": "mcts_ctree",
+      "description": "cpu_bound_mcts_100_sims_delayed_first_batch",
+      "action": "optimize_mcts_or_increase_workers"
+    },
+    {
+      "id": 4,
+      "severity": "critical",
+      "title": "cpu_bound_encoder",
+      "location": "env/trading_env.py:97",
+      "description": "encoder_on_cpu_gpu_only_18pct_utilized",
+      "action": "switch_to_gpu_encoder"
     }
   ],
-
   "tasks": {
     "claude": [
-      "profile_training_loop",
-      "create_test_suite",
-      "add_gpu_monitoring",
-      "analyze_monkey_patch_alternatives"
+      "analyze_speed_bottlenecks",
+      "suggest_mcts_optimizations",
+      "review_gpu_utilization",
+      "optimization_patches_ready"
     ],
     "gemini": [
-      "commit_config_changes",
-      "fill_architectural_plan",
-      "review_claude_analysis"
+      "monitor_training_convergence",
+      "fill_architectural_plan"
     ]
   },
-
   "metrics": {
-    "baseline": null,
-    "comment": "no_training_runs_yet"
+    "baseline": "running_initial_collection",
+    "comment": "waiting_for_first_batch_512"
   }
 }
