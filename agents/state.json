@@ -1,0 +1,77 @@
+{
+  "project": "TRM+MCTS Trading Agent",
+  "last_updated": "2025-12-03T22:45:00Z",
+  "updated_by": "claude",
+  "status": "initialization_complete",
+
+  "current_state": {
+    "components": {
+      "data_pipeline": "operational",
+      "trm_model": "implemented",
+      "lightzero_integration": "functional",
+      "training_loop": "ready",
+      "database": "populated_20gb"
+    },
+    "training": {
+      "status": "not_started",
+      "gpu": "rtx_3090_24gb",
+      "memory_used": "16gb",
+      "memory_available": "8gb"
+    }
+  },
+
+  "pending_changes": {
+    "gemini": {
+      "file": "mcts_trader/config/trading_config.py",
+      "changes": {
+        "batch_size": {"from": 2048, "to": 512, "impact": "saves_2.25gb"},
+        "replay_buffer_size": {"from": 50000, "to": 10000, "impact": "saves_8gb"}
+      },
+      "status": "unstaged",
+      "review": {
+        "by": "claude",
+        "pros": ["memory_reduction", "prevents_oom"],
+        "cons": ["higher_gradient_variance", "less_diverse_replay"],
+        "recommendation": "commit_and_monitor"
+      }
+    }
+  },
+
+  "issues": [
+    {
+      "id": 1,
+      "severity": "high",
+      "title": "monkey_patch_dependency",
+      "location": "main.py:12-51",
+      "description": "critical_patch_for_lightzero_cpp_bindings",
+      "action": "document_and_version_pin"
+    },
+    {
+      "id": 2,
+      "severity": "medium",
+      "title": "experiment_folder_proliferation",
+      "location": "root_directory",
+      "description": "30+_timestamped_folders_accumulating",
+      "action": "create_cleanup_script"
+    }
+  ],
+
+  "tasks": {
+    "claude": [
+      "profile_training_loop",
+      "create_test_suite",
+      "add_gpu_monitoring",
+      "analyze_monkey_patch_alternatives"
+    ],
+    "gemini": [
+      "commit_config_changes",
+      "fill_architectural_plan",
+      "review_claude_analysis"
+    ]
+  },
+
+  "metrics": {
+    "baseline": null,
+    "comment": "no_training_runs_yet"
+  }
+}
