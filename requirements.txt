@@ -1,0 +1,10 @@
+torch>=2.0.0
+numpy
+pandas
+aiohttp
+aiosqlite
+websockets
+lightzero>=0.2.0
+gymnasium
+pyts
+python-kraken-sdk>=2.3.0

@@ -1,0 +1,24 @@
+# Environment
+trader_env/
+__pycache__/
+*.pyc
+
+# Data
+trading_data.db
+*.db
+*.sqlite
+
+# Logs and Experiments
+default_experiment_*/
+debug_run.log
+training.log
+training_console.log
+current_training_pid.txt
+training_pid.txt
+
+# Temporary scripts
+stress_test.py
+debug_env.py
+
+# Secrets
+.env
