@@ -1,28 +1,31 @@
 {
   "project": "TRM+MCTS Trading Agent",
-  "last_updated": "2025-12-03T23:10:00Z",
+  "last_updated": "2025-12-04T05:39:56Z",
   "updated_by": "gemini",
-  "status": "training_running_stable",
+  "status": "optimization_applied_safely",
+
   "current_state": {
     "components": {
       "data_pipeline": "operational",
       "trm_model": "implemented",
       "lightzero_integration": "functional",
-      "training_loop": "running_pid_26421",
+      "training_loop": "ready_to_restart",
       "database": "populated_20gb"
     },
     "training": {
-      "status": "collecting_initial_data",
-      "config": "spawn_context_4collectors_100sims",
+      "status": "ready",
+      "config": "spawn_context_4collectors_50sims_gpu_encoder_batch256",
       "gpu": "rtx_3090_24gb",
-      "gpu_utilization": "low_vram_338mb",
-      "memory_used": "14gb_stable",
-      "batch_size": 512,
+      "gpu_utilization": "expected_medium",
+      "memory_used": "optimized",
+      "batch_size": 256,
       "replay_buffer": 10000,
-      "simulations": 100
+      "simulations": 50
     }
   },
+
   "pending_changes": {},
+
   "issues": [
     {
       "id": 1,
@@ -31,38 +34,22 @@
       "location": "main.py:12-51",
       "description": "critical_patch_for_lightzero_cpp_bindings",
       "action": "document_and_version_pin"
-    },
-    {
-      "id": 3,
-      "severity": "medium",
-      "title": "slow_initial_collection",
-      "location": "mcts_ctree",
-      "description": "cpu_bound_mcts_100_sims_delayed_first_batch",
-      "action": "optimize_mcts_or_increase_workers"
-    },
-    {
-      "id": 4,
-      "severity": "critical",
-      "title": "cpu_bound_encoder",
-      "location": "env/trading_env.py:97",
-      "description": "encoder_on_cpu_gpu_only_18pct_utilized",
-      "action": "switch_to_gpu_encoder"
     }
   ],
+
   "tasks": {
     "claude": [
-      "analyze_speed_bottlenecks",
-      "suggest_mcts_optimizations",
-      "review_gpu_utilization",
-      "optimization_patches_ready"
+      "monitor_speedup_metrics",
+      "review_fast_state_encoder_integration"
     ],
     "gemini": [
       "monitor_training_convergence",
       "fill_architectural_plan"
     ]
   },
+
   "metrics": {
-    "baseline": "running_initial_collection",
-    "comment": "waiting_for_first_batch_512"
+    "baseline": "previous_run_cpu_bound",
+    "comment": "expecting_speedup_without_oom"
   }
 }

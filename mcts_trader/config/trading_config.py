@@ -19,7 +19,7 @@ trading_muzero_config = dict(
             model_type='conv', # Custom model type
         ),
         mcts=dict(
-            num_simulations=100,
+            num_simulations=50,
             max_depth=10, # Lookahead steps
             pb_c_base=19652,
             pb_c_init=1.25,
@@ -30,7 +30,7 @@ trading_muzero_config = dict(
         env_type='not_board_games',
         game_segment_length=200,
         update_per_collect=50,
-        batch_size=512,
+        batch_size=256,
         optim_type='Adam',
         learning_rate=0.0002,
         weight_decay=1e-4,

@@ -94,7 +94,8 @@ class TradingEnv(gym.Env):
         
         # Components
         self.market = HistoricalMarket(db_path, n_assets=n_assets)
-        self.encoder = MultiAssetStateEncoder(n_assets=n_assets, lookback=lookback, device='cpu')
+        # Use CPU for encoder in environments to avoid OOM (multiple CUDA contexts)
+        self.encoder = MultiAssetStateEncoder(n_assets=n_assets, lookback=lookback, device='cuda')
         self.portfolio = None # Init in reset
         
         # Register assets with encoder
@@ -189,9 +190,6 @@ class TradingEnv(gym.Env):
         
         # Clip huge rewards (artifacts)
         reward = np.clip(reward, -10, 10)
-        
-        # Debug heartbeat
-        print(".", end="", flush=True)
         
         done = False # Infinite horizon in training usually, or fixed steps in config
         
