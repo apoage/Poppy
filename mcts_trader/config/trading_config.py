@@ -1,4 +1,17 @@
 from easydict import EasyDict
+import torch
+
+# Dynamic batch size based on GPU memory
+try:
+    vram = torch.cuda.get_device_properties(0).total_memory
+    if vram < 16 * 1024**3: # < 16GB
+        dynamic_batch_size = 256
+    elif vram < 24 * 1024**3: # < 24GB
+        dynamic_batch_size = 512
+    else: # >= 24GB
+        dynamic_batch_size = 2048
+except:
+    dynamic_batch_size = 256 # Fallback
 
 # Configuration for TRM+MCTS Agent
 trading_muzero_config = dict(
@@ -30,7 +43,7 @@ trading_muzero_config = dict(
         env_type='not_board_games',
         game_segment_length=200,
         update_per_collect=50,
-        batch_size=256,
+        batch_size=dynamic_batch_size,
         optim_type='Adam',
         learning_rate=0.0002,
         weight_decay=1e-4,
