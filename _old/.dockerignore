@@ -1,0 +1,45 @@
+# Docker ignore file - exclude unnecessary files from image
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+trader_env/
+venv/
+env/
+
+# Training artifacts (mount as volumes instead)
+default_experiment_*/
+checkpoints/
+logs/
+*.pth
+*.pt
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in runtime)
+*.md
+agents/
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Database (mount as volume)
+*.db
+*.db-journal

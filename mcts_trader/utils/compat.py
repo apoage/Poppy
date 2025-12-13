@@ -2,6 +2,7 @@ import numpy as np
 from lzero.policy import utils
 import lzero.policy.muzero
 import logging
+import gymnasium as gym
 
 def apply_lightzero_patches():
     """
@@ -48,3 +49,42 @@ def apply_lightzero_patches():
     utils.mz_network_output_unpack = patched_unpack
     lzero.policy.muzero.mz_network_output_unpack = patched_unpack
     logging.info("Applied LightZero monkey-patches successfully.")
+
+def patch_lightzero_gym_compat():
+    """
+    Patch LightZero to handle Gymnasium 1.x reset() signature.
+    Gymnasium returns (obs, info), old Gym returned obs only.
+    DI-engine expects just obs.
+    """
+    try:
+        from ding.envs import BaseEnvManager
+
+        # Avoid double patching
+        if getattr(BaseEnvManager, '_patched_for_gymnasium', False):
+            return
+
+        original_reset = BaseEnvManager.reset
+
+        def patched_reset(self, *args, **kwargs):
+            # Call original reset
+            result = original_reset(self, *args, **kwargs)
+            
+            # Handle list of tuples (from vector env)
+            if isinstance(result, list):
+                new_result = []
+                for item in result:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        new_result.append(item[0])
+                    else:
+                        new_result.append(item)
+                return new_result
+            
+            # Handle single tuple
+            if isinstance(result, tuple) and len(result) == 2:
+                return result[0]
+                
+            return result
+
+    except ImportError:
+        logging.warning("Could not import ding.envs.BaseEnvManager to apply patch")
+

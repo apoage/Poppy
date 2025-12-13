@@ -1,0 +1,308 @@
+(trader_env) lukas@workstation:~/Trader$ python train_manager.py --random-subset 64  --exclude-forex   --date-start 2018-03-30  --date-end 2025-03-30  --min-candles 262800  --min-coverage 0.85  --steps 1440   --epochs 2200   --no-validate
+2025-12-13 08:04:44,364 - [MANAGER] - ✅ CUDA libs configured from venv (10 paths)
+2025-12-13 08:04:44,367 - [MANAGER] - Filtering data: 2018-03-30 00:00:00 to 2025-03-30 00:00:00
+2025-12-13 08:08:41,649 - [MANAGER] - Excluded 7 forex pairs. Remaining: 188
+2025-12-13 08:08:41,649 - [MANAGER] - ✅ Selected 64 random assets from 188 candidates.
+2025-12-13 08:08:41,649 - [MANAGER] - Sample assets: ['QNT/USD', 'LINK/USDT', '/USDTCAD', 'AAVE/EUR', '/USDT/USD', 'XMR/EUR', 'DOTGBP', 'BCH/USD', 'APE/USD', 'INJ/USD']
+2025-12-13 08:08:41,649 - [MANAGER] - 📝 Config written to: config/current_training.json
+2025-12-13 08:08:41,649 - [MANAGER] - Loaded 2 experiments.
+2025-12-13 08:08:41,649 - [MANAGER] - --- Running 1/2 ---
+2025-12-13 08:08:41,649 - [MANAGER] - Starting Experiment: spot_baseline_v1 (Mode: SPOT, Fee: 26, Epochs: 2200, Steps: 1440)
+2025-12-13 08:08:41,649 - [MANAGER] - Command: python train_jax_fast.py --name spot_baseline_v1 --mode SPOT --fee 26 --epochs 2200 --steps 1440 --config config/current_training.json
+[spot_baseline_v1] 2025-12-13 08:08:43,366 - Loading 64 specific assets...
+[spot_baseline_v1] 2025-12-13 08:08:54,205 - Building valid timestamp index (min 54 of our 64 assets)...
+[spot_baseline_v1] 2025-12-13 08:09:09,141 - Market loaded: 64 assets, 1,178 valid timestamps, Time range: 1378856820-1765558500
+[spot_baseline_v1] INFO:2025-12-13 08:09:09,184:jax._src.xla_bridge:752: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+[spot_baseline_v1] 2025-12-13 08:09:09,184 - Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+[spot_baseline_v1] 2025-12-13 08:09:18,791 - Using fallback FX rate for CAD/USD: 0.74 (inaccurate for historical data)
+[spot_baseline_v1] 2025-12-13 08:09:18,916 - Using fallback FX rate for GBP/USD: 1.27 (inaccurate for historical data)
+[spot_baseline_v1] 2025-12-13 08:09:19,221 - Using fallback FX rate for BTC/USD: 100000.0 (inaccurate for historical data)
+[spot_baseline_v1] 2025-12-13 08:09:26,959 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:26,959 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:26,960 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:30,158 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:30,158 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:30,159 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:38,466 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:38,466 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:38,468 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:39,869 - Capping buy order for INJ/USD due to insufficient cash. Desired: $594.17, Available: $568.67
+[spot_baseline_v1] 2025-12-13 08:09:40,085 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $669.53, Available: $48.46
+[spot_baseline_v1] 2025-12-13 08:09:40,119 - Capping buy order for BTCGBP due to insufficient cash. Desired: $659.51, Available: $48.46
+[spot_baseline_v1] 2025-12-13 08:09:40,152 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $575.14, Available: $48.46
+[spot_baseline_v1] 2025-12-13 08:09:40,265 - Capping buy order for CRV/EUR due to insufficient cash. Desired: $666.79, Available: $48.46
+[spot_baseline_v1] 2025-12-13 08:09:40,293 - Capping buy order for APE/USD due to insufficient cash. Desired: $645.15, Available: $48.46
+[spot_baseline_v1] 2025-12-13 08:09:40,398 - Capping buy order for LTC/USD due to insufficient cash. Desired: $656.95, Available: $502.94
+[spot_baseline_v1] 2025-12-13 08:09:40,418 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $700.98, Available: $502.94
+[spot_baseline_v1] 2025-12-13 08:09:40,435 - Capping buy order for AAVE/EUR due to insufficient cash. Desired: $638.27, Available: $502.94
+[spot_baseline_v1] 2025-12-13 08:09:40,469 - Capping buy order for DOTGBP due to insufficient cash. Desired: $591.41, Available: $478.05
+[spot_baseline_v1] 2025-12-13 08:09:42,891 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:42,892 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:42,892 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:44,694 - Capping buy order for CRV/EUR due to insufficient cash. Desired: $591.65, Available: $376.33
+[spot_baseline_v1] 2025-12-13 08:09:44,936 - Capping buy order for CRV/EUR due to insufficient cash. Desired: $561.27, Available: $169.76
+[spot_baseline_v1] 2025-12-13 08:09:47,756 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:47,756 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:47,757 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:49,279 - Capping buy order for SEI/USD due to insufficient cash. Desired: $672.29, Available: $37.76
+[spot_baseline_v1] 2025-12-13 08:09:49,543 - Capping buy order for /USDC/USDT due to insufficient cash. Desired: $755.44, Available: $60.27
+[spot_baseline_v1] 2025-12-13 08:09:49,633 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $759.92, Available: $629.15
+[spot_baseline_v1] 2025-12-13 08:09:49,672 - Capping buy order for ALGOBTC due to insufficient cash. Desired: $765.83, Available: $629.15
+[spot_baseline_v1] 2025-12-13 08:09:49,700 - Capping buy order for ETH/USD due to insufficient cash. Desired: $710.14, Available: $629.15
+[spot_baseline_v1] 2025-12-13 08:09:49,812 - Capping buy order for ATOM/USD due to insufficient cash. Desired: $619.51, Available: $507.49
+[spot_baseline_v1] 2025-12-13 08:09:49,874 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $651.12, Available: $507.49
+[spot_baseline_v1] 2025-12-13 08:09:49,935 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $736.93, Available: $496.03
+[spot_baseline_v1] 2025-12-13 08:09:49,947 - Capping buy order for XBT/USDT due to insufficient cash. Desired: $718.67, Available: $496.03
+[spot_baseline_v1] 2025-12-13 08:09:50,437 - Capping buy order for EOS/EUR due to insufficient cash. Desired: $938.88, Available: $881.75
+[spot_baseline_v1] 2025-12-13 08:09:50,824 - Capping buy order for ETHBTC due to insufficient cash. Desired: $1033.58, Available: $1009.72
+[spot_baseline_v1] 2025-12-13 08:09:50,879 - Capping buy order for ALGOBTC due to insufficient cash. Desired: $1088.44, Available: $1009.72
+[spot_baseline_v1] 2025-12-13 08:09:50,891 - Capping buy order for DOT/USDT due to insufficient cash. Desired: $1088.90, Available: $1009.72
+[spot_baseline_v1] 2025-12-13 08:09:51,238 - Capping buy order for ETH/USDT due to insufficient cash. Desired: $1044.65, Available: $263.02
+[spot_baseline_v1] 2025-12-13 08:09:53,700 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:09:53,700 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:09:53,701 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:00.029722: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029747: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029791: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029853: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029870: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029883: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029944: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029971: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.029986: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.030082: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.030092: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.030102: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.030110: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:00.030137: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+[spot_baseline_v1] 2025-12-13 08:10:24,431 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:10:24,431 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:24,433 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:29,237 - Capping buy order for DOTGBP due to insufficient cash. Desired: $483.05, Available: $146.01
+[spot_baseline_v1] 2025-12-13 08:10:29,264 - Capping buy order for XDG/EUR due to insufficient cash. Desired: $540.93, Available: $146.01
+[spot_baseline_v1] 2025-12-13 08:10:29,434 - Capping buy order for INJ/USD due to insufficient cash. Desired: $499.60, Available: $459.90
+[spot_baseline_v1] 2025-12-13 08:10:30,205 - Using fallback FX rate for CHF/USD: 1.13 (inaccurate for historical data)
+[spot_baseline_v1] 2025-12-13 08:10:30,240 - Capping buy order for INJ/USD due to insufficient cash. Desired: $758.84, Available: $89.28
+[spot_baseline_v1] 2025-12-13 08:10:30,458 - Capping buy order for DOTGBP due to insufficient cash. Desired: $820.20, Available: $597.89
+[spot_baseline_v1] 2025-12-13 08:10:30,470 - Capping buy order for ZEC/EUR due to insufficient cash. Desired: $777.45, Available: $597.89
+[spot_baseline_v1] 2025-12-13 08:10:30,596 - Capping buy order for ETH/USDT due to insufficient cash. Desired: $786.77, Available: $580.76
+[spot_baseline_v1] 2025-12-13 08:10:33,175 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:10:33,176 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:33,177 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:37,337 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:10:37,337 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:37,338 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:47,137 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:10:47,137 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:47,138 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:49,588 - Tensorflow library not found, tensorflow.io.gfile operations will use native shim calls. GCS paths (i.e. 'gs://...') cannot be accessed.
+[spot_baseline_v1] 2025-12-13 08:10:49,589 - Saving checkpoint at step: 250
+[spot_baseline_v1] 2025-12-13 08:10:49,589 - Using Orbax as backend to save Flax checkpoints. For potential troubleshooting see: https://flax.readthedocs.io/en/latest/guides/training_techniques/use_checkpointing.html#orbax-as-backend-troubleshooting
+[spot_baseline_v1] 2025-12-13 08:10:49,589 - save_device_host_concurrent_bytes=None
+[spot_baseline_v1] 2025-12-13 08:10:49,589 - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x79b65c224280>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[spot_baseline_v1] 2025-12-13 08:10:49,589 - orbax-checkpoint version: 0.11.30
+[spot_baseline_v1] 2025-12-13 08:10:49,590 - [thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+[spot_baseline_v1] 2025-12-13 08:10:49,590 - [process=0] Started saving checkpoint to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.
+[spot_baseline_v1] 2025-12-13 08:10:49,591 - Creating tmp directory /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:10:49,591 - Wrote Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1765609849591702656, 'commit_timestamp_nsecs': None, 'custom_metadata': {}}, json={"item_handlers": null, "metrics": {}, "performance_metrics": {}, "init_timestamp_nsecs": 1765609849591702656, "commit_timestamp_nsecs": null, "custom_metadata": {}} to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[spot_baseline_v1] 2025-12-13 08:10:49,628 - Using ThreadSafeKeyValueSignalingClient
+[spot_baseline_v1] 2025-12-13 08:10:49,628 - Scheduling D2H of 455 prioritized jax.Array.
+[spot_baseline_v1] 2025-12-13 08:10:49,629 - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[spot_baseline_v1] 2025-12-13 08:10:49,759 - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.131840s
+[spot_baseline_v1] 2025-12-13 08:10:49,765 - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 69.557 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 172 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:10:49,765 - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.173077s (batch_requests_ready=0.014285s, total_serialization_initiated=0.158484s, others=0.000307s)
+[spot_baseline_v1] 2025-12-13 08:10:49,765 - [process=0][thread=MainThread][operation_id=1] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[spot_baseline_v1] 2025-12-13 08:10:49,819 - [process=0][thread=array_type_handler] Wrote 455 array_metadata.ArrayMetadata to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp/array_metadatas/process_0
+[spot_baseline_v1] 2025-12-13 08:10:49,971 - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.206285s (commit=0.188436s, array_metadata_write=0.017849s)
+[spot_baseline_v1] 2025-12-13 08:10:49,972 - [process=0] /jax/checkpoint/write/gbytes_per_sec: 31.625 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 380 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:10:49,973 - Read Metadata={'item_handlers': None, 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1765609849591702656, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} from /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[spot_baseline_v1] 2025-12-13 08:10:49,973 - Updated Metadata={'item_handlers': 'orbax.checkpoint._src.handlers.pytree_checkpoint_handler.PyTreeCheckpointHandler', 'metrics': {}, 'performance_metrics': {}, 'init_timestamp_nsecs': 1765609849591702656, 'commit_timestamp_nsecs': None, 'custom_metadata': {}} to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp/_CHECKPOINT_METADATA
+[spot_baseline_v1] 2025-12-13 08:10:49,976 - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[spot_baseline_v1] 2025-12-13 08:10:49,991 - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.017406s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:10:49,992 - Renaming /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250.orbax-checkpoint-tmp to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250
+[spot_baseline_v1] 2025-12-13 08:10:49,993 - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250`.
+[spot_baseline_v1] 2025-12-13 08:10:49,993 - Finished synchronous save in 0.40 seconds to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250
+[spot_baseline_v1] 2025-12-13 08:10:49,993 - Removing checkpoint at /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_136750
+[spot_baseline_v1] 2025-12-13 08:10:49,995 - Removing checkpoint at /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_137250
+[spot_baseline_v1] 2025-12-13 08:10:49,996 - Removing checkpoint at /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_137750
+[spot_baseline_v1] 2025-12-13 08:10:52,650 - Capping buy order for ZEC/EUR due to insufficient cash. Desired: $579.30, Available: $409.08
+[spot_baseline_v1] 2025-12-13 08:10:52,979 - Capping buy order for NANO/EUR due to insufficient cash. Desired: $547.47, Available: $496.76
+[spot_baseline_v1] 2025-12-13 08:10:53,576 - Capping buy order for MANA/EUR due to insufficient cash. Desired: $715.64, Available: $537.21
+[spot_baseline_v1] 2025-12-13 08:10:53,593 - Capping buy order for CRV/EUR due to insufficient cash. Desired: $831.41, Available: $537.21
+[spot_baseline_v1] 2025-12-13 08:10:53,850 - Capping buy order for EWT/USD due to insufficient cash. Desired: $762.35, Available: $539.00
+[spot_baseline_v1] 2025-12-13 08:10:54,369 - Capping buy order for MANA/EUR due to insufficient cash. Desired: $885.14, Available: $871.44
+[spot_baseline_v1] 2025-12-13 08:10:56,859 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:10:56,860 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:10:56,861 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:03,046 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:03,046 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:03,047 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:08,554 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:08,554 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:08,555 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:13,603 - Capping buy order for EOS/EUR due to insufficient cash. Desired: $762.17, Available: $544.87
+[spot_baseline_v1] 2025-12-13 08:11:14,668 - Capping buy order for ATOM/USD due to insufficient cash. Desired: $1097.37, Available: $519.31
+[spot_baseline_v1] 2025-12-13 08:11:17,194 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:17,194 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:17,195 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:25,944 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:25,945 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:25,946 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:34,057 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:34,058 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:34,059 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:41,848 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:41,849 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:41,850 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:45,970 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:45,970 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:45,971 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:54,049 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:11:54,049 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:11:54,050 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:02,303 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:02,304 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:02,305 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:04,642 - Saving checkpoint at step: 750
+[spot_baseline_v1] 2025-12-13 08:12:04,642 - Using Orbax as backend to save Flax checkpoints. For potential troubleshooting see: https://flax.readthedocs.io/en/latest/guides/training_techniques/use_checkpointing.html#orbax-as-backend-troubleshooting
+[spot_baseline_v1] 2025-12-13 08:12:04,642 - save_device_host_concurrent_bytes=None
+[spot_baseline_v1] 2025-12-13 08:12:04,642 - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x79b65c224280>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[spot_baseline_v1] 2025-12-13 08:12:04,642 - [process=0] Started saving checkpoint to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750.
+[spot_baseline_v1] 2025-12-13 08:12:04,643 - Creating tmp directory /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:12:04,679 - Scheduling D2H of 455 prioritized jax.Array.
+[spot_baseline_v1] 2025-12-13 08:12:04,679 - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[spot_baseline_v1] 2025-12-13 08:12:04,794 - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.115094s
+[spot_baseline_v1] 2025-12-13 08:12:04,837 - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 62.437 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 192 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:12:04,837 - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.192877s (batch_requests_ready=0.013891s, total_serialization_initiated=0.135907s, others=0.043080s)
+[spot_baseline_v1] 2025-12-13 08:12:04,837 - [process=0][thread=MainThread][operation_id=2] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[spot_baseline_v1] 2025-12-13 08:12:04,839 - [process=0][thread=array_type_handler] Wrote 455 array_metadata.ArrayMetadata to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750.orbax-checkpoint-tmp/array_metadatas/process_0
+[spot_baseline_v1] 2025-12-13 08:12:05,025 - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.188907s (commit=0.171108s, array_metadata_write=0.017800s)
+[spot_baseline_v1] 2025-12-13 08:12:05,026 - [process=0] /jax/checkpoint/write/gbytes_per_sec: 31.524 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 381 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:12:05,029 - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[spot_baseline_v1] 2025-12-13 08:12:05,044 - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.016829s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:12:05,044 - Renaming /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750.orbax-checkpoint-tmp to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750
+[spot_baseline_v1] 2025-12-13 08:12:05,045 - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750`.
+[spot_baseline_v1] 2025-12-13 08:12:05,046 - Finished synchronous save in 0.40 seconds to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_750
+[spot_baseline_v1] 2025-12-13 08:12:10,955 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:10,956 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:10,957 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:15,443 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:15,444 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:15,445 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:24,480 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:24,480 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:24,481 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:30,845 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:30,845 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:30,846 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:37,394 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:37,395 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:37,396 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:41,529 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:41,529 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:41,530 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:48,437 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:48,438 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:48,439 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:53,523 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:53,523 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:53,524 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:57,674 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:12:57,674 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:12:57,675 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:02,219 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:02,220 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:02,221 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:04,295 - Saving checkpoint at step: 1250
+[spot_baseline_v1] 2025-12-13 08:13:04,295 - Using Orbax as backend to save Flax checkpoints. For potential troubleshooting see: https://flax.readthedocs.io/en/latest/guides/training_techniques/use_checkpointing.html#orbax-as-backend-troubleshooting
+[spot_baseline_v1] 2025-12-13 08:13:04,295 - save_device_host_concurrent_bytes=None
+[spot_baseline_v1] 2025-12-13 08:13:04,295 - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x79b65c224280>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[spot_baseline_v1] 2025-12-13 08:13:04,295 - [process=0] Started saving checkpoint to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250.
+[spot_baseline_v1] 2025-12-13 08:13:04,296 - Creating tmp directory /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:13:04,331 - Scheduling D2H of 455 prioritized jax.Array.
+[spot_baseline_v1] 2025-12-13 08:13:04,331 - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[spot_baseline_v1] 2025-12-13 08:13:04,454 - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.123579s
+[spot_baseline_v1] 2025-12-13 08:13:04,493 - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 61.408 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 195 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:13:04,493 - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.196288s (batch_requests_ready=0.013412s, total_serialization_initiated=0.149066s, others=0.033810s)
+[spot_baseline_v1] 2025-12-13 08:13:04,494 - [process=0][thread=MainThread][operation_id=3] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[spot_baseline_v1] 2025-12-13 08:13:04,505 - [process=0][thread=array_type_handler] Wrote 455 array_metadata.ArrayMetadata to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250.orbax-checkpoint-tmp/array_metadatas/process_0
+[spot_baseline_v1] 2025-12-13 08:13:04,873 - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.379816s (commit=0.362380s, array_metadata_write=0.017436s)
+[spot_baseline_v1] 2025-12-13 08:13:04,874 - [process=0] /jax/checkpoint/write/gbytes_per_sec: 20.850 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 576 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:13:04,877 - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[spot_baseline_v1] 2025-12-13 08:13:04,898 - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.023032s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:13:04,899 - Renaming /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250.orbax-checkpoint-tmp to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250
+[spot_baseline_v1] 2025-12-13 08:13:04,900 - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250`.
+[spot_baseline_v1] 2025-12-13 08:13:04,900 - Finished synchronous save in 0.61 seconds to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1250
+[spot_baseline_v1] 2025-12-13 08:13:10,361 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:10,361 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:10,363 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:17,760 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:17,760 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:17,761 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:21,897 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:21,898 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:21,899 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:27,260 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:27,260 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:27,261 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:32,279 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:32,280 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:32,281 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:39,909 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:39,909 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:39,910 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:47,141 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:47,141 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:47,142 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:57,366 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:13:57,366 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:13:57,367 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:02,608 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:02,608 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:02,615 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:11,229 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:11,229 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:11,230 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:13,391 - Saving checkpoint at step: 1750
+[spot_baseline_v1] 2025-12-13 08:14:13,391 - Using Orbax as backend to save Flax checkpoints. For potential troubleshooting see: https://flax.readthedocs.io/en/latest/guides/training_techniques/use_checkpointing.html#orbax-as-backend-troubleshooting
+[spot_baseline_v1] 2025-12-13 08:14:13,391 - save_device_host_concurrent_bytes=None
+[spot_baseline_v1] 2025-12-13 08:14:13,391 - Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x79b65c224280>, enable_pinned_host_transfer=True, save_concurrent_bytes: 96000000000 (89.4 GiB), restore_concurrent_bytes: 96000000000 (89.4 GiB)
+[spot_baseline_v1] 2025-12-13 08:14:13,391 - [process=0] Started saving checkpoint to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750.
+[spot_baseline_v1] 2025-12-13 08:14:13,392 - Creating tmp directory /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:14:13,428 - Scheduling D2H of 455 prioritized jax.Array.
+[spot_baseline_v1] 2025-12-13 08:14:13,428 - Transferring arrays to host memory with options: use_replica_parallel=True, min_slice_bytes_for_replica_parallel=None, max_replicas_for_replica_parallel=None, enable_pinned_host_transfer=True
+[spot_baseline_v1] 2025-12-13 08:14:13,560 - [process=0][thread=MainThread] Initiated "orbax.checkpoint._src.serialization.jax_array_handlers.ArrayHandler".serialize. Time taken: 0.132149s
+[spot_baseline_v1] 2025-12-13 08:14:13,593 - [process=0] /jax/checkpoint/write/blocking_gbytes_per_sec: 60.275 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 199 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:14:13,593 - [process=0][thread=MainThread] Initiated Pytree async_save. Time taken: 0.199833s (batch_requests_ready=0.013578s, total_serialization_initiated=0.158134s, others=0.028120s)
+[spot_baseline_v1] 2025-12-13 08:14:13,593 - [process=0][thread=MainThread][operation_id=4] _SignalingThread.join() waiting for signals ([]) blocking the main thread will slow down blocking save times. This is likely due to main thread calling result() on a CommitFuture.
+[spot_baseline_v1] 2025-12-13 08:14:13,599 - [process=0][thread=array_type_handler] Wrote 455 array_metadata.ArrayMetadata to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750.orbax-checkpoint-tmp/array_metadatas/process_0
+[spot_baseline_v1] 2025-12-13 08:14:13,776 - [process=0][thread=write_metadata_after_commits] Commit + Array metadata written. Time taken: 0.183821s (commit=0.166371s, array_metadata_write=0.017450s)
+[spot_baseline_v1] 2025-12-13 08:14:13,777 - [process=0] /jax/checkpoint/write/gbytes_per_sec: 31.311 MiB/s (total gbytes: 12.0 MiB) (time elapsed: 384 milliseconds) (per-host)
+[spot_baseline_v1] 2025-12-13 08:14:13,781 - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+[spot_baseline_v1] 2025-12-13 08:14:13,796 - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.017004s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750.orbax-checkpoint-tmp
+[spot_baseline_v1] 2025-12-13 08:14:13,796 - Renaming /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750.orbax-checkpoint-tmp to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750
+[spot_baseline_v1] 2025-12-13 08:14:13,797 - [process=0][thread=MainThread] Finished saving checkpoint (finalized tmp dir) to `/home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750`.
+[spot_baseline_v1] 2025-12-13 08:14:13,798 - Finished synchronous save in 0.41 seconds to /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_1750
+[spot_baseline_v1] 2025-12-13 08:14:13,798 - Removing checkpoint at /home/lukas/Trader/jax_ckpt_fast/dynamic_set/checkpoint_250
+[spot_baseline_v1] 2025-12-13 08:14:16,819 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:16,819 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:16,820 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:23,415 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:23,415 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:23,416 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:28,017 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:28,017 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:28,018 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:32,849 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:32,849 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:32,850 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:41,286 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:41,286 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:41,287 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:47,973 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:47,973 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:47,974 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:52,993 - No more valid timestamps after 1741699620. Ending episode.
+[spot_baseline_v1] 2025-12-13 08:14:52,994 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+[spot_baseline_v1] 2025-12-13 08:14:52,994 - Query returned 0 rows at timestamp 1765558560. First 5 asset IDs: [996, 997, 1019, 1014, 46]
+^CTraceback (most recent call last):

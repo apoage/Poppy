@@ -1,0 +1,23 @@
+# Core ML
+torch>=2.0.0
+numpy>=1.25.0
+tensorboard
+
+# Reinforcement Learning
+lzero>=0.4.0 
+di-engine
+
+# Environment
+gymnasium>=0.29.0
+easydict
+
+# Other Utilities
+treevalue
+psutil
+websockets
+aiosqlite
+aiohttp
+pandas
+pyts
+scikit-learn
+numba

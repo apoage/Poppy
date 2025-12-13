@@ -1,10 +1,34 @@
+# Core ML - JAX Stack
+jax>=0.4.0
+jaxlib>=0.4.0
+flax>=0.7.0
+optax>=0.1.7
+mctx>=0.0.3
+chex>=0.1.7
+
+# Core ML - PyTorch (Used for Encoder/Legacy)
 torch>=2.0.0
-numpy
-pandas
-aiohttp
-aiosqlite
+numpy>=1.25.0
+tensorboard
+
+# Reinforcement Learning (Legacy/Reference)
+# lzero>=0.4.0 
+# di-engine
+
+# Environment
+gymnasium>=0.29.0
+easydict
+
+# Data & Networking
 websockets
-lightzero>=0.2.0
-gymnasium
+aiosqlite
+aiohttp
+pandas
+
+# Utilities
+psutil
+treevalue
 pyts
-python-kraken-sdk>=2.3.0
+scikit-learn
+numba
+tqdm

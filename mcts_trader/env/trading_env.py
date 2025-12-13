@@ -11,7 +11,6 @@ from ..agent.portfolio import PortfolioManager
 from ..encoder.state import MultiAssetStateEncoder
 from ..data.history import HistoricalMarket
 from ding.utils import ENV_REGISTRY
-from ding.envs import BaseEnvTimestep
 
 @ENV_REGISTRY.register('trading_env')
 class TradingEnv(gym.Env):
@@ -58,12 +57,18 @@ class TradingEnv(gym.Env):
         n_actions_per_asset: int = 3, # Sell, Hold, Buy
         lookback: int = 60,
         initial_capital: float = 10000.0,
+        device: str = 'cpu', # Default to cpu to avoid PyTorch/JAX GPU conflicts
+        trading_fee_bps: int = 26, # Conservative default (0.26% Taker)
+        slippage_bps: int = 5,     # Conservative default (0.05%)
         **kwargs
     ):
         super().__init__()
         self.n_assets = n_assets
         self.n_actions_per_asset = n_actions_per_asset
         self.initial_capital = initial_capital
+        self.device = device # Store device config
+        self.trading_fee_bps = trading_fee_bps
+        self.slippage_bps = slippage_bps
         
         # Action space: select (asset, action) pair
         self.action_space = spaces.Discrete(n_assets * n_actions_per_asset)
@@ -94,9 +99,13 @@ class TradingEnv(gym.Env):
         
         # Components
         self.market = HistoricalMarket(db_path, n_assets=n_assets)
-        # Use CPU for encoder in environments to avoid OOM (multiple CUDA contexts)
-        self.encoder = MultiAssetStateEncoder(n_assets=n_assets, lookback=lookback, device='cuda')
+        # Use specified device for encoder
+        self.encoder = MultiAssetStateEncoder(n_assets=n_assets, lookback=lookback, device=self.device)
         self.portfolio = None # Init in reset
+        
+        self.market_asset_ids_ordered = list(self.market.assets.keys()) # Store ordered list of db_ids
+        self.db_id_to_action_idx = {db_id: i for i, db_id in enumerate(self.market_asset_ids_ordered)}
+        self.action_idx_to_db_id = {i: db_id for i, db_id in enumerate(self.market_asset_ids_ordered)}
         
         # Register assets with encoder
         asset_symbols = list(self.market.assets.values())
@@ -121,7 +130,9 @@ class TradingEnv(gym.Env):
         # Reset components
         self.portfolio = self.portfolio_manager_cls(
             initial_capital=self.initial_capital, 
-            n_assets=self.n_assets
+            n_assets=self.n_assets,
+            trading_fee_bps=self.trading_fee_bps,
+            slippage_bps=self.slippage_bps
         )
         self.portfolio.register_assets(self.market.assets)
         
@@ -137,7 +148,7 @@ class TradingEnv(gym.Env):
         obs = self._get_observation()
         info = self._get_info()
         
-        return obs
+        return obs, info
     
     def step(self, action: int):
         # Decode action
@@ -152,10 +163,25 @@ class TradingEnv(gym.Env):
         # So we execute action at current price, THEN step market.
         
         current_data = self.market.get_current_data()
-        current_prices = {
-            idx: current_data[sym]['close'] 
-            for idx, sym in self.market.assets.items() 
+        current_prices_by_db_id = {
+            db_id: current_data[sym]['close'] 
+            for db_id, sym in self.market.assets.items() 
             if sym in current_data
+        }
+        
+        # BUG FIX [2025-12-12]: Extract FX rates for correct portfolio valuation
+        # Previously ignored, leading to corrupted training for non-USD assets.
+        fx_rates = {}
+        for sym, data in current_data.items():
+            # capture anything looking like a currency pair (contains USD)
+            if 'USD' in sym: 
+                fx_rates[sym] = data['close']
+        
+        # Convert keys from db_id to action_idx for PortfolioManager
+        current_prices_for_portfolio = {
+            self.db_id_to_action_idx[db_id]: price
+            for db_id, price in current_prices_by_db_id.items()
+            if db_id in self.db_id_to_action_idx # Ensure mapping exists
         }
         
         # Execute action
@@ -169,7 +195,7 @@ class TradingEnv(gym.Env):
         prev_value = self.portfolio.state.total_value
         
         # Execute orders
-        self.portfolio.execute_actions(actions, sizes, current_prices)
+        self.portfolio.execute_actions(actions, sizes, current_prices_for_portfolio, fx_rates=fx_rates)
         
         # Advance time
         new_data = self.market.step()
@@ -182,7 +208,14 @@ class TradingEnv(gym.Env):
                 for idx, sym in self.market.assets.items() 
                 if sym in new_data
             }
-            self.portfolio.update_prices(new_prices)
+            
+            # Update FX rates for new timestep
+            new_fx_rates = {}
+            for sym, data in new_data.items():
+                if 'USD' in sym:
+                    new_fx_rates[sym] = data['close']
+
+            self.portfolio.update_prices(new_prices, fx_rates=new_fx_rates)
         
         # Calculate Reward
         new_value = self.portfolio.state.total_value
@@ -191,22 +224,32 @@ class TradingEnv(gym.Env):
         # Clip huge rewards (artifacts)
         reward = np.clip(reward, -10, 10)
         
-        done = False # Infinite horizon in training usually, or fixed steps in config
+        terminated = False 
+        truncated = False
         
         obs = self._get_observation()
         info = self._get_info()
         
-        return BaseEnvTimestep(obs, reward, done, info)
+        return obs, reward, terminated, truncated, info
     
     def _get_observation(self) -> Dict:
         state = self.encoder.encode()
-        obs = state['combined'].cpu().numpy()
+        obs = state['combined']
+        
+        # If on GPU, move to CPU numpy for returning to LightZero Collector
+        # (Collector expects numpy, but we encode on GPU for speed)
+        if hasattr(obs, 'cpu'):
+            obs = obs.cpu().numpy()
+
+        # Simple action mask - all actions valid (faster than 192 lookups)
+        # Market data gaps are rare in our filtered dataset
+        mask = np.ones(self.action_space.n, dtype=np.int8)
         
         # MuZero expects dict with observation and action_mask
         return {
             'observation': obs,
-            'action_mask': np.ones(self.action_space.n, dtype=np.int8),
-            'to_play': np.array([-1], dtype=np.int8)
+            'action_mask': mask,
+            'to_play': -1 # Scalar for 1-player/environment games
         }
     
     def _get_info(self) -> Dict:

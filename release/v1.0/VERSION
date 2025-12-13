@@ -1,0 +1,24 @@
+1.0.0
+Release Date: 2025-12-08
+Codename: "First Light"
+
+Model: JAX MuZero with TRM (Tiny Recursive Model)
+Training: 49,750 iterations on historical crypto data
+Assets: 64 top volatile cryptocurrencies
+Architecture: TRM encoder + MuZero MCTS planning
+
+Key Features:
+- Fast state encoder (27 channels, no correlation matrices)
+- Gumbel MuZero search via mctx library
+- JAX/Flax implementation for GPU acceleration
+- Paper trading capability with Kraken WebSocket
+
+Performance (Training):
+- Self-play: ~1.5-2.5 seconds per episode
+- Training: ~1.5 seconds per iteration
+- Episodes: 200 steps each
+
+Notes:
+- This is the first working release
+- Known issues: NaN loss during training (system still learns)
+- Paper trading has WebSocket timestamp parsing issues (to be fixed)

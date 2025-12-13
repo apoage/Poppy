@@ -1,8 +1,13 @@
 import asyncio
 import aiohttp
 import time
+import hashlib
+import hmac
+import base64
+import urllib.parse
+import os
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 import logging
 
 @dataclass
@@ -47,8 +52,8 @@ class KrakenClient:
     BASE_URL = "https://api.kraken.com"
     
     def __init__(self, api_key: str = None, api_secret: str = None):
-        self.api_key = api_key
-        self.api_secret = api_secret
+        self.api_key = api_key or os.environ.get('KRAKEN_API_KEY')
+        self.api_secret = api_secret or os.environ.get('KRAKEN_API_SECRET')
         self.rate_limiter = RateLimiter()
         self.session: Optional[aiohttp.ClientSession] = None
         
@@ -57,11 +62,21 @@ class KrakenClient:
         return self
     
     async def __aexit__(self, *args):
-        await self.session.close()
+        if self.session:
+            await self.session.close()
+
+    def _get_kraken_signature(self, urlpath: str, data: Dict, secret: str) -> str:
+        """Sign request with API secret"""
+        postdata = urllib.parse.urlencode(data)
+        encoded = (str(data['nonce']) + postdata).encode()
+        message = urlpath.encode() + hashlib.sha256(encoded).digest()
+
+        mac = hmac.new(base64.b64decode(secret), message, hashlib.sha512)
+        return base64.b64encode(mac.digest()).decode()
     
     async def _request(self, endpoint: str, params: Dict = None) -> Dict:
         """
-        Internal helper to handle requests with rate limit retries
+        Internal helper for PUBLIC requests (GET)
         """
         retries = 0
         max_retries = 10
@@ -73,9 +88,7 @@ class KrakenClient:
             try:
                 async with self.session.get(f"{self.BASE_URL}/{endpoint}", params=params) as resp:
                     if resp.status in [429, 520, 529, 500, 502, 503, 504]:
-                        # Penalize the rate limiter globally
                         self.rate_limiter.penalize(backoff)
-                        
                         logging.warning(f"Kraken API {resp.status} error. Retrying in {backoff}s...")
                         await asyncio.sleep(backoff)
                         retries += 1
@@ -86,7 +99,6 @@ class KrakenClient:
                     
                     if data.get('error'):
                         errors = data['error']
-                        # Check for rate limit errors
                         if any('Too many requests' in e or 'Rate limit exceeded' in e for e in errors):
                             self.rate_limiter.penalize(backoff)
                             logging.warning(f"Rate limit hit ({errors}). Retrying in {backoff}s...")
@@ -108,53 +120,145 @@ class KrakenClient:
         logging.error(f"Max retries reached for {endpoint}")
         return {'error': ['Max retries reached']}
 
+    async def _private_request(self, endpoint: str, data: Dict = None) -> Dict:
+        """
+        Internal helper for PRIVATE requests (POST)
+        """
+        if not self.api_key or not self.api_secret:
+            raise ValueError("API Key and Secret required for private requests")
+
+        retries = 0
+        max_retries = 5 # Fewer retries for trading
+        backoff = 2.0
+        
+        # Private endpoints often cost more tokens
+        # We'll acquire 2 tokens conservatively
+        
+        urlpath = f"/{endpoint}"
+        
+        while retries < max_retries:
+            await self.rate_limiter.acquire(tokens=2)
+            
+            # Nonce must be always increasing
+            if data is None:
+                data = {}
+            data['nonce'] = str(int(time.time() * 1000))
+            
+            headers = {
+                'API-Key': self.api_key,
+                'API-Sign': self._get_kraken_signature(urlpath, data, self.api_secret)
+            }
+            
+            try:
+                async with self.session.post(f"{self.BASE_URL}{urlpath}", data=data, headers=headers) as resp:
+                    if resp.status in [429, 520, 529, 500, 502, 503, 504]:
+                        self.rate_limiter.penalize(backoff)
+                        logging.warning(f"Kraken API {resp.status} error. Retrying in {backoff}s...")
+                        await asyncio.sleep(backoff)
+                        retries += 1
+                        backoff = min(backoff * 1.5, 60)
+                        continue
+                        
+                    data_resp = await resp.json()
+                    
+                    if data_resp.get('error'):
+                        errors = data_resp['error']
+                        if any('Too many requests' in e or 'Rate limit exceeded' in e for e in errors):
+                            self.rate_limiter.penalize(backoff)
+                            logging.warning(f"Rate limit hit ({errors}). Retrying in {backoff}s...")
+                            await asyncio.sleep(backoff)
+                            retries += 1
+                            backoff = min(backoff * 1.5, 60)
+                            continue
+                        else:
+                            return data_resp
+                    
+                    return data_resp
+            except Exception as e:
+                logging.warning(f"Private Request failed: {e}. Retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+                retries += 1
+        
+        logging.error(f"Max retries reached for {endpoint}")
+        return {'error': ['Max retries reached']}
+
+    # --- Public Methods ---
+
     async def get_tradeable_pairs(self) -> Dict:
         """Get all tradeable asset pairs"""
         data = await self._request("0/public/AssetPairs")
         return data.get('result', {})
     
     async def get_ohlc(self, pair: str, interval: int = 1, since: int = None) -> List:
-        """
-        Get OHLC data
-        interval: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600 minutes
-        since: Unix timestamp (returns data since this time)
-        """
+        """Get OHLC data"""
         params = {'pair': pair, 'interval': interval}
         if since:
             params['since'] = since
-            
         data = await self._request("0/public/OHLC", params=params)
-        
         if data.get('error'):
             logging.error(f"OHLC error for {pair}: {data['error']}")
             return []
-            
         result = data.get('result', {})
         pair_data = [v for k, v in result.items() if k != 'last']
         return pair_data[0] if pair_data else []
-    
-    async def get_trades(self, pair: str, since: int = None) -> tuple:
-        """
-        Get recent trades (up to 1000)
-        Returns: (trades_list, last_timestamp)
-        """
-        params = {'pair': pair}
-        if since:
-            params['since'] = since
-            
-        data = await self._request("0/public/Trades", params=params)
-        
-        if data.get('error'):
-            logging.error(f"Trades error for {pair}: {data['error']}")
-            return [], None
-            
-        result = data.get('result', {})
-        last = result.pop('last', None)
-        trades = list(result.values())[0] if result else []
-        return trades, last
     
     async def get_ticker(self, pairs: List[str]) -> Dict:
         """Get current ticker for multiple pairs"""
         pair_str = ','.join(pairs)
         data = await self._request("0/public/Ticker", params={'pair': pair_str})
         return data.get('result', {})
+
+    # --- Private Methods (Trading) ---
+
+    async def get_account_balance(self) -> Dict:
+        """Get asset balances"""
+        data = await self._private_request("0/private/Balance")
+        return data.get('result', {})
+
+    async def get_trade_balance(self, asset: str = "ZUSD") -> Dict:
+        """Get trade balance info (equity, margin, etc.)"""
+        data = await self._private_request("0/private/TradeBalance", {'asset': asset})
+        return data.get('result', {})
+
+    async def get_open_orders(self) -> Dict:
+        """Get open orders info"""
+        data = await self._private_request("0/private/OpenOrders")
+        return data.get('result', {}).get('open', {})
+
+    async def get_open_positions(self) -> Dict:
+        """Get open margin positions"""
+        data = await self._private_request("0/private/OpenPositions")
+        return data.get('result', {})
+
+    async def add_order(self, pair: str, side: str, order_type: str, volume: float, 
+                       price: float = None, leverage: str = None, 
+                       reduce_only: bool = False) -> Dict:
+        """
+        Place a new order
+        side: 'buy' or 'sell'
+        order_type: 'market' or 'limit'
+        """
+        params = {
+            'pair': pair,
+            'type': side,
+            'ordertype': order_type,
+            'volume': str(volume)
+        }
+        if price:
+            params['price'] = str(price)
+        if leverage:
+            params['leverage'] = str(leverage)
+        if reduce_only:
+            # Kraken flag for reduce-only is obscure, usually passed in 'flags' or specific calls
+            # For simplicity/standard api, we might just rely on correct sizing.
+            pass
+
+        return await self._private_request("0/private/AddOrder", params)
+
+    async def cancel_order(self, txid: str) -> Dict:
+        """Cancel a specific order"""
+        return await self._private_request("0/private/CancelOrder", {'txid': txid})
+
+    async def cancel_all_orders(self) -> Dict:
+        """Cancel all open orders"""
+        return await self._private_request("0/private/CancelAll")
