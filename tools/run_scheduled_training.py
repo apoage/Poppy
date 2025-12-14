@@ -49,7 +49,7 @@ def setup_cuda_env():
 
 CUDA_ENV = setup_cuda_env()
 
-def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs=None, steps=200):
+def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs=None, steps=200, last_checkpoint=None):
     """Execute a single training run"""
     
     start_ts = period_data['start']
@@ -92,6 +92,9 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
         "--mode", "MARGIN",
         "--fee", "26"
     ]
+
+    if last_checkpoint:
+        cmd.extend(["--load-checkpoint", last_checkpoint])
     
     logging.info(f"Executing: {' '.join(cmd)}")
     
@@ -107,7 +110,7 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
     ) as proc:
         for line in proc.stdout:
             # Filter output to reduce noise but keep progress
-            if "Epoch" in line or "Error" in line or "CRITICAL" in line:
+            if "Epoch" in line or "Error" in line or "CRITICAL" in line or "Checkpoint" in line:
                 print(f"[{run_id}] {line.strip()}")
                 
         return_code = proc.wait()
@@ -121,17 +124,30 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
             os.remove(config_path)
         except:
             pass
-        return True
+            
+        # Find latest checkpoint
+        ckpt_dir = os.path.join('jax_ckpt_fast', run_id)
+        if os.path.exists(ckpt_dir):
+            checkpoints = [d for d in os.listdir(ckpt_dir) if d.startswith('checkpoint_')]
+            if checkpoints:
+                # Sort by step number (checkpoint_100, checkpoint_200)
+                checkpoints.sort(key=lambda x: int(x.split('_')[1]))
+                latest = os.path.join(ckpt_dir, checkpoints[-1])
+                logging.info(f"Found latest checkpoint: {latest}")
+                return latest
+        
+        logging.warning("No checkpoint found for successful run.")
+        return None
     else:
         logging.error(f"Run {run_id} FAILED with code {return_code}.")
-        return False
+        return None
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--limit', type=int, default=None, help='Limit number of runs (for testing)')
     parser.add_argument('--epochs', type=int, default=None, help='Epochs per run (default: duration of period)')
-    parser.add_argument('--steps', type=int, default=200, help='Steps per episode')
+    parser.add_argument('--steps', type=int, default=1440, help='Steps per episode (default: 1440 = 24h)')
     args = parser.parse_args()
 
     if not os.path.exists('training_schedule.json'):
@@ -150,6 +166,7 @@ def main():
     
     runs_completed = 0
     global_run_count = 0
+    last_checkpoint = None
     
     for p_idx, period in enumerate(schedule['periods'], start=1):
         logging.info(f"=== Processing Period {p_idx}/{len(schedule['periods'])} ===")
@@ -160,12 +177,16 @@ def main():
                 logging.info(f"Limit of {args.limit} runs reached. Exiting.")
                 return
 
-            success = run_training_run(p_idx, r_idx, period, run_data, db_path, epochs=args.epochs, steps=args.steps)
+            # Pass last checkpoint to resume
+            latest_ckpt = run_training_run(p_idx, r_idx, period, run_data, db_path, 
+                                         epochs=args.epochs, steps=args.steps, 
+                                         last_checkpoint=last_checkpoint)
             
-            if success:
+            if latest_ckpt:
+                last_checkpoint = latest_ckpt
                 runs_completed += 1
             else:
-                logging.warning(f"Run {p_idx}-{r_idx} failed, continuing to next...")
+                logging.warning(f"Run {p_idx}-{r_idx} failed or produced no checkpoint. Continuing without updating last_checkpoint...")
                 
             global_run_count += 1
             

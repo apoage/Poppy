@@ -343,6 +343,7 @@ def main():
     parser.add_argument('--config', type=str, help='Training config JSON (dynamic assets)')
     parser.add_argument('--start-date', type=str, help='Start date filter (YYYY-MM-DD or unix ts)')
     parser.add_argument('--end-date', type=str, help='End date filter (YYYY-MM-DD or unix ts)')
+    parser.add_argument('--load-checkpoint', type=str, help='Path to checkpoint to resume from (absolute or relative)')
     args = parser.parse_args()
 
     # Dynamic Asset Configuration
@@ -430,6 +431,24 @@ def main():
     rng, init_rng = jax.random.split(rng)
     dummy_obs = jnp.ones((1, 27, n_assets, n_assets))
     state = trainer.init_train_state(init_rng, dummy_obs)
+
+    # Resume from checkpoint if provided
+    if args.load_checkpoint:
+        print(f"📥 Loading checkpoint from: {args.load_checkpoint}")
+        try:
+            # MuZeroTrainer.restore_checkpoint returns the restored state
+            restored_state = trainer.restore_checkpoint(args.load_checkpoint)
+            if restored_state:
+                trainer.state = restored_state
+                state = restored_state # Update local reference
+                print(f"✅ Checkpoint loaded successfully! (Step: {state.step})")
+            else:
+                print(f"⚠️ Failed to load checkpoint (trainer returned None)")
+        except Exception as e:
+            print(f"❌ Error loading checkpoint: {e}")
+            # Do not crash, continue from scratch if load fails? Or crash?
+            # Crashing is safer to avoid accidental scratch training
+            raise e
 
     search = create_mctx_search(model, num_simulations=16, use_gumbel=True)
     print(f"✅ Model ready ({sum(x.size for x in jax.tree_util.tree_leaves(state.params)):,} params)")
