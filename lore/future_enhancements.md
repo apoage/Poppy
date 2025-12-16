@@ -1,5 +1,13 @@
 # Future Enhancements - MCTS Trading Agent
 
+⚠️ **STALE WARNING**: This file may be out of date.
+
+**Authoritative source**: See `CURRENT_STATE.md` for what's ACTUALLY implemented.
+
+**Last audit**: 2025-12-17 00:15:53
+
+---
+
 ## 1. Auto-Resample Assets on Training Plateau
 
 ### Concept
@@ -410,7 +418,46 @@ for epoch in range(args.epochs):
 
 ---
 
-## 4. Validation Split
+## 4. "Universal Agent" Architecture (v2.0)
+
+### Concept
+Switch from fixed-grid CNN backbone to Transformer-based set processing ("Asset-as-Token").
+
+### Motivation
+- **Infinite Scaling**: Train on 64 assets, trade on 120, 500, or 1000+ without architectural changes.
+- **Zero-Shot Generalization**: Model learns "general trading logic" rather than memorizing a specific 64-asset grid.
+- **Dynamic Correlations**: Self-attention naturally learns which assets are related at any given moment.
+
+### Architecture
+1.  **Input**: Sequence of $N$ tokens. Each token = 1 Asset (Technical Indicators + Embedding).
+2.  **Interaction**: Self-Attention layers replace fixed correlation matrices.
+3.  **Recursive Reasoning (TRM)**: Apply TRM loop to the sequence of tokens.
+4.  **Output**: Shared Policy Head applied to each token independently.
+
+### Implementation Plan
+1.  Create `mcts_trader/agent/trm_transformer.py`.
+2.  Implement `AssetTokenEncoder` (replacing CNN).
+3.  Implement `TransformerTRMBlock` (replacing CNN TRM Block).
+4.  Update `JAX` trainer to handle variable-length sequences (padding or masking).
+
+---
+
+## 5. Multi-Horizon Curriculum
+
+### Concept
+Permute episode lengths during training to force model to learn different trading styles.
+
+### Strategy
+- **Scalping**: 200 steps (3h)
+- **Day Trading**: 1440 steps (24h) - *Current Baseline*
+- **Swing Trading**: 10080 steps (7d)
+
+### Implementation
+Update `training_schedule.json` generator to assign random `steps` count to each run, or cycle through them in the scheduler.
+
+---
+
+## 6. Validation Split
 
 ### Concept
 Hold out 10% of temporal data for validation (don't train on it).
@@ -430,7 +477,7 @@ if args.validation_split:
 
 ---
 
-## 5. Live Data Integration (Paper Trading)
+## 7. Live Data Integration (Paper Trading)
 
 ### Concept
 Replace HistoricalMarket with WebSocket stream for real-time paper trading.
@@ -456,7 +503,7 @@ class LiveMarket:
 
 ---
 
-## 6. Hyperparameter Optimization
+## 8. Hyperparameter Optimization
 
 ### Concept
 Use Optuna or similar to tune:
@@ -485,7 +532,7 @@ study.optimize(objective, n_trials=50)
 
 ---
 
-## 7. Multi-Timeframe Training
+## 9. Multi-Timeframe Training
 
 ### Concept
 Train on multiple timeframes (1min, 5min, 15min, 1h) simultaneously.
@@ -511,19 +558,26 @@ class MultiTimeframeEnv:
 
 ## Implementation Priority
 
-### High Priority (Implement Soon)
-1. ✅ Log filtering (DONE)
-2. **Auto-resample on plateau** (this document)
-3. Transfer learning between phases
+### CRITICAL (Week 1)
+1. **MCTS Parallelization** (TASK_01) - 3× speedup, unblocks everything
+2. **Synthetic Curriculum Levels 0-3** (TASK_02) - Validate architecture
 
-### Medium Priority (Next Month)
-4. Validation split
-5. Curriculum learning
+### High Priority (Week 2-3)
+3. **Model Scaling to 25M** (TASK_03) - Enable adversarial training
+4. **Portfolio Curriculum Levels 4-6** (TASK_04) - Teach portfolio tactics
+5. **Prediction Heads** (TASK_05) - Multi-task learning
+
+### Medium Priority (Month 2)
+6. **Cross-Pair Trading** (TASK_06) - Direct BTC→ETH, 50% fee savings
+7. **Adversarial Training** (TASK_07) - AlphaGo-style self-play
+8. **Universal Agent (Transformer Backbone)** (v2.0) - Asset-as-token
 
 ### Low Priority (Future)
-6. Live data integration (after paper trading validation)
-7. Hyperparameter optimization
-8. Multi-timeframe training
+9. Multi-GPU async self-play (when 4×5090 available)
+10. Validation split (10% temporal holdout)
+11. Live data integration (after paper trading validation)
+12. Hyperparameter optimization (Optuna)
+13. Multi-timeframe training (1m/5m/15m/1h)
 
 ---
 
