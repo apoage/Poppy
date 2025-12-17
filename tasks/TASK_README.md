@@ -66,7 +66,16 @@ These tasks implement a complete synthetic curriculum training system for the po
 
 ---
 
-### 🔜 TASK_06: Cross-Pair Trading (NOT YET CREATED)
+### 📝 TASK_06: Document Tools Directory
+**Priority**: LOW (documentation improvement)
+**Estimated effort**: 3-4 hours
+**Why**: 36 tools in tools/ with no documentation
+
+**Outcome**: README.md + individual docs for each tool with usage examples
+
+---
+
+### 🔜 TASK_07: Cross-Pair Trading (NOT YET CREATED)
 **Priority**: MEDIUM
 **Estimated effort**: 6 hours
 **Why**: Enable BTC→ETH trades (avoid 2× fees)
@@ -75,7 +84,7 @@ These tasks implement a complete synthetic curriculum training system for the po
 
 ---
 
-### 🔜 TASK_07: Adversarial Training (NOT YET CREATED)
+### 🔜 TASK_08: Adversarial Training (NOT YET CREATED)
 **Priority**: HIGH
 **Estimated effort**: 12 hours
 **Why**: AlphaGo-style self-play for breakthrough tactics
