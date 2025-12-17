@@ -13,21 +13,37 @@ from mcts_trader.jax_agent.mcts_worker_pool import MCTSWorkerPool
 from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent.mctx_search import create_mctx_search
 
-def benchmark_batch_size(batch_size: int, n_workers: int = 4, num_simulations: int = 32):
-    """Benchmark MCTS with specific batch size"""
+def benchmark_batch_size(batch_size: int, n_workers: int = 4, num_simulations: int = 32, model_size: str = 'current'):
+    """Benchmark MCTS with specific batch size and model size"""
 
     print(f"\n{'='*60}")
-    print(f"Benchmarking: batch_size={batch_size}, workers={n_workers}, sims={num_simulations}")
+    print(f"Benchmarking: batch_size={batch_size}, workers={n_workers}, sims={num_simulations}, model={model_size}")
     print(f"{'='*60}")
 
-    # Initialize model
-    model_kwargs = {
-        'observation_shape': (27, 64, 64),
-        'num_actions': 192,
-        'num_channels': 64,
-        'num_blocks': 4,
-        'support_size': 10,
-    }
+    # Model size configurations
+    # MuZeroNetworks uses: state_dim, action_space_size, support_size
+    if model_size == 'current':  # 7M params (state_dim=64)
+        model_kwargs = {
+            'state_dim': 64,
+            'action_space_size': 192,
+            'support_size': 601,
+        }
+    elif model_size == 'medium':  # ~15M params (state_dim=96)
+        model_kwargs = {
+            'state_dim': 96,
+            'action_space_size': 192,
+            'support_size': 601,
+        }
+    elif model_size == 'large':  # ~25M params (state_dim=128)
+        model_kwargs = {
+            'state_dim': 128,
+            'action_space_size': 192,
+            'support_size': 601,
+        }
+    else:
+        raise ValueError(f"Unknown model size: {model_size}")
+
+    print(f"Model config: state_dim={model_kwargs['state_dim']}, actions={model_kwargs['action_space_size']}")
 
     search_kwargs = {
         'num_simulations': num_simulations,
@@ -110,6 +126,7 @@ def benchmark_batch_size(batch_size: int, n_workers: int = 4, num_simulations: i
         'batch_size': batch_size,
         'n_workers': n_workers,
         'num_simulations': num_simulations,
+        'model_size': model_size,
         'avg_pool': avg_pool,
         'avg_local': avg_local,
         'speedup': speedup,
@@ -145,18 +162,18 @@ def test_worker_count(batch_size: int = 512):
 
     return results
 
-def test_batch_sizes(n_workers: int = 4):
+def test_batch_sizes(n_workers: int = 4, model_size: str = 'current'):
     """Test different batch sizes"""
 
     print("\n" + "="*60)
-    print("TESTING BATCH SIZE SCALING")
+    print(f"TESTING BATCH SIZE SCALING (model={model_size})")
     print("="*60)
 
     results = []
     for batch_size in [64, 128, 256, 512, 1024, 2048]:
         print(f"\n\nTesting batch size {batch_size}...")
         try:
-            result = benchmark_batch_size(batch_size, n_workers=n_workers, num_simulations=32)
+            result = benchmark_batch_size(batch_size, n_workers=n_workers, num_simulations=32, model_size=model_size)
             results.append(result)
         except Exception as e:
             print(f"ERROR with batch {batch_size}: {e}")
@@ -170,6 +187,34 @@ def test_batch_sizes(n_workers: int = 4):
     print("-"*60)
     for r in results:
         print(f"{r['batch_size']:<12} {r['avg_pool']:<12.3f} {r['speedup']:<10.2f}× {r['throughput_pool']:<15.1f} samples/s")
+
+    return results
+
+def test_model_scaling(batch_size: int = 512, n_workers: int = 4):
+    """Test different model sizes"""
+
+    print("\n" + "="*60)
+    print("TESTING MODEL SIZE SCALING")
+    print("="*60)
+
+    results = []
+    for model_size in ['current', 'medium', 'large']:
+        print(f"\n\nTesting model size: {model_size}...")
+        try:
+            result = benchmark_batch_size(batch_size, n_workers=n_workers, num_simulations=32, model_size=model_size)
+            results.append(result)
+        except Exception as e:
+            print(f"ERROR with model {model_size}: {e}")
+            continue
+
+    # Print summary
+    print("\n" + "="*60)
+    print("MODEL SIZE SUMMARY")
+    print("="*60)
+    print(f"{'Model':<12} {'Time (s)':<12} {'Speedup':<10} {'Throughput':<15}")
+    print("-"*60)
+    for r in results:
+        print(f"{r['model_size']:<12} {r['avg_pool']:<12.3f} {r['speedup']:<10.2f}× {r['throughput_pool']:<15.1f} samples/s")
 
     return results
 
@@ -192,20 +237,27 @@ def analyze_vram_usage():
             print(f"  Total: {total} MB")
             print(f"  Free:  {total - used} MB")
 
-            # Model size estimation
-            model_size_mb = 7  # 7M params * 4 bytes (float32) / 1024^2 ≈ 27MB, but with overhead ~50MB
-            batch_512_mb = 200  # Estimated activation memory for batch 512
+            # Model size estimation for different configs
+            print(f"\nEstimated VRAM Requirements per Model Size:")
 
-            print(f"\nEstimated VRAM Requirements:")
-            print(f"  Model (7M params):        ~50 MB")
-            print(f"  Activations (batch 512):  ~200 MB")
-            print(f"  Replay Buffer:            ~1000 MB")
-            print(f"  MCTS Trees (CPU):         0 MB (on CPU)")
-            print(f"  Total per training:       ~1250 MB")
+            configs = {
+                'current (7M)': {'model': 50, 'activations': 200, 'replay': 1000, 'optimizer': 50},
+                'medium (15M)': {'model': 100, 'activations': 300, 'replay': 1000, 'optimizer': 100},
+                'large (25M)': {'model': 150, 'activations': 400, 'replay': 1000, 'optimizer': 150},
+            }
 
-            parallel_instances = (total - used - 2000) // 1250  # Leave 2GB buffer
-            print(f"\nCould run ~{parallel_instances} parallel training instances")
-            print(f"(Each uses ~1.25 GB VRAM)")
+            for name, sizes in configs.items():
+                total_size = sum(sizes.values())
+                print(f"\n  {name}:")
+                print(f"    Model:       {sizes['model']:>5} MB")
+                print(f"    Activations: {sizes['activations']:>5} MB (batch 512)")
+                print(f"    Replay:      {sizes['replay']:>5} MB")
+                print(f"    Optimizer:   {sizes['optimizer']:>5} MB")
+                print(f"    Total:       {total_size:>5} MB")
+
+                available = total - used - 2000  # Leave 2GB buffer
+                parallel = available // total_size
+                print(f"    → Can run ~{parallel} parallel instances")
 
     except Exception as e:
         print(f"Could not query GPU: {e}")
@@ -214,24 +266,30 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Benchmark MCTS parallelization")
-    parser.add_argument('--test', choices=['batch', 'workers', 'single', 'vram', 'all'],
+    parser.add_argument('--test', choices=['batch', 'workers', 'models', 'single', 'vram', 'all'],
                        default='single', help='Which test to run')
     parser.add_argument('--batch-size', type=int, default=512, help='Batch size for single test')
     parser.add_argument('--workers', type=int, default=4, help='Number of workers')
+    parser.add_argument('--model-size', choices=['current', 'medium', 'large'],
+                       default='current', help='Model size for single test')
 
     args = parser.parse_args()
 
     if args.test == 'single' or args.test == 'all':
         print("\n### SINGLE BENCHMARK ###")
-        benchmark_batch_size(args.batch_size, n_workers=args.workers)
+        benchmark_batch_size(args.batch_size, n_workers=args.workers, model_size=args.model_size)
 
     if args.test == 'batch' or args.test == 'all':
         print("\n### BATCH SIZE SCALING TEST ###")
-        test_batch_sizes(n_workers=args.workers)
+        test_batch_sizes(n_workers=args.workers, model_size=args.model_size)
 
     if args.test == 'workers' or args.test == 'all':
         print("\n### WORKER COUNT SCALING TEST ###")
         test_worker_count(batch_size=args.batch_size)
+
+    if args.test == 'models' or args.test == 'all':
+        print("\n### MODEL SIZE SCALING TEST ###")
+        test_model_scaling(batch_size=args.batch_size, n_workers=args.workers)
 
     if args.test == 'vram' or args.test == 'all':
         print("\n### VRAM ANALYSIS ###")
