@@ -17,6 +17,7 @@ from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent.trainer import MuZeroTrainer
 from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
 from mcts_trader.jax_agent.mctx_search import create_mctx_search
+from mcts_trader.jax_agent.mcts_worker_pool import MCTSWorkerPool
 
 # Import environment components
 from mcts_trader.data.history import HistoricalMarket
@@ -52,19 +53,60 @@ class FastTradingEnv(gym.Env):
         self.slippage_bps = slippage_bps
         self.mode = mode
 
+        # Handle duplicates for padding
+        self.padded_symbols = asset_symbols
+        unique_symbols = None
+        if self.padded_symbols:
+            unique_symbols = list(set(self.padded_symbols))
+            self.n_assets = len(self.padded_symbols) # Force size to match padded list
+        else:
+            self.n_assets = n_assets
+
+        # FORCE LOAD FX PAIRS (Standard Format for DB)
+        # We found that EUR/USD has 2M+ rows, while ZEURZUSD has 700.
+        # Use standard symbols for loading, but map correctly.
+        self.fx_map = {
+            'EUR/USD': 'EUR/USD',
+            'GBP/USD': 'GBP/USD',
+            'USD/CAD': 'USD/CAD', # Check if exists
+            '/USDCAD': 'USD/CAD',
+            'USD/CHF': 'USD/CHF',
+            '/USDCHF': 'USD/CHF',
+            'USD/JPY': 'USD/JPY',
+            '/USDJPY': 'USD/JPY',
+            'AUD/USD': 'AUD/USD',
+            'AUDUSD': 'AUD/USD',
+            # Keep Kraken ones just in case, but mapped to standard
+            'ZEURZUSD': 'EUR/USD',
+            'ZGBPZUSD': 'GBP/USD'
+        }
+        
+        # Add FX pairs to unique_symbols if they aren't already there
+        if unique_symbols:
+            for fx_sym in self.fx_map.keys():
+                if fx_sym not in unique_symbols:
+                    unique_symbols.append(fx_sym)
+
         # Components (CPU encoder!)
-        # Initialize market FIRST to determine actual available assets
+        # Initialize market with UNIQUE symbols (DB limitation)
         self.market = HistoricalMarket(
             db_path, 
-            n_assets=n_assets, 
+            n_assets=len(unique_symbols) if unique_symbols else n_assets, 
             min_required_assets=min_required_assets,
-            specific_symbols=asset_symbols,
+            specific_symbols=unique_symbols,
             start_date=start_date,
             end_date=end_date
         )
-        # Update n_assets to match actual market assets (in case fewer were found)
-        self.n_assets = self.market.n_assets
         
+        # If no explicit symbols provided, grab what market found
+        if not self.padded_symbols:
+            self.padded_symbols = list(self.market.assets.values())
+            # Filter out the forced FX pairs from the "tradeable" set if we auto-discovered
+            # (Optional, but keeps action space clean if we don't want to trade FX)
+            # For now, let's just keep them if they were auto-discovered.
+            self.n_assets = len(self.padded_symbols)
+        
+        # Encoder gets the FULL PADDED list so it generates correct shape (e.g. 64x64)
         self.encoder = FastMultiAssetStateEncoder(n_assets=self.n_assets, lookback=lookback, device='cpu')
         self.portfolio = None
 
@@ -91,25 +133,32 @@ class FastTradingEnv(gym.Env):
             )
         })
 
-        # Asset mapping
-        self.market_asset_ids_ordered = list(self.market.assets.keys())
-        self.db_id_to_action_idx = {db_id: i for i, db_id in enumerate(self.market_asset_ids_ordered)}
-        self.action_idx_to_db_id = {i: db_id for i, db_id in enumerate(self.market_asset_ids_ordered)}
+        # Asset mapping: Action Index -> Symbol (handles duplicates)
+        self.action_idx_to_symbol = {i: sym for i, sym in enumerate(self.padded_symbols)}
+        
+        # We assume HistoricalMarket loads what we asked.
+        # But we need to map from our Padded Index to DB ID if we needed exact IDs.
+        # But step() below uses symbol string lookup, so we are good.
 
-        # Register assets in encoder
-        symbols = [self.market.id_to_symbol[db_id] for db_id in self.market_asset_ids_ordered]
-        self.encoder.register_assets(symbols)
+        # Register assets in encoder (FULL PADDED LIST)
+        self.encoder.register_assets(self.padded_symbols)
 
         # Build symbol dict for portfolio logging (idx -> symbol)
-        self.symbol_map = {i: sym for i, sym in enumerate(symbols)}
+        self.symbol_map = self.action_idx_to_symbol
 
         self.steps_taken = 0
+        
+        # Forward Fill cache for FX rates (handles weekends/gaps)
+        self.last_fx_rates = {}
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
         # Reset market
         self.market.reset()
+        
+        # Reset FX cache on new episode (or keep? No, new episode might jump in time)
+        self.last_fx_rates = {}
 
         # Reset portfolio with fees and slippage
         self.portfolio = PortfolioManager(
@@ -117,7 +166,7 @@ class FastTradingEnv(gym.Env):
             trading_fee_bps=self.trading_fee_bps,
             slippage_bps=self.slippage_bps,
             mode=self.mode,
-            n_assets=self.n_assets  # Must match actual loaded assets
+            n_assets=self.n_assets  # Must match padded count
         )
         # Register symbols for readable logging
         self.portfolio.register_assets(self.symbol_map)
@@ -131,6 +180,30 @@ class FastTradingEnv(gym.Env):
 
         self.steps_taken = 0
         return self._get_observation(), {}
+
+    def _normalize_kraken_symbol(self, symbol):
+        """Convert Kraken symbols (XXBTZUSD) to standard (BTC/USD)"""
+        # Common mappings
+        if symbol == 'XXBTZUSD': return 'BTC/USD'
+        if symbol == 'XETHZUSD': return 'ETH/USD'
+        if symbol == 'ZEURZUSD': return 'EUR/USD'
+        if symbol == 'ZGBPZUSD': return 'GBP/USD'
+        if symbol == 'ZUSDZCAD': return 'USD/CAD'
+        if symbol == 'ZUSDZJPY': return 'USD/JPY'
+        if symbol == 'XXRPZUSD': return 'XRP/USD'
+        if symbol == 'XLTCZUSD': return 'LTC/USD'
+        if symbol == 'XXMRZUSD': return 'XMR/USD'
+        if symbol == 'XZECZUSD': return 'ZEC/USD'
+        
+        # Generic cleaning
+        s = symbol
+        if len(s) == 8:
+            # Try removing X/Z prefixes for standard ISO/Crypto pairs
+            # e.g. XXBT ZUSD -> XBT USD -> BTC USD
+            # This is heuristics, safer to use explicit map above for majors
+            pass
+            
+        return symbol
 
     def step(self, action: int):
         # Decode action
@@ -150,36 +223,43 @@ class FastTradingEnv(gym.Env):
         # Set the specific action for the selected asset
         actions[asset_idx] = action_type  # 0=Sell, 1=Hold, 2=Buy
 
-        # Convert current_data from {symbol: data} to {db_id: price}
-        # Portfolio expects prices keyed by database ID (int), not symbol (str)
-        current_prices_by_id = {}
+        # Convert current_data from {symbol: data} to {action_idx: price}
+        # This handles duplicates correctly: Both 'BTC' at idx 0 and 'BTC' at idx 60 get the same price
+        current_prices_by_idx = {}
         fx_rates = {}
 
         for symbol, data in current_data.items():
             price = data['close']
+            
+            # Map Kraken FX symbols to standard rates
+            if symbol in self.fx_map:
+                std_pair = self.fx_map[symbol]
+                
+                if std_pair == 'EUR/USD':
+                    fx_rates['EUR/USD'] = price
+                elif std_pair == 'GBP/USD':
+                    fx_rates['GBP/USD'] = price
+                elif std_pair == 'AUD/USD':
+                    fx_rates['AUD/USD'] = price
+                elif std_pair == 'USD/CAD':
+                    fx_rates['CAD/USD'] = 1.0 / price if price > 0 else 0
+                elif std_pair == 'USD/CHF':
+                    fx_rates['CHF/USD'] = 1.0 / price if price > 0 else 0
+                elif std_pair == 'USD/JPY':
+                    fx_rates['JPY/USD'] = 1.0 / price if price > 0 else 0
 
-            # Extract FX rates for non-USD quote currencies
-            # e.g., BTC/EUR price tells us EUR/USD rate indirectly
-            # But we need direct rates like EUR/USD, GBP/USD
-            if symbol.endswith('/USD') or symbol.endswith('USD'):
-                # This gives us the base asset price in USD directly
-                pass
-            elif '/EUR' in symbol or '/GBP' in symbol or '/CAD' in symbol or '/CHF' in symbol or '/JPY' in symbol:
-                # Extract quote currency for FX tracking
-                parts = symbol.split('/')
-                if len(parts) == 2:
-                    quote = parts[1]
-                    # Store the pair price (we'll derive FX from USD pairs)
-                    fx_rates[symbol] = price
-
-            # Find the db_id for this symbol
-            for db_id, sym in self.market.id_to_symbol.items():
-                if sym == symbol:
-                    # Map asset index to price (portfolio uses 0-based indices)
-                    if db_id in self.db_id_to_action_idx:
-                        idx = self.db_id_to_action_idx[db_id]
-                        current_prices_by_id[idx] = price
-                    break
+            # Store ALL symbols as potential FX rates (e.g. BTC/USD is needed for ETH/BTC quote conversion)
+            # NORMALIZE KEYS: XXBTZUSD -> BTC/USD
+            norm_sym = self._normalize_kraken_symbol(symbol)
+            fx_rates[norm_sym] = price
+            # Also keep original just in case
+            if norm_sym != symbol:
+                fx_rates[symbol] = price
+        
+        # Map prices to ALL indices that use this symbol
+        for idx, sym in self.action_idx_to_symbol.items():
+            if sym in current_data:
+                current_prices_by_idx[idx] = current_data[sym]['close']
 
         # Build FX rates - first check for direct FX pairs
         for symbol, data in current_data.items():
@@ -191,37 +271,26 @@ class FastTradingEnv(gym.Env):
                 if quote:
                     fx_rates[f'{quote}/USD'] = 1.0 / data['close'] if data['close'] > 0 else 1.0
 
-        # Derive FX rates from crypto pairs if not available
-        # If we have BTC/USD and BTC/EUR, then EUR/USD = BTC/USD / BTC/EUR
-        base_usd_prices = {}  # base_asset -> USD price
-        base_other_prices = {}  # (base_asset, quote_currency) -> price
-
-        for symbol, data in current_data.items():
-            parts = symbol.replace('/', ' ').split()
-            if len(parts) != 2:
-                continue
-            base, quote = parts[0], parts[1]
-
-            if quote == 'USD':
-                base_usd_prices[base] = data['close']
-            elif quote in ['EUR', 'GBP', 'CAD', 'CHF', 'JPY', 'AUD']:
-                base_other_prices[(base, quote)] = data['close']
-
-        # Calculate cross rates
-        for (base, quote), price in base_other_prices.items():
-            if base in base_usd_prices and price > 0:
-                # quote/USD = base/USD / base/quote
-                derived_rate = base_usd_prices[base] / price
-                rate_key = f'{quote}/USD'
-                if rate_key not in fx_rates:
-                    fx_rates[rate_key] = derived_rate
+        # --- KEY UPDATE: Load authoritative FX rates from DB ---
+        # This replaces the ad-hoc derivation from crypto bridges
+        db_fx_rates = self.market.get_current_fx_rates()
+        if db_fx_rates:
+            fx_rates.update(db_fx_rates)
+            
+        # Update last known FX rates with current ones
+        self.last_fx_rates.update(fx_rates)
+        
+        # Use merged rates (Forward Fill)
+        # This prevents 'Using fallback FX rate' warnings on weekends when EUR/USD is closed but Crypto is open
+        effective_fx_rates = self.last_fx_rates.copy()
+        effective_fx_rates.update(fx_rates)
 
         # Update portfolio FX rates
-        self.portfolio.fx_rates = fx_rates
+        self.portfolio.fx_rates = effective_fx_rates
 
         # Execute if we have price data
-        if len(current_prices_by_id) > 0:
-            self.portfolio.execute_actions(actions, sizes, current_prices_by_id)
+        if len(current_prices_by_idx) > 0:
+            self.portfolio.execute_actions(actions, sizes, current_prices_by_idx)
 
         # Step market
         next_data = self.market.step()
@@ -269,7 +338,7 @@ class FastTradingEnv(gym.Env):
         }
 
 
-def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200):
+def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200, confidence_threshold=0.0):
     """Self-play with timing"""
     obs_dict, info = env.reset()
 
@@ -306,6 +375,16 @@ def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200):
 
         # Execute
         action_int = int(action_jax[0])
+
+        # Confidence Thresholding (Gate-keeping)
+        if confidence_threshold > 0:
+            probs = np.array(policy_jax[0])
+            max_prob = np.max(probs)
+            if max_prob < confidence_threshold:
+                # Force HOLD: (asset_idx * 3) + 1
+                asset_idx = action_int // 3
+                action_int = (asset_idx * 3) + 1
+
         next_obs_dict, reward, terminated, truncated, info = env.step(action_int)
         done = terminated or truncated
 
@@ -338,12 +417,23 @@ def main():
     parser.add_argument('--name', type=str, default='default', help='Experiment name')
     parser.add_argument('--mode', type=str, default='MARGIN', choices=['SPOT', 'MARGIN'], help='Trading mode')
     parser.add_argument('--fee', type=int, default=26, help='Trading fee in bps')
+    parser.add_argument('--slippage', type=int, default=5, help='Slippage in bps')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs')
     parser.add_argument('--steps', type=int, default=200, help='Steps per episode (200=3h, 1440=24h)')
     parser.add_argument('--config', type=str, help='Training config JSON (dynamic assets)')
     parser.add_argument('--start-date', type=str, help='Start date filter (YYYY-MM-DD or unix ts)')
     parser.add_argument('--end-date', type=str, help='End date filter (YYYY-MM-DD or unix ts)')
     parser.add_argument('--load-checkpoint', type=str, help='Path to checkpoint to resume from (absolute or relative)')
+    
+    # MCTS Hyperparameters (Maniac Mode)
+    parser.add_argument('--sims', type=int, default=16, help='MCTS simulations')
+    parser.add_argument('--noise', type=float, default=0.3, help='Dirichlet noise alpha')
+    parser.add_argument('--noise-frac', type=float, default=0.25, help='Dirichlet noise fraction')
+    
+    # Advanced Training Parameters
+    parser.add_argument('--batch-size', type=int, default=256, help='Training batch size')
+    parser.add_argument('--confidence-threshold', type=float, default=0.0, help='Minimum policy confidence to execute trade (force Hold otherwise)')
+    
     args = parser.parse_args()
 
     # Dynamic Asset Configuration
@@ -390,7 +480,7 @@ def main():
     )
 
     print("="*70)
-    print(f"JAX TRADING AGENT | {args.mode} | {args.fee}bps | {n_assets} Assets")
+    print(f"JAX TRADING AGENT | {args.mode} | Fee: {args.fee}bps | Slip: {args.slippage}bps | {n_assets} Assets")
     print("="*70)
     print()
 
@@ -399,7 +489,7 @@ def main():
         n_assets=n_assets,
         initial_capital=10000.0,
         trading_fee_bps=args.fee,
-        slippage_bps=5,
+        slippage_bps=args.slippage,
         mode=args.mode,
         asset_symbols=asset_symbols,
         max_steps=args.steps,
@@ -422,8 +512,8 @@ def main():
     trainer = MuZeroTrainer(
         model=model,
         learning_rate=2e-5,  # Reduced from 1e-4 for stability
-        num_simulations=16,  # Reduced for speed
-        batch_size=256,      # Increased for GPU
+        num_simulations=args.sims,  # Dynamic sims
+        batch_size=args.batch_size,      # Dynamic batch size
         unroll_steps=5,
         td_steps=10
     )
@@ -434,14 +524,18 @@ def main():
 
     # Resume from checkpoint if provided
     if args.load_checkpoint:
+        # Resolve to absolute path for Orbax
+        abs_ckpt_path = os.path.abspath(args.load_checkpoint)
         print(f"📥 Loading checkpoint from: {args.load_checkpoint}")
+        print(f"   (Resolved absolute path: {abs_ckpt_path})")
+        
         try:
             # MuZeroTrainer.restore_checkpoint returns the restored state
-            restored_state = trainer.restore_checkpoint(args.load_checkpoint)
+            restored_state = trainer.restore_checkpoint(abs_ckpt_path)
             if restored_state:
                 trainer.state = restored_state
                 state = restored_state # Update local reference
-                print(f"✅ Checkpoint loaded successfully! (Step: {state.step})")
+                print(f"✅ Checkpoint loaded successfully! (Step: {state.step_count})")
             else:
                 print(f"⚠️ Failed to load checkpoint (trainer returned None)")
         except Exception as e:
@@ -450,8 +544,31 @@ def main():
             # Crashing is safer to avoid accidental scratch training
             raise e
 
-    search = create_mctx_search(model, num_simulations=16, use_gumbel=True)
+    # Create search with Maniac params
+    # PARALLEL MCTS INTEGRATION
+    model_kwargs = {
+        'state_dim': n_assets,
+        'action_space_size': n_assets*3,
+        'support_size': 601
+    }
+    
+    search_kwargs = {
+        'num_simulations': args.sims,
+        'use_gumbel': True,
+        'dirichlet_alpha': args.noise,
+        'exploration_fraction': args.noise_frac
+    }
+    
+    print(f"🚀 Initializing Parallel MCTS with 4 workers...")
+    search = MCTSWorkerPool(
+        model_cls=MuZeroNetworks,
+        model_kwargs=model_kwargs,
+        search_kwargs=search_kwargs,
+        n_workers=4
+    )
+    
     print(f"✅ Model ready ({sum(x.size for x in jax.tree_util.tree_leaves(state.params)):,} params)")
+    print(f"   Maniac Mode: Sims={args.sims}, Noise={args.noise}, Frac={args.noise_frac}")
     print()
 
     print("[3/4] Initializing replay buffer...")
@@ -459,7 +576,7 @@ def main():
         capacity=10000,
         observation_shape=(27, n_assets, n_assets),
         action_size=n_assets * 3,  # Must match actual loaded assets
-        batch_size=256,
+        batch_size=args.batch_size,
         sequence_length=5
     )
     print("✅ Buffer ready (10K capacity, float32)")
@@ -480,50 +597,101 @@ def main():
     checkpoint_dir = os.path.abspath(f"jax_ckpt_fast/{args.name}")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    for epoch in range(args.epochs):
-        # Self-play
-        start = time.time()
-        rng, search_rng = jax.random.split(rng)
-        trajectory, score = run_self_play(env, search, model.apply, trainer.state.params, search_rng, steps=args.steps)
-        self_play_time = time.time() - start
+    # Track metrics for scheduler
+    recent_rewards = []
 
-        # Add to buffer
-        # Sanity check for NaNs in trajectory
-        for key, arr in trajectory.items():
-            if np.isnan(arr).any():
-                print(f"!!! CRITICAL WARNING: NaNs detected in {key} from self-play!")
-                # Optional: Don't add to buffer if bad?
-                # continue
-        
-        replay_buffer.add_trajectory(
-            jnp.array(trajectory['observations']),
-            jnp.array(trajectory['actions']),
-            jnp.array(trajectory['rewards']),
-            jnp.array(trajectory['values']),
-            jnp.array(trajectory['policy_probs']),
-            jnp.array(trajectory['dones'])
-        )
+    try:
+        for epoch in range(args.epochs):
+            # Self-play
+            start = time.time()
+            rng, search_rng = jax.random.split(rng)
+            trajectory, score = run_self_play(
+                env, 
+                search, 
+                model.apply, 
+                trainer.state.params, 
+                search_rng, 
+                steps=args.steps,
+                confidence_threshold=args.confidence_threshold
+            )
+            self_play_time = time.time() - start
 
-        # Training
-        if epoch >= 5:
-            train_start = time.time()
-            metrics = trainer.train(replay_buffer, num_iterations=50, rng=rng)
-            train_time = time.time() - train_start
-            loss = metrics['total_loss'][-1]
-            val_loss = metrics['value_loss'][-1]
-            pol_loss = metrics['policy_loss'][-1]
-            rew_loss = metrics['reward_loss'][-1]
+            # Track reward
+            recent_rewards.append(score)
+            if len(recent_rewards) > 20:
+                recent_rewards.pop(0)
 
-            print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Steps: {len(trajectory['actions']):3d} | "
-                  f"Self-play: {self_play_time:5.1f}s | Train: {train_time:4.1f}s | "
-                  f"Loss: {loss:.4f} | Val: {val_loss:.4f} | Pol: {pol_loss:.4f} | Rew: {rew_loss:.4f}")
+            # Add to buffer
+            # Sanity check for NaNs in trajectory
+            for key, arr in trajectory.items():
+                if np.isnan(arr).any():
+                    print(f"!!! CRITICAL WARNING: NaNs detected in {key} from self-play!")
+                    # Optional: Don't add to buffer if bad?
+                    # continue
+            
+            replay_buffer.add_trajectory(
+                jnp.array(trajectory['observations']),
+                jnp.array(trajectory['actions']),
+                jnp.array(trajectory['rewards']),
+                jnp.array(trajectory['values']),
+                jnp.array(trajectory['policy_probs']),
+                jnp.array(trajectory['dones'])
+            )
 
-            if (epoch + 1) % 10 == 0:
-                trainer.save_checkpoint(checkpoint_dir)
-                print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
-        else:
-            print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Steps: {len(trajectory['actions']):3d} | "
-                  f"Self-play: {self_play_time:5.1f}s | (warmup)")
+            # Training
+            if epoch >= 5:
+                train_start = time.time()
+                metrics = trainer.train(replay_buffer, num_iterations=50, rng=rng)
+                train_time = time.time() - train_start
+                loss = metrics['total_loss'][-1]
+                val_loss = metrics['value_loss'][-1]
+                pol_loss = metrics['policy_loss'][-1]
+                rew_loss = metrics['reward_loss'][-1]
+
+                # Action Stats
+                actions_arr = np.array(trajectory['actions'])
+                n_sell = np.sum(actions_arr % 3 == 0)
+                n_hold = np.sum(actions_arr % 3 == 1)
+                n_buy = np.sum(actions_arr % 3 == 2)
+
+                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
+                      f"B/H/S: {n_buy}/{n_hold}/{n_sell} | "
+                      f"Self-play: {self_play_time:5.1f}s | Train: {train_time:4.1f}s | "
+                      f"Loss: {loss:.4f} | Val: {val_loss:.4f} | Pol: {pol_loss:.4f} | Rew: {rew_loss:.4f}")
+
+                if (epoch + 1) % 10 == 0:
+                    trainer.save_checkpoint(checkpoint_dir)
+                    print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
+            else:
+                # Action Stats for warmup too
+                actions_arr = np.array(trajectory['actions'])
+                n_sell = np.sum(actions_arr % 3 == 0)
+                n_hold = np.sum(actions_arr % 3 == 1)
+                n_buy = np.sum(actions_arr % 3 == 2)
+                
+                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
+                      f"B/H/S: {n_buy}/{n_hold}/{n_sell} | "
+                      f"Self-play: {self_play_time:5.1f}s | (warmup)")
+                      
+    finally:
+        search.close()
+        print("🛑 MCTS Worker Pool closed.")
+
+    print()
+    print("="*70)
+    print("TRAINING COMPLETE!")
+    print("="*70)
+    
+    # Save metrics for scheduler
+    avg_reward = sum(recent_rewards) / len(recent_rewards) if recent_rewards else 0.0
+    metrics_data = {
+        'avg_reward': float(avg_reward),
+        'final_loss': float(loss) if 'loss' in locals() else 0.0
+    }
+    import json
+    with open('last_run_metrics.json', 'w') as f:
+        json.dump(metrics_data, f)
+    print(f"📊 Saved metrics: {metrics_data}")
 
     print()
     print("="*70)

@@ -6,7 +6,60 @@
 
 ---
 
-## December 17, 2025 - Codebase Audit & Documentation Cleanup
+## December 17, 2025 - Documentation Organization & Rules
+
+**Completed by**: Claude Code (orchestrator)
+
+### Root Directory Cleanup
+
+**Problem**: Root directory cluttered with 40+ markdown files - task prompts, reports, design docs, summaries all mixed together.
+
+**Solution**: Organized into clear structure:
+
+**Moved to lore/** (design docs and training guides):
+- ADVANCED_ORDERS_DESIGN.md
+- PORTFOLIO_MANAGER_TRAINING.md
+- PREDICTION_LATENT_SPACE.md
+- SYNTHETIC_CURRICULUM_DESIGN.md
+- TRAINING_COMMANDS.md
+- TRAINING_QUICK_START.md
+- TRAINING_STRATEGY_NOTES.md
+
+**Moved to _old/gemini_reports/** (completed work reports):
+- GEMINI.md, GEMINI_TASK_CHECKLIST.md
+- FX_DB_REPORT.md, FX_FINAL_REPORT.md, FX_INTEGRATION_REPORT.md
+- RAINBOW_TABLE_READY.md, RAINBOW_TABLE_SUMMARY.md
+- READY_FOR_TRAINING_SUMMARY.md, READY_TO_TRAIN.md
+- And 5 other summary/report files
+
+**Moved to _old/gemini_prompts/** (old task prompts):
+- FOR_GEMINI.md, FOR_GEMINI_TRAINING_MAPPER.md
+- DYNAMIC_ASSET_SELECTION_PROMPT.md
+- PRE_TRAINING_FIXES_PROMPT.md
+- INFRASTRUCTURE_AUDIT_PROMPT.md
+- And 2 other prompt files
+
+**Moved to _old/audit/** (audit reports):
+- SESSION_SUMMARY.md
+- AUDIT_SUMMARY.md, AUDIT_IMPLEMENTATION_STATUS.md
+- AUDIT_DOCUMENTATION_DRIFT.md
+- CLEANUP_SUMMARY.md
+
+**Created**: ORGANIZATION_RULES.md
+- Clear rules for where files go
+- Workflow for Claude Code and Gemini
+- Prevents future mess
+- Enforces clean root directory (max 10 files)
+
+**Result**:
+- Root directory: 40+ files → 4 markdown files (CLAUDE.md, CURRENT_STATE.md, ORGANIZATION_RULES.md, README.md)
+- Clean structure: tasks/, lore/, _old/ with clear purposes
+- Rules documented for future work
+- Both AI agents have clear guidelines
+
+---
+
+### Codebase Audit & Documentation Cleanup
 
 **Completed by**: Claude Code (orchestrator)
 

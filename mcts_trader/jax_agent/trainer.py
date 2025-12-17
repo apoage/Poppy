@@ -388,8 +388,13 @@ class MuZeroTrainer:
     def load_checkpoint(self, path: str, step: int = None):
         """Load model checkpoint"""
         from flax.training import checkpoints
-        self.state = checkpoints.restore_checkpoint(
+        restored_state = checkpoints.restore_checkpoint(
             ckpt_dir=path,
             target=self.state,
             step=step
         )
+        return restored_state
+
+    def restore_checkpoint(self, path: str, step: int = None):
+        """Alias for load_checkpoint"""
+        return self.load_checkpoint(path, step)

@@ -17,7 +17,10 @@ class MuZeroMCTXSearch:
         max_num_considered_actions: int = 16,
         discount: float = 0.997,
         temperature: float = 1.0,
-        use_gumbel: bool = True
+        use_gumbel: bool = True,
+        dirichlet_alpha: float = 0.3,
+        exploration_fraction: float = 0.25,
+        gumbel_scale: float = 1.0
     ):
         """
         Args:
@@ -25,8 +28,11 @@ class MuZeroMCTXSearch:
             num_simulations: Number of MCTS simulations
             max_num_considered_actions: Top-K actions for Gumbel
             discount: Reward discount factor
-            temperature: Sampling temperature
+            temperature: Sampling temperature (for standard MuZero)
             use_gumbel: Use Gumbel MuZero (recommended) vs standard PUCT
+            dirichlet_alpha: Noise alpha for root prior (Standard MuZero only)
+            exploration_fraction: Fraction of noise to add (Standard MuZero only)
+            gumbel_scale: Scale of Gumbel noise (for Gumbel MuZero)
         """
         self.model_apply_fn = model_apply_fn
         self.num_simulations = num_simulations
@@ -34,6 +40,9 @@ class MuZeroMCTXSearch:
         self.discount = discount
         self.temperature = temperature
         self.use_gumbel = use_gumbel
+        self.dirichlet_alpha = dirichlet_alpha
+        self.exploration_fraction = exploration_fraction
+        self.gumbel_scale = gumbel_scale
 
         # JIT-compile search functions to XLA
         # static_argnums not needed for pure function call if self is mostly static config
@@ -175,18 +184,14 @@ class MuZeroMCTXSearch:
         if self.use_gumbel:
             # Gumbel MuZero (recommended)
             policy_output = mctx.gumbel_muzero_policy(
-                params=params, # Passed to recurrent_fn via closure? No, params arg in mctx is for... 
-                # Wait, mctx.gumbel_muzero_policy signature:
-                # (params, rng_key, root, recurrent_fn, ...)
-                # The 'params' arg here is passed as the first arg to recurrent_fn.
-                # So we can pass 'params' (weights) here.
+                params=params, 
                 rng_key=rng,
                 root=root,
                 recurrent_fn=recurrent_fn,
                 num_simulations=self.num_simulations,
                 max_num_considered_actions=self.max_num_considered_actions,
                 qtransform=mctx.qtransform_by_parent_and_siblings,  # Improved Q-transform
-                gumbel_scale=1.0
+                gumbel_scale=self.gumbel_scale
             )
         else:
             # Standard MuZero with PUCT
@@ -197,6 +202,8 @@ class MuZeroMCTXSearch:
                 recurrent_fn=recurrent_fn,
                 num_simulations=self.num_simulations,
                 temperature=self.temperature,
+                dirichlet_alpha=self.dirichlet_alpha,
+                dirichlet_fraction=self.exploration_fraction,
                 invalid_actions=~action_mask if action_mask is not None else None
             )
 

@@ -60,13 +60,14 @@ class TradingEnv(gym.Env):
         device: str = 'cpu', # Default to cpu to avoid PyTorch/JAX GPU conflicts
         trading_fee_bps: int = 26, # Conservative default (0.26% Taker)
         slippage_bps: int = 5,     # Conservative default (0.05%)
+        asset_symbols: list = None, # NEW: explicit list of symbols
         **kwargs
     ):
         super().__init__()
         self.n_assets = n_assets
         self.n_actions_per_asset = n_actions_per_asset
         self.initial_capital = initial_capital
-        self.device = device # Store device config
+        self.device = device 
         self.trading_fee_bps = trading_fee_bps
         self.slippage_bps = slippage_bps
         
@@ -77,7 +78,9 @@ class TradingEnv(gym.Env):
         self.observation_space = spaces.Dict({
             'observation': spaces.Box(
                 low=-np.inf, high=np.inf, 
-                shape=(27, 64, 64), 
+                shape=(27, 64, 64), # Fixed size assumption? Or should use n_assets?
+                # Ideally use n_assets, but for CNN we often fix it.
+                # Assuming n_assets matches 64 for now or caller handles it.
                 dtype=np.float32
             ),
             'action_mask': spaces.Box(
@@ -98,19 +101,39 @@ class TradingEnv(gym.Env):
         )
         
         # Components
-        self.market = HistoricalMarket(db_path, n_assets=n_assets)
+        # Handle duplicate assets for padding
+        self.padded_symbols = asset_symbols
+        unique_symbols = None
+        
+        if self.padded_symbols:
+            # If explicit list provided, use it (and respect length including duplicates)
+            self.n_assets = len(self.padded_symbols)
+            # Filter unique for DB query
+            unique_symbols = list(set(self.padded_symbols))
+        
+        # Init Market with UNIQUE symbols only (DB doesn't understand duplicates)
+        self.market = HistoricalMarket(
+            db_path, 
+            n_assets=len(unique_symbols) if unique_symbols else n_assets, 
+            specific_symbols=unique_symbols
+        )
+        
+        # If we didn't have symbols before, get them from market
+        if not self.padded_symbols:
+            self.padded_symbols = list(self.market.assets.values())
+            self.n_assets = len(self.padded_symbols)
+
         # Use specified device for encoder
-        self.encoder = MultiAssetStateEncoder(n_assets=n_assets, lookback=lookback, device=self.device)
+        # Encoder uses the PADDED list (so it generates 64 rows if padded)
+        self.encoder = MultiAssetStateEncoder(n_assets=self.n_assets, lookback=lookback, device=self.device)
         self.portfolio = None # Init in reset
         
-        self.market_asset_ids_ordered = list(self.market.assets.keys()) # Store ordered list of db_ids
-        self.db_id_to_action_idx = {db_id: i for i, db_id in enumerate(self.market_asset_ids_ordered)}
-        self.action_idx_to_db_id = {i: db_id for i, db_id in enumerate(self.market_asset_ids_ordered)}
-        
         # Register assets with encoder
-        asset_symbols = list(self.market.assets.values())
-        self.encoder.register_assets(asset_symbols)
+        self.encoder.register_assets(self.padded_symbols)
         self.portfolio_manager_cls = PortfolioManager
+        
+        # Create mapping: Action Index -> Symbol (DB ID no longer primary key for Agent)
+        self.action_idx_to_symbol = {i: sym for i, sym in enumerate(self.padded_symbols)}
         
     def seed(self, seed: int, dynamic_seed: bool = True) -> None:
         self._seed = seed
@@ -134,55 +157,49 @@ class TradingEnv(gym.Env):
             trading_fee_bps=self.trading_fee_bps,
             slippage_bps=self.slippage_bps
         )
-        self.portfolio.register_assets(self.market.assets)
+        
+        # Register assets using Action Index as ID
+        # Portfolio expects {id: symbol}
+        self.portfolio.register_assets(self.action_idx_to_symbol)
         
         # Warm up encoder (feed 60 minutes of data)
         # In a real efficient impl, we'd load this in batch from DB
         # For now, just step 60 times
         # logging.info("Warming up encoder...")
         for _ in range(60):
-            data = self.market.step()
-            if data:
-                self.encoder.update(data)
+            self.step_market_only()
         
         obs = self._get_observation()
         info = self._get_info()
         
         return obs, info
-    
+
+    def step_market_only(self):
+        """Advance market and update encoder without executing actions"""
+        data = self.market.step()
+        if data:
+            self.encoder.update(data)
+
     def step(self, action: int):
         # Decode action
         asset_idx = action // self.n_actions_per_asset
         action_type = action % self.n_actions_per_asset
         # action_type: 0=Sell, 1=Hold, 2=Buy
         
-        # Get current prices from encoder buffer (last close)
-        # or fetch from market (which is current step)
-        # Note: market.step() gives us data for the NEW minute (future relative to decision)
-        # RL Convention: Observation(t) -> Action(t) -> Env updates -> Reward(t+1), Obs(t+1)
-        # So we execute action at current price, THEN step market.
-        
+        # Get current data from market
         current_data = self.market.get_current_data()
-        current_prices_by_db_id = {
-            db_id: current_data[sym]['close'] 
-            for db_id, sym in self.market.assets.items() 
-            if sym in current_data
-        }
         
-        # BUG FIX [2025-12-12]: Extract FX rates for correct portfolio valuation
-        # Previously ignored, leading to corrupted training for non-USD assets.
+        # Map Market Data (Key=Symbol) to Portfolio Input (Key=ActionIndex)
+        current_prices_for_portfolio = {}
         fx_rates = {}
-        for sym, data in current_data.items():
-            # capture anything looking like a currency pair (contains USD)
-            if 'USD' in sym: 
-                fx_rates[sym] = data['close']
         
-        # Convert keys from db_id to action_idx for PortfolioManager
-        current_prices_for_portfolio = {
-            self.db_id_to_action_idx[db_id]: price
-            for db_id, price in current_prices_by_db_id.items()
-            if db_id in self.db_id_to_action_idx # Ensure mapping exists
-        }
+        for idx, sym in self.action_idx_to_symbol.items():
+            if sym in current_data:
+                current_prices_for_portfolio[idx] = current_data[sym]['close']
+                
+                # Capture FX rates
+                if 'USD' in sym:
+                    fx_rates[sym] = current_data[sym]['close']
         
         # Execute action
         actions = np.ones(self.n_assets, dtype=int) # Default Hold (1)
@@ -198,24 +215,21 @@ class TradingEnv(gym.Env):
         self.portfolio.execute_actions(actions, sizes, current_prices_for_portfolio, fx_rates=fx_rates)
         
         # Advance time
-        new_data = self.market.step()
-        if new_data:
-            self.encoder.update(new_data)
-            
-            # Update portfolio prices to new market state to calc Reward
-            new_prices = {
-                idx: new_data[sym]['close'] 
-                for idx, sym in self.market.assets.items() 
-                if sym in new_data
-            }
-            
-            # Update FX rates for new timestep
-            new_fx_rates = {}
-            for sym, data in new_data.items():
+        self.step_market_only()
+        
+        # Update portfolio prices to new market state to calc Reward
+        # We need new prices for ALL padded assets
+        new_data = self.market.get_current_data() # Market already stepped
+        new_prices = {}
+        new_fx_rates = {}
+        
+        for idx, sym in self.action_idx_to_symbol.items():
+            if sym in new_data:
+                new_prices[idx] = new_data[sym]['close']
                 if 'USD' in sym:
-                    new_fx_rates[sym] = data['close']
+                    new_fx_rates[sym] = new_data[sym]['close']
 
-            self.portfolio.update_prices(new_prices, fx_rates=new_fx_rates)
+        self.portfolio.update_prices(new_prices, fx_rates=new_fx_rates)
         
         # Calculate Reward
         new_value = self.portfolio.state.total_value

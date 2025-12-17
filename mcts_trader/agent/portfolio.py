@@ -125,6 +125,11 @@ def get_quote_to_usd_rate(quote_currency: str, fx_rates: dict) -> float:
         if sym and sym in fx_rates:
             return fx_rates[sym]
 
+    # Try direct currency lookup (e.g. 'EUR' -> 1.08)
+    # This supports the new fx_rates table which uses single currency keys
+    if quote in fx_rates:
+        return fx_rates[quote]
+
     # Try inverse (USD/QUOTE means we divide)
     inverse_symbols = [f"USD/{quote}", f"USD{quote}"]
     for sym in inverse_symbols:
