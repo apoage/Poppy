@@ -16,6 +16,11 @@ training_console.log
 current_training_pid.txt
 training_pid.txt
 
+# Profiling artifacts
+profile.stats
+profile_debug.log
+*.prof
+
 # Temporary scripts
 stress_test.py
 debug_env.py
