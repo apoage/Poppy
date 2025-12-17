@@ -1,0 +1,40 @@
+ok loaded this 
+python train_jax_fast.py --config config/temp_schedule_p3_run1.json --epochs 180 --steps 1440 --mode MARGIN --fee 0 --slippage 0 --sims 32 --noise 0.5 --noise-frac 0.5 --load-checkpoint jax_ckpt_fast/p2_run1/checkpoint_5500
+
+we do have still tensor flow lib not found 
+2025-12-14 21:52:48,265 - Tensorflow library not found, tensorflow.io.gfile operations will use native shim calls. GCS paths (i.e. 'gs://...') cannot be accessed.
+
+than we get smootlhy trought warmup 
+
+multiple problems with autotuning 
+2025-12-14 21:54:38.431827: W external/xla/xla/service/gpu/autotuning/dot_search_space.cc:200] All configs were filtered out because none of them sufficiently match the hints. Maybe the hints set does not contain a good representative set of valid configs?Working around this by using the full hints set instead.
+
+skiped cross host seems sus but might not break anything 
+2025-12-14 21:56:30,125 - [process=0][thread=MainThread] Skipped cross-host ArrayMetadata validation because only one process is found: process_index=0.
+2025-12-14 21:56:30,139 - [process=0][thread=MainThread] Pytree save finalize (merge_ocdbt + ArrayMetadata validation) completed. Time taken: 0.017204s. use_zarr3=False, enable_post_merge_validation=True, directory=/home/lukas/Trader/jax_ckpt_fast/p3_run1/checkpoint_5750.orbax-checkpoint-tmp
+
+otherwise training seems smooth .. 
+
+tune 
+increase batch size 
+### 5. Hyperparameter Tuning (Saturating the GPU)
+Since the GPU is stable at 60% (Compute) with dips only between epochs, the system is likely **Latency Bound** or **Under-saturated** due to small model/batch size. We can "spend" the remaining 40% compute to get a smarter agent.
+
+**Experiments:**
+1.  **Increase Simulations:**
+    *   Change `--sims 32` -> `--sims 64`.
+    *   *Prediction:* GPU Load -> ~80-90%. Training time per epoch increases slightly, but agent quality improves drastically (deeper thought).
+2.  **Increase Batch Size:**
+    *   Change `batch_size=256` -> `512`.
+    *   *Prediction:* GPU Load -> Higher. Training throughput (samples/sec) increases. Epoch time decreases.
+3.  **Increase Model Size (Long Term):**
+    *   Increase TRM `d_model` (e.g., 64 -> 128) or layers.
+    *   *Prediction:* Uses more compute per sim.
+    
+one more thing we will run multiple times 
+python train_jax_fast.py --config config/temp_schedule_p3_run1.json --epochs 10 --steps 1440 --mode MARGIN --fee 0 --slippage 0 --sims 32 --noise 0.5 --noise-frac 0.5 --load-checkpoint jax_ckpt_fast/p2_run1/checkpoint_5500
+
+
+with various parameters specially want to try batch size .. set it into system
+
+another thing is there was also one more policy that was canceled trades(result was only signal not trade) when model seemed sure enought find that we need to controll that add that to parameters of python train_jax_fast.py so we can turn on as last thing on curiculum 
