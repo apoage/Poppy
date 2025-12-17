@@ -51,11 +51,21 @@
 - Prevents future mess
 - Enforces clean root directory (max 10 files)
 
-**Result**:
-- Root directory: 40+ files → 4 markdown files (CLAUDE.md, CURRENT_STATE.md, ORGANIZATION_RULES.md, README.md)
+**Cleanup Results**:
+- Root directory: 40+ MD files → 4 essential MD files
+- Removed profiling artifacts (profile.stats 1.6MB, profile_debug.log)
+- Kept delistedpairs.csv (actively used by tools/validate_database.py)
+- Updated .gitignore to prevent future profiling artifacts
 - Clean structure: tasks/, lore/, _old/ with clear purposes
 - Rules documented for future work
 - Both AI agents have clear guidelines
+
+**Final Root Directory**:
+- 4 markdown files (CLAUDE.md, CURRENT_STATE.md, ORGANIZATION_RULES.md, README.md)
+- Essential scripts (.py, .sh)
+- Config files (.json, .txt, .csv for delisted pairs)
+- Database and directories
+- Total: Clean and minimal
 
 ---
 
