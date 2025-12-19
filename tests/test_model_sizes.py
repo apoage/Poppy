@@ -6,9 +6,9 @@ def test_model_sizes():
     """Verify each size has expected parameter count"""
 
     configs = {
-        'small': {'state_dim': 64, 'expected': (6.0e6, 8.0e6)},    # ~7M ± 1M
-        'medium': {'state_dim': 96, 'expected': (14.0e6, 17.0e6)}, # ~15M ± 1M
-        'large': {'state_dim': 128, 'expected': (24.0e6, 28.0e6)}  # ~25M ± 2M
+        'small': {'state_dim': 64, 'expected': (6.0e6, 8.0e6)},     # ~7.3M
+        'medium': {'state_dim': 96, 'expected': (14.0e6, 17.0e6)},  # ~15M
+        'large': {'state_dim': 160, 'expected': (34.0e6, 40.0e6)}   # ~36M
     }
 
     n_assets = 64

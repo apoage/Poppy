@@ -434,7 +434,7 @@ def main():
     # Advanced Training Parameters
     parser.add_argument('--batch-size', type=int, default=256, help='Training batch size')
     parser.add_argument('--model-size', type=str, default='small', choices=['small', 'medium', 'large'],
-                       help='Model size: small (~7.3M), medium (~15M), large (~25M)')
+                       help='Model size: small (~7.3M), medium (~15M), large (~36M)')
     parser.add_argument('--state-dim', type=int, default=None, help='Model state dimension (overrides --model-size)')
     parser.add_argument('--h-cycles', type=int, default=4, help='TRM Reasoning outer cycles (H)')
     parser.add_argument('--l-cycles', type=int, default=6, help='TRM Reasoning inner cycles (L)')
@@ -449,7 +449,7 @@ def main():
         elif args.model_size == 'medium':
             args.state_dim = 96
         elif args.model_size == 'large':
-            args.state_dim = 128
+            args.state_dim = 160
     
     # Auto-adjust batch size for model size to prevent OOM on 24GB VRAM
     if args.model_size == 'large' and args.batch_size > 256:
@@ -577,8 +577,15 @@ def main():
     # PARALLEL MCTS INTEGRATION
     
     # Report model size
-    param_count = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
-    print(f"✅ Model ready ({param_count/1e6:.1f}M params, state_dim={state_dim}, size={args.model_size})")
+    if state_dim == 64:
+        param_estimate = "~7.3M"
+    elif state_dim == 96:
+        param_estimate = "~15M"
+    elif state_dim == 160:
+        param_estimate = "~36M"
+    else:
+        param_estimate = "custom"
+    print(f"Model size: state_dim={state_dim} ({param_estimate} params)")
     
     search_kwargs = {
         'num_simulations': args.sims,

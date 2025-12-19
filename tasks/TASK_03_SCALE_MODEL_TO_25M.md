@@ -11,9 +11,18 @@ Scale TRM model from 788K to 36M parameters to handle complex portfolio tactics.
 - ✅ Added `--model-size` CLI argument (small/medium/large)
 - ✅ Added `--state-dim`, `--h-cycles`, `--l-cycles` for fine-grained control
 - ✅ Properly scaled `TRMEncoder` (CNN filters), `TRMReasoning` (hidden_dim), and `MuZeroNetworks` (dynamics_hidden)
-- ✅ Verified parameter counts: Small (7.3M), Medium (14.8M), Large (24.9M)
+- ✅ Verified parameter counts: Small (7.25M), Medium (14.77M), Large (37.58M)
 - ✅ Verified VRAM stability: All sizes fit in 24GB VRAM with auto-adjusted batch sizes
 - ✅ Created `tests/test_model_sizes.py` for regression testing
+- ✅ Updated "large" size target from 25M to 36M per user request
+
+## Architecture Specs
+
+| Size   | State Dim | H/L Cycles | Hidden Dim | Params | Use Case |
+| :---   | :---:     | :---:      | :---:      | :---:  | :---     |
+| Small  | 64        | 4/6        | 1024       | ~7.3M  | Dev / Tests |
+| Medium | 96        | 4/6        | 1536       | ~14.8M | Curriculum |
+| Large  | 160       | 4/6        | 2560       | ~37.6M | Production |
 
 ## Prerequisites
 - TASK_01 completed ✅ (GPU-native MCTS working)
