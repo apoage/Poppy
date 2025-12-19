@@ -1,10 +1,15 @@
 # TASK 02: Synthetic Market Generators (Levels 0-3)
 
-## Objective
-Implement synthetic market data generators for curriculum training Levels 0-3. Enable training on mathematically controlled environments before real data.
+## Status: COMPLETE ✅
+
+**What's Done** (Dec 19, 2025):
+- ✅ Created `mcts_trader/data/synthetic_market.py` with 4 generators (Sine, Lag, Dip, Trends)
+- ✅ Updated `train_jax_fast.py` to support `--synthetic-level` and `--synthetic-steps`
+- ✅ Added `tools/visualize_synthetic.py` and verified data patterns
+- ✅ Verified training on Level 0 (Reward: +4.48% after 5 epochs)
 
 ## Prerequisites
-- TASK_01 completed (parallel MCTS working)
+- TASK_01 completed ✅ (GPU-native MCTS working)
 
 ## Scope
 Create 4 synthetic data generators:

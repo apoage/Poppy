@@ -44,7 +44,9 @@ class FastTradingEnv(gym.Env):
         max_steps: int = 200,  # Steps per episode (200=3h, 1440=24h)
         min_required_assets: int = 6,
         start_date: str = None,
-        end_date: str = None
+        end_date: str = None,
+        synthetic_level: int = None,  # NEW
+        synthetic_steps: int = 10000  # NEW
     ):
         super().__init__()
         self.n_actions_per_asset = 3
@@ -63,49 +65,67 @@ class FastTradingEnv(gym.Env):
         else:
             self.n_assets = n_assets
 
-        # FORCE LOAD FX PAIRS (Standard Format for DB)
-        # We found that EUR/USD has 2M+ rows, while ZEURZUSD has 700.
-        # Use standard symbols for loading, but map correctly.
-        self.fx_map = {
-            'EUR/USD': 'EUR/USD',
-            'GBP/USD': 'GBP/USD',
-            'USD/CAD': 'USD/CAD', # Check if exists
-            '/USDCAD': 'USD/CAD',
-            'USD/CHF': 'USD/CHF',
-            '/USDCHF': 'USD/CHF',
-            'USD/JPY': 'USD/JPY',
-            '/USDJPY': 'USD/JPY',
-            'AUD/USD': 'AUD/USD',
-            'AUDUSD': 'AUD/USD',
-            # Keep Kraken ones just in case, but mapped to standard
-            'ZEURZUSD': 'EUR/USD',
-            'ZGBPZUSD': 'GBP/USD'
-        }
-        
-        # Add FX pairs to unique_symbols if they aren't already there
-        if unique_symbols:
-            for fx_sym in self.fx_map.keys():
-                if fx_sym not in unique_symbols:
-                    unique_symbols.append(fx_sym)
-
-        # Components (CPU encoder!)
-        # Initialize market with UNIQUE symbols (DB limitation)
-        self.market = HistoricalMarket(
-            db_path, 
-            n_assets=len(unique_symbols) if unique_symbols else n_assets, 
-            min_required_assets=min_required_assets,
-            specific_symbols=unique_symbols,
-            start_date=start_date,
-            end_date=end_date
-        )
-        
-        # If no explicit symbols provided, grab what market found
-        if not self.padded_symbols:
+        if synthetic_level is not None:
+            # === SYNTHETIC MODE ===
+            from mcts_trader.data.synthetic_market import SyntheticMarket
+            logging.info(f"Using SYNTHETIC market (Level {synthetic_level})")
+            
+            self.market = SyntheticMarket(
+                level=synthetic_level,
+                n_assets=n_assets,
+                n_steps=synthetic_steps
+            )
+            
+            # Synthetic market generates its own assets
             self.padded_symbols = list(self.market.assets.values())
-            # Filter out the forced FX pairs from the "tradeable" set if we auto-discovered
-            # (Optional, but keeps action space clean if we don't want to trade FX)
-            # For now, let's just keep them if they were auto-discovered.
             self.n_assets = len(self.padded_symbols)
+            self.fx_map = {}  # Empty for synthetic
+            
+        else:
+            # === REAL DATA MODE ===
+            # FORCE LOAD FX PAIRS (Standard Format for DB)
+            # We found that EUR/USD has 2M+ rows, while ZEURZUSD has 700.
+            # Use standard symbols for loading, but map correctly.
+            self.fx_map = {
+                'EUR/USD': 'EUR/USD',
+                'GBP/USD': 'GBP/USD',
+                'USD/CAD': 'USD/CAD', # Check if exists
+                '/USDCAD': 'USD/CAD',
+                'USD/CHF': 'USD/CHF',
+                '/USDCHF': 'USD/CHF',
+                'USD/JPY': 'USD/JPY',
+                '/USDJPY': 'USD/JPY',
+                'AUD/USD': 'AUD/USD',
+                'AUDUSD': 'AUD/USD',
+                # Keep Kraken ones just in case, but mapped to standard
+                'ZEURZUSD': 'EUR/USD',
+                'ZGBPZUSD': 'GBP/USD'
+            }
+            
+            # Add FX pairs to unique_symbols if they aren't already there
+            if unique_symbols:
+                for fx_sym in self.fx_map.keys():
+                    if fx_sym not in unique_symbols:
+                        unique_symbols.append(fx_sym)
+
+            # Components (CPU encoder!)
+            # Initialize market with UNIQUE symbols (DB limitation)
+            self.market = HistoricalMarket(
+                db_path, 
+                n_assets=len(unique_symbols) if unique_symbols else n_assets, 
+                min_required_assets=min_required_assets,
+                specific_symbols=unique_symbols,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            # If no explicit symbols provided, grab what market found
+            if not self.padded_symbols:
+                self.padded_symbols = list(self.market.assets.values())
+                # Filter out the forced FX pairs from the "tradeable" set if we auto-discovered
+                # (Optional, but keeps action space clean if we don't want to trade FX)
+                # For now, let's just keep them if they were auto-discovered.
+                self.n_assets = len(self.padded_symbols)
         
         # Encoder gets the FULL PADDED list so it generates correct shape (e.g. 64x64)
         self.encoder = FastMultiAssetStateEncoder(n_assets=self.n_assets, lookback=lookback, device='cpu')
@@ -436,6 +456,10 @@ def main():
     parser.add_argument('--model-size', type=str, default='small', choices=['small', 'medium', 'large'],
                        help='Model size: small (~7.3M), medium (~15M), large (~36M)')
     parser.add_argument('--state-dim', type=int, default=None, help='Model state dimension (overrides --model-size)')
+    parser.add_argument('--synthetic-level', type=int, default=None, 
+                       help='Use synthetic data (0=sine, 1=lag, 2=dip, 3=trends, None=real)')
+    parser.add_argument('--synthetic-steps', type=int, default=10000,
+                       help='Steps per synthetic episode')
     parser.add_argument('--h-cycles', type=int, default=4, help='TRM Reasoning outer cycles (H)')
     parser.add_argument('--l-cycles', type=int, default=6, help='TRM Reasoning inner cycles (L)')
     parser.add_argument('--confidence-threshold', type=float, default=0.0, help='Minimum policy confidence to execute trade (force Hold otherwise)')
@@ -511,15 +535,19 @@ def main():
     env = FastTradingEnv(
         n_assets=n_assets,
         initial_capital=10000.0,
-        trading_fee_bps=args.fee,
-        slippage_bps=args.slippage,
-        mode=args.mode,
-        asset_symbols=asset_symbols,
-        max_steps=args.steps,
-        min_required_assets=min_required_assets,
+        trading_fee_bps=26,
+        slippage_bps=5,
+        max_steps=200,          # FIX: steps_per_episode -> max_steps
+        min_required_assets=6, # For real data only
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        synthetic_level=args.synthetic_level,
+        synthetic_steps=args.synthetic_steps
     )
+    
+    # If synthetic, n_assets might have changed to what the generator produced
+    n_assets = env.n_assets
+
     # Update n_assets to match what the environment actually loaded
     n_assets = env.n_assets
     print(f"✅ Environment ready ({args.mode} mode, {n_assets} assets, {args.steps} steps/episode)")
