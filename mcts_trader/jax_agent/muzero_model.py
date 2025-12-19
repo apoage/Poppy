@@ -12,6 +12,8 @@ class MuZeroNetworks(nn.Module):
     state_dim: int = 64
     action_space_size: int = 192
     support_size: int = 601
+    H_cycles: int = 4
+    L_cycles: int = 6
 
     def setup(self):
         """Initialize all three networks"""
@@ -29,8 +31,9 @@ class MuZeroNetworks(nn.Module):
         )
 
         # Transition function: (state, action) -> (next_state, reward)
+        dynamics_hidden = self.state_dim * 8  # 512 for 64, 768 for 96, 1024 for 128
         self.dynamics_net = nn.Sequential([
-            nn.Dense(256),
+            nn.Dense(dynamics_hidden),
             nn.LayerNorm(epsilon=1e-5),
             lambda x: nn.gelu(x),
             nn.Dense(self.state_dim + self.support_size)
@@ -58,7 +61,7 @@ class MuZeroNetworks(nn.Module):
             value: (batch, support_size)
         """
         policy_logits, value, _ = self.trm.compute_policy_value(
-            latent_state, H_cycles=3, L_cycles=4
+            latent_state, H_cycles=self.H_cycles, L_cycles=self.L_cycles
         )
         return policy_logits, value
 

@@ -17,7 +17,8 @@ from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent.trainer import MuZeroTrainer
 from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
 from mcts_trader.jax_agent.mctx_search import create_mctx_search
-from mcts_trader.jax_agent.mcts_worker_pool import MCTSWorkerPool
+# NOTE: Not using MCTSWorkerPool - it runs MCTS on CPU (slow!)
+# Direct GPU MCTS is ~10× faster
 
 # Import environment components
 from mcts_trader.data.history import HistoricalMarket
@@ -432,9 +433,31 @@ def main():
     
     # Advanced Training Parameters
     parser.add_argument('--batch-size', type=int, default=256, help='Training batch size')
+    parser.add_argument('--model-size', type=str, default='small', choices=['small', 'medium', 'large'],
+                       help='Model size: small (~7.3M), medium (~15M), large (~25M)')
+    parser.add_argument('--state-dim', type=int, default=None, help='Model state dimension (overrides --model-size)')
+    parser.add_argument('--h-cycles', type=int, default=4, help='TRM Reasoning outer cycles (H)')
+    parser.add_argument('--l-cycles', type=int, default=6, help='TRM Reasoning inner cycles (L)')
     parser.add_argument('--confidence-threshold', type=float, default=0.0, help='Minimum policy confidence to execute trade (force Hold otherwise)')
     
     args = parser.parse_args()
+
+    # Map model size to state_dim if not explicitly provided
+    if args.state_dim is None:
+        if args.model_size == 'small':
+            args.state_dim = 64
+        elif args.model_size == 'medium':
+            args.state_dim = 96
+        elif args.model_size == 'large':
+            args.state_dim = 128
+    
+    # Auto-adjust batch size for model size to prevent OOM on 24GB VRAM
+    if args.model_size == 'large' and args.batch_size > 256:
+        logging.warning(f"Large model + batch {args.batch_size} might OOM. Reducing to 256.")
+        args.batch_size = 256
+    elif args.model_size == 'medium' and args.batch_size > 384:
+        logging.warning(f"Medium model + batch {args.batch_size} might OOM. Reducing to 384.")
+        args.batch_size = 384
 
     # Dynamic Asset Configuration
     n_assets = 64
@@ -505,9 +528,15 @@ def main():
     print("[2/4] Initializing JAX model...")
     rng = jax.random.PRNGKey(42)
 
-    model = MuZeroNetworks(state_dim=n_assets, action_space_size=n_assets*3, support_size=601)
-    # We can't access model.trm yet because setup() is called during apply/init
-    print(f"DEBUG: Model definition: state_dim={model.state_dim}, actions={model.action_space_size}")
+    state_dim = args.state_dim
+    model = MuZeroNetworks(
+        state_dim=state_dim,
+        action_space_size=n_assets*3,
+        support_size=601,
+        H_cycles=args.h_cycles,
+        L_cycles=args.l_cycles
+    )
+    print(f"DEBUG: Model definition: state_dim={model.state_dim}, size={args.model_size}, actions={model.action_space_size}")
     
     trainer = MuZeroTrainer(
         model=model,
@@ -546,11 +575,10 @@ def main():
 
     # Create search with Maniac params
     # PARALLEL MCTS INTEGRATION
-    model_kwargs = {
-        'state_dim': n_assets,
-        'action_space_size': n_assets*3,
-        'support_size': 601
-    }
+    
+    # Report model size
+    param_count = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
+    print(f"✅ Model ready ({param_count/1e6:.1f}M params, state_dim={state_dim}, size={args.model_size})")
     
     search_kwargs = {
         'num_simulations': args.sims,
@@ -559,27 +587,27 @@ def main():
         'exploration_fraction': args.noise_frac
     }
     
-    print(f"🚀 Initializing Parallel MCTS with 4 workers...")
-    search = MCTSWorkerPool(
-        model_cls=MuZeroNetworks,
-        model_kwargs=model_kwargs,
-        search_kwargs=search_kwargs,
-        n_workers=4
-    )
+    print(f"🚀 Initializing GPU-native MCTS...")
+    # Use direct GPU MCTS instead of CPU worker pool
+    # Worker pool runs MCTS on CPU (slow!), direct call runs on GPU (fast!)
+    from mcts_trader.jax_agent.mctx_search import create_mctx_search
+    search = create_mctx_search(model, **search_kwargs)
+    search = jax.jit(search)  # JIT compile for GPU
     
-    print(f"✅ Model ready ({sum(x.size for x in jax.tree_util.tree_leaves(state.params)):,} params)")
     print(f"   Maniac Mode: Sims={args.sims}, Noise={args.noise}, Frac={args.noise_frac}")
     print()
 
     print("[3/4] Initializing replay buffer...")
+    # Reduce buffer size for multi-instance training (5K per instance = 10K total with 2 instances)
+    buffer_capacity = 5000
     replay_buffer = JAXReplayBuffer(
-        capacity=10000,
+        capacity=buffer_capacity,
         observation_shape=(27, n_assets, n_assets),
         action_size=n_assets * 3,  # Must match actual loaded assets
         batch_size=args.batch_size,
         sequence_length=5
     )
-    print("✅ Buffer ready (10K capacity, float32)")
+    print(f"✅ Buffer ready ({buffer_capacity} capacity, float32)")
     print()
 
     print("[4/4] Warmup (JIT compilation)...")
@@ -674,8 +702,8 @@ def main():
                       f"Self-play: {self_play_time:5.1f}s | (warmup)")
                       
     finally:
-        search.close()
-        print("🛑 MCTS Worker Pool closed.")
+        # No cleanup needed for GPU-native MCTS
+        print("✅ MCTS cleanup complete.")
 
     print()
     print("="*70)
