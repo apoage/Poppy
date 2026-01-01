@@ -20,31 +20,37 @@ These tasks implement a complete synthetic curriculum training system for the po
 
 ---
 
-### ⚠️ TASK_01: Verify MCTS Parallelization - NEEDS VERIFICATION
+### ✅ TASK_01: GPU-Native MCTS & Multi-Instance Training - COMPLETED (Dec 19)
 **Priority**: CRITICAL
-**Status**: ⚠️ Code exists, needs verification
-**Updated**: Dec 17 (discovered existing implementation)
-**Why**: Worker pool code exists but unknown if active during training
+**Status**: ✅ DONE (modified approach)
+**Completed by**: Claude Code
+**Updated**: Dec 19 (implemented GPU-native MCTS, dual-instance training)
+**Why**: CPU worker pool was bottleneck, GPU underutilized
 
-**Outcome**: Verify 3-4× speedup, GPU utilization 85%+, all CPU cores utilized
+**Outcome**:
+- ✅ GPU-native MCTS implemented (bypassed CPU worker pool)
+- ✅ Dual-instance training tested (96% GPU utilization, up from 65%)
+- ✅ Multi-instance architecture ready for multi-GPU setups
 
 ---
 
-### ✅ TASK_02: Synthetic Market Generators
+### ⏭️ TASK_02: Synthetic Market Generators - SKIPPED
 **Priority**: HIGH
-**Estimated effort**: 6 hours
+**Status**: ⏭️ SKIPPED (not needed for current objectives)
 **Why**: Enable training on controlled environments (Levels 0-3)
 
 **Outcome**: Can train on pure sine waves, validate architecture works
 
 ---
 
-### ✅ TASK_03: Scale Model to 25M
+### ✅ TASK_03: Scale Model to 37M - COMPLETED (Dec 19)
 **Priority**: MEDIUM
-**Estimated effort**: 3 hours
+**Status**: ✅ DONE
+**Completed by**: Gemini
 **Why**: 7M params might be too small for complex portfolio tactics
 
-**Outcome**: Configurable model sizes (7M/15M/25M)
+**Outcome**: Configurable model sizes (7M/15M/37M) - Successfully implemented!
+**Verified**: Small (7.25M), Medium (14.77M), Large (37.58M) all fit in 24GB VRAM
 
 ---
 

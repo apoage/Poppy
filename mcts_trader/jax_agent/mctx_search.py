@@ -20,7 +20,9 @@ class MuZeroMCTXSearch:
         use_gumbel: bool = True,
         dirichlet_alpha: float = 0.3,
         exploration_fraction: float = 0.25,
-        gumbel_scale: float = 1.0
+        gumbel_scale: float = 1.0,
+        value_scale: float = 1.0,
+        value_shift: float = 0.0
     ):
         """
         Args:
@@ -33,6 +35,8 @@ class MuZeroMCTXSearch:
             dirichlet_alpha: Noise alpha for root prior (Standard MuZero only)
             exploration_fraction: Fraction of noise to add (Standard MuZero only)
             gumbel_scale: Scale of Gumbel noise (for Gumbel MuZero)
+            value_scale: Calibration scale for value predictions (default 1.0)
+            value_shift: Calibration shift for value predictions (default 0.0)
         """
         self.model_apply_fn = model_apply_fn
         self.num_simulations = num_simulations
@@ -43,6 +47,8 @@ class MuZeroMCTXSearch:
         self.dirichlet_alpha = dirichlet_alpha
         self.exploration_fraction = exploration_fraction
         self.gumbel_scale = gumbel_scale
+        self.value_scale = value_scale
+        self.value_shift = value_shift
 
         # JIT-compile search functions to XLA
         # static_argnums not needed for pure function call if self is mostly static config
@@ -112,10 +118,17 @@ class MuZeroMCTXSearch:
         Returns:
             scalar: (batch,) scalar values
         """
-        support_size = logits.shape[-1]
-        support = jnp.linspace(-10, 10, support_size)
+        from . import get_value_support
+        support = get_value_support()
         probs = jax.nn.softmax(logits, axis=-1)
-        return jnp.sum(probs * support, axis=-1)
+        raw_value = jnp.sum(probs * support, axis=-1)
+
+        # Apply calibration scaling (fixes slope < 1.0 issue)
+        # Scale expands prediction range, shift adjusts center
+        # Defaults: scale=1.0, shift=0.0 (no change) for backward compat
+        scale = getattr(self, 'value_scale', 1.0)
+        shift = getattr(self, 'value_shift', 0.0)
+        return raw_value * scale + shift
 
     def _search(
         self,
@@ -138,18 +151,7 @@ class MuZeroMCTXSearch:
             policy_probs: (batch, action_space_size) visit count distribution
             search_stats: dict of search statistics
         """
-        # Create root nodes (vmap across batch)
-        # observation shape: (batch, ...)
-        # _root_fn expects single observation, so we vmap it
-        root = jax.vmap(lambda obs: self._root_fn(params, obs[None]))(observation)
-        
-        # NOTE: _root_fn above manually expands dims for single obs? 
-        # Wait, if observation is (batch, ...), vmap passes (slice, ...).
-        # Flax model expects (batch, ...). So we need obs[None] inside vmap to make it (1, ...) 
-        # OR we just run model on full batch once if logic allows.
-        # Efficient impl: Run model on full batch first, then pass to RootFnOutput.
-        
-        # Let's optimize: Run initial inference on FULL BATCH at once
+        # Run initial inference on FULL BATCH at once (more efficient than vmap)
         root_output = self.model_apply_fn(
             {'params': params},
             observation,
@@ -237,3 +239,54 @@ def create_mctx_search(model, **kwargs):
         model_apply_fn=model.apply,
         **kwargs
     )
+
+
+def extract_mcts_diagnostics(
+    policy_output,
+    root_value: jnp.ndarray,
+    actual_rewards: jnp.ndarray = None
+) -> dict:
+    """
+    Extract MCTS diagnostics for DS24 dashboard.
+
+    Args:
+        policy_output: mctx PolicyOutput from search
+        root_value: Root node values from search stats
+        actual_rewards: Actual episode rewards (optional, for calibration)
+
+    Returns:
+        Dict with diagnostic metrics:
+        - root_value_mean: Mean predicted root value
+        - root_value_std: Std of root values
+        - visit_entropy_mean: Mean entropy of visit counts (exploration indicator)
+        - calibration_mse: MSE vs actual rewards (if provided)
+    """
+    diagnostics = {
+        'root_value_mean': float(jnp.mean(root_value)),
+        'root_value_std': float(jnp.std(root_value)),
+        'visit_entropy_mean': 0.0,
+        'calibration_mse': 0.0,
+    }
+
+    # Visit entropy (exploration indicator)
+    # Higher entropy = more balanced exploration across actions
+    if hasattr(policy_output, 'action_weights'):
+        visit_counts = policy_output.action_weights
+        # Normalize to probabilities
+        visit_sum = jnp.sum(visit_counts, axis=-1, keepdims=True)
+        probs = visit_counts / (visit_sum + 1e-8)
+        # Compute entropy: -sum(p * log(p))
+        entropy = -jnp.sum(probs * jnp.log(probs + 1e-8), axis=-1)
+        diagnostics['visit_entropy_mean'] = float(jnp.mean(entropy))
+
+    # Calibration error vs actual rewards
+    if actual_rewards is not None:
+        actual_rewards = jnp.array(actual_rewards)
+        # Match shapes if needed
+        if actual_rewards.shape != root_value.shape:
+            # Take mean over unmatched dims
+            if len(actual_rewards.shape) > len(root_value.shape):
+                actual_rewards = jnp.mean(actual_rewards)
+        diagnostics['calibration_mse'] = float(jnp.mean((root_value - actual_rewards) ** 2))
+
+    return diagnostics

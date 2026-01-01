@@ -47,10 +47,13 @@ def benchmark_batch_size(batch_size: int, n_workers: int = 4, num_simulations: i
 
     search_kwargs = {
         'num_simulations': num_simulations,
-        'max_depth': 10,
+        'max_num_considered_actions': 16,
         'discount': 0.997,
-        'pb_c_init': 1.25,
+        'temperature': 1.0,
         'use_gumbel': True,
+        'dirichlet_alpha': 0.3,
+        'exploration_fraction': 0.25,
+        'gumbel_scale': 1.0,
     }
 
     # Create worker pool
@@ -73,7 +76,10 @@ def benchmark_batch_size(batch_size: int, n_workers: int = 4, num_simulations: i
     rng = jax.random.PRNGKey(0)
     params_rng, obs_rng, rng = jax.random.split(rng, 3)
 
-    params = model.init(params_rng, jnp.zeros((1, 27, 64, 64)))
+    # Initialize model - extract just params from variables dict
+    variables = model.init(params_rng, jnp.zeros((1, 27, 64, 64)), mode='initialize_parameters')
+    params = variables['params']
+
     observations = jax.random.normal(obs_rng, (batch_size, 27, 64, 64))
     action_masks = jnp.ones((batch_size, 192), dtype=jnp.float32)
 

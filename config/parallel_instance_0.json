@@ -1,0 +1,6 @@
+{
+  "n_assets": 64,
+  "min_coverage": 0.75,
+  "random_seed": 42,
+  "checkpoint_dir": "jax_ckpt_fast/parallel/instance_0"
+}
