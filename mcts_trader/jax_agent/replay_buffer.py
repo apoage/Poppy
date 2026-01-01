@@ -64,8 +64,8 @@ class JAXReplayBuffer:
         self.trajectory_starts = jnp.zeros((capacity,), dtype=jnp.int32)
         self.trajectory_lengths = jnp.zeros((capacity,), dtype=jnp.int32)
         # Track when trajectory was added (for wrap-around validation)
-        # Use int64 to prevent overflow in extremely long training runs
-        self.trajectory_generation = jnp.zeros((capacity,), dtype=jnp.int64)
+        # int32 handles ~2B generations - sufficient for any practical training
+        self.trajectory_generation = jnp.zeros((capacity,), dtype=jnp.int32)
 
         # Buffer state (these stay on CPU mostly, but JAX handles them)
         self.position = 0
