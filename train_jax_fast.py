@@ -55,6 +55,7 @@ from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support, get_val
 
 # Import environment - VectorBT-based (clean accounting, no FX bugs)
 from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
+from mcts_trader.training.safe_checkpoint import SafeCheckpointManager
 
 # Tree Search (Phase 3) - imported conditionally when --use-tree-search is enabled
 # from mcts_trader.jax_agent.prediction import (
@@ -212,9 +213,15 @@ def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200, co
 
         score += reward
         obs_dict = next_obs_dict
+        last_info = info  # Keep last info for market baseline metrics
 
         if done:
             break
+
+    # Extract market baseline metrics from last step
+    market_return = last_info.get('market_return', 0.0)
+    agent_return = last_info.get('agent_return', 0.0)
+    alpha = last_info.get('alpha', 0.0)
 
     # CRITICAL FIX: Compute Monte Carlo returns (sum of future discounted rewards)
     # instead of using model's value predictions (which creates circular dependency!)
@@ -250,7 +257,11 @@ def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200, co
         'policy_probs': np.array(policy_probs),
         'dones': np.array(dones),
         'mcts_root_values': np.array(mcts_root_values),  # For DS24 planning metrics
-        'horizon_returns': horizon_returns  # For DS24 horizon value error analysis
+        'horizon_returns': horizon_returns,  # For DS24 horizon value error analysis
+        # Market baseline metrics
+        'market_return': market_return,
+        'agent_return': agent_return,
+        'alpha': alpha,
     }
 
     # Include price data if collected (Phase 2)
@@ -299,6 +310,7 @@ def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, step
     all_mcts_root_values = [[] for _ in range(n_envs)]  # For DS24 planning metrics
     all_prices = [[] for _ in range(n_envs)]
     all_next_prices = [[] for _ in range(n_envs)]
+    all_last_info = [{} for _ in range(n_envs)]  # Track last info for market baseline
 
     scores = [0.0] * n_envs
     active = [True] * n_envs  # Track which envs are still running
@@ -372,6 +384,7 @@ def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, step
 
             scores[env_idx] += reward
             obs_dicts[env_idx] = next_obs_dict
+            all_last_info[env_idx] = info  # Track last info for market baseline
 
             if done:
                 active[env_idx] = False
@@ -402,6 +415,12 @@ def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, step
                 h_returns[t] = running
             horizon_returns[h] = h_returns
 
+        # Extract market baseline metrics from last info
+        last_info = all_last_info[i]
+        market_return = last_info.get('market_return', 0.0)
+        agent_return = last_info.get('agent_return', 0.0)
+        alpha = last_info.get('alpha', 0.0)
+
         result = {
             'observations': np.array(all_observations[i]),
             'actions': np.array(all_actions[i]),
@@ -410,7 +429,11 @@ def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, step
             'policy_probs': np.array(all_policy_probs[i]),
             'dones': np.array(all_dones[i]),
             'mcts_root_values': np.array(all_mcts_root_values[i]),  # For DS24 planning metrics
-            'horizon_returns': horizon_returns  # For DS24 horizon value error analysis
+            'horizon_returns': horizon_returns,  # For DS24 horizon value error analysis
+            # Market baseline metrics
+            'market_return': market_return,
+            'agent_return': agent_return,
+            'alpha': alpha,
         }
 
         if collect_prices and len(all_prices[i]) > 0:
@@ -420,6 +443,383 @@ def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, step
         results.append(result)
 
     return results, scores
+
+
+# =============================================================================
+# JAX-Vectorized Self-Play (Phase 4 Integration)
+# =============================================================================
+
+def run_self_play_jax(
+    jax_env_states,  # TradingState from JAX env (batched)
+    prices: jnp.ndarray,  # Price array (n_steps, n_assets)
+    jax_env_config,  # EnvConfig
+    search_fn,
+    model_apply_fn,
+    params,
+    rng_key,
+    steps: int = 200,
+    confidence_threshold: float = 0.0,
+    support_size: int = VALUE_SUPPORT_SIZE,
+    discount: float = 0.997,
+):
+    """Fully GPU-accelerated self-play using JAX environment.
+
+    This replaces run_self_play_batched with a JAX-native implementation
+    that keeps all computation on GPU.
+
+    Args:
+        jax_env_states: Batched TradingState from jit_batch_reset
+        prices: Price array (n_steps, n_assets) as JAX array
+        jax_env_config: JAX EnvConfig
+        search_fn: MCTS search function
+        model_apply_fn: Model apply function
+        params: Model parameters
+        rng_key: JAX RNG key
+        steps: Number of steps per episode
+        confidence_threshold: MCTS confidence threshold for forcing HOLD
+        support_size: Value support size
+        discount: Discount factor for returns
+
+    Returns:
+        results: List of trajectory dicts (same format as run_self_play_batched)
+        scores: List of episode scores
+    """
+    from mcts_trader.env.jax_trading_env import (
+        jit_batch_step, compute_observation_27ch,
+        compute_portfolio_value, get_current_prices,
+    )
+    from mcts_trader.env.jax_encoder import (
+        EncoderConfig as FullEncoderConfig,
+        jit_batch_encode_simple,
+    )
+
+    n_envs = jax_env_states.cash.shape[0]
+    n_assets = jax_env_config.n_assets
+    n_actions = n_assets * N_ACTIONS_PER_ASSET
+
+    # Create encoder config
+    encoder_config = FullEncoderConfig(
+        n_assets=n_assets,
+        window_size=jax_env_config.window_size,
+        n_channels=27,
+    )
+
+    # Storage for trajectories (on CPU for compatibility with trainer)
+    all_observations = [[] for _ in range(n_envs)]
+    all_actions = [[] for _ in range(n_envs)]
+    all_rewards = [[] for _ in range(n_envs)]
+    all_values = [[] for _ in range(n_envs)]
+    all_policy_probs = [[] for _ in range(n_envs)]
+    all_dones = [[] for _ in range(n_envs)]
+    all_mcts_root_values = [[] for _ in range(n_envs)]
+
+    scores = np.zeros(n_envs, dtype=np.float32)
+    active = np.ones(n_envs, dtype=bool)  # Track active envs
+    states = jax_env_states
+    rng = rng_key
+
+    for step in range(steps):
+        n_active = int(np.sum(active))
+        if n_active == 0:
+            break
+
+        rng, step_rng = jax.random.split(rng)
+
+        # Get window starts for observation encoding
+        window_starts = states.episode_start_idx + states.current_step
+
+        # Encode observations using 27-channel encoder (batched)
+        obs_batch = jit_batch_encode_simple(
+            prices, window_starts, encoder_config
+        )  # (n_envs, 27, n_assets, n_assets)
+
+        # Action mask (all actions valid for now)
+        mask_batch = jnp.ones((n_envs, n_actions), dtype=jnp.int8)
+
+        # Batched MCTS - single GPU call
+        actions_jax, policies_jax, stats = search_fn(params, step_rng, obs_batch, mask_batch)
+
+        # Get values
+        if 'root_value' in stats:
+            values_batch = stats['root_value']
+        else:
+            output = model_apply_fn({'params': params}, obs_batch, mode='initial_inference')
+            support = get_value_support()
+            value_probs = jax.nn.softmax(output['value'], axis=-1)
+            values_batch = jnp.sum(value_probs * support, axis=-1)
+
+        # Confidence thresholding
+        if confidence_threshold > 0:
+            max_probs = jnp.max(policies_jax, axis=-1)
+            low_confidence = max_probs < confidence_threshold
+            asset_indices = actions_jax // N_ACTIONS_PER_ASSET
+            hold_actions = asset_indices * N_ACTIONS_PER_ASSET + 1
+            actions_jax = jnp.where(low_confidence, hold_actions, actions_jax)
+
+        # Batched JAX step - GPU accelerated!
+        new_states, obs_new, rewards, dones = jit_batch_step(
+            states, actions_jax, prices, jax_env_config
+        )
+
+        # Transfer to CPU for trajectory storage (only active envs)
+        obs_np = np.array(obs_batch)
+        actions_np = np.array(actions_jax)
+        rewards_np = np.array(rewards)
+        values_np = np.array(values_batch)
+        policies_np = np.array(policies_jax)
+        dones_np = np.array(dones)
+
+        for i in range(n_envs):
+            if active[i]:
+                all_observations[i].append(obs_np[i])
+                all_actions[i].append(int(actions_np[i]))
+                all_rewards[i].append(float(rewards_np[i]))
+                all_values[i].append(float(values_np[i]))
+                all_policy_probs[i].append(policies_np[i])
+                all_dones[i].append(bool(dones_np[i]))
+                all_mcts_root_values[i].append(float(values_np[i]))
+                scores[i] += float(rewards_np[i])
+
+                if dones_np[i]:
+                    active[i] = False
+
+        states = new_states
+
+    # Compute MC returns and package results
+    results = []
+    for i in range(n_envs):
+        rewards_arr = np.array(all_rewards[i])
+        n_steps_i = len(rewards_arr)
+        mc_returns = np.zeros(n_steps_i)
+
+        running_return = 0.0
+        for t in range(n_steps_i - 1, -1, -1):
+            running_return = rewards_arr[t] + discount * running_return
+            mc_returns[t] = running_return
+
+        # Horizon-specific returns for DS24
+        horizon_returns = {}
+        for h in [1, 5, 10]:
+            h_returns = np.zeros(n_steps_i)
+            for t in range(n_steps_i):
+                end_idx = min(t + h, n_steps_i)
+                running = 0.0
+                for j in range(end_idx - 1, t - 1, -1):
+                    running = rewards_arr[j] + discount * running
+                h_returns[t] = running
+            horizon_returns[h] = h_returns
+
+        # Get final portfolio metrics
+        final_return = float(states.cumulative_return[i]) if n_steps_i > 0 else 0.0
+
+        result = {
+            'observations': np.array(all_observations[i]),
+            'actions': np.array(all_actions[i]),
+            'rewards': rewards_arr,
+            'values': mc_returns,
+            'policy_probs': np.array(all_policy_probs[i]),
+            'dones': np.array(all_dones[i]),
+            'mcts_root_values': np.array(all_mcts_root_values[i]),
+            'horizon_returns': horizon_returns,
+            # Market baseline metrics (simplified for JAX env)
+            'market_return': 0.0,  # TODO: compute from prices
+            'agent_return': final_return,
+            'alpha': final_return,  # Simplified
+        }
+        results.append(result)
+
+    return results, list(scores)
+
+
+def create_jax_env_and_prices(
+    synthetic_level: int,
+    n_envs: int,
+    n_assets: int = 64,
+    n_steps: int = 2000,
+    fee_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    max_episode_steps: int = 400,
+    window_size: int = 60,
+    position_size_pct: float = 0.1,
+    rng_key=None,
+):
+    """Create JAX environment states and synthetic prices.
+
+    Args:
+        synthetic_level: Synthetic curriculum level (0-4)
+        n_envs: Number of parallel environments
+        n_assets: Number of assets
+        n_steps: Total price steps to generate
+        fee_bps: Trading fee in basis points
+        slippage_bps: Slippage in basis points
+        max_episode_steps: Max steps per episode
+        window_size: Observation window size
+        position_size_pct: Position size as fraction of portfolio
+        rng_key: JAX RNG key (optional)
+
+    Returns:
+        states: Batched TradingState
+        prices: Price array (n_steps, n_assets)
+        config: EnvConfig
+    """
+    from mcts_trader.env.jax_trading_env import (
+        EnvConfig, jit_batch_reset,
+    )
+    from mcts_trader.data.synthetic_market import SyntheticMarket
+
+    if rng_key is None:
+        rng_key = jax.random.PRNGKey(42)
+
+    # Generate synthetic prices using existing generator
+    synthetic = SyntheticMarket(
+        level=synthetic_level,
+        n_assets=n_assets,
+        n_steps=n_steps,
+    )
+    synthetic.reset()
+
+    # Collect prices
+    prices_np = np.zeros((n_steps, n_assets), dtype=np.float32)
+    for i in range(n_steps):
+        data = synthetic.get_current_data()
+        for j in range(n_assets):
+            symbol = f"SYN_{j:02d}"
+            if symbol in data:
+                prices_np[i, j] = data[symbol]['close']
+        synthetic.step()
+
+    prices = jnp.array(prices_np, dtype=jnp.float32)
+
+    # Create JAX env config
+    config = EnvConfig(
+        n_assets=n_assets,
+        initial_cash=100_000.0,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        max_steps=max_episode_steps,
+        window_size=window_size,
+        position_size_pct=position_size_pct,
+        allow_short=True,
+        tp_sl_enabled=False,
+    )
+
+    # Initialize batched environment states
+    keys = jax.random.split(rng_key, n_envs)
+    states = jit_batch_reset(keys, prices, config)
+
+    return states, prices, config
+
+
+def run_generalization_eval(
+    eval_level: int,
+    search_fn,
+    model_apply_fn,
+    params,
+    rng_key,
+    steps: int = 200,
+    support_size: int = VALUE_SUPPORT_SIZE,
+    n_assets: int = 64,
+    fee: int = 0,
+    slippage: int = 0,
+) -> dict:
+    """
+    Run evaluation episode on a different synthetic level to test generalization.
+
+    Used during curriculum training to track how well the model handles
+    harder patterns (e.g., evaluate on L4 rotation while training on L0 sine).
+
+    Args:
+        eval_level: Synthetic level to evaluate on (0-4)
+        search_fn: MCTS search function
+        model_apply_fn: Model apply function
+        params: Model parameters
+        rng_key: JAX RNG key
+        steps: Episode length
+        support_size: Value support size
+        n_assets: Number of assets
+        fee: Trading fee in bps
+        slippage: Slippage in bps
+
+    Returns:
+        Dict with evaluation metrics:
+            - reward: Episode reward (%)
+            - alpha: Agent return - market return (%)
+            - market_return: Buy-and-hold return (%)
+            - agent_return: Agent final return (%)
+            - pct_hold: Hold action percentage
+            - pct_buy: Buy action percentage
+            - pct_sell: Sell action percentage
+    """
+    # Create evaluation environment
+    eval_env = VectorBTTradingEnv(
+        n_assets=n_assets,
+        window_size=64,
+        mode='MARGIN',
+        fee_bps=fee,
+        slippage_bps=slippage,
+        synthetic_level=eval_level,
+        synthetic_steps=steps + 100,  # Extra buffer
+    )
+
+    # Run single evaluation episode
+    obs_dict, _ = eval_env.reset()
+    score = 0.0
+    actions_list = []
+    rng = rng_key
+
+    for step in range(steps):
+        rng, step_rng = jax.random.split(rng)
+
+        # Prepare observation
+        obs_array = obs_dict['observation']
+        if hasattr(obs_array, 'cpu'):
+            obs_array = obs_array.cpu().numpy()
+        obs_array = np.expand_dims(obs_array, axis=0)
+        obs_jax = jnp.array(obs_array, dtype=jnp.float32)
+
+        # Action mask
+        action_mask = obs_dict['action_mask']
+        if hasattr(action_mask, 'cpu'):
+            action_mask = action_mask.cpu().numpy()
+        mask_jax = jnp.array(np.expand_dims(action_mask, 0), dtype=jnp.int8)
+
+        # MCTS search (no exploration noise in eval)
+        action_jax, _, _ = search_fn(params, step_rng, obs_jax, mask_jax)
+        action = int(action_jax[0])
+        actions_list.append(action)
+
+        # Step environment
+        obs_dict, reward, terminated, truncated, info = eval_env.step(action)
+        score += reward
+
+        if terminated or truncated:
+            break
+
+    # Compute action stats
+    actions_arr = np.array(actions_list)
+    total_actions = len(actions_arr)
+    n_sell = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 0)
+    n_hold = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 1)
+    n_buy = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 2)
+
+    # Extract market baseline from final info
+    market_return = info.get('market_return', 0.0)
+    agent_return = info.get('agent_return', 0.0)
+    alpha = info.get('alpha', agent_return - market_return)
+
+    eval_env.close()
+
+    return {
+        'reward': score,
+        'alpha': alpha,
+        'market_return': market_return,
+        'agent_return': agent_return,
+        'pct_hold': 100.0 * n_hold / total_actions if total_actions > 0 else 0,
+        'pct_buy': 100.0 * n_buy / total_actions if total_actions > 0 else 0,
+        'pct_sell': 100.0 * n_sell / total_actions if total_actions > 0 else 0,
+        'eval_level': eval_level,
+        'steps': len(actions_list),
+    }
 
 
 def main():
@@ -437,6 +837,13 @@ def main():
     
     # MCTS Hyperparameters (Maniac Mode)
     parser.add_argument('--sims', type=int, default=32, help='MCTS simulations (32=better planning, 16=faster)')
+    parser.add_argument('--sims-warmup', type=int, default=0,
+                       help='Epochs to warm up simulations from min to max (0=disabled)')
+    parser.add_argument('--sims-min', type=int, default=8,
+                       help='Minimum simulations during warmup (default: 8)')
+    parser.add_argument('--sims-schedule', type=str, default='linear',
+                       choices=['linear', 'step', 'exponential'],
+                       help='Sims warmup schedule type (default: linear)')
     parser.add_argument('--noise', type=float, default=0.3, help='Dirichlet noise alpha (Standard MCTS only)')
     parser.add_argument('--noise-frac', type=float, default=0.25, help='Dirichlet noise fraction (Standard MCTS only)')
     parser.add_argument('--gumbel-scale', type=float, default=3.0, help='Gumbel noise scale (Gumbel MCTS) - higher=more exploration')
@@ -446,8 +853,12 @@ def main():
 
     # Advanced Training Parameters
     parser.add_argument('--batch-size', type=int, default=256, help='Training batch size')
-    parser.add_argument('--parallel-envs', type=int, default=1,
+    parser.add_argument('--parallel-envs', type=int, default=4,
                        help='Number of parallel environments for batched self-play (1=serial, 4=4x throughput)')
+    parser.add_argument('--jax-env', action='store_true',
+                       help='Use JAX-vectorized environment (3000x faster, GPU-native). Requires --synthetic-level.')
+    parser.add_argument('--regenerate-data-every', type=int, default=10,
+                       help='Regenerate synthetic data every N epochs for training variety (default: 10, 0=never)')
     parser.add_argument('--model-size', type=str, default='small', choices=['small', 'medium', 'large'],
                        help='Model size: small (~7.3M), medium (~15M), large (~36M)')
     parser.add_argument('--state-dim', type=int, default=None, help='Model state dimension (overrides --model-size)')
@@ -459,6 +870,8 @@ def main():
                        help='Load from training_schedule.json (random period/run selection)')
     parser.add_argument('--db-path', type=str, default=None,
                        help='Load data from SQLite database')
+    parser.add_argument('--cache-path', type=str, default=None,
+                       help='Numpy cache for DB data (7min->5sec loading)')
     parser.add_argument('--h-cycles', type=int, default=4, help='TRM Reasoning outer cycles (H)')
     parser.add_argument('--l-cycles', type=int, default=6, help='TRM Reasoning inner cycles (L)')
     parser.add_argument('--confidence-threshold', type=float, default=0.0, help='Minimum policy confidence to execute trade (force Hold otherwise)')
@@ -475,6 +888,18 @@ def main():
                        help='Moderate entropy boost when HOLD%% > threshold (default: 0.15)')
     parser.add_argument('--entropy-boost-high', type=float, default=0.30,
                        help='Aggressive entropy boost when HOLD%% > threshold+10%% (default: 0.30)')
+
+    # Value loss configuration (controls sensitivity to high-variance targets)
+    parser.add_argument('--value-loss-type', type=str, default='mse', choices=['mse', 'huber'],
+                       help='Value loss type: mse (standard) or huber (robust to outliers)')
+    parser.add_argument('--value-huber-delta', type=float, default=1.0,
+                       help='Huber loss delta (smaller = more robust, default: 1.0)')
+
+    # PopArt value normalization (TASK_021 - for curriculum stability)
+    parser.add_argument('--use-popart', action='store_true', default=False,
+                       help='Enable PopArt adaptive value normalization (recommended for curriculum)')
+    parser.add_argument('--popart-beta', type=float, default=0.0001,
+                       help='PopArt EMA decay rate (lower = more stable, default: 0.0001)')
 
     # Multi-Action + Limit Orders
     parser.add_argument('--action-points', type=int, default=1,
@@ -493,6 +918,11 @@ def main():
     # =========================================================================
     parser.add_argument('--use-prediction-loss', action='store_true', default=False,
                        help='Enable auxiliary prediction loss (requires prediction head)')
+    parser.add_argument('--physics-only', action='store_true', default=False,
+                       help='Use only physics core in prediction (disable neural corrector)')
+    parser.add_argument('--pred-head-size', type=str, default='small',
+                       choices=['small', 'medium', 'large'],
+                       help='Prediction head size: small=128d/2blk, medium=256d/3blk, large=512d/4blk')
     parser.add_argument('--prediction-loss-weight', type=float, default=0.2,
                        help='Final weight for auxiliary prediction loss (default: 0.2)')
     parser.add_argument('--prediction-loss-initial', type=float, default=0.01,
@@ -545,6 +975,40 @@ def main():
                        help='Save periodic tensor snapshots for analysis (every 100 epochs)')
     parser.add_argument('--ds24-grad-norms', action='store_true', default=False,
                        help='Track per-head gradient norms (slower, ~20%% overhead)')
+    # Dynamic level boosting (reduces overhead while getting periodic deep insights)
+    parser.add_argument('--ds24-boost-every', type=int, default=10,
+                       help='Boost to DS24 L4 every N epochs (default: 10, 0=disabled)')
+    parser.add_argument('--ds24-snapshot-every', type=int, default=50,
+                       help='Full DS24 L6 snapshot every N epochs (default: 50, 0=disabled)')
+
+    # =========================================================================
+    # Safe Checkpoint Management (for advanced curriculum levels)
+    # =========================================================================
+    parser.add_argument('--safe-checkpoints', action='store_true', default=False,
+                       help='Enable safe checkpoint management (saves only on improvement, rollback on degradation)')
+    parser.add_argument('--rollback-patience', type=int, default=50,
+                       help='Epochs to wait before considering rollback (default: 50)')
+    parser.add_argument('--rollback-threshold', type=float, default=0.5,
+                       help='Performance drop to trigger rollback (default: 0.5)')
+    parser.add_argument('--max-rollbacks', type=int, default=3,
+                       help='Maximum rollbacks allowed before failing (default: 3)')
+    parser.add_argument('--keep-best-n', type=int, default=3,
+                       help='Number of best checkpoints to keep (default: 3)')
+    parser.add_argument('--lr-decay-on-rollback', type=float, default=0.5,
+                       help='Learning rate decay factor after rollback (default: 0.5)')
+
+    # =========================================================================
+    # Generalization Evaluation (Curriculum Training Metrics)
+    # =========================================================================
+    # Periodically evaluate on harder levels to track generalization during curriculum
+    parser.add_argument('--eval-every', type=int, default=0,
+                       help='Run evaluation on --eval-level every N epochs (0=disabled)')
+    parser.add_argument('--eval-level', type=int, default=4,
+                       help='Synthetic level for periodic evaluation (default: 4=rotation)')
+    parser.add_argument('--eval-steps', type=int, default=200,
+                       help='Steps per evaluation episode (default: 200)')
+    parser.add_argument('--snapshot-every', type=int, default=0,
+                       help='Generate comprehensive DS24 L4 snapshot every N epochs (0=disabled)')
 
     args = parser.parse_args()
 
@@ -646,6 +1110,8 @@ def main():
         data_source = "training schedule"
     elif args.db_path:
         env_kwargs['db_path'] = args.db_path
+        if args.cache_path:
+            env_kwargs['cache_path'] = args.cache_path
         if args.start_date:
             env_kwargs['start_date'] = args.start_date
         if args.end_date:
@@ -678,6 +1144,32 @@ def main():
     print(f"   5-action space (limit orders), {multi_action_mode}, TP/SL={'ON' if args.tp_sl_enabled else 'OFF'}")
     print(f"DEBUG: n_assets={n_assets}, total_actions={action_space_size}")
 
+    # JAX Environment Setup (Phase 4 - 3000x faster)
+    jax_env_states = None
+    jax_prices = None
+    jax_env_config = None
+    use_jax_env = args.jax_env
+
+    if use_jax_env:
+        if args.synthetic_level is None:
+            logging.warning("--jax-env requires --synthetic-level. Falling back to Python env.")
+            use_jax_env = False
+        else:
+            print(f"   Initializing JAX-vectorized environment ({args.parallel_envs} parallel envs)...")
+            jax_env_states, jax_prices, jax_env_config = create_jax_env_and_prices(
+                synthetic_level=args.synthetic_level,
+                n_envs=args.parallel_envs,
+                n_assets=n_assets,
+                n_steps=args.synthetic_steps,
+                fee_bps=float(args.fee),
+                slippage_bps=float(args.slippage),
+                max_episode_steps=args.steps,
+                window_size=60,
+                position_size_pct=0.1,
+                rng_key=jax.random.PRNGKey(42),
+            )
+            print(f"   ✅ JAX env ready: {args.parallel_envs} envs, {jax_prices.shape[0]} price steps")
+
     print("[2/4] Initializing JAX model...")
     rng = jax.random.PRNGKey(42)
 
@@ -686,6 +1178,15 @@ def main():
     dtype_str = "bfloat16" if args.bf16 else "float32"
 
     state_dim = args.state_dim
+
+    # Prediction head size configuration
+    PRED_HEAD_SIZES = {
+        'small':  {'embed_dim': 128, 'num_blocks': 2, 'mlp_dim': 256, 'n_factors': 8},
+        'medium': {'embed_dim': 256, 'num_blocks': 3, 'mlp_dim': 512, 'n_factors': 16},
+        'large':  {'embed_dim': 512, 'num_blocks': 4, 'mlp_dim': 1024, 'n_factors': 32},
+    }
+    pred_cfg = PRED_HEAD_SIZES[args.pred_head_size]
+
     model = MuZeroNetworks(
         state_dim=state_dim,
         action_space_size=action_space_size,  # n_assets * N_ACTIONS_PER_ASSET
@@ -694,8 +1195,14 @@ def main():
         L_cycles=args.l_cycles,
         # Prediction head (Phase 2)
         use_prediction_head=args.use_prediction_loss,
+        physics_only=args.physics_only,  # Disable neural corrector for pure physics
         n_assets=n_assets,
         n_features=10,  # External features dimension
+        # Prediction head size
+        pred_embed_dim=pred_cfg['embed_dim'],
+        pred_num_blocks=pred_cfg['num_blocks'],
+        pred_mlp_dim=pred_cfg['mlp_dim'],
+        pred_n_factors=pred_cfg['n_factors'],
         # Mixed precision
         dtype=compute_dtype,
         param_dtype=jnp.float32,  # Always keep params in float32 for stability
@@ -704,7 +1211,10 @@ def main():
     print(f"DEBUG: Compute dtype: {dtype_str} ({'TensorCore enabled' if args.bf16 else 'standard precision'})")
     print(f"DEBUG: Entropy coefficient: {args.entropy_coef} (higher=more exploration)")
     if args.use_prediction_loss:
-        print(f"DEBUG: Prediction head ENABLED (λ_pred: {args.prediction_loss_initial} -> {args.prediction_loss_weight})")
+        mode_str = "PHYSICS-ONLY" if args.physics_only else "HYBRID (physics+neural)"
+        print(f"DEBUG: Prediction head ENABLED (λ_pred: {args.prediction_loss_initial} -> {args.prediction_loss_weight}, mode: {mode_str}, size: {args.pred_head_size})")
+    if args.use_popart:
+        print(f"DEBUG: PopArt normalization ENABLED (β={args.popart_beta})")
 
     # Create prediction loss config if enabled
     prediction_config = None
@@ -730,11 +1240,17 @@ def main():
         policy_loss_weight=1.0,
         reward_loss_weight=1.0,
         entropy_coef=args.entropy_coef,  # Entropy bonus to prevent policy collapse
+        # Value loss configuration
+        value_loss_type=args.value_loss_type,
+        value_huber_delta=args.value_huber_delta,
         # Prediction loss (Phase 2)
         use_prediction_loss=args.use_prediction_loss,
         prediction_config=prediction_config,
         # DS24 gradient monitoring
         track_grad_norms=args.ds24_grad_norms,
+        # PopArt value normalization (TASK_021)
+        use_popart=args.use_popart,
+        popart_beta=args.popart_beta,
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -818,7 +1334,8 @@ def main():
     tree_search_uses_muzero_prediction = False  # Track if we're using trained model
 
     if args.use_tree_search:
-        print(f"🌳 Initializing Predictive Tree Search...")
+        tree_mode = "PHYSICS-ONLY" if args.physics_only else "HYBRID"
+        print(f"🌳 Initializing Predictive Tree Search ({tree_mode})...")
         from mcts_trader.jax_agent.prediction import (
             NeuralMarketODE,
             create_physics_aware_tree_search_fn,
@@ -848,6 +1365,7 @@ def main():
                 n_features=10,
                 use_transformer=True,
                 use_action_conditioning=True,  # Match MuZero's config
+                physics_only=args.physics_only,  # Match physics-only mode
             )
 
             # Create dynamic reward adjuster that takes params at runtime
@@ -871,6 +1389,7 @@ def main():
                 n_features=10,
                 use_transformer=True,
                 use_action_conditioning=False,
+                physics_only=args.physics_only,  # Match physics-only mode
             )
 
             rng, pred_init_rng = jax.random.split(rng)
@@ -955,6 +1474,8 @@ def main():
     base_columns = [
         # Core metrics
         'epoch', 'reward', 'reward_ma20', 'fee_bps', 'steps',
+        # Market baseline (alpha = agent - market, positive = beating market)
+        'alpha', 'market_return', 'agent_return',
         # Action counts (5-action space: S/H/B/LS/LB)
         'n_buy', 'n_hold', 'n_sell', 'n_limit_sell', 'n_limit_buy',
         # Action percentages
@@ -972,7 +1493,9 @@ def main():
         # Tree search (Phase 3)
         'uncertainty',
         # Config reference
-        'synthetic_level', 'model_size', 'run_id'
+        'synthetic_level', 'model_size', 'run_id',
+        # Generalization evaluation (curriculum training)
+        'eval_level', 'eval_reward', 'eval_alpha', 'eval_pct_hold',
     ]
 
     # Combine base + DS24 columns
@@ -1000,8 +1523,50 @@ def main():
     if adaptive_calibration:
         print(f"📐 Adaptive calibration enabled (starts epoch {calibration_start_epoch}, interval {calibration_interval})")
 
+    # MCTS sims warmup schedule (TASK_020)
+    sims_schedule = None
+    if args.sims_warmup > 0:
+        from mcts_trader.jax_agent.schedules import SimsSchedule
+        sims_schedule = SimsSchedule(
+            min_sims=args.sims_min,
+            max_sims=args.sims,
+            warmup_epochs=args.sims_warmup,
+            schedule_type=args.sims_schedule
+        )
+        print(f"🎯 Sims warmup enabled: {args.sims_min} → {args.sims} over {args.sims_warmup} epochs ({args.sims_schedule})")
+
+    # Safe checkpoint management (for advanced curriculum levels)
+    safe_ckpt_manager = None
+    rollback_count = 0
+    if args.safe_checkpoints:
+        safe_ckpt_manager = SafeCheckpointManager(
+            checkpoint_dir=os.path.join(checkpoint_dir, 'safe'),
+            metric_name='avg_reward',
+            patience=args.rollback_patience,
+            rollback_threshold=args.rollback_threshold,
+            keep_best_n=args.keep_best_n,
+            rolling_window=20,
+            min_improvement=0.01,
+            save_golden=True,
+        )
+        print(f"🛡️ Safe checkpoint management enabled:")
+        print(f"   Patience: {args.rollback_patience}, Threshold: {args.rollback_threshold}")
+        print(f"   Max rollbacks: {args.max_rollbacks}, Keep best: {args.keep_best_n}")
+
+    # Generalization evaluation tracking (curriculum training)
+    last_eval_result = {'eval_level': '', 'eval_reward': '', 'eval_alpha': '', 'eval_pct_hold': ''}
+    if args.eval_every > 0:
+        print(f"📊 Generalization eval: Every {args.eval_every} epochs on synthetic L{args.eval_level}")
+
     try:
         for epoch in range(args.epochs):
+            # Update MCTS sims if warmup schedule active
+            if sims_schedule is not None:
+                current_sims = sims_schedule.get_sims(epoch)
+                trainer.update_simulations(current_sims)
+            else:
+                current_sims = args.sims
+
             # Self-play
             start = time.time()
             rng, search_rng = jax.random.split(rng)
@@ -1021,8 +1586,48 @@ def main():
                     # Create dummy params for the dynamic adjuster (won't be optimal but won't crash)
                     pred_params_for_tree = {'params': {}}
 
-            # Use batched self-play if parallel_envs > 1
-            if args.parallel_envs > 1:
+            # Regenerate synthetic data periodically for training variety (~16ms, essentially free)
+            if use_jax_env and args.regenerate_data_every > 0 and epoch > 0 and epoch % args.regenerate_data_every == 0:
+                rng, regen_rng = jax.random.split(rng)
+                jax_env_states, jax_prices, jax_env_config = create_jax_env_and_prices(
+                    synthetic_level=args.synthetic_level,
+                    n_envs=args.parallel_envs,
+                    n_assets=n_assets,
+                    n_steps=args.synthetic_steps,
+                    fee_bps=float(args.fee),
+                    slippage_bps=float(args.slippage),
+                    max_episode_steps=args.steps,
+                    window_size=60,
+                    position_size_pct=0.1,
+                    rng_key=regen_rng,
+                )
+                if epoch % 50 == 0:  # Log occasionally
+                    print(f"   🔄 Regenerated synthetic data (epoch {epoch})")
+
+            # Use JAX-vectorized env (3000x faster) or batched Python env
+            if use_jax_env:
+                # Reset JAX env states for new episode
+                from mcts_trader.env.jax_trading_env import jit_batch_reset
+                reset_keys = jax.random.split(search_rng, args.parallel_envs)
+                jax_env_states = jit_batch_reset(reset_keys, jax_prices, jax_env_config)
+
+                trajectories, scores = run_self_play_jax(
+                    jax_env_states,
+                    jax_prices,
+                    jax_env_config,
+                    search,
+                    model.apply,
+                    trainer.state.params,
+                    search_rng,
+                    steps=args.steps,
+                    confidence_threshold=args.confidence_threshold,
+                    support_size=model.support_size,
+                    discount=args.discount,
+                )
+                # Use average score for display
+                score = np.mean(scores)
+                trajectory = trajectories[0]  # Use first for action stats below
+            elif args.parallel_envs > 1:
                 trajectories, scores = run_self_play_batched(
                     parallel_envs,
                     search,
@@ -1184,7 +1789,13 @@ def main():
                 if pred_loss > 0:
                     pred_str = f" | Pred: {pred_loss:.4f} (λ={lambda_pred:.3f})"
 
-                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
+                # Market baseline metrics (alpha = agent - market)
+                alpha = trajectory.get('alpha', 0.0)
+                market_return = trajectory.get('market_return', 0.0)
+                agent_return = trajectory.get('agent_return', 0.0)
+                alpha_str = f" | α: {alpha:+.2f}% (Mkt: {market_return:+.1f}%)"
+
+                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f}{alpha_str} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
                       f"{action_str} | "
                       f"Self-play: {self_play_time:5.1f}s | Train: {train_time:4.1f}s | "
                       f"Loss: {loss:.4f} | Val: {val_loss:.4f} | Pol: {pol_loss:.4f} | Rew: {rew_loss:.4f}{pred_str}{calib_str}{uncertainty_str}")
@@ -1193,6 +1804,7 @@ def main():
                 global_epoch = epoch + 1 + epoch_offset
                 base_row = [
                     global_epoch, score, reward_ma20, env.trading_fee_bps, len(trajectory['actions']),
+                    alpha, market_return, agent_return,  # Market baseline metrics
                     n_buy, n_hold, n_sell, n_limit_sell, n_limit_buy,
                     pct_buy, pct_hold, pct_sell, pct_limit_sell, pct_limit_buy,
                     self_play_time, train_time,
@@ -1201,7 +1813,12 @@ def main():
                     policy_entropy, avg_value, value_std,
                     search.value_scale, search.value_shift,
                     avg_uncertainty,
-                    args.synthetic_level, args.model_size, args.name
+                    args.synthetic_level, args.model_size, args.name,
+                    # Generalization evaluation (curriculum training)
+                    last_eval_result.get('eval_level', ''),
+                    last_eval_result.get('eval_reward', ''),
+                    last_eval_result.get('eval_alpha', ''),
+                    last_eval_result.get('eval_pct_hold', ''),
                 ]
 
                 # Append DS24 values if enabled
@@ -1215,9 +1832,83 @@ def main():
                 csv_file.flush()
                 os.fsync(csv_file.fileno())  # Force OS to write to disk
 
-                if (epoch + 1) % 10 == 0:
+                # Checkpoint management
+                if safe_ckpt_manager is not None:
+                    # Safe checkpoint: only save on improvement
+                    if safe_ckpt_manager.should_save(score):
+                        checkpoint_data = {
+                            'params': trainer.state.params,
+                            'opt_state': trainer.state.opt_state,
+                            'step': trainer.state.step,
+                        }
+                        safe_ckpt_manager.save_checkpoint(checkpoint_data, epoch, score)
+                        print(f"  🛡️ Safe checkpoint saved (metric: {score:.2f})")
+
+                    # Check for rollback
+                    if safe_ckpt_manager.should_rollback(score):
+                        if rollback_count >= args.max_rollbacks:
+                            print(f"  ❌ Max rollbacks ({args.max_rollbacks}) exceeded! Failing.")
+                            raise RuntimeError(f"Training failed: max rollbacks exceeded at epoch {epoch}")
+
+                        print(f"  🔄 ROLLBACK #{rollback_count + 1}: Loading best checkpoint...")
+                        checkpoint_data, rollback_epoch = safe_ckpt_manager.load_best_checkpoint()
+
+                        # Restore model state
+                        trainer.state = trainer.state.replace(
+                            params=checkpoint_data['params'],
+                            opt_state=checkpoint_data['opt_state'],
+                            step=checkpoint_data['step'],
+                        )
+
+                        # TODO: Add LR decay on rollback
+                        # Currently Optax doesn't easily support runtime LR changes
+                        # Would need to recreate optimizer with new LR
+                        if args.lr_decay_on_rollback < 1.0:
+                            print(f"  ⚠️ LR decay on rollback not yet implemented")
+
+                        rollback_count += 1
+                        print(f"  ✓ Rolled back to epoch {rollback_epoch}")
+                elif (epoch + 1) % 10 == 0:
+                    # Standard checkpoint save (every 10 epochs)
                     trainer.save_checkpoint(checkpoint_dir)
                     print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
+
+                # =========================================================================
+                # Generalization Evaluation (Curriculum Training)
+                # =========================================================================
+                # Run periodic evaluation on harder levels to track generalization
+                if args.eval_every > 0 and (epoch + 1) % args.eval_every == 0:
+                    rng, eval_rng = jax.random.split(rng)
+                    eval_start = time.time()
+                    eval_result = run_generalization_eval(
+                        eval_level=args.eval_level,
+                        search_fn=search,
+                        model_apply_fn=model.apply,
+                        params=trainer.state.params,
+                        rng_key=eval_rng,
+                        steps=args.eval_steps,
+                        support_size=model.support_size,
+                        n_assets=n_assets,
+                        fee=args.fee,
+                        slippage=args.slippage,
+                    )
+                    eval_time = time.time() - eval_start
+
+                    # Update last_eval_result for CSV logging
+                    last_eval_result = {
+                        'eval_level': args.eval_level,
+                        'eval_reward': eval_result['reward'],
+                        'eval_alpha': eval_result['alpha'],
+                        'eval_pct_hold': eval_result['pct_hold'],
+                    }
+
+                    print(f"  📊 EVAL L{args.eval_level}: Reward={eval_result['reward']:+.2f}% | "
+                          f"α={eval_result['alpha']:+.2f}% | HOLD={eval_result['pct_hold']:.0f}% | "
+                          f"Time: {eval_time:.1f}s")
+
+                # Note: DS24 dynamic level boosting (L4/L6 snapshots) is now handled
+                # automatically by ds24_hooks.on_epoch_end() based on --ds24-boost-every
+                # and --ds24-snapshot-every settings
 
                 # Adaptive value calibration
                 if adaptive_calibration:
@@ -1280,7 +1971,13 @@ def main():
 
                 action_str = f"S/H/B/LS/LB: {n_sell}/{n_hold}/{n_buy}/{n_limit_sell}/{n_limit_buy}"
 
-                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
+                # Market baseline metrics (alpha = agent - market)
+                alpha = trajectory.get('alpha', 0.0)
+                market_return = trajectory.get('market_return', 0.0)
+                agent_return = trajectory.get('agent_return', 0.0)
+                alpha_str = f" | α: {alpha:+.2f}% (Mkt: {market_return:+.1f}%)"
+
+                print(f"Epoch {epoch+1:4d} | Reward: {score:+7.2f}{alpha_str} | Fee: {env.trading_fee_bps:2d} | Steps: {len(trajectory['actions']):3d} | "
                       f"{action_str} | "
                       f"Self-play: {self_play_time:5.1f}s | (warmup)")
 
@@ -1293,6 +1990,7 @@ def main():
                 global_epoch = epoch + 1 + epoch_offset
                 base_row = [
                     global_epoch, score, reward_ma20, env.trading_fee_bps, len(trajectory['actions']),
+                    alpha, market_return, agent_return,  # Market baseline metrics
                     n_buy, n_hold, n_sell, n_limit_sell, n_limit_buy,
                     pct_buy, pct_hold, pct_sell, pct_limit_sell, pct_limit_buy,
                     self_play_time, 0,  # train_time=0
@@ -1301,7 +1999,9 @@ def main():
                     policy_entropy, avg_value, value_std,
                     search.value_scale, search.value_shift,
                     avg_uncertainty,
-                    args.synthetic_level, args.model_size, args.name
+                    args.synthetic_level, args.model_size, args.name,
+                    # Generalization evaluation (curriculum training) - empty during warmup
+                    '', '', '', '',
                 ]
 
                 # Append empty DS24 values if enabled (warmup has no TRM data)
@@ -1337,7 +2037,9 @@ def main():
         'episode_rewards': [float(r) for r in all_rewards],  # Full history for mastery check
         'recent_avg_reward': float(recent_50_avg),  # Last 50 epochs average
         'total_epochs': args.epochs,
-        'experiment_name': args.name
+        'experiment_name': args.name,
+        'rollback_count': rollback_count,  # Safe checkpoint rollbacks
+        'safe_checkpoints_enabled': args.safe_checkpoints,
     }
     import json
     with open('last_run_metrics.json', 'w') as f:
