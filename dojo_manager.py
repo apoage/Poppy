@@ -85,6 +85,8 @@ class DojoManager:
         """Run full curriculum sequence"""
         logging.info(f"Starting curriculum training ({len(self.curriculum)} levels)")
 
+        previous_checkpoint = self.initial_checkpoint  # Track checkpoint between levels
+
         for i, level_config in enumerate(self.curriculum):
             logging.info(f"\n{'='*60}")
             logging.info(f"LEVEL {i}: {level_config['generator']}")
@@ -92,14 +94,23 @@ class DojoManager:
             logging.info(f"Epochs: {level_config['epochs']}")
             logging.info(f"{'='*60}\n")
 
-            self._train_level(level_config, level_idx=i)
+            # Pass previous level's checkpoint
+            checkpoint_from_level = self._train_level(
+                level_config, level_idx=i,
+                previous_level_checkpoint=previous_checkpoint
+            )
+
+            # Update checkpoint for next level
+            if checkpoint_from_level:
+                previous_checkpoint = checkpoint_from_level
 
             # Save curriculum progress
             self._save_progress(i)
 
         logging.info("🎓 Curriculum COMPLETE!")
 
-    def _train_level(self, config: Dict, level_idx: int):
+    def _train_level(self, config: Dict, level_idx: int,
+                     previous_level_checkpoint: str = None) -> str:
         """
         Train single curriculum level with mastery check.
 
@@ -117,6 +128,10 @@ class DojoManager:
                     'n_steps': 10000,
                 }
             level_idx: Index in curriculum
+            previous_level_checkpoint: Checkpoint from previous level (for handoff)
+
+        Returns:
+            Path to this level's checkpoint (for next level)
         """
         start_time = time.time()
 
@@ -151,6 +166,9 @@ class DojoManager:
         logging.info(f"Tactics: {tactics} (enable_swaps={enable_swaps})")
         logging.info(f"Config: {epochs} epochs, {n_assets} assets, {steps} steps/ep, {sims} sims")
 
+        # Run naming (defined before loop so it's available for return)
+        run_name = f'{self.base_name}_{stage}_{generator_type}'
+
         # Training loop with retries
         attempt = 0
         passed = False
@@ -165,7 +183,6 @@ class DojoManager:
 
             # Build training command with tournament-validated configurations (2026-01-03)
             import subprocess
-            run_name = f'{self.base_name}_{stage}_{generator_type}'
 
             # Optimal env config based on data type:
             # Synthetic: 50 envs × 400 steps = 20,000 samples (diversity)
@@ -269,17 +286,21 @@ class DojoManager:
                     ])
                 logging.info(f"Safe checkpoints enabled for level {level}")
 
-            # Load initial checkpoint for first level, first attempt
-            if level_idx == 0 and attempt == 0 and self.initial_checkpoint:
-                cmd.extend(['--load-checkpoint', self.initial_checkpoint])
-                logging.info(f"Loading initial checkpoint: {self.initial_checkpoint}")
+            # Checkpoint loading logic
+            checkpoint_dir = f'jax_ckpt_fast/{run_name}'
+            is_first_attempt = (attempt == 0)
 
-            # Load checkpoint if retry
-            elif attempt > 0:
-                checkpoint_dir = f'jax_ckpt_fast/{run_name}'
-                if os.path.exists(checkpoint_dir):
-                    cmd.extend(['--load-checkpoint', checkpoint_dir])
-                    logging.info(f"Resuming from checkpoint: {checkpoint_dir}")
+            if is_first_attempt and previous_level_checkpoint and os.path.exists(previous_level_checkpoint):
+                # First attempt of NEW level - load from previous level, reset optimizer
+                cmd.extend(['--load-checkpoint', previous_level_checkpoint])
+                cmd.append('--reset-optimizer')
+                cmd.append('--clear-buffer')
+                logging.info(f"📂 Starting new level from previous checkpoint: {previous_level_checkpoint}")
+                logging.info(f"   🔄 Resetting optimizer for new level")
+            elif not is_first_attempt and os.path.exists(checkpoint_dir):
+                # Retry - resume from same level's checkpoint
+                cmd.extend(['--load-checkpoint', checkpoint_dir])
+                logging.info(f"📂 Resuming from checkpoint (retry {attempt})")
 
             logging.info(f"Running: {' '.join(cmd)}")
 
@@ -305,6 +326,9 @@ class DojoManager:
 
         duration = time.time() - start_time
         logging.info(f"✅ Level {level_idx} PASSED in {duration/60:.1f} minutes ({total_epochs_trained} total epochs)")
+
+        # Return checkpoint path for next level
+        return f'jax_ckpt_fast/{run_name}'
 
     def _check_level_mastery(self, level_idx: int, config: Dict, metrics_file: str) -> bool:
         """
