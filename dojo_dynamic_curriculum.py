@@ -164,8 +164,8 @@ class DynamicDojo:
             '--name', experiment_name,
             '--fee', str(fee),
             '--slippage', str(slippage),
-            # Optimal env config: 50 envs × 400 steps = 20,000 samples
-            '--parallel-envs', '50',
+            # Env config: 20 envs × 400 steps = 8,000 samples (avoid OOM with large pred head)
+            '--parallel-envs', '20',
             '--steps', '400',
             '--jax-env',  # Use JAX environment with batched transfers
             # Tournament winner: PopArt normalization
