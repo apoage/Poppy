@@ -159,7 +159,7 @@ class DynamicDojo:
             '--synthetic-level', str(level),
             '--synthetic-steps', '10000',
             '--epochs', str(epochs),
-            '--batch-size', '256',  # Reduced from 512 to fit VRAM with large pred head
+            '--batch-size', '384',  # Balance: fits 24GB VRAM with large pred head
             '--model-size', self.model_size,
             '--name', experiment_name,
             '--fee', str(fee),
