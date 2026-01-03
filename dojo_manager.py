@@ -454,11 +454,11 @@ def create_default_curriculum() -> List[Dict]:
         List of level configs
     """
     # Base config for all levels
-    # Note: 50 envs causes OOM with large pred head, use 20 for stability
+    # Optimal config: 50 envs × 400 steps, batch 256 (fits 24GB VRAM)
     base_config = {
         'n_assets': 64,
         'n_steps': 10000,
-        'parallel_envs': 20,  # Reduced from 50 to avoid OOM
+        'parallel_envs': 50,  # 50 envs × 400 steps = 20,000 samples/epoch
         'steps': 400,
         'retry_epochs': 300,
         'max_retries': 2,
