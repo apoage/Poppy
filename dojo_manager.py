@@ -141,7 +141,7 @@ class DojoManager:
         n_assets = config.get('n_assets', 64)
         n_steps = config.get('n_steps', 10000)
         epochs = config.get('epochs', 500)
-        batch_size = config.get('batch_size', 512)
+        batch_size = config.get('batch_size', 256)  # Reduced from 512 for VRAM
         model_size = self.model_size  # Use from CLI args (overrides config)
         retry_epochs = config.get('retry_epochs', 250)
         max_retries = config.get('max_retries', 2)
