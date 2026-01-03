@@ -241,19 +241,32 @@ class DojoManager:
                 cmd.extend(['--value-scale', str(self.value_scale)])
 
             # Safe checkpoint parameters (for advanced levels)
+            # Safe checkpoints for level 4+ (protect learned knowledge)
             safety_config = config.get('safety', {})
-            if safety_config.get('enabled', False) or level >= 5:  # Auto-enable for level 5+
+            if safety_config.get('enabled', False) or level >= 4:
                 cmd.append('--safe-checkpoints')
-                if 'rollback_patience' in safety_config:
-                    cmd.extend(['--rollback-patience', str(safety_config['rollback_patience'])])
-                if 'rollback_threshold' in safety_config:
-                    cmd.extend(['--rollback-threshold', str(safety_config['rollback_threshold'])])
-                if 'max_rollbacks' in safety_config:
-                    cmd.extend(['--max-rollbacks', str(safety_config['max_rollbacks'])])
-                if 'keep_best_n' in safety_config:
-                    cmd.extend(['--keep-best-n', str(safety_config['keep_best_n'])])
-                if 'lr_decay_on_rollback' in safety_config:
-                    cmd.extend(['--lr-decay-on-rollback', str(safety_config['lr_decay_on_rollback'])])
+                # Default safety params for higher levels
+                rollback_patience = safety_config.get('rollback_patience', 50)
+                rollback_threshold = safety_config.get('rollback_threshold', 0.5)
+                max_rollbacks = safety_config.get('max_rollbacks', 3)
+                keep_best_n = safety_config.get('keep_best_n', 3)
+                lr_decay = safety_config.get('lr_decay_on_rollback', 0.5)
+
+                cmd.extend([
+                    '--rollback-patience', str(rollback_patience),
+                    '--rollback-threshold', str(rollback_threshold),
+                    '--max-rollbacks', str(max_rollbacks),
+                    '--keep-best-n', str(keep_best_n),
+                    '--lr-decay-on-rollback', str(lr_decay),
+                ])
+
+                # Periodic evaluation on rotation level for higher levels
+                if level >= 5:
+                    cmd.extend([
+                        '--eval-every', '50',
+                        '--eval-level', '4',  # Evaluate on rotation (tests multi-asset)
+                        '--eval-steps', '200',
+                    ])
                 logging.info(f"Safe checkpoints enabled for level {level}")
 
             # Load initial checkpoint for first level, first attempt

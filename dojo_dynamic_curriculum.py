@@ -200,6 +200,25 @@ class DynamicDojo:
         if enable_swaps:
             cmd.append('--enable-swaps')
 
+        # Safe checkpoints for level 4+ (protect learned knowledge)
+        if level >= 4:
+            cmd.extend([
+                '--safe-checkpoints',
+                '--rollback-patience', '50',
+                '--rollback-threshold', '0.5',
+                '--max-rollbacks', '3',
+                '--keep-best-n', '3',
+                '--lr-decay-on-rollback', '0.5',
+            ])
+            # Periodic evaluation for levels 5+
+            if level >= 5:
+                cmd.extend([
+                    '--eval-every', '50',
+                    '--eval-level', '4',  # Evaluate on rotation
+                    '--eval-steps', '200',
+                ])
+            logging.info(f"🛡️ Safe checkpoints enabled for level {level}")
+
         # Checkpoint loading logic
         checkpoint_dir = f'jax_ckpt_fast/{experiment_name}'
         is_first_phase = (total_epochs_so_far == 0)
