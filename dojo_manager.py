@@ -215,6 +215,8 @@ class DojoManager:
                 # DS24 logging (L3 full metrics)
                 '--ds24-level', '3',
                 '--ds24-intermediates-every', '5',
+                '--ds24-snapshot-every', '10',
+                '--ds24-save-tensors',  # Save tensor snapshots every 10 epochs
                 # Data regeneration for diversity
                 '--regenerate-data-every', '50',
             ]

@@ -192,7 +192,8 @@ class DynamicDojo:
             '--ds24-level', '3',
             '--ds24-intermediates-every', '5',
             '--ds24-boost-every', str(self.ds24_boost_every),
-            '--ds24-snapshot-every', str(self.ds24_snapshot_every),
+            '--ds24-snapshot-every', '10',
+            '--ds24-save-tensors',  # Save tensor snapshots every snapshot-every epochs
             # Data regeneration for diversity
             '--regenerate-data-every', '50',
         ]
