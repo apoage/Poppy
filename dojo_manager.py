@@ -18,17 +18,11 @@ import time
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-# Training imports
-import jax
-import jax.numpy as jnp
-import numpy as np
-from train_jax_fast import run_training  # Reuse existing training loop
+# Synthetic generators (for reference, not used directly since we call via subprocess)
+# from mcts_trader.data.synthetic_market import SyntheticMarket
 
-# Synthetic generators
-from mcts_trader.data.synthetic_market import SyntheticMarket
-
-# Tactics
-from mcts_trader.tactics import BasicTrading, PortfolioMorphing
+# Tactics (for reference)
+# from mcts_trader.tactics import BasicTrading, PortfolioMorphing
 
 # Setup logging
 os.makedirs('logs', exist_ok=True)
@@ -53,7 +47,10 @@ class DojoManager:
     - Progress tracking
     """
 
-    def __init__(self, curriculum_config: List[Dict], checkpoint_dir: str = 'dojo_checkpoints'):
+    def __init__(self, curriculum_config: List[Dict], checkpoint_dir: str = 'dojo_checkpoints',
+                 adaptive_calibration: bool = False, value_scale: float = 1.0,
+                 load_checkpoint: str = None, model_size: str = 'large',
+                 base_name: str = 'pretrain'):
         """
         Args:
             curriculum_config: List of level configs
@@ -63,13 +60,26 @@ class DojoManager:
                     ...
                 ]
             checkpoint_dir: Directory for curriculum checkpoints
+            adaptive_calibration: Enable adaptive value calibration
+            value_scale: Initial value calibration scale
+            load_checkpoint: Path to checkpoint to load for first level
+            model_size: Model size (small/medium/large) - overrides curriculum config
+            base_name: Base name for run directories
         """
         self.curriculum = curriculum_config
         self.checkpoint_dir = checkpoint_dir
         self.current_level = 0
+        self.adaptive_calibration = adaptive_calibration
+        self.value_scale = value_scale
+        self.initial_checkpoint = load_checkpoint
+        self.model_size = model_size
+        self.base_name = base_name
 
         os.makedirs(checkpoint_dir, exist_ok=True)
         logging.info(f"Dojo initialized with {len(curriculum_config)} curriculum levels")
+        logging.info(f"Model size: {model_size}")
+        if adaptive_calibration:
+            logging.info(f"Adaptive calibration enabled (initial scale={value_scale})")
 
     def run(self):
         """Run full curriculum sequence"""
@@ -91,7 +101,7 @@ class DojoManager:
 
     def _train_level(self, config: Dict, level_idx: int):
         """
-        Train single curriculum level.
+        Train single curriculum level with mastery check.
 
         Args:
             config: Level configuration
@@ -100,6 +110,9 @@ class DojoManager:
                     'generator': 'sine',
                     'tactics': ['basic'],
                     'epochs': 500,
+                    'pass_threshold': 1.5,  # Required avg reward
+                    'retry_epochs': 250,     # Extra epochs if failed
+                    'max_retries': 2,        # Max retry attempts
                     'n_assets': 64,
                     'n_steps': 10000,
                 }
@@ -107,77 +120,237 @@ class DojoManager:
         """
         start_time = time.time()
 
-        # 1. Create synthetic generator
+        # Extract config parameters
         generator_type = config['generator']
         level = config.get('level', level_idx)
         n_assets = config.get('n_assets', 64)
         n_steps = config.get('n_steps', 10000)
-        seed = config.get('seed', 42 + level_idx)
+        epochs = config.get('epochs', 500)
+        batch_size = config.get('batch_size', 512)
+        model_size = self.model_size  # Use from CLI args (overrides config)
+        retry_epochs = config.get('retry_epochs', 250)
+        max_retries = config.get('max_retries', 2)
+        disable_fees = config.get('disable_fees', False)  # NEW: For easier early levels
 
-        logging.info(f"Creating synthetic generator: {generator_type} (Level {level})")
-        # For now, use existing SyntheticMarket class
-        # TODO: Refactor into separate generator classes
-        generator = SyntheticMarket(
-            level=level,
-            n_assets=n_assets,
-            n_steps=n_steps,
-            seed=seed
-        )
+        # NEW: Extended curriculum parameters
+        sims = config.get('sims', 32)                    # MCTS simulations
+        slippage_bps = config.get('slippage_bps', 0)     # Slippage in basis points
+        steps = config.get('steps', 400)                  # Episode length
+        parallel_envs = config.get('parallel_envs', 4)    # Parallel environments
+        bf16 = config.get('bf16', True)                   # BFloat16 mixed precision
+        adaptive_entropy = config.get('adaptive_entropy', True)  # Adaptive entropy
 
-        # 2. Determine tactics
+        # Run naming: base_name + stage
+        stage = config.get('stage', f'{level_idx}')
+
+        # Determine tactics
         tactics = config['tactics']
         enable_swaps = 'morphing' in tactics
 
-        logging.info(f"Tactics enabled: {tactics} (enable_swaps={enable_swaps})")
+        logging.info(f"Training Level {level} ({generator_type})")
+        logging.info(f"Tactics: {tactics} (enable_swaps={enable_swaps})")
+        logging.info(f"Config: {epochs} epochs, {n_assets} assets, {steps} steps/ep, {sims} sims")
 
-        # 3. Build training command
-        # For now, we call train_jax_fast.py with appropriate flags
-        # TODO: Refactor to use modular environment composition
+        # Training loop with retries
+        attempt = 0
+        passed = False
+        total_epochs_trained = 0
 
-        epochs = config.get('epochs', 500)
-        batch_size = config.get('batch_size', 512)
-        model_size = config.get('model_size', 'tiny')
+        while not passed and attempt <= max_retries:
+            if attempt > 0:
+                logging.info(f"🔄 RETRY {attempt}/{max_retries}: Adding {retry_epochs} more epochs")
+                current_epochs = retry_epochs
+            else:
+                current_epochs = epochs
 
-        training_args = {
-            'synthetic_level': level,
-            'synthetic_steps': n_steps,
-            'enable_swaps': enable_swaps,
-            'epochs': epochs,
-            'batch_size': batch_size,
-            'model_size': model_size,
-            'name': f'dojo_level_{level_idx}_{generator_type}',
-        }
+            # Build training command with tournament-validated configurations (2026-01-03)
+            import subprocess
+            run_name = f'{self.base_name}_{stage}_{generator_type}'
 
-        logging.info(f"Training args: {training_args}")
+            # Optimal env config based on data type:
+            # Synthetic: 50 envs × 400 steps = 20,000 samples (diversity)
+            # Real-time: 15 envs × 1440 steps = 21,600 samples
+            optimal_envs = parallel_envs if parallel_envs > 4 else 50
+            optimal_steps = steps if steps > 400 else 400
 
-        # 4. Run training
-        # Option A: Call train_jax_fast as subprocess (current approach)
-        # Option B: Import run_training and call directly (future refactor)
+            cmd = [
+                'python', 'train_jax_fast.py',
+                '--synthetic-level', str(level),
+                '--synthetic-steps', str(n_steps),
+                '--epochs', str(current_epochs),
+                '--batch-size', str(batch_size),
+                '--model-size', model_size,
+                '--name', run_name,
+                '--sims', str(sims),
+                '--steps', str(optimal_steps),
+                '--parallel-envs', str(optimal_envs),
+                '--jax-env',  # Use JAX environment with TASK_028 optimizations
+                # Tournament winner: PopArt normalization
+                '--use-popart',
+                '--popart-beta', '0.0001',
+                # Tournament winner: Slow sims warmup
+                '--sims-warmup', '100',
+                '--sims-min', '8',
+                # Tournament winner: Prediction loss
+                '--use-prediction-loss',
+                '--prediction-loss-weight', '0.2',
+                '--pred-head-size', 'large',
+                # DS24 logging (L3 full metrics)
+                '--ds24-level', '3',
+                '--ds24-intermediates-every', '5',
+                # Data regeneration for diversity
+                '--regenerate-data-every', '50',
+            ]
 
-        import subprocess
-        cmd = [
-            'python', 'train_jax_fast.py',
-            '--synthetic-level', str(level),
-            '--synthetic-steps', str(n_steps),
-            '--epochs', str(epochs),
-            '--batch-size', str(batch_size),
-            '--model-size', model_size,
-            '--name', training_args['name'],
-        ]
+            # BFloat16 mixed precision
+            if bf16:
+                cmd.append('--bf16')
 
-        if enable_swaps:
-            cmd.append('--enable-swaps')
+            # Tournament winner: Adaptive entropy pumping with tuned thresholds
+            if adaptive_entropy:
+                cmd.extend([
+                    '--adaptive-entropy',
+                    '--entropy-hold-threshold', '0.7',
+                    '--entropy-boost-low', '0.05',
+                    '--entropy-boost-high', '0.3',
+                ])
 
-        logging.info(f"Running command: {' '.join(cmd)}")
+            # Adaptive value calibration for curriculum stability
+            cmd.append('--adaptive-calibration')
 
-        result = subprocess.run(cmd, capture_output=False)
+            if enable_swaps:
+                cmd.append('--enable-swaps')
 
-        if result.returncode != 0:
-            logging.error(f"Level {level_idx} FAILED with code {result.returncode}")
-            raise RuntimeError(f"Training failed at level {level_idx}")
+            # Fee and slippage handling
+            fee_bps = config.get('fee_bps', None)
+            if fee_bps is not None:
+                cmd.extend(['--fee', str(fee_bps)])
+            elif disable_fees:
+                cmd.extend(['--fee', '0'])
+
+            # Slippage handling
+            if slippage_bps > 0:
+                cmd.extend(['--slippage', str(slippage_bps)])
+            elif disable_fees or fee_bps == 0:
+                cmd.extend(['--slippage', '0'])
+
+            # Adaptive calibration parameters
+            if self.adaptive_calibration:
+                cmd.append('--adaptive-calibration')
+            if self.value_scale != 1.0:
+                cmd.extend(['--value-scale', str(self.value_scale)])
+
+            # Safe checkpoint parameters (for advanced levels)
+            safety_config = config.get('safety', {})
+            if safety_config.get('enabled', False) or level >= 5:  # Auto-enable for level 5+
+                cmd.append('--safe-checkpoints')
+                if 'rollback_patience' in safety_config:
+                    cmd.extend(['--rollback-patience', str(safety_config['rollback_patience'])])
+                if 'rollback_threshold' in safety_config:
+                    cmd.extend(['--rollback-threshold', str(safety_config['rollback_threshold'])])
+                if 'max_rollbacks' in safety_config:
+                    cmd.extend(['--max-rollbacks', str(safety_config['max_rollbacks'])])
+                if 'keep_best_n' in safety_config:
+                    cmd.extend(['--keep-best-n', str(safety_config['keep_best_n'])])
+                if 'lr_decay_on_rollback' in safety_config:
+                    cmd.extend(['--lr-decay-on-rollback', str(safety_config['lr_decay_on_rollback'])])
+                logging.info(f"Safe checkpoints enabled for level {level}")
+
+            # Load initial checkpoint for first level, first attempt
+            if level_idx == 0 and attempt == 0 and self.initial_checkpoint:
+                cmd.extend(['--load-checkpoint', self.initial_checkpoint])
+                logging.info(f"Loading initial checkpoint: {self.initial_checkpoint}")
+
+            # Load checkpoint if retry
+            elif attempt > 0:
+                checkpoint_dir = f'jax_ckpt_fast/{run_name}'
+                if os.path.exists(checkpoint_dir):
+                    cmd.extend(['--load-checkpoint', checkpoint_dir])
+                    logging.info(f"Resuming from checkpoint: {checkpoint_dir}")
+
+            logging.info(f"Running: {' '.join(cmd)}")
+
+            result = subprocess.run(cmd, capture_output=False)
+
+            if result.returncode != 0:
+                logging.error(f"Level {level_idx} FAILED with code {result.returncode}")
+                raise RuntimeError(f"Training failed at level {level_idx}")
+
+            total_epochs_trained += current_epochs
+
+            # Check mastery
+            passed = self._check_level_mastery(level_idx, config, 'last_run_metrics.json')
+
+            if not passed and attempt < max_retries:
+                logging.warning(f"❌ Level {level_idx} did not pass mastery check")
+                logging.info(f"Will retry with {retry_epochs} additional epochs")
+            elif not passed:
+                logging.error(f"❌ Level {level_idx} FAILED after {max_retries} retries")
+                raise RuntimeError(f"Could not pass Level {level_idx} after {total_epochs_trained} total epochs")
+
+            attempt += 1
 
         duration = time.time() - start_time
-        logging.info(f"Level {level_idx} COMPLETED in {duration/60:.1f} minutes")
+        logging.info(f"✅ Level {level_idx} PASSED in {duration/60:.1f} minutes ({total_epochs_trained} total epochs)")
+
+    def _check_level_mastery(self, level_idx: int, config: Dict, metrics_file: str) -> bool:
+        """
+        Check if agent passed level based on reward criteria.
+
+        Args:
+            level_idx: Current level index
+            config: Level configuration (contains pass_threshold)
+            metrics_file: Path to last_run_metrics.json
+
+        Returns:
+            True if passed, False otherwise
+        """
+        # Load metrics
+        try:
+            with open(metrics_file) as f:
+                metrics = json.load(f)
+        except FileNotFoundError:
+            logging.error(f"Metrics file not found: {metrics_file}")
+            return False
+
+        episode_rewards = metrics.get('episode_rewards', [])
+        recent_avg = metrics.get('recent_avg_reward', 0.0)
+
+        # Get pass threshold from config or use defaults
+        default_thresholds = {
+            0: 1.5,   # Level 0: +1.5% avg (sine waves - easy)
+            1: 1.0,   # Level 1: +1.0% avg (lagged pairs)
+            2: 0.5,   # Level 2: +0.5% avg (dip crashes - hard)
+            3: 0.2,   # Level 3: +0.2% avg (noisy trends - harder)
+        }
+
+        threshold = config.get('pass_threshold', default_thresholds.get(level_idx, 0.0))
+
+        # Check if we have enough data
+        if len(episode_rewards) < 50:
+            logging.warning(f"Only {len(episode_rewards)} epochs - using all rewards for average")
+            if episode_rewards:
+                recent_avg = sum(episode_rewards) / len(episode_rewards)
+            else:
+                logging.error("No episode rewards found!")
+                return False
+
+        # Determine pass/fail
+        passed = recent_avg >= threshold
+
+        # Log results
+        logging.info("")
+        logging.info("="*60)
+        logging.info(f"MASTERY CHECK - Level {level_idx}")
+        logging.info("="*60)
+        logging.info(f"Recent Avg Reward (last 50 epochs): {recent_avg:+.2f}%")
+        logging.info(f"Pass Threshold:                      {threshold:+.2f}%")
+        logging.info(f"Total Epochs Completed:              {len(episode_rewards)}")
+        logging.info(f"Result: {'✅ PASS' if passed else '❌ FAIL'}")
+        logging.info("="*60)
+        logging.info("")
+
+        return passed
 
     def _save_progress(self, level_idx: int):
         """Save curriculum progress checkpoint"""
@@ -216,7 +389,11 @@ def load_curriculum_from_file(filepath: str) -> List[Dict]:
 
 def create_default_curriculum() -> List[Dict]:
     """
-    Create default 4-level curriculum (Levels 0-3).
+    Create default 4-level curriculum (Levels 0-3) with mastery checks.
+
+    Uses tournament-validated optimal configurations (2026-01-03):
+    - 50 envs × 400 steps = 20,000 samples/epoch (synthetic diversity)
+    - PopArt, sims warmup, prediction loss, adaptive entropy
 
     Returns:
         List of level configs
@@ -227,17 +404,29 @@ def create_default_curriculum() -> List[Dict]:
             'generator': 'sine',
             'tactics': ['basic'],
             'epochs': 500,
+            'pass_threshold': 2.0,    # Must average +2.0% reward (NO FEES - easier)
+            'retry_epochs': 250,      # Add 250 epochs if failed
+            'max_retries': 2,         # Up to 2 retries (500 + 250*2 = 1000 max)
+            'disable_fees': True,     # No fees/slippage for Level 0
             'n_assets': 64,
             'n_steps': 10000,
-            'description': 'Pure sine waves - learn trend detection'
+            # Optimal env config: 50 envs × 400 steps = 20,000 samples
+            'parallel_envs': 50,
+            'steps': 400,
+            'description': 'Pure sine waves - learn trend detection (no fees)'
         },
         {
             'level': 1,
             'generator': 'lagged',
             'tactics': ['basic'],
             'epochs': 1000,
+            'pass_threshold': 1.0,    # Must average +1.0% reward
+            'retry_epochs': 300,
+            'max_retries': 2,
             'n_assets': 64,
             'n_steps': 10000,
+            'parallel_envs': 50,
+            'steps': 400,
             'description': 'Lagged pairs - learn correlation detection'
         },
         {
@@ -245,8 +434,13 @@ def create_default_curriculum() -> List[Dict]:
             'generator': 'dip',
             'tactics': ['basic'],
             'epochs': 1500,
+            'pass_threshold': 0.5,    # Must average +0.5% reward
+            'retry_epochs': 400,
+            'max_retries': 2,
             'n_assets': 64,
             'n_steps': 10000,
+            'parallel_envs': 50,
+            'steps': 400,
             'description': 'Dip crashes - learn patience and timing'
         },
         {
@@ -254,8 +448,13 @@ def create_default_curriculum() -> List[Dict]:
             'generator': 'noisy_trends',
             'tactics': ['basic', 'morphing'],
             'epochs': 2000,
+            'pass_threshold': 0.2,    # Must average +0.2% reward
+            'retry_epochs': 500,
+            'max_retries': 2,
             'n_assets': 64,
             'n_steps': 10000,
+            'parallel_envs': 50,
+            'steps': 400,
             'description': 'Noisy trends + swaps - learn fee optimization'
         },
     ]
@@ -268,6 +467,12 @@ def main():
     parser.add_argument('--level', type=int, help='Train single level (0-3)')
     parser.add_argument('--resume', action='store_true', help='Resume from last checkpoint')
     parser.add_argument('--checkpoint-dir', default='dojo_checkpoints', help='Checkpoint directory')
+    parser.add_argument('--adaptive-calibration', action='store_true', help='Enable adaptive value calibration')
+    parser.add_argument('--value-scale', type=float, default=1.0, help='Initial value calibration scale')
+    parser.add_argument('--load-checkpoint', help='Load model from specific checkpoint path')
+    parser.add_argument('--model-size', default='large', choices=['small', 'medium', 'large'],
+                        help='Model size (overrides curriculum config)')
+    parser.add_argument('--name', default='pretrain', help='Base name for run')
 
     args = parser.parse_args()
 
@@ -286,7 +491,15 @@ def main():
         curriculum = create_default_curriculum()
 
     # Create Dojo manager
-    dojo = DojoManager(curriculum, checkpoint_dir=args.checkpoint_dir)
+    dojo = DojoManager(
+        curriculum,
+        checkpoint_dir=args.checkpoint_dir,
+        adaptive_calibration=args.adaptive_calibration,
+        value_scale=args.value_scale,
+        load_checkpoint=args.load_checkpoint,
+        model_size=args.model_size,
+        base_name=args.name
+    )
 
     # Resume from checkpoint if requested
     if args.resume:
