@@ -714,6 +714,21 @@ def run_self_play_jax(
             'agent_return': final_return,
             'alpha': final_return - market_return,  # True alpha vs market
         }
+
+        # Add prices for prediction loss and DS24 physics logging
+        # Use trajectory's actual time indices from the price array
+        if n_steps_i > 0 and end_idx <= len(prices_np):
+            result['prices'] = prices_np[start_idx:end_idx]
+            # next_prices: shifted by 1, with last step using same price
+            next_end = min(end_idx + 1, len(prices_np))
+            result['next_prices'] = prices_np[start_idx + 1:next_end]
+            # Pad if needed to match length
+            if len(result['next_prices']) < n_steps_i:
+                result['next_prices'] = np.concatenate([
+                    result['next_prices'],
+                    prices_np[next_end - 1:next_end]  # Repeat last price
+                ])
+
         results.append(result)
 
     return results, list(scores)
