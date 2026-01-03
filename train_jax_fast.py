@@ -505,19 +505,67 @@ def run_self_play_jax(
         n_channels=27,
     )
 
-    # Storage for trajectories (on CPU for compatibility with trainer)
-    all_observations = [[] for _ in range(n_envs)]
-    all_actions = [[] for _ in range(n_envs)]
-    all_rewards = [[] for _ in range(n_envs)]
-    all_values = [[] for _ in range(n_envs)]
-    all_policy_probs = [[] for _ in range(n_envs)]
-    all_dones = [[] for _ in range(n_envs)]
-    all_mcts_root_values = [[] for _ in range(n_envs)]
+    # Storage for trajectories - PRE-ALLOCATED arrays (TASK_028 Phase 1)
+    # This eliminates 20,000+ list.append() calls and their memory fragmentation
+    # Using fp16 for large arrays (obs, policies) to halve bandwidth
+    all_observations = np.zeros((n_envs, steps, 27, n_assets, n_assets), dtype=np.float16)
+    all_actions = np.zeros((n_envs, steps), dtype=np.int32)
+    all_rewards = np.zeros((n_envs, steps), dtype=np.float32)
+    all_values = np.zeros((n_envs, steps), dtype=np.float32)
+    all_policy_probs = np.zeros((n_envs, steps, n_actions), dtype=np.float16)
+    all_dones = np.zeros((n_envs, steps), dtype=np.bool_)
+    all_mcts_root_values = np.zeros((n_envs, steps), dtype=np.float32)
+    step_counts = np.zeros(n_envs, dtype=np.int32)  # Track actual steps per env
 
     scores = np.zeros(n_envs, dtype=np.float32)
     active = np.ones(n_envs, dtype=bool)  # Track active envs
     states = jax_env_states
     rng = rng_key
+
+    # TASK_028 Phase 2: Batched GPU transfers
+    # Accumulate JAX arrays on GPU, transfer in batches every BATCH_STEPS
+    BATCH_STEPS = 50  # Transfer every 50 steps (4 transfers instead of 200)
+    gpu_obs_buffer = []
+    gpu_actions_buffer = []
+    gpu_rewards_buffer = []
+    gpu_values_buffer = []
+    gpu_policies_buffer = []
+    gpu_dones_buffer = []
+    batch_start_step = 0
+
+    def flush_gpu_buffers(batch_start, gpu_obs, gpu_actions, gpu_rewards,
+                          gpu_values, gpu_policies, gpu_dones, active_states):
+        """Transfer accumulated GPU buffers to CPU storage."""
+        if not gpu_obs:
+            return
+
+        # Stack on GPU (fast) then single transfer
+        obs_stacked = jnp.stack(gpu_obs, axis=1)  # (n_envs, batch_steps, 27, n_assets, n_assets)
+        actions_stacked = jnp.stack(gpu_actions, axis=1)  # (n_envs, batch_steps)
+        rewards_stacked = jnp.stack(gpu_rewards, axis=1)
+        values_stacked = jnp.stack(gpu_values, axis=1)
+        policies_stacked = jnp.stack(gpu_policies, axis=1)
+        dones_stacked = jnp.stack(gpu_dones, axis=1)
+
+        # Single batch transfer (much fewer PCIe roundtrips)
+        obs_np = np.array(obs_stacked, dtype=np.float16)
+        actions_np = np.array(actions_stacked, dtype=np.int32)
+        rewards_np = np.array(rewards_stacked, dtype=np.float32)
+        values_np = np.array(values_stacked, dtype=np.float32)
+        policies_np = np.array(policies_stacked, dtype=np.float16)
+        dones_np = np.array(dones_stacked, dtype=np.bool_)
+
+        batch_len = obs_np.shape[1]
+        end_step = batch_start + batch_len
+
+        # Copy to pre-allocated arrays
+        all_observations[:, batch_start:end_step] = obs_np
+        all_actions[:, batch_start:end_step] = actions_np
+        all_rewards[:, batch_start:end_step] = rewards_np
+        all_values[:, batch_start:end_step] = values_np
+        all_policy_probs[:, batch_start:end_step] = policies_np
+        all_dones[:, batch_start:end_step] = dones_np
+        all_mcts_root_values[:, batch_start:end_step] = values_np
 
     for step in range(steps):
         n_active = int(np.sum(active))
@@ -569,27 +617,36 @@ def run_self_play_jax(
             states, actions_jax, prices, jax_env_config
         )
 
-        # Transfer to CPU for trajectory storage (only active envs)
-        obs_np = np.array(obs_batch)
-        actions_np = np.array(actions_jax)
-        rewards_np = np.array(rewards)
-        values_np = np.array(values_batch)
-        policies_np = np.array(policies_jax)
-        dones_np = np.array(dones)
+        # TASK_028 Phase 2: Accumulate on GPU instead of per-step transfer
+        gpu_obs_buffer.append(obs_batch)
+        gpu_actions_buffer.append(actions_jax)
+        gpu_rewards_buffer.append(rewards)
+        gpu_values_buffer.append(values_batch)
+        gpu_policies_buffer.append(policies_jax)
+        gpu_dones_buffer.append(dones)
 
-        for i in range(n_envs):
-            if active[i]:
-                all_observations[i].append(obs_np[i])
-                all_actions[i].append(int(actions_np[i]))
-                all_rewards[i].append(float(rewards_np[i]))
-                all_values[i].append(float(values_np[i]))
-                all_policy_probs[i].append(policies_np[i])
-                all_dones[i].append(bool(dones_np[i]))
-                all_mcts_root_values[i].append(float(values_np[i]))
-                scores[i] += float(rewards_np[i])
+        # Flush buffer every BATCH_STEPS (4 transfers instead of 200)
+        if len(gpu_obs_buffer) >= BATCH_STEPS or step == steps - 1:
+            flush_gpu_buffers(batch_start_step, gpu_obs_buffer, gpu_actions_buffer,
+                              gpu_rewards_buffer, gpu_values_buffer, gpu_policies_buffer,
+                              gpu_dones_buffer, active)
+            batch_start_step = step + 1
+            gpu_obs_buffer = []
+            gpu_actions_buffer = []
+            gpu_rewards_buffer = []
+            gpu_values_buffer = []
+            gpu_policies_buffer = []
+            gpu_dones_buffer = []
 
-                if dones_np[i]:
-                    active[i] = False
+        # Update step counts and scores (need per-step for done detection)
+        # Small transfer for dones check only
+        dones_np = np.array(dones, dtype=np.bool_)
+        rewards_np = np.array(rewards, dtype=np.float32)
+        step_counts[active] += 1
+        scores[active] += rewards_np[active]
+
+        # Mark done envs as inactive
+        active[dones_np] = False
 
         states = new_states
 
@@ -600,9 +657,15 @@ def run_self_play_jax(
     prices_np = np.array(prices)  # (n_steps, n_assets)
 
     for i in range(n_envs):
-        rewards_arr = np.array(all_rewards[i])
-        n_steps_i = len(rewards_arr)
-        mc_returns = np.zeros(n_steps_i)
+        # Use step_counts to slice pre-allocated arrays to actual trajectory length
+        n_steps_i = int(step_counts[i])
+        if n_steps_i == 0:
+            # Empty trajectory, skip
+            continue
+
+        # Slice to actual trajectory length (TASK_028: no extra copies)
+        rewards_arr = all_rewards[i, :n_steps_i]
+        mc_returns = np.zeros(n_steps_i, dtype=np.float32)
 
         running_return = 0.0
         for t in range(n_steps_i - 1, -1, -1):
@@ -612,7 +675,7 @@ def run_self_play_jax(
         # Horizon-specific returns for DS24
         horizon_returns = {}
         for h in [1, 5, 10]:
-            h_returns = np.zeros(n_steps_i)
+            h_returns = np.zeros(n_steps_i, dtype=np.float32)
             for t in range(n_steps_i):
                 end_idx = min(t + h, n_steps_i)
                 running = 0.0
@@ -636,14 +699,16 @@ def run_self_play_jax(
         else:
             market_return = 0.0
 
+        # Slice pre-allocated arrays to actual trajectory length
+        # fp16 arrays converted back to fp32 for trainer compatibility
         result = {
-            'observations': np.array(all_observations[i]),
-            'actions': np.array(all_actions[i]),
+            'observations': all_observations[i, :n_steps_i].astype(np.float32),
+            'actions': all_actions[i, :n_steps_i],
             'rewards': rewards_arr,
             'values': mc_returns,
-            'policy_probs': np.array(all_policy_probs[i]),
-            'dones': np.array(all_dones[i]),
-            'mcts_root_values': np.array(all_mcts_root_values[i]),
+            'policy_probs': all_policy_probs[i, :n_steps_i].astype(np.float32),
+            'dones': all_dones[i, :n_steps_i],
+            'mcts_root_values': all_mcts_root_values[i, :n_steps_i],
             'horizon_returns': horizon_returns,
             'market_return': market_return,
             'agent_return': final_return,
