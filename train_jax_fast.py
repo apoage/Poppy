@@ -487,6 +487,7 @@ def run_self_play_jax(
     from mcts_trader.env.jax_trading_env import (
         jit_batch_step, compute_observation_27ch,
         compute_portfolio_value, get_current_prices,
+        jit_batch_compute_action_mask,
     )
     from mcts_trader.env.jax_encoder import (
         EncoderConfig as FullEncoderConfig,
@@ -533,8 +534,15 @@ def run_self_play_jax(
             prices, window_starts, encoder_config
         )  # (n_envs, 27, n_assets, n_assets)
 
-        # Action mask (all actions valid for now)
-        mask_batch = jnp.ones((n_envs, n_actions), dtype=jnp.int8)
+        # Get current prices for each env (for action masking)
+        current_step_indices = states.episode_start_idx + states.current_step
+        current_prices_batch = prices[current_step_indices]  # (n_envs, n_assets)
+
+        # Compute proper action mask based on portfolio state (matches VectorBT behavior)
+        mask_batch = jit_batch_compute_action_mask(
+            states, current_prices_batch, jax_env_config,
+            max_positions=16, min_cash_threshold=100.0
+        )
 
         # Batched MCTS - single GPU call
         actions_jax, policies_jax, stats = search_fn(params, step_rng, obs_batch, mask_batch)
@@ -587,6 +595,10 @@ def run_self_play_jax(
 
     # Compute MC returns and package results
     results = []
+
+    # Convert prices once (not per-env!) - fixes performance bug
+    prices_np = np.array(prices)  # (n_steps, n_assets)
+
     for i in range(n_envs):
         rewards_arr = np.array(all_rewards[i])
         n_steps_i = len(rewards_arr)
@@ -612,6 +624,18 @@ def run_self_play_jax(
         # Get final portfolio metrics
         final_return = float(states.cumulative_return[i]) if n_steps_i > 0 else 0.0
 
+        # Compute market return (buy & hold baseline)
+        start_idx = int(jax_env_states.episode_start_idx[i])
+        end_idx = start_idx + n_steps_i
+        if end_idx < len(prices_np) and n_steps_i > 0:
+            start_prices = prices_np[start_idx]
+            end_prices = prices_np[end_idx - 1]
+            # Average return across all assets (equal weight buy & hold)
+            asset_returns = (end_prices - start_prices) / (start_prices + 1e-8)
+            market_return = float(np.mean(asset_returns)) * 100  # As percentage
+        else:
+            market_return = 0.0
+
         result = {
             'observations': np.array(all_observations[i]),
             'actions': np.array(all_actions[i]),
@@ -621,10 +645,9 @@ def run_self_play_jax(
             'dones': np.array(all_dones[i]),
             'mcts_root_values': np.array(all_mcts_root_values[i]),
             'horizon_returns': horizon_returns,
-            # Market baseline metrics (simplified for JAX env)
-            'market_return': 0.0,  # TODO: compute from prices
+            'market_return': market_return,
             'agent_return': final_return,
-            'alpha': final_return,  # Simplified
+            'alpha': final_return - market_return,  # True alpha vs market
         }
         results.append(result)
 

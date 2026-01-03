@@ -487,16 +487,25 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
     """Execute BUY action - open/add long or close short.
 
     If short exists: Close the short position
-    If no position: Open new long
+    If no position: Open new long (uses available cash if can't afford full trade)
     If long exists: Add to position
+
+    NOTE: Like VectorBT, if can't afford full trade, uses available cash * 0.99
+    to ensure trades actually execute rather than failing silently.
     """
     price = current_prices[asset_idx]
     buy_exec_price = apply_fee_and_slippage(price, True, config.fee_bps, config.slippage_bps)
 
     portfolio_value = compute_portfolio_value(state, current_prices)
-    trade_value = portfolio_value * config.position_size_pct
-    shares_to_buy = trade_value / buy_exec_price
-    cost = shares_to_buy * buy_exec_price
+    ideal_trade_value = portfolio_value * config.position_size_pct
+    ideal_cost = ideal_trade_value  # Cost before adjustment
+
+    # VectorBT behavior: if can't afford full trade, use available cash
+    # (lines 1118-1122 in vectorbt_env.py)
+    available_cash = state.cash * 0.99  # Leave 1% buffer like VectorBT
+    actual_cost = jnp.minimum(ideal_cost, available_cash)
+    shares_to_buy = actual_cost / buy_exec_price
+    cost = actual_cost
 
     has_position = state.pos_active[asset_idx]
     is_long = state.pos_side[asset_idx] == 1
@@ -509,8 +518,10 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
     short_proceeds = current_size * (2.0 * current_entry - buy_exec_price)
     fee_on_close = jnp.abs(short_proceeds) * config.fee_bps / 10000.0
 
-    # Case 2: Open/add to long
-    can_afford = state.cash >= cost
+    # Case 2: Open/add to long - has cash for trade (after adjustment)
+    # Minimum trade threshold to prevent dust trades
+    min_trade_value = 100.0
+    can_afford = (state.cash > min_trade_value) & (shares_to_buy > 0)
 
     # New long size (if opening or adding)
     new_long_size = jnp.where(has_position & is_long,
@@ -582,15 +593,17 @@ def execute_sell(state: TradingState, asset_idx: chex.Array,
     """Execute SELL action - close long or open short.
 
     If long exists: Close the long position
-    If no position and allow_short: Open new short
+    If no position and allow_short: Open new short (uses available cash if can't afford full trade)
     If short exists: Do nothing (can't add to short with market order)
+
+    NOTE: Like VectorBT, if can't afford full short, uses available cash * 0.99
+    to ensure trades actually execute rather than failing silently.
     """
     price = current_prices[asset_idx]
     sell_exec_price = apply_fee_and_slippage(price, False, config.fee_bps, config.slippage_bps)
 
     portfolio_value = compute_portfolio_value(state, current_prices)
-    trade_value = portfolio_value * config.position_size_pct
-    shares_to_sell = trade_value / price
+    ideal_trade_value = portfolio_value * config.position_size_pct
 
     has_position = state.pos_active[asset_idx]
     is_long = state.pos_side[asset_idx] == 1
@@ -603,9 +616,16 @@ def execute_sell(state: TradingState, asset_idx: chex.Array,
     fee_on_close = long_proceeds * config.fee_bps / 10000.0
 
     # Case 2: Open short (if no position and allowed)
-    short_cost = shares_to_sell * price  # Cash needed for margin
+    # VectorBT behavior: if can't afford full trade, use available cash
+    ideal_short_cost = ideal_trade_value  # Cash needed for margin
+    available_cash = state.cash * 0.99  # Leave 1% buffer like VectorBT
+    actual_short_cost = jnp.minimum(ideal_short_cost, available_cash)
+    shares_to_sell = actual_short_cost / price
+    short_cost = actual_short_cost
+
     fee_on_open = short_cost * config.fee_bps / 10000.0
-    can_afford_short = state.cash >= (short_cost + fee_on_open)
+    min_trade_value = 100.0
+    can_afford_short = (state.cash > min_trade_value) & (shares_to_sell > 0)
 
     # Determine which case applies
     closing_long = has_position & is_long
@@ -712,8 +732,12 @@ def execute_limit_buy(state: TradingState, asset_idx: chex.Array,
         jnp.where(can_place, config.default_limit_order_ttl, state.order_ttl[asset_idx])
     )
 
-    # Update cash: return old reserved, deduct new reserved
-    new_cash = state.cash + existing_reserved - jnp.where(can_place, total_reserve, 0.0)
+    # Update cash: only change when can_place=True
+    # BUG FIX: Previously returned existing_reserved even when can_place=False,
+    # but order_reserved wasn't cleared, causing money printing.
+    # Now only adjust cash when actually placing a new order.
+    reserved_change = jnp.where(can_place, existing_reserved - total_reserve, 0.0)
+    new_cash = state.cash + reserved_change
 
     return state.replace(
         cash=new_cash,
@@ -780,8 +804,10 @@ def execute_limit_sell(state: TradingState, asset_idx: chex.Array,
         jnp.where(can_place, config.default_limit_order_ttl, state.order_ttl[asset_idx])
     )
 
-    # Update cash (return any previously reserved)
-    new_cash = state.cash + existing_reserved
+    # Update cash: only return reserved when can_place=True
+    # BUG FIX: Same issue as execute_limit_buy - only change cash when placing order
+    reserved_change = jnp.where(can_place, existing_reserved, 0.0)
+    new_cash = state.cash + reserved_change
 
     return state.replace(
         cash=new_cash,
@@ -1029,6 +1055,118 @@ def compute_observation(state: TradingState, prices: chex.Array,
     ], axis=0)
 
     return obs
+
+
+# =============================================================================
+# Action Masking (matches VectorBT behavior)
+# =============================================================================
+
+def compute_action_mask(state: TradingState, current_prices: chex.Array,
+                        config: EnvConfig, max_positions: int = 16,
+                        min_cash_threshold: float = 100.0) -> chex.Array:
+    """Compute valid action mask based on portfolio state.
+
+    This matches VectorBT's _get_action_mask() logic to ensure
+    models trained on JAX env can transfer to real trading.
+
+    Actions per asset (5-action space):
+        [0] Market Sell: close long or open short
+        [1] Hold: always valid
+        [2] Market Buy: open long or close short
+        [3] Limit Sell: close long or open short (queued)
+        [4] Limit Buy: open long or close short (queued, no existing pending)
+
+    Args:
+        state: Current TradingState
+        current_prices: Current prices (n_assets,)
+        config: EnvConfig
+        max_positions: Maximum concurrent positions (default 16)
+        min_cash_threshold: Minimum cash required to open new position
+
+    Returns:
+        mask: Valid action mask (n_assets * 5,) with 1=valid, 0=invalid
+    """
+    n_assets = config.n_assets
+
+    # Count total orders (positions + pending orders)
+    n_positions = jnp.sum(state.pos_active.astype(jnp.int32))
+    n_pending = jnp.sum(state.order_active.astype(jnp.int32))
+    total_orders = n_positions + n_pending
+
+    # Per-asset conditions
+    has_position = state.pos_active  # (n_assets,)
+    is_long = state.pos_side == 1    # (n_assets,)
+    is_short = state.pos_side == 2   # (n_assets,)
+    has_long = has_position & is_long
+    has_short = has_position & is_short
+    has_pending = state.order_active  # (n_assets,)
+
+    # Price validity
+    price_valid = current_prices > 0  # (n_assets,)
+
+    # Cash check
+    has_cash = state.cash > min_cash_threshold
+
+    # Position limit check
+    below_limit = total_orders < max_positions
+
+    # Can open new position (no existing position + cash + limit + price valid)
+    can_open = ~has_position & has_cash & below_limit & price_valid
+
+    # Build mask for each action type
+    # [0] SELL: close long OR (allow_short AND can open short)
+    can_sell = has_long | (config.allow_short & can_open)
+
+    # [1] HOLD: always valid
+    can_hold = jnp.ones(n_assets, dtype=jnp.bool_)
+
+    # [2] BUY: close short OR can open long
+    can_buy = has_short | can_open
+
+    # [3] LIMIT SELL: same as sell
+    can_limit_sell = can_sell
+
+    # [4] LIMIT BUY: same as buy AND no pending order for this asset
+    can_limit_buy = can_buy & ~has_pending
+
+    # Stack into (n_assets, 5) then flatten to (n_assets * 5,)
+    mask_per_asset = jnp.stack([
+        can_sell,
+        can_hold,
+        can_buy,
+        can_limit_sell,
+        can_limit_buy,
+    ], axis=1)  # (n_assets, 5)
+
+    return mask_per_asset.flatten().astype(jnp.int8)
+
+
+def batch_compute_action_mask(states: TradingState, current_prices: chex.Array,
+                              config: EnvConfig, max_positions: int = 16,
+                              min_cash_threshold: float = 100.0) -> chex.Array:
+    """Compute action masks for batch of states.
+
+    Args:
+        states: Batched TradingState (vmapped)
+        current_prices: Current prices for each env (n_envs, n_assets)
+        config: EnvConfig
+        max_positions: Maximum positions per env
+        min_cash_threshold: Minimum cash to open position
+
+    Returns:
+        masks: (n_envs, n_assets * 5)
+    """
+    return jax.vmap(
+        lambda s, p: compute_action_mask(s, p, config, max_positions, min_cash_threshold)
+    )(states, current_prices)
+
+
+@partial(jax.jit, static_argnames=['config', 'max_positions', 'min_cash_threshold'])
+def jit_batch_compute_action_mask(states: TradingState, current_prices: chex.Array,
+                                   config: EnvConfig, max_positions: int = 16,
+                                   min_cash_threshold: float = 100.0) -> chex.Array:
+    """JIT-compiled batched action mask computation."""
+    return batch_compute_action_mask(states, current_prices, config, max_positions, min_cash_threshold)
 
 
 # =============================================================================
