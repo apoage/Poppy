@@ -318,13 +318,29 @@ class DojoManager:
 
         # Get pass threshold from config or use defaults
         default_thresholds = {
-            0: 1.5,   # Level 0: +1.5% avg (sine waves - easy)
-            1: 1.0,   # Level 1: +1.0% avg (lagged pairs)
-            2: 0.5,   # Level 2: +0.5% avg (dip crashes - hard)
-            3: 0.2,   # Level 3: +0.2% avg (noisy trends - harder)
+            # Phase 1: Basic Mechanics
+            0: 2.0,   # Sine waves (no fees)
+            1: 1.5,   # Lagged pairs
+            2: 1.0,   # Dip crashes
+            3: 0.5,   # Noisy trends
+            4: 0.5,   # Rotation
+            # Phase 2: Statistical Arbitrage
+            5: 0.3,   # Pairs trading
+            6: 0.2,   # Triangle arb
+            7: 0.2,   # Index arb
+            # Phase 3: Momentum & Reversal
+            8: 0.3,   # Momentum
+            9: 0.3,   # Mean reversion
+            10: 0.2,  # Breakout
+            # Phase 4: Market Microstructure
+            11: 0.1,  # Bid-ask bounce
+            12: 0.1,  # Order imbalance
+            13: 0.1,  # Market making
+            # Phase 5: Volatility
+            14: 0.1,  # Volatility clustering
         }
 
-        threshold = config.get('pass_threshold', default_thresholds.get(level_idx, 0.0))
+        threshold = config.get('pass_threshold', default_thresholds.get(level_idx, 0.1))
 
         # Check if we have enough data
         if len(episode_rewards) < 50:
@@ -389,7 +405,7 @@ def load_curriculum_from_file(filepath: str) -> List[Dict]:
 
 def create_default_curriculum() -> List[Dict]:
     """
-    Create default 4-level curriculum (Levels 0-3) with mastery checks.
+    Create full curriculum (Levels 0-14) with mastery checks.
 
     Uses tournament-validated optimal configurations (2026-01-03):
     - 50 envs × 400 steps = 20,000 samples/epoch (synthetic diversity)
@@ -398,64 +414,157 @@ def create_default_curriculum() -> List[Dict]:
     Returns:
         List of level configs
     """
+    # Base config for all levels
+    base_config = {
+        'n_assets': 64,
+        'n_steps': 10000,
+        'parallel_envs': 50,
+        'steps': 400,
+        'retry_epochs': 300,
+        'max_retries': 2,
+    }
+
     return [
+        # Phase 1: Basic Mechanics (Levels 0-4)
         {
+            **base_config,
             'level': 0,
             'generator': 'sine',
             'tactics': ['basic'],
             'epochs': 500,
-            'pass_threshold': 2.0,    # Must average +2.0% reward (NO FEES - easier)
-            'retry_epochs': 250,      # Add 250 epochs if failed
-            'max_retries': 2,         # Up to 2 retries (500 + 250*2 = 1000 max)
-            'disable_fees': True,     # No fees/slippage for Level 0
-            'n_assets': 64,
-            'n_steps': 10000,
-            # Optimal env config: 50 envs × 400 steps = 20,000 samples
-            'parallel_envs': 50,
-            'steps': 400,
-            'description': 'Pure sine waves - learn trend detection (no fees)'
+            'pass_threshold': 2.0,
+            'disable_fees': True,
+            'description': 'Sine waves - trend detection (no fees)'
         },
         {
+            **base_config,
             'level': 1,
             'generator': 'lagged',
             'tactics': ['basic'],
-            'epochs': 1000,
-            'pass_threshold': 1.0,    # Must average +1.0% reward
-            'retry_epochs': 300,
-            'max_retries': 2,
-            'n_assets': 64,
-            'n_steps': 10000,
-            'parallel_envs': 50,
-            'steps': 400,
-            'description': 'Lagged pairs - learn correlation detection'
+            'epochs': 750,
+            'pass_threshold': 1.5,
+            'description': 'Lagged pairs - correlation detection'
         },
         {
+            **base_config,
             'level': 2,
             'generator': 'dip',
             'tactics': ['basic'],
-            'epochs': 1500,
-            'pass_threshold': 0.5,    # Must average +0.5% reward
-            'retry_epochs': 400,
-            'max_retries': 2,
-            'n_assets': 64,
-            'n_steps': 10000,
-            'parallel_envs': 50,
-            'steps': 400,
-            'description': 'Dip crashes - learn patience and timing'
+            'epochs': 1000,
+            'pass_threshold': 1.0,
+            'description': 'Dip crashes - patience and timing'
         },
         {
+            **base_config,
             'level': 3,
             'generator': 'noisy_trends',
             'tactics': ['basic', 'morphing'],
+            'epochs': 1000,
+            'pass_threshold': 0.5,
+            'description': 'Noisy trends + swaps - fee optimization'
+        },
+        {
+            **base_config,
+            'level': 4,
+            'generator': 'rotation',
+            'tactics': ['basic', 'morphing'],
+            'epochs': 1000,
+            'pass_threshold': 0.5,
+            'description': 'Sector rotation - multi-asset timing'
+        },
+        # Phase 2: Statistical Arbitrage (Levels 5-7)
+        {
+            **base_config,
+            'level': 5,
+            'generator': 'pairs_trading',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'epochs': 1500,
+            'pass_threshold': 0.3,
+            'description': 'Pairs trading - cointegrated pairs'
+        },
+        {
+            **base_config,
+            'level': 6,
+            'generator': 'triangle_arbitrage',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'epochs': 1500,
+            'pass_threshold': 0.2,
+            'description': 'Triangle arbitrage opportunities'
+        },
+        {
+            **base_config,
+            'level': 7,
+            'generator': 'index_arbitrage',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'epochs': 1500,
+            'pass_threshold': 0.2,
+            'description': 'Index vs component arbitrage'
+        },
+        # Phase 3: Momentum & Reversal (Levels 8-10)
+        {
+            **base_config,
+            'level': 8,
+            'generator': 'momentum',
+            'tactics': ['basic', 'morphing'],
+            'epochs': 1500,
+            'pass_threshold': 0.3,
+            'description': 'Momentum with trend persistence'
+        },
+        {
+            **base_config,
+            'level': 9,
+            'generator': 'mean_reversion',
+            'tactics': ['basic', 'morphing'],
+            'epochs': 1500,
+            'pass_threshold': 0.3,
+            'description': 'Mean-reverting prices (OU process)'
+        },
+        {
+            **base_config,
+            'level': 10,
+            'generator': 'breakout',
+            'tactics': ['basic', 'morphing'],
+            'epochs': 1500,
+            'pass_threshold': 0.2,
+            'description': 'Consolidation → Breakout patterns'
+        },
+        # Phase 4: Market Microstructure (Levels 11-13)
+        {
+            **base_config,
+            'level': 11,
+            'generator': 'bid_ask_bounce',
+            'tactics': ['basic', 'morphing', 'market_making'],
             'epochs': 2000,
-            'pass_threshold': 0.2,    # Must average +0.2% reward
-            'retry_epochs': 500,
-            'max_retries': 2,
-            'n_assets': 64,
-            'n_steps': 10000,
-            'parallel_envs': 50,
-            'steps': 400,
-            'description': 'Noisy trends + swaps - learn fee optimization'
+            'pass_threshold': 0.1,
+            'description': 'Bid-ask bounce microstructure'
+        },
+        {
+            **base_config,
+            'level': 12,
+            'generator': 'order_imbalance',
+            'tactics': ['basic', 'morphing', 'market_making'],
+            'epochs': 2000,
+            'pass_threshold': 0.1,
+            'description': 'Order book imbalance signals'
+        },
+        {
+            **base_config,
+            'level': 13,
+            'generator': 'market_making',
+            'tactics': ['basic', 'morphing', 'market_making'],
+            'epochs': 2000,
+            'pass_threshold': 0.1,
+            'description': 'Market making with adverse selection'
+        },
+        # Phase 5: Volatility (Level 14)
+        {
+            **base_config,
+            'level': 14,
+            'generator': 'volatility_clustering',
+            'tactics': ['basic', 'morphing'],
+            'epochs': 2000,
+            'pass_threshold': 0.1,
+            'description': 'GARCH(1,1) volatility dynamics'
         },
     ]
 

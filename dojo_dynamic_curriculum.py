@@ -268,40 +268,106 @@ class DynamicDojo:
 
 def create_dynamic_curriculum() -> List[Dict]:
     """
-    Create curriculum for dynamic training.
+    Create curriculum for dynamic training (Levels 0-14).
 
     Each level uses progressive difficulty (phases).
+    Optimal env config: 50 envs × 400 steps = 20,000 samples/epoch
     """
     return [
+        # Phase 1: Basic Mechanics (Levels 0-4)
         {
             'level': 0,
             'generator': 'sine',
             'tactics': ['basic'],
-            'description': 'Sine waves - progressive difficulty'
+            'description': 'Sine waves - learn trend detection'
         },
         {
             'level': 1,
             'generator': 'lagged',
             'tactics': ['basic'],
-            'description': 'Lagged pairs - progressive difficulty'
+            'description': 'Lagged pairs - learn correlation detection'
         },
         {
             'level': 2,
             'generator': 'dip',
             'tactics': ['basic'],
-            'description': 'Dip crashes - progressive difficulty'
+            'description': 'Dip crashes - learn patience and timing'
         },
         {
             'level': 3,
             'generator': 'noisy_trends',
             'tactics': ['basic', 'morphing'],
-            'description': 'Noisy trends + swaps - progressive difficulty'
+            'description': 'Noisy trends + swaps - learn fee optimization'
         },
         {
             'level': 4,
             'generator': 'rotation',
             'tactics': ['basic', 'morphing'],
-            'description': 'Sector rotation - tests multi-asset timing'
+            'description': 'Sector rotation - multi-asset timing'
+        },
+        # Phase 2: Statistical Arbitrage (Levels 5-7)
+        {
+            'level': 5,
+            'generator': 'pairs_trading',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'description': 'Pairs trading - cointegrated pairs'
+        },
+        {
+            'level': 6,
+            'generator': 'triangle_arbitrage',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'description': 'Triangle arbitrage opportunities'
+        },
+        {
+            'level': 7,
+            'generator': 'index_arbitrage',
+            'tactics': ['basic', 'morphing', 'pairs'],
+            'description': 'Index vs component arbitrage'
+        },
+        # Phase 3: Momentum & Reversal (Levels 8-10)
+        {
+            'level': 8,
+            'generator': 'momentum',
+            'tactics': ['basic', 'morphing'],
+            'description': 'Momentum with trend persistence'
+        },
+        {
+            'level': 9,
+            'generator': 'mean_reversion',
+            'tactics': ['basic', 'morphing'],
+            'description': 'Mean-reverting prices (OU process)'
+        },
+        {
+            'level': 10,
+            'generator': 'breakout',
+            'tactics': ['basic', 'morphing'],
+            'description': 'Consolidation → Breakout patterns'
+        },
+        # Phase 4: Market Microstructure (Levels 11-13)
+        {
+            'level': 11,
+            'generator': 'bid_ask_bounce',
+            'tactics': ['basic', 'morphing', 'market_making'],
+            'description': 'Bid-ask bounce microstructure'
+        },
+        {
+            'level': 12,
+            'generator': 'order_imbalance',
+            'tactics': ['basic', 'morphing', 'market_making'],
+            'description': 'Order book imbalance signals'
+        },
+        {
+            'level': 13,
+            'generator': 'market_making',
+            'tactics': ['basic', 'morphing', 'market_making'],
+            'description': 'Market making with adverse selection'
+        },
+        # Phase 5: Volatility (Level 14)
+        {
+            'level': 14,
+            'generator': 'volatility_clustering',
+            'tactics': ['basic', 'morphing'],
+            'description': 'GARCH(1,1) volatility dynamics'
         },
     ]
 
@@ -309,7 +375,7 @@ def create_dynamic_curriculum() -> List[Dict]:
 def main():
     parser = argparse.ArgumentParser(description='Dojo Dynamic Curriculum Manager')
 
-    parser.add_argument('--level', type=int, default=0, help='Start level (0-4)')
+    parser.add_argument('--level', type=int, default=0, help='Start level (0-14)')
     parser.add_argument('--model-size', default='small', choices=['small', 'medium', 'large'],
                         help='Model size (small=15M, medium=28M, large=50M+)')
     parser.add_argument('--checkpoint-dir', default='dojo_checkpoints', help='Checkpoint directory')
