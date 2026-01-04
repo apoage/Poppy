@@ -229,7 +229,7 @@ class DojoManager:
             if adaptive_entropy:
                 cmd.extend([
                     '--adaptive-entropy',
-                    '--entropy-hold-threshold', '0.7',
+                    '--entropy-hold-threshold', '0.85',
                     '--entropy-boost-low', '0.05',
                     '--entropy-boost-high', '0.3',
                 ])

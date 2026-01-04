@@ -180,7 +180,7 @@ class DynamicDojo:
             '--pred-head-size', 'large',
             # Tournament winner: Adaptive entropy pumping
             '--adaptive-entropy',
-            '--entropy-hold-threshold', '0.7',
+            '--entropy-hold-threshold', '0.85',
             '--entropy-boost-low', '0.05',
             '--entropy-boost-high', '0.3',
             # Adaptive value calibration for curriculum stability
