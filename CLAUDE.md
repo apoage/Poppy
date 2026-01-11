@@ -73,10 +73,14 @@ Formula: `action = asset_idx * 5 + action_type`
 
 ### Value Support
 
-Categorical value representation with symlog rewards:
-- **Range**: [-750, +750] with 751 bins
-- **Resolution**: 2 units per bin
-- **Transformation**: Symlog for per-step rewards, MC returns for training targets
+Categorical value representation for PopArt-normalized values:
+- **Range**: [-10, +10] with 401 bins (TASK_033 fix)
+- **Resolution**: 0.05 units per bin
+- **Bins > Actions**: 401 bins > 320 actions (ensures value differentiation)
+- **PopArt normalization**: Targets normalized to mean=0, std=1
+- **Transformation**: Symlog for per-step rewards, PopArt for training targets
+
+**IMPORTANT**: Value support must match PopArt scale. The original [-750, +750] caused 99.5% information loss!
 
 ## Running the System
 
@@ -189,8 +193,9 @@ Uses Google's `mctx` library for GPU-accelerated search:
 
 ## Curriculum System
 
-### Synthetic Levels
+### Synthetic Levels (0-14)
 
+**Basic Patterns (0-4)**
 | Level | Generator | Pattern | Tactics |
 |-------|-----------|---------|---------|
 | 0 | sine | Pure sine waves | Momentum detection |
@@ -198,6 +203,32 @@ Uses Google's `mctx` library for GPU-accelerated search:
 | 2 | dip | Random V-shaped crashes | Dip buying |
 | 3 | noisy_trends | Random walk + drift | Trend following |
 | 4 | rotation | Sector rotation cycles | Multi-asset timing |
+
+**Arbitrage Patterns (5-7)**
+| Level | Generator | Pattern | Tactics |
+|-------|-----------|---------|---------|
+| 5 | pairs_trading | Cointegrated pairs | Spread trading |
+| 6 | triangle_arb | 3-asset price loops | Triangular arbitrage |
+| 7 | index_arb | Index vs components | Index arbitrage |
+
+**Strategy Patterns (8-10)**
+| Level | Generator | Pattern | Tactics |
+|-------|-----------|---------|---------|
+| 8 | momentum | Trending with noise | Trend following |
+| 9 | mean_reversion | Oscillating around mean | Fade extremes |
+| 10 | breakout | Range then breakout | Breakout detection |
+
+**Microstructure Patterns (11-13)**
+| Level | Generator | Pattern | Tactics |
+|-------|-----------|---------|---------|
+| 11 | bid_ask_bounce | Spread dynamics | Market microstructure |
+| 12 | order_imbalance | Volume pressure | Order flow |
+| 13 | market_making | Two-sided liquidity | Spread capture |
+
+**Advanced (14)**
+| Level | Generator | Pattern | Tactics |
+|-------|-----------|---------|---------|
+| 14 | volatility_clustering | GARCH-like vol | Volatility timing |
 
 ### Dynamic Difficulty Phases
 
@@ -254,16 +285,67 @@ Orders persist until filled (price condition met) or expired (TTL exceeded).
 
 ## Files & Directories
 
-| Path | Purpose |
-|------|---------|
+```
+Trader/
+├── CLAUDE.md                    # Project documentation
+├── README.md                    # Project readme
+├── requirements.txt             # Dependencies
+├── trading_data.db              # SQLite database (22GB)
+├── train_jax_fast.py            # Main training entry point
+├── real_trade_jax.py            # Live trading entry point
+├── trader_env/                  # Virtual environment
+│
+├── config/
+│   └── curriculum/              # Curriculum YAML configs (TASK_056)
+│
+├── datasets/                    # Data files
+│
+├── docs/
+│   └── AI_bleed research/       # Dual collapse research
+│
+├── jax_ckpt_fast/               # All checkpoints (unified)
+│
+├── logs/
+│   ├── training_*.csv/log       # Training logs
+│   ├── reports/                 # Analysis reports
+│   ├── sweep_results/           # Sweep outputs
+│   └── tournament_results/      # Tournament outputs
+│
+├── lore/                        # Design documents, notes
+│
+├── mcts_trader/                 # Main package
+│   ├── data/                    # Data loaders, synthetic market
+│   ├── encoder/                 # State encoder
+│   ├── env/                     # Trading environments (JAX + VectorBT)
+│   ├── jax_agent/               # Model, trainer, MCTS, schedules
+│   └── training/                # Env factory, curriculum config
+│
+├── scripts/                     # Shell scripts
+│   ├── run_training.sh          # CUDA wrapper
+│   ├── START_TRAINING.sh        # Phase 1 training
+│   └── START_TRAINING_PHASE2.sh # Phase 2 fine-tuning
+│
+├── tasks/                       # Task specifications
+│
+├── tests/                       # Unit tests (pytest)
+│
+└── tools/                       # Analysis & utility scripts
+    ├── analysis/                # analyze_sweep.py, cross_validate.py
+    ├── benchmarks/              # measure_*.py, profile_*.py
+    ├── sweeps/                  # *_sweep.py, *_tournament.py
+    ├── orchestration/           # dojo_*.py, train_manager.py
+    ├── debug/                   # debug_*.py
+    └── testing/                 # test_*.py, test_*.sh
+```
+
+| Key Paths | Purpose |
+|-----------|---------|
 | `train_jax_fast.py` | Main training script |
-| `dojo_dynamic_curriculum.py` | Curriculum manager |
-| `jax_ckpt_fast/` | Checkpoint storage |
-| `logs/` | Training logs |
-| `lore/` | Design documents, notes |
-| `tasks/` | Feature task specifications |
-| `trading_data.db` | SQLite database (22GB) |
-| `config/` | Training configurations |
+| `tools/sweeps/` | Warmup/stability sweeps and tournaments |
+| `tools/orchestration/` | Curriculum manager, dojo scripts |
+| `jax_ckpt_fast/` | All checkpoints (including dojo) |
+| `logs/` | Training logs and sweep results |
+| `config/curriculum/` | Per-level YAML configs |
 
 ## Prediction Model (In Development)
 
@@ -290,6 +372,9 @@ Task files: `tasks/TASK_008_*.md` through `TASK_012_*.md`
 - **Replay buffer logical vs physical indexing** - trajectories use logical indices, data uses physical.
 - **Symlog is bidirectional** - rewards go symlog → MC returns → training targets
 - **Model sizes affect batch limits** - large model may OOM with batch > 512
+- **Division guards required** - Always use `jnp.maximum(divisor, 1e-10)` in JAX code; `jnp.where` evaluates both branches
+- **Don't JIT `flush_gpu_buffers`** - it captures mutable numpy arrays from closure
+- **Per-instance RNG for parallel envs** - use `np.random.default_rng()` not `np.random.seed()`
 
 ### Performance Tuning
 - XLA autotuning level 4 enabled (`.xla_cache/`)
@@ -406,16 +491,53 @@ The main script should be a **router**, not implementation:
 | Synthetic (diversity) | `--parallel-envs 50 --steps 400` | 20,000 | ~25s |
 | Synthetic (fast) | `--parallel-envs 100 --steps 200` | 20,000 | ~25s |
 
-**Tuned Hyperparameters (tournament-validated):**
+**Tuned Hyperparameters (production config 2026-01-06):**
 ```bash
---use-prediction-loss --prediction-loss-weight 0.2
---use-popart --popart-beta 0.0001
---sims-warmup 100 --sims-min 8
---adaptive-entropy --entropy-hold-threshold 0.70
---entropy-boost-low 0.05 --entropy-boost-high 0.2
---ds24-level 3 --ds24-intermediates-every 5
---pred-head-size large
+python train_jax_fast.py \
+    --synthetic-level 0 --synthetic-steps 10000 \
+    --epochs 500 --batch-size 384 --model-size small \
+    --steps 400 --parallel-envs 50 --jax-env --bf16 \
+    --use-popart --popart-beta 0.0001 \
+    --sims 32 --sims-warmup 100 --sims-min 8 \
+    --use-prediction-loss --prediction-loss-weight 0.2 \
+    --pred-head-size large \
+    --ds24-level 3 --ds24-intermediates-every 5 \
+    --adaptive-entropy --entropy-hold-threshold 0.85 \
+    --entropy-boost-low 0.05 --entropy-boost-high 0.3 \
+    --regenerate-data-every 50 \
+    --fee 0 --slippage 0
 ```
+
+**Best Stability Config (warmup_sweep.py 2026-01-06):**
+
+Sweep tested 12 configurations. Best result: "kitchen_sink" (stability score 0.7354)
+- Delayed HOLD>70% until epoch 27 (vs epoch 8 for baseline)
+- Entropy never dropped below 3.5 during 50-epoch test
+- Max reward 39.96, final reward 32.60
+
+```bash
+# Kitchen Sink - Most stable configuration found
+--sims-warmup 300 --sims-min 4 --sims-max 24 \
+--entropy-coef 0.2 \
+--entropy-hold-threshold 0.55 \
+--entropy-boost-low 0.4 --entropy-boost-high 0.6 \
+--prediction-loss-weight 0.5 \
+--physics-warmup-steps 10000
+```
+
+| Rank | Config | Score | MaxRwd | HOLD>70% at |
+|------|--------|-------|--------|-------------|
+| 1 | kitchen_sink | 0.735 | 39.96 | epoch 27 |
+| 2 | very_high_entropy_05 | 0.725 | 38.27 | epoch 27 |
+| 3 | combined_v3_aggressive | 0.695 | 38.87 | epoch 15 |
+| 4 | combined_v2 | 0.690 | 41.19 | epoch 8 |
+| 5 | early_adaptive_060 | 0.675 | 38.71 | epoch 8 |
+
+**Key insights from sweep:**
+- Lower sims (4-24) + longer warmup (300) delays collapse
+- Higher entropy coefficient (0.2) + aggressive boosts (0.4-0.6) help
+- Early adaptive trigger (0.55 vs 0.85) catches collapse sooner
+- Higher prediction loss weight (0.5) may help prediction head
 
 ### Training Optimization Tasks
 
@@ -428,3 +550,250 @@ See `tasks/` for implementation plans:
 - **TASK_027**: JAX-vectorized environment - COMPLETE
 - **TASK_028**: Streaming data pipeline - COMPLETE (pre-alloc + fp16 + batched transfers)
 - **TASK_029**: 100+ environment scaling - COMPLETE
+
+## Dual Collapse Problem (2026-01-06 Research)
+
+### Problem Statement
+
+Training exhibits **coupled policy-prediction collapse**:
+1. **Policy collapse**: Entropy bleeds → HOLD dominates (85%+)
+2. **Prediction collapse**: After warmup, loss → 0.01 (trivial "no change" solution)
+
+These are coupled via feedback loop:
+```
+MCTS produces sharp π (HOLD-heavy)
+    ↓
+Policy trained to match → π_network becomes HOLD-heavy
+    ↓
+Data distribution shifts to HOLD-only
+    ↓
+Prediction head sees no dynamics → learns "no change"
+    ↓
+Value estimates become uninformative
+    ↓
+MCTS produces even sharper HOLD targets
+```
+
+### Root Causes Identified
+
+| Cause | Effect |
+|-------|--------|
+| **MCTS sharpening** | More sims → sharper policy → faster collapse |
+| **HOLD appears safe** | R(HOLD)=0 vs R(TRADE)≈-fees → HOLD bias |
+| **Martingale trap** | Predicting "no change" is strong local optimum |
+| **Dormant neurons** | HOLD-only data kills network capacity |
+| **Representation collapse** | All states → similar embeddings |
+
+### Interventions (Task Files Created)
+
+| Task | Intervention | Target |
+|------|--------------|--------|
+| **TASK_036** | Warmup configuration sweep | Find stable hyperparams |
+| **TASK_037** | ε-greedy MCTS: `π_train = (1-ε)*π_mcts + ε*uniform` | Policy collapse |
+| **TASK_038** | Differential reward: `r = r_agent - r_market` | HOLD incentive |
+| **TASK_039** | Higher Dirichlet noise (α=0.5, ε=0.5) | MCTS exploration |
+| **TASK_040** | SAC-style adaptive entropy (learnable α) | Entropy control |
+| **TASK_041** | Flow matching (predict velocity not state) | Prediction collapse |
+| **TASK_042** | ReDo (recycle dormant neurons) | Network capacity |
+| **TASK_043** | Augmented Temporal Contrast (ATC) | Representation collapse |
+
+### Priority Order
+
+1. **TASK_041** (Flow Matching) - Directly prevents prediction identity solution
+2. **TASK_040** (SAC Entropy) - Proactive entropy control vs reactive
+3. **TASK_037** (ε-greedy) - Breaks MCTS→policy feedback loop
+4. **TASK_038** (Differential Reward) - Removes HOLD=safe incentive
+5. **TASK_039** (Dirichlet) - Quick win, synergistic with above
+6. **TASK_042** (ReDo) - Addresses symptom (dead neurons)
+7. **TASK_043** (ATC) - Representation health
+
+### Implemented Modules (2026-01-06)
+
+All modules are in `mcts_trader/jax_agent/`:
+
+| Module | File | CLI Flags |
+|--------|------|-----------|
+| ε-greedy MCTS | `exploration.py` | `--epsilon-greedy 0.2` |
+| Dirichlet Noise | `exploration.py` | `--dirichlet-aggressive` |
+| SAC Entropy | `sac_entropy.py` | `--sac-entropy --sac-target-entropy-ratio 0.5` |
+| Flow Matching | `flow_matching.py` | `--flow-matching --flow-velocity-weight 0.8` |
+| Differential Reward | `differential_reward.py` | `--differential-reward --differential-weight 1.0` |
+
+**Example usage combining interventions:**
+```bash
+python train_jax_fast.py \
+    --synthetic-level 0 \
+    --epsilon-greedy 0.2 \
+    --dirichlet-aggressive \
+    --sac-entropy \
+    --flow-matching \
+    --differential-reward
+```
+
+### Research Sources
+
+Research documents in `/home/lukas/Trader/docs/AI_bleed research/`:
+- `big gemini.txt` - Comprehensive deep research
+- `kimi.txt` - Collapse mechanism analysis
+- `cl_cli.txt` - Causal diagram
+- `compass_artifact_*.md` - Breaking dual collapse
+
+### Known Limitations (2026-01-04 Audit)
+
+Documented issues that are acceptable for now but may need future attention:
+
+| Issue | File | Status | Notes |
+|-------|------|--------|-------|
+| **MCTS terminal discount** | `mctx_search.py:104` | Accepted | Discount always γ=0.997, no terminal handling. Acceptable for fixed-length episodes (γ^400≈0.30 natural decay). Future: add terminal prediction head to dynamics model. |
+| **Target network unused** | `trainer.py:683-694` | Dead code | `target_params` updated but never used in loss. Decision needed: implement TD-style value learning or remove. |
+| **RNG split inefficiency** | `muzero_model.py:344` | Optimization | RNG splits inside loop prevent parallelization. Future: pre-split all keys outside loop. |
+
+### Code Quality Notes (2026-01-04 Audit)
+
+**Confirmed Working Correctly** (investigated, not bugs):
+- **PopArt weight correction**: Correction before gradient is intentional - provides smooth starting point, then gradients adapt
+- **Replay buffer `<=` check**: Correct because `position` is "next write" not "last wrote"
+- **Symlog + categorical**: Not double transformation - symlog (compression) and binning (discretization) serve different purposes
+- **Adaptive calibration**: Fully implemented at `train_jax_fast.py:2055-2088`
+
+**Fixed Bugs (2026-01-04)**:
+- Scheduled sampling scalar → per-batch-element random (`muzero_model.py:349`)
+- Division by zero guards in position sizing (`jax_trading_env.py:508,532,627`)
+- Per-instance RNG for parallel reproducibility (`vectorbt_env.py:342,362-364`)
+
+## Session Notes (2026-01-06)
+
+### Work Completed
+
+1. **Stability Intervention Modules Created** - All modular, minimal main program growth:
+   - `mcts_trader/jax_agent/exploration.py` - ε-greedy MCTS + Dirichlet helpers
+   - `mcts_trader/jax_agent/sac_entropy.py` - SAC-style learnable entropy coefficient
+   - `mcts_trader/jax_agent/flow_matching.py` - Velocity prediction loss
+   - `mcts_trader/jax_agent/differential_reward.py` - Opportunity cost rewards
+
+2. **CLI Flags Added to train_jax_fast.py**:
+   ```
+   --epsilon-greedy 0.2        # Mix uniform into MCTS policy
+   --dirichlet-aggressive      # α=0.5, ε=0.5 (vs default 0.3, 0.25)
+   --sac-entropy               # Enable learnable entropy coefficient
+   --sac-target-entropy-ratio  # Target as % of max entropy (default: 0.5)
+   --flow-matching             # Predict velocity not state
+   --flow-velocity-weight      # Weight for velocity loss (default: 0.8)
+   --differential-reward       # Subtract market average from rewards
+   --differential-weight       # Weight for differential component
+   ```
+
+3. **Sweep/Tournament Scripts Created**:
+   - `stability_sweep.py` - Tests interventions individually and in combinations
+   - `stability_tournament.py` - Multi-run statistical tournament with confidence intervals
+
+   Usage:
+   ```bash
+   # Quick test (50 epochs, ~2h)
+   python stability_sweep.py --mode quick
+
+   # Full sweep (150 epochs, ~8h)
+   python stability_sweep.py --mode full
+
+   # Overnight (300 epochs, ~16h)
+   python stability_sweep.py --mode overnight
+
+   # Tournament (5 runs per config)
+   python stability_tournament.py --mode full --runs-per-config 5
+   ```
+
+   Both scripts support:
+   - `--parallel-envs N` (default: 50)
+   - `--no-jax-env` (use numpy env instead)
+   - Mode-based timeouts: quick=30min, full=90min, overnight=180min
+
+4. **Task Files Updated**:
+   - TASK_037 (ε-greedy) → IMPLEMENTED
+   - TASK_039 (Dirichlet) → IMPLEMENTED
+   - TASK_040 (SAC Entropy) → IMPLEMENTED
+   - TASK_041 (Flow Matching) → IMPLEMENTED
+   - TASK_038 (Differential Reward) → IMPLEMENTED
+
+5. **Bug Fixes**:
+   - Fixed syntax error in `stability_sweep.py:322` - missing `)` in `cmd.extend([...])`
+   - Fixed syntax error in `stability_tournament.py:207` - same issue
+
+### Next Steps
+
+1. Run overnight stability sweep to find best intervention combinations
+2. Integrate winning interventions into main training loop
+3. Implement TASK_042 (ReDo) and TASK_043 (ATC) if needed
+
+### Sweep Configurations Being Tested
+
+| Config | Interventions |
+|--------|---------------|
+| baseline_kitchen_sink | Best warmup config, no new interventions |
+| epsilon_010/020/030 | ε-greedy at 10%, 20%, 30% |
+| dirichlet_aggressive | α=0.5, ε=0.5 |
+| sac_entropy_040/050 | SAC entropy at 40%, 50% target |
+| flow_matching_080/100 | Flow matching at 80%, 100% velocity weight |
+| differential_reward_050/100 | Differential reward at 50%, 100% |
+| combo_exploration | ε-greedy 20% + aggressive Dirichlet |
+| combo_entropy_control | ε-greedy 20% + SAC entropy |
+| combo_prediction_reward | Flow matching + differential reward |
+| kitchen_sink_v2 | All interventions enabled |
+
+## Session Notes (2026-01-11)
+
+### Work Completed
+
+1. **Training Enhancement Tasks Implemented** (commit `222a3ce`):
+   - **TASK_022**: TD(λ)/GAE returns - `mcts_trader/jax_agent/returns.py`
+   - **TASK_025**: Per-head gradient clipping - in `trainer.py`
+   - **TASK_042**: ReDo dormancy framework - `mcts_trader/jax_agent/redo.py`
+   - **TASK_043**: ATC contrastive loss - `mcts_trader/jax_agent/atc.py`
+
+2. **New CLI Flags**:
+   ```
+   # TASK_022: GAE Returns
+   --use-gae                    # Enable GAE instead of MC returns
+   --gae-lambda 0.95            # GAE lambda parameter
+
+   # TASK_025: Per-head Gradient Clipping
+   --per-head-clipping          # Enable per-head clipping
+   --clip-grad-value 1.0        # Value head max norm
+   --clip-grad-policy 1.0       # Policy head max norm
+   --clip-grad-dynamics 1.0     # Dynamics head max norm
+   --clip-grad-encoder 1.0      # Encoder max norm
+
+   # TASK_042: ReDo
+   --redo                       # Enable dormant neuron recycling
+   --redo-interval 10           # Epochs between checks
+   --redo-threshold 0.01        # CV threshold for dormancy
+
+   # TASK_043: ATC
+   --atc-loss                   # Enable ATC contrastive loss
+   --atc-weight 0.1             # Weight for ATC loss
+   --atc-k-step 5               # Temporal distance for positives
+   --atc-temperature 0.1        # Contrastive temperature
+   ```
+
+3. **Partial Implementations**:
+   - TASK_042 and TASK_043 require model changes to expose intermediate activations
+   - Core loss functions and monitoring frameworks are complete
+
+### Testing Results
+
+- [x] Unit test: GAE returns computation - PASSED
+- [x] Unit test: Per-head gradient clipping - PASSED (bug fixed in commit `8f28b4a`)
+- [x] Unit test: ReDo dormancy monitor - PASSED
+- [x] Unit test: ATC contrastive loss - PASSED
+- [x] Integration test: Short training run - PASSED
+- [x] Validate kitchen_sink_v2 config - PASSED (10 epochs completed)
+
+**Bug Fixed**: Per-head gradient clipping was returning wrong pytree structure.
+Used `jax.tree_util.tree_map_with_path` instead of `unflatten_dict` to preserve exact FrozenDict structure.
+
+### Training Results (L2_full_realism)
+
+Impressive results shared:
+- Alpha: +663% at epoch 291 (400% MA50)
+- HOLD: 65% (healthy, not collapsed)
+- Entropy: 5.26 (healthy)
+- Note: This is 400% per 400-minute block, not annual
