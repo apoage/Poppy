@@ -56,6 +56,14 @@ from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support, get_val
 # Import environment - VectorBT-based (clean accounting, no FX bugs)
 from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
 from mcts_trader.training.safe_checkpoint import SafeCheckpointManager
+from mcts_trader.training.self_play import (
+    run_self_play,
+    run_self_play_batched,
+    run_self_play_jax,
+    N_ACTIONS_PER_ASSET,
+)
+from mcts_trader.training.evaluator import run_generalization_eval
+from mcts_trader.training.env_factory import create_jax_env_and_prices
 
 # Tree Search (Phase 3) - imported conditionally when --use-tree-search is enabled
 # from mcts_trader.jax_agent.prediction import (
@@ -65,865 +73,6 @@ from mcts_trader.training.safe_checkpoint import SafeCheckpointManager
 # DS24 Enhanced Metrics Logging - imported conditionally when --ds24-logging is enabled
 # from tools.DS24.metrics_logger import DS24MetricsLogger
 
-# Action space: 5 actions per asset [Sell, Hold, Buy, Limit Sell, Limit Buy]
-N_ACTIONS_PER_ASSET = 5
-
-
-def run_self_play(env, search_fn, model_apply_fn, params, rng_key, steps=200, confidence_threshold=0.0, support_size=VALUE_SUPPORT_SIZE, collect_prices=False, risk_adjust_fn=None, pred_params=None, discount=0.997):
-    """Self-play with timing. Optionally collects price data for prediction loss and risk-adjusted rewards.
-
-    Args:
-        pred_params: Prediction model params for dynamic tree search. If provided, risk_adjust_fn
-                     will be called as risk_adjust_fn(pred_params, prices, reward, rng) instead of
-                     risk_adjust_fn(prices, reward, rng).
-    """
-    obs_dict, info = env.reset()
-
-    observations, actions, rewards, values, policy_probs, dones = [], [], [], [], [], []
-    # MCTS root values for DS24 planning metrics
-    mcts_root_values = []
-    # Price data for prediction loss (Phase 2)
-    prices_list, next_prices_list = [], []
-    # Uncertainty tracking for tree search (Phase 3)
-    uncertainty_samples = []
-    score = 0.0
-    rng = rng_key
-
-    for step in range(steps):
-        rng, step_rng = jax.random.split(rng)
-
-        # Prepare observation
-        obs_array = obs_dict['observation']
-        if hasattr(obs_array, 'cpu'):
-            obs_array = obs_array.cpu().numpy()
-        obs_array = np.expand_dims(obs_array, axis=0)
-        obs_jax = jnp.array(obs_array, dtype=jnp.float32)
-
-        # Prepare Mask
-        mask_array = obs_dict['action_mask']
-        mask_array = np.expand_dims(mask_array, axis=0)
-        mask_jax = jnp.array(mask_array, dtype=jnp.int8)
-
-        # MCTS
-        action_jax, policy_jax, stats = search_fn(params, step_rng, obs_jax, mask_jax)
-
-        # Value (MCTS root value for DS24 logging)
-        if 'root_value' in stats:
-            value_scalar = stats['root_value'][0]
-            mcts_root_values.append(float(value_scalar))
-        else:
-            output = model_apply_fn({'params': params}, obs_jax, mode='initial_inference')
-            support = get_value_support()
-            value_probs = jax.nn.softmax(output['value'][0])
-            value_scalar = jnp.sum(value_probs * support)
-            mcts_root_values.append(float(value_scalar))
-
-        # MCTS Tree Analytics (every 10% of episode or min 100 steps)
-        log_interval = max(100, steps // 10)
-        if step % log_interval == 0 and step > 0:
-            # Aggregate action types from MCTS policy
-            policy_np = np.array(policy_jax[0])
-
-            # Sum probabilities by action type across all assets
-            # 5-action: [0] Sell, [1] Hold, [2] Buy, [3] Limit Sell, [4] Limit Buy
-            sell_prob = policy_np[0::5].sum()
-            hold_prob = policy_np[1::5].sum()
-            buy_prob = policy_np[2::5].sum()
-            limit_sell_prob = policy_np[3::5].sum()
-            limit_buy_prob = policy_np[4::5].sum()
-            action_summary = f"S={sell_prob:.3f} H={hold_prob:.3f} B={buy_prob:.3f} LS={limit_sell_prob:.3f} LB={limit_buy_prob:.3f}"
-
-            # Policy entropy (measure of exploration)
-            policy_entropy = -np.sum(policy_np * np.log(policy_np + 1e-10))
-
-            # Value head distribution analysis
-            output = model_apply_fn({'params': params}, obs_jax, mode='initial_inference')
-            value_probs = jax.nn.softmax(output['value'][0])
-            value_probs_np = np.array(value_probs)
-
-            # Find peak bin and concentration
-            peak_bin = np.argmax(value_probs_np)
-            peak_prob = value_probs_np[peak_bin]
-            support_np = get_value_support_np()
-            peak_value = support_np[peak_bin]
-
-            # Entropy of value distribution
-            value_entropy = -np.sum(value_probs_np * np.log(value_probs_np + 1e-10))
-
-            print(f"  [MCTS Step {step}] Policy: {action_summary} | Entropy={policy_entropy:.2f} | Value={value_scalar:.3f}")
-            print(f"    Value Head: Peak bin={peak_bin}/{len(value_probs_np)} ({peak_value:.2f}) | Peak prob={peak_prob:.3f} | Entropy={value_entropy:.2f}")
-
-        # Execute
-        action_int = int(action_jax[0])
-
-        # Confidence Thresholding (Gate-keeping)
-        if confidence_threshold > 0:
-            probs = np.array(policy_jax[0])
-            max_prob = np.max(probs)
-            if max_prob < confidence_threshold:
-                # Force HOLD: (asset_idx * N_ACTIONS_PER_ASSET) + 1
-                asset_idx = action_int // N_ACTIONS_PER_ASSET
-                action_int = (asset_idx * N_ACTIONS_PER_ASSET) + 1
-
-        next_obs_dict, reward, terminated, truncated, info = env.step(action_int)
-        done = terminated or truncated
-
-        # Risk-adjusted reward using tree search (Phase 3)
-        # Sample uncertainty every 50 steps to avoid overhead
-        if risk_adjust_fn is not None and step % 50 == 0 and hasattr(env, 'prices') and env.prices is not None:
-            rng, tree_rng = jax.random.split(rng)
-            try:
-                # Use correct attribute names from VectorBTTradingEnv
-                current_idx = env.episode_start_idx + env.current_step
-                if current_idx < len(env.prices):
-                    # Convert prices to log-space for tree search
-                    log_prices = jnp.log(jnp.array(env.prices[current_idx]) + 1e-8)
-
-                    # Call reward adjuster - different signature for dynamic vs static params
-                    if pred_params is not None:
-                        # Dynamic: uses trained prediction model params
-                        adjusted_reward = risk_adjust_fn(pred_params, log_prices, float(reward), tree_rng)
-                    else:
-                        # Static: uses baked-in params
-                        adjusted_reward = risk_adjust_fn(log_prices, float(reward), tree_rng)
-
-                    uncertainty = float(reward) - float(adjusted_reward)  # Penalty amount
-                    uncertainty_samples.append(uncertainty)
-            except Exception as e:
-                # Log first error for debugging
-                if len(uncertainty_samples) == 0:
-                    print(f"⚠️ Tree search error: {e}")
-                pass  # Don't crash training on tree search errors
-
-        # Store
-        observations.append(obs_array[0])
-        actions.append(action_int)
-        rewards.append(reward)
-        values.append(float(value_scalar))
-        policy_probs.append(np.array(policy_jax[0]))
-        dones.append(done)
-
-        # Collect price data for prediction loss (Phase 2)
-        if collect_prices and hasattr(env, 'prices') and env.prices is not None:
-            # Use correct attribute names from VectorBTTradingEnv
-            current_idx = env.episode_start_idx + env.current_step
-            if current_idx < len(env.prices) - 1:
-                prices_list.append(env.prices[current_idx].copy())
-                next_prices_list.append(env.prices[current_idx + 1].copy())
-
-        score += reward
-        obs_dict = next_obs_dict
-        last_info = info  # Keep last info for market baseline metrics
-
-        if done:
-            break
-
-    # Extract market baseline metrics from last step
-    market_return = last_info.get('market_return', 0.0)
-    agent_return = last_info.get('agent_return', 0.0)
-    alpha = last_info.get('alpha', 0.0)
-
-    # CRITICAL FIX: Compute Monte Carlo returns (sum of future discounted rewards)
-    # instead of using model's value predictions (which creates circular dependency!)
-    rewards_arr = np.array(rewards)
-    n_steps = len(rewards_arr)
-    mc_returns = np.zeros(n_steps)
-    # discount is passed as parameter now
-
-    # Compute returns from end to start
-    running_return = 0.0
-    for t in range(n_steps - 1, -1, -1):
-        running_return = rewards_arr[t] + discount * running_return
-        mc_returns[t] = running_return
-
-    # Compute horizon-specific returns for DS24 tracking (value prediction error analysis)
-    horizon_returns = {}
-    for h in [1, 5, 10]:
-        h_returns = np.zeros(n_steps)
-        for t in range(n_steps):
-            # k-step discounted return from t
-            end_idx = min(t + h, n_steps)
-            running = 0.0
-            for i in range(end_idx - 1, t - 1, -1):
-                running = rewards_arr[i] + discount * running
-            h_returns[t] = running
-        horizon_returns[h] = h_returns
-
-    result = {
-        'observations': np.array(observations),
-        'actions': np.array(actions),
-        'rewards': np.array(rewards),
-        'values': mc_returns,  # Full MC returns (not clipped)
-        'policy_probs': np.array(policy_probs),
-        'dones': np.array(dones),
-        'mcts_root_values': np.array(mcts_root_values),  # For DS24 planning metrics
-        'horizon_returns': horizon_returns,  # For DS24 horizon value error analysis
-        # Market baseline metrics
-        'market_return': market_return,
-        'agent_return': agent_return,
-        'alpha': alpha,
-    }
-
-    # Include price data if collected (Phase 2)
-    if collect_prices and len(prices_list) > 0:
-        result['prices'] = np.array(prices_list)
-        result['next_prices'] = np.array(next_prices_list)
-
-    # Include uncertainty samples if collected (Phase 3)
-    if len(uncertainty_samples) > 0:
-        result['uncertainty'] = np.array(uncertainty_samples)
-
-    return result, score
-
-
-def run_self_play_batched(envs, search_fn, model_apply_fn, params, rng_key, steps=200,
-                          confidence_threshold=0.0, support_size=VALUE_SUPPORT_SIZE,
-                          collect_prices=False, discount=0.997):
-    """Batched self-play across N parallel environments.
-
-    Achieves near-linear speedup by batching MCTS neural network calls across
-    all environments. Each env is independent, preserving causality.
-
-    Args:
-        envs: List of N environment instances
-        Other args same as run_self_play
-
-    Returns:
-        results: List of N trajectory dicts
-        scores: List of N episode scores
-    """
-    n_envs = len(envs)
-
-    # Reset all envs
-    obs_dicts = []
-    for env in envs:
-        obs_dict, _ = env.reset()
-        obs_dicts.append(obs_dict)
-
-    # Per-env trajectory storage
-    all_observations = [[] for _ in range(n_envs)]
-    all_actions = [[] for _ in range(n_envs)]
-    all_rewards = [[] for _ in range(n_envs)]
-    all_values = [[] for _ in range(n_envs)]
-    all_policy_probs = [[] for _ in range(n_envs)]
-    all_dones = [[] for _ in range(n_envs)]
-    all_mcts_root_values = [[] for _ in range(n_envs)]  # For DS24 planning metrics
-    all_prices = [[] for _ in range(n_envs)]
-    all_next_prices = [[] for _ in range(n_envs)]
-    all_last_info = [{} for _ in range(n_envs)]  # Track last info for market baseline
-
-    scores = [0.0] * n_envs
-    active = [True] * n_envs  # Track which envs are still running
-    rng = rng_key
-
-    for step in range(steps):
-        # Count active envs
-        n_active = sum(active)
-        if n_active == 0:
-            break
-
-        rng, step_rng = jax.random.split(rng)
-
-        # Stack observations from active envs only
-        active_indices = [i for i in range(n_envs) if active[i]]
-        obs_batch = []
-        mask_batch = []
-
-        for i in active_indices:
-            obs_array = obs_dicts[i]['observation']
-            if hasattr(obs_array, 'cpu'):
-                obs_array = obs_array.cpu().numpy()
-            obs_batch.append(obs_array)
-            mask_batch.append(obs_dicts[i]['action_mask'])
-
-        obs_batch = jnp.array(np.stack(obs_batch), dtype=jnp.float32)
-        mask_batch = jnp.array(np.stack(mask_batch), dtype=jnp.int8)
-
-        # Batched MCTS - single GPU call for all envs!
-        actions_jax, policies_jax, stats = search_fn(params, step_rng, obs_batch, mask_batch)
-
-        # Get values
-        if 'root_value' in stats:
-            values_batch = stats['root_value']
-        else:
-            output = model_apply_fn({'params': params}, obs_batch, mode='initial_inference')
-            support = get_value_support()
-            value_probs = jax.nn.softmax(output['value'], axis=-1)
-            values_batch = jnp.sum(value_probs * support, axis=-1)
-
-        # Step each active env (this is still serial but env.step is fast ~2ms)
-        for batch_idx, env_idx in enumerate(active_indices):
-            action_int = int(actions_jax[batch_idx])
-
-            # Confidence thresholding
-            if confidence_threshold > 0:
-                probs = np.array(policies_jax[batch_idx])
-                max_prob = np.max(probs)
-                if max_prob < confidence_threshold:
-                    asset_idx = action_int // N_ACTIONS_PER_ASSET
-                    action_int = (asset_idx * N_ACTIONS_PER_ASSET) + 1  # Force HOLD
-
-            next_obs_dict, reward, terminated, truncated, info = envs[env_idx].step(action_int)
-            done = terminated or truncated
-
-            # Store trajectory data
-            all_observations[env_idx].append(obs_batch[batch_idx])
-            all_actions[env_idx].append(action_int)
-            all_rewards[env_idx].append(reward)
-            all_values[env_idx].append(float(values_batch[batch_idx]))
-            all_policy_probs[env_idx].append(np.array(policies_jax[batch_idx]))
-            all_dones[env_idx].append(done)
-            all_mcts_root_values[env_idx].append(float(values_batch[batch_idx]))
-
-            # Collect price data
-            if collect_prices and hasattr(envs[env_idx], 'prices') and envs[env_idx].prices is not None:
-                current_idx = envs[env_idx].episode_start_idx + envs[env_idx].current_step
-                if current_idx < len(envs[env_idx].prices) - 1:
-                    all_prices[env_idx].append(envs[env_idx].prices[current_idx].copy())
-                    all_next_prices[env_idx].append(envs[env_idx].prices[current_idx + 1].copy())
-
-            scores[env_idx] += reward
-            obs_dicts[env_idx] = next_obs_dict
-            all_last_info[env_idx] = info  # Track last info for market baseline
-
-            if done:
-                active[env_idx] = False
-
-    # Compute MC returns and package results for each env
-    results = []
-    # discount is passed as parameter now
-
-    for i in range(n_envs):
-        rewards_arr = np.array(all_rewards[i])
-        n_steps = len(rewards_arr)
-        mc_returns = np.zeros(n_steps)
-
-        running_return = 0.0
-        for t in range(n_steps - 1, -1, -1):
-            running_return = rewards_arr[t] + discount * running_return
-            mc_returns[t] = running_return
-
-        # Compute horizon-specific returns for DS24 tracking
-        horizon_returns = {}
-        for h in [1, 5, 10]:
-            h_returns = np.zeros(n_steps)
-            for t in range(n_steps):
-                end_idx = min(t + h, n_steps)
-                running = 0.0
-                for j in range(end_idx - 1, t - 1, -1):
-                    running = rewards_arr[j] + discount * running
-                h_returns[t] = running
-            horizon_returns[h] = h_returns
-
-        # Extract market baseline metrics from last info
-        last_info = all_last_info[i]
-        market_return = last_info.get('market_return', 0.0)
-        agent_return = last_info.get('agent_return', 0.0)
-        alpha = last_info.get('alpha', 0.0)
-
-        result = {
-            'observations': np.array(all_observations[i]),
-            'actions': np.array(all_actions[i]),
-            'rewards': rewards_arr,
-            'values': mc_returns,
-            'policy_probs': np.array(all_policy_probs[i]),
-            'dones': np.array(all_dones[i]),
-            'mcts_root_values': np.array(all_mcts_root_values[i]),  # For DS24 planning metrics
-            'horizon_returns': horizon_returns,  # For DS24 horizon value error analysis
-            # Market baseline metrics
-            'market_return': market_return,
-            'agent_return': agent_return,
-            'alpha': alpha,
-        }
-
-        if collect_prices and len(all_prices[i]) > 0:
-            result['prices'] = np.array(all_prices[i])
-            result['next_prices'] = np.array(all_next_prices[i])
-
-        results.append(result)
-
-    return results, scores
-
-
-# =============================================================================
-# JAX-Vectorized Self-Play (Phase 4 Integration)
-# =============================================================================
-
-def run_self_play_jax(
-    jax_env_states,  # TradingState from JAX env (batched)
-    prices: jnp.ndarray,  # Price array (n_steps, n_assets)
-    jax_env_config,  # EnvConfig
-    search_fn,
-    model_apply_fn,
-    params,
-    rng_key,
-    steps: int = 200,
-    confidence_threshold: float = 0.0,
-    support_size: int = VALUE_SUPPORT_SIZE,
-    discount: float = 0.997,
-):
-    """Fully GPU-accelerated self-play using JAX environment.
-
-    This replaces run_self_play_batched with a JAX-native implementation
-    that keeps all computation on GPU.
-
-    Args:
-        jax_env_states: Batched TradingState from jit_batch_reset
-        prices: Price array (n_steps, n_assets) as JAX array
-        jax_env_config: JAX EnvConfig
-        search_fn: MCTS search function
-        model_apply_fn: Model apply function
-        params: Model parameters
-        rng_key: JAX RNG key
-        steps: Number of steps per episode
-        confidence_threshold: MCTS confidence threshold for forcing HOLD
-        support_size: Value support size
-        discount: Discount factor for returns
-
-    Returns:
-        results: List of trajectory dicts (same format as run_self_play_batched)
-        scores: List of episode scores
-    """
-    from mcts_trader.env.jax_trading_env import (
-        jit_batch_step, compute_observation_27ch,
-        compute_portfolio_value, get_current_prices,
-        jit_batch_compute_action_mask,
-    )
-    from mcts_trader.env.jax_encoder import (
-        EncoderConfig as FullEncoderConfig,
-        jit_batch_encode_simple,
-    )
-
-    n_envs = jax_env_states.cash.shape[0]
-    n_assets = jax_env_config.n_assets
-    n_actions = n_assets * N_ACTIONS_PER_ASSET
-
-    # Create encoder config
-    encoder_config = FullEncoderConfig(
-        n_assets=n_assets,
-        window_size=jax_env_config.window_size,
-        n_channels=27,
-    )
-
-    # Storage for trajectories - PRE-ALLOCATED arrays (TASK_028 Phase 1)
-    # This eliminates 20,000+ list.append() calls and their memory fragmentation
-    # Using fp16 for large arrays (obs, policies) to halve bandwidth
-    all_observations = np.zeros((n_envs, steps, 27, n_assets, n_assets), dtype=np.float16)
-    all_actions = np.zeros((n_envs, steps), dtype=np.int32)
-    all_rewards = np.zeros((n_envs, steps), dtype=np.float32)
-    all_values = np.zeros((n_envs, steps), dtype=np.float32)
-    all_policy_probs = np.zeros((n_envs, steps, n_actions), dtype=np.float16)
-    all_dones = np.zeros((n_envs, steps), dtype=np.bool_)
-    all_mcts_root_values = np.zeros((n_envs, steps), dtype=np.float32)
-    step_counts = np.zeros(n_envs, dtype=np.int32)  # Track actual steps per env
-
-    scores = np.zeros(n_envs, dtype=np.float32)
-    active = np.ones(n_envs, dtype=bool)  # Track active envs
-    states = jax_env_states
-    rng = rng_key
-
-    # TASK_028 Phase 2: Batched GPU transfers
-    # Accumulate JAX arrays on GPU, transfer in batches every BATCH_STEPS
-    BATCH_STEPS = 50  # Transfer every 50 steps (4 transfers instead of 200)
-    gpu_obs_buffer = []
-    gpu_actions_buffer = []
-    gpu_rewards_buffer = []
-    gpu_values_buffer = []
-    gpu_policies_buffer = []
-    gpu_dones_buffer = []
-    batch_start_step = 0
-
-    def flush_gpu_buffers(batch_start, gpu_obs, gpu_actions, gpu_rewards,
-                          gpu_values, gpu_policies, gpu_dones, active_states):
-        """Transfer accumulated GPU buffers to CPU storage."""
-        if not gpu_obs:
-            return
-
-        # Stack on GPU (fast) then single transfer
-        obs_stacked = jnp.stack(gpu_obs, axis=1)  # (n_envs, batch_steps, 27, n_assets, n_assets)
-        actions_stacked = jnp.stack(gpu_actions, axis=1)  # (n_envs, batch_steps)
-        rewards_stacked = jnp.stack(gpu_rewards, axis=1)
-        values_stacked = jnp.stack(gpu_values, axis=1)
-        policies_stacked = jnp.stack(gpu_policies, axis=1)
-        dones_stacked = jnp.stack(gpu_dones, axis=1)
-
-        # Single batch transfer (much fewer PCIe roundtrips)
-        obs_np = np.array(obs_stacked, dtype=np.float16)
-        actions_np = np.array(actions_stacked, dtype=np.int32)
-        rewards_np = np.array(rewards_stacked, dtype=np.float32)
-        values_np = np.array(values_stacked, dtype=np.float32)
-        policies_np = np.array(policies_stacked, dtype=np.float16)
-        dones_np = np.array(dones_stacked, dtype=np.bool_)
-
-        batch_len = obs_np.shape[1]
-        end_step = batch_start + batch_len
-
-        # Copy to pre-allocated arrays
-        all_observations[:, batch_start:end_step] = obs_np
-        all_actions[:, batch_start:end_step] = actions_np
-        all_rewards[:, batch_start:end_step] = rewards_np
-        all_values[:, batch_start:end_step] = values_np
-        all_policy_probs[:, batch_start:end_step] = policies_np
-        all_dones[:, batch_start:end_step] = dones_np
-        all_mcts_root_values[:, batch_start:end_step] = values_np
-
-    for step in range(steps):
-        n_active = int(np.sum(active))
-        if n_active == 0:
-            break
-
-        rng, step_rng = jax.random.split(rng)
-
-        # Get window starts for observation encoding
-        window_starts = states.episode_start_idx + states.current_step
-
-        # Encode observations using 27-channel encoder (batched)
-        obs_batch = jit_batch_encode_simple(
-            prices, window_starts, encoder_config
-        )  # (n_envs, 27, n_assets, n_assets)
-
-        # Get current prices for each env (for action masking)
-        current_step_indices = states.episode_start_idx + states.current_step
-        current_prices_batch = prices[current_step_indices]  # (n_envs, n_assets)
-
-        # Compute proper action mask based on portfolio state (matches VectorBT behavior)
-        mask_batch = jit_batch_compute_action_mask(
-            states, current_prices_batch, jax_env_config,
-            max_positions=16, min_cash_threshold=100.0
-        )
-
-        # Batched MCTS - single GPU call
-        actions_jax, policies_jax, stats = search_fn(params, step_rng, obs_batch, mask_batch)
-
-        # Get values
-        if 'root_value' in stats:
-            values_batch = stats['root_value']
-        else:
-            output = model_apply_fn({'params': params}, obs_batch, mode='initial_inference')
-            support = get_value_support()
-            value_probs = jax.nn.softmax(output['value'], axis=-1)
-            values_batch = jnp.sum(value_probs * support, axis=-1)
-
-        # Confidence thresholding
-        if confidence_threshold > 0:
-            max_probs = jnp.max(policies_jax, axis=-1)
-            low_confidence = max_probs < confidence_threshold
-            asset_indices = actions_jax // N_ACTIONS_PER_ASSET
-            hold_actions = asset_indices * N_ACTIONS_PER_ASSET + 1
-            actions_jax = jnp.where(low_confidence, hold_actions, actions_jax)
-
-        # Batched JAX step - GPU accelerated!
-        new_states, obs_new, rewards, dones = jit_batch_step(
-            states, actions_jax, prices, jax_env_config
-        )
-
-        # TASK_028 Phase 2: Accumulate on GPU instead of per-step transfer
-        gpu_obs_buffer.append(obs_batch)
-        gpu_actions_buffer.append(actions_jax)
-        gpu_rewards_buffer.append(rewards)
-        gpu_values_buffer.append(values_batch)
-        gpu_policies_buffer.append(policies_jax)
-        gpu_dones_buffer.append(dones)
-
-        # Flush buffer every BATCH_STEPS (4 transfers instead of 200)
-        if len(gpu_obs_buffer) >= BATCH_STEPS or step == steps - 1:
-            flush_gpu_buffers(batch_start_step, gpu_obs_buffer, gpu_actions_buffer,
-                              gpu_rewards_buffer, gpu_values_buffer, gpu_policies_buffer,
-                              gpu_dones_buffer, active)
-            batch_start_step = step + 1
-            gpu_obs_buffer = []
-            gpu_actions_buffer = []
-            gpu_rewards_buffer = []
-            gpu_values_buffer = []
-            gpu_policies_buffer = []
-            gpu_dones_buffer = []
-
-        # Update step counts and scores (need per-step for done detection)
-        # Small transfer for dones check only
-        dones_np = np.array(dones, dtype=np.bool_)
-        rewards_np = np.array(rewards, dtype=np.float32)
-        step_counts[active] += 1
-        scores[active] += rewards_np[active]
-
-        # Mark done envs as inactive
-        active[dones_np] = False
-
-        states = new_states
-
-    # Compute MC returns and package results
-    results = []
-
-    # Convert prices once (not per-env!) - fixes performance bug
-    prices_np = np.array(prices)  # (n_steps, n_assets)
-
-    for i in range(n_envs):
-        # Use step_counts to slice pre-allocated arrays to actual trajectory length
-        n_steps_i = int(step_counts[i])
-        if n_steps_i == 0:
-            # Empty trajectory, skip
-            continue
-
-        # Slice to actual trajectory length (TASK_028: no extra copies)
-        rewards_arr = all_rewards[i, :n_steps_i]
-        mc_returns = np.zeros(n_steps_i, dtype=np.float32)
-
-        running_return = 0.0
-        for t in range(n_steps_i - 1, -1, -1):
-            running_return = rewards_arr[t] + discount * running_return
-            mc_returns[t] = running_return
-
-        # Horizon-specific returns for DS24
-        horizon_returns = {}
-        for h in [1, 5, 10]:
-            h_returns = np.zeros(n_steps_i, dtype=np.float32)
-            for t in range(n_steps_i):
-                end_idx = min(t + h, n_steps_i)
-                running = 0.0
-                for j in range(end_idx - 1, t - 1, -1):
-                    running = rewards_arr[j] + discount * running
-                h_returns[t] = running
-            horizon_returns[h] = h_returns
-
-        # Get final portfolio metrics
-        final_return = float(states.cumulative_return[i]) if n_steps_i > 0 else 0.0
-
-        # Compute market return (buy & hold baseline)
-        start_idx = int(jax_env_states.episode_start_idx[i])
-        end_idx = start_idx + n_steps_i
-        if end_idx < len(prices_np) and n_steps_i > 0:
-            start_prices = prices_np[start_idx]
-            end_prices = prices_np[end_idx - 1]
-            # Average return across all assets (equal weight buy & hold)
-            asset_returns = (end_prices - start_prices) / (start_prices + 1e-8)
-            market_return = float(np.mean(asset_returns)) * 100  # As percentage
-        else:
-            market_return = 0.0
-
-        # Slice pre-allocated arrays to actual trajectory length
-        # fp16 arrays converted back to fp32 for trainer compatibility
-        result = {
-            'observations': all_observations[i, :n_steps_i].astype(np.float32),
-            'actions': all_actions[i, :n_steps_i],
-            'rewards': rewards_arr,
-            'values': mc_returns,
-            'policy_probs': all_policy_probs[i, :n_steps_i].astype(np.float32),
-            'dones': all_dones[i, :n_steps_i],
-            'mcts_root_values': all_mcts_root_values[i, :n_steps_i],
-            'horizon_returns': horizon_returns,
-            'market_return': market_return,
-            'agent_return': final_return,
-            'alpha': final_return - market_return,  # True alpha vs market
-        }
-
-        # Add prices for prediction loss and DS24 physics logging
-        # Use trajectory's actual time indices from the price array
-        if n_steps_i > 0 and end_idx <= len(prices_np):
-            result['prices'] = prices_np[start_idx:end_idx]
-            # next_prices: shifted by 1, with last step using same price
-            next_end = min(end_idx + 1, len(prices_np))
-            result['next_prices'] = prices_np[start_idx + 1:next_end]
-            # Pad if needed to match length
-            if len(result['next_prices']) < n_steps_i:
-                result['next_prices'] = np.concatenate([
-                    result['next_prices'],
-                    prices_np[next_end - 1:next_end]  # Repeat last price
-                ])
-
-        results.append(result)
-
-    return results, list(scores)
-
-
-def create_jax_env_and_prices(
-    synthetic_level: int,
-    n_envs: int,
-    n_assets: int = 64,
-    n_steps: int = 2000,
-    fee_bps: float = 0.0,
-    slippage_bps: float = 0.0,
-    max_episode_steps: int = 400,
-    window_size: int = 60,
-    position_size_pct: float = 0.1,
-    rng_key=None,
-):
-    """Create JAX environment states and synthetic prices.
-
-    Args:
-        synthetic_level: Synthetic curriculum level (0-4)
-        n_envs: Number of parallel environments
-        n_assets: Number of assets
-        n_steps: Total price steps to generate
-        fee_bps: Trading fee in basis points
-        slippage_bps: Slippage in basis points
-        max_episode_steps: Max steps per episode
-        window_size: Observation window size
-        position_size_pct: Position size as fraction of portfolio
-        rng_key: JAX RNG key (optional)
-
-    Returns:
-        states: Batched TradingState
-        prices: Price array (n_steps, n_assets)
-        config: EnvConfig
-    """
-    from mcts_trader.env.jax_trading_env import (
-        EnvConfig, jit_batch_reset,
-    )
-    from mcts_trader.data.synthetic_market import SyntheticMarket
-
-    if rng_key is None:
-        rng_key = jax.random.PRNGKey(42)
-
-    # Generate synthetic prices using existing generator
-    synthetic = SyntheticMarket(
-        level=synthetic_level,
-        n_assets=n_assets,
-        n_steps=n_steps,
-    )
-    synthetic.reset()
-
-    # Collect prices
-    prices_np = np.zeros((n_steps, n_assets), dtype=np.float32)
-    for i in range(n_steps):
-        data = synthetic.get_current_data()
-        for j in range(n_assets):
-            symbol = f"SYN_{j:02d}"
-            if symbol in data:
-                prices_np[i, j] = data[symbol]['close']
-        synthetic.step()
-
-    prices = jnp.array(prices_np, dtype=jnp.float32)
-
-    # Create JAX env config
-    config = EnvConfig(
-        n_assets=n_assets,
-        initial_cash=100_000.0,
-        fee_bps=fee_bps,
-        slippage_bps=slippage_bps,
-        max_steps=max_episode_steps,
-        window_size=window_size,
-        position_size_pct=position_size_pct,
-        allow_short=True,
-        tp_sl_enabled=False,
-    )
-
-    # Initialize batched environment states
-    keys = jax.random.split(rng_key, n_envs)
-    states = jit_batch_reset(keys, prices, config)
-
-    return states, prices, config
-
-
-def run_generalization_eval(
-    eval_level: int,
-    search_fn,
-    model_apply_fn,
-    params,
-    rng_key,
-    steps: int = 200,
-    support_size: int = VALUE_SUPPORT_SIZE,
-    n_assets: int = 64,
-    fee: int = 0,
-    slippage: int = 0,
-) -> dict:
-    """
-    Run evaluation episode on a different synthetic level to test generalization.
-
-    Used during curriculum training to track how well the model handles
-    harder patterns (e.g., evaluate on L4 rotation while training on L0 sine).
-
-    Args:
-        eval_level: Synthetic level to evaluate on (0-4)
-        search_fn: MCTS search function
-        model_apply_fn: Model apply function
-        params: Model parameters
-        rng_key: JAX RNG key
-        steps: Episode length
-        support_size: Value support size
-        n_assets: Number of assets
-        fee: Trading fee in bps
-        slippage: Slippage in bps
-
-    Returns:
-        Dict with evaluation metrics:
-            - reward: Episode reward (%)
-            - alpha: Agent return - market return (%)
-            - market_return: Buy-and-hold return (%)
-            - agent_return: Agent final return (%)
-            - pct_hold: Hold action percentage
-            - pct_buy: Buy action percentage
-            - pct_sell: Sell action percentage
-    """
-    # Create evaluation environment
-    eval_env = VectorBTTradingEnv(
-        n_assets=n_assets,
-        window_size=64,
-        mode='MARGIN',
-        fee_bps=fee,
-        slippage_bps=slippage,
-        synthetic_level=eval_level,
-        synthetic_steps=steps + 100,  # Extra buffer
-    )
-
-    # Run single evaluation episode
-    obs_dict, _ = eval_env.reset()
-    score = 0.0
-    actions_list = []
-    rng = rng_key
-
-    for step in range(steps):
-        rng, step_rng = jax.random.split(rng)
-
-        # Prepare observation
-        obs_array = obs_dict['observation']
-        if hasattr(obs_array, 'cpu'):
-            obs_array = obs_array.cpu().numpy()
-        obs_array = np.expand_dims(obs_array, axis=0)
-        obs_jax = jnp.array(obs_array, dtype=jnp.float32)
-
-        # Action mask
-        action_mask = obs_dict['action_mask']
-        if hasattr(action_mask, 'cpu'):
-            action_mask = action_mask.cpu().numpy()
-        mask_jax = jnp.array(np.expand_dims(action_mask, 0), dtype=jnp.int8)
-
-        # MCTS search (no exploration noise in eval)
-        action_jax, _, _ = search_fn(params, step_rng, obs_jax, mask_jax)
-        action = int(action_jax[0])
-        actions_list.append(action)
-
-        # Step environment
-        obs_dict, reward, terminated, truncated, info = eval_env.step(action)
-        score += reward
-
-        if terminated or truncated:
-            break
-
-    # Compute action stats
-    actions_arr = np.array(actions_list)
-    total_actions = len(actions_arr)
-    n_sell = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 0)
-    n_hold = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 1)
-    n_buy = np.sum(actions_arr % N_ACTIONS_PER_ASSET == 2)
-
-    # Extract market baseline from final info
-    market_return = info.get('market_return', 0.0)
-    agent_return = info.get('agent_return', 0.0)
-    alpha = info.get('alpha', agent_return - market_return)
-
-    eval_env.close()
-
-    return {
-        'reward': score,
-        'alpha': alpha,
-        'market_return': market_return,
-        'agent_return': agent_return,
-        'pct_hold': 100.0 * n_hold / total_actions if total_actions > 0 else 0,
-        'pct_buy': 100.0 * n_buy / total_actions if total_actions > 0 else 0,
-        'pct_sell': 100.0 * n_sell / total_actions if total_actions > 0 else 0,
-        'eval_level': eval_level,
-        'steps': len(actions_list),
-    }
-
 
 def main():
     parser = argparse.ArgumentParser(description='JAX MuZero Training')
@@ -931,6 +80,18 @@ def main():
     parser.add_argument('--mode', type=str, default='MARGIN', choices=['SPOT', 'MARGIN'], help='Trading mode')
     parser.add_argument('--fee', type=int, default=0, help='Trading fee in bps (0 for synthetic testing)')
     parser.add_argument('--slippage', type=int, default=0, help='Slippage in bps (0 for synthetic testing)')
+    # TASK_047/052: Market realism
+    parser.add_argument('--probabilistic-fills', action='store_true',
+                       help='Enable probabilistic limit order fills based on distance from market')
+    # TASK_055: Borrowing cost for shorts
+    parser.add_argument('--borrow-rate', type=float, default=0.0,
+                       help='Annual borrowing rate for short positions (e.g., 0.05 = 5%%)')
+    # TASK_049: Synthetic noise for anti-memorization
+    parser.add_argument('--synthetic-noise', type=float, default=0.0,
+                       help='Noise level for synthetic data (0.0-1.0). Higher = harder to memorize patterns')
+    # TASK_053: Episode length variance
+    parser.add_argument('--episode-variance', type=int, default=0,
+                       help='Episode length variance (±N steps). Prevents end-of-episode exploits')
     parser.add_argument('--epochs', type=int, default=1000, help='Number of epochs')
     parser.add_argument('--steps', type=int, default=400, help='Steps per episode (400=6h, 200=3h)')
     parser.add_argument('--config', type=str, help='Training config JSON (dynamic assets)')
@@ -980,7 +141,21 @@ def main():
     parser.add_argument('--confidence-threshold', type=float, default=0.0, help='Minimum policy confidence to execute trade (force Hold otherwise)')
     parser.add_argument('--entropy-coef', type=float, default=0.01, help='Entropy bonus coefficient (higher=more exploration, try 1.0-10.0 for aggressive)')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (default: 1e-4)')
+    # TASK_024: LR schedule
+    parser.add_argument('--lr-schedule', type=str, default='constant',
+                       choices=['constant', 'cosine', 'linear'],
+                       help='LR schedule type (default: constant)')
+    parser.add_argument('--lr-min', type=float, default=1e-6,
+                       help='Minimum LR for schedule (default: 1e-6)')
+    parser.add_argument('--lr-warmup-epochs', type=int, default=10,
+                       help='Warmup epochs for LR schedule (default: 10)')
     parser.add_argument('--discount', type=float, default=0.997, help='Discount factor gamma (default: 0.997)')
+
+    # TASK_022: TD(λ)/GAE returns for variance reduction
+    parser.add_argument('--use-gae', action='store_true', default=False,
+                       help='Use TD(λ)/GAE returns instead of MC returns for variance reduction')
+    parser.add_argument('--gae-lambda', type=float, default=0.95,
+                       help='Lambda parameter for GAE (0=TD(0), 1=MC). Default: 0.95')
 
     # Adaptive entropy - boost exploration when policy collapses to HOLD
     parser.add_argument('--adaptive-entropy', action='store_true', default=False,
@@ -991,6 +166,68 @@ def main():
                        help='Moderate entropy boost when HOLD%% > threshold (default: 0.15)')
     parser.add_argument('--entropy-boost-high', type=float, default=0.30,
                        help='Aggressive entropy boost when HOLD%% > threshold+10%% (default: 0.30)')
+
+    # =========================================================================
+    # Stability Interventions (TASK_037-043) - Prevent dual collapse
+    # =========================================================================
+    # TASK_037: ε-greedy MCTS training target
+    parser.add_argument('--epsilon-greedy', type=float, default=0.0,
+                       help='Mix uniform into MCTS training target: (1-ε)*π_mcts + ε*uniform. '
+                            'Prevents policy collapse. Try 0.1-0.3 (default: 0.0=disabled)')
+
+    # TASK_039: Dirichlet noise (already have --noise and --noise-frac, add recommended preset)
+    parser.add_argument('--dirichlet-aggressive', action='store_true', default=False,
+                       help='Use aggressive Dirichlet noise (α=0.5, ε=0.5) for trading. '
+                            'Overrides --noise and --noise-frac')
+
+    # TASK_040: SAC-style adaptive entropy
+    parser.add_argument('--sac-entropy', action='store_true', default=False,
+                       help='Use SAC-style learnable entropy coefficient (replaces threshold-based)')
+    parser.add_argument('--sac-target-entropy-ratio', type=float, default=0.5,
+                       help='Target entropy as ratio of max (0.5=50%% of log(320)≈2.9 nats)')
+    parser.add_argument('--sac-alpha-lr', type=float, default=3e-4,
+                       help='Learning rate for entropy coefficient (default: 3e-4)')
+    parser.add_argument('--sac-init-alpha', type=float, default=0.01,
+                       help='Initial entropy coefficient (default: 0.01)')
+
+    # TASK_041: Flow matching for prediction
+    parser.add_argument('--flow-matching', action='store_true', default=False,
+                       help='Use velocity (flow) matching for prediction loss. '
+                            'Prevents identity solution collapse.')
+    parser.add_argument('--flow-velocity-weight', type=float, default=0.8,
+                       help='Weight for velocity loss vs state loss (default: 0.8)')
+
+    # TASK_038: Differential reward (opportunity cost)
+    parser.add_argument('--differential-reward', action='store_true', default=False,
+                       help='Use opportunity cost reward: r = r_agent - r_market. '
+                            'Makes HOLD costly when market moves.')
+    parser.add_argument('--differential-baseline', type=str, default='market',
+                       choices=['market', 'zero'],
+                       help='Baseline for differential reward (default: market)')
+    parser.add_argument('--differential-weight', type=float, default=1.0,
+                       help='Weight for market baseline (0=ignore, 1=full, default: 1.0)')
+
+    # TASK_042: ReDo - Recycling Dormant Neurons
+    parser.add_argument('--redo', action='store_true', default=False,
+                       help='Enable ReDo: recycle dormant neurons to maintain network capacity')
+    parser.add_argument('--redo-interval', type=int, default=10,
+                       help='Epochs between dormancy checks (default: 10)')
+    parser.add_argument('--redo-threshold', type=float, default=0.01,
+                       help='Dormancy threshold (CV below this is dormant). Default: 0.01')
+    parser.add_argument('--redo-init-scale', type=float, default=0.01,
+                       help='Scale for re-initialized weights (default: 0.01)')
+
+    # TASK_043: ATC - Augmented Temporal Contrast
+    parser.add_argument('--atc-loss', action='store_true', default=False,
+                       help='Enable ATC: contrastive learning for representation health')
+    parser.add_argument('--atc-weight', type=float, default=0.1,
+                       help='Weight for ATC loss (default: 0.1)')
+    parser.add_argument('--atc-k-step', type=int, default=5,
+                       help='Temporal distance for positive pairs (default: 5)')
+    parser.add_argument('--atc-temperature', type=float, default=0.1,
+                       help='Contrastive loss temperature (default: 0.1)')
+    parser.add_argument('--atc-num-negatives', type=int, default=32,
+                       help='Number of negative samples (default: 32)')
 
     # Value loss configuration (controls sensitivity to high-variance targets)
     parser.add_argument('--value-loss-type', type=str, default='mse', choices=['mse', 'huber'],
@@ -1038,6 +275,8 @@ def main():
                        help='Steps to anneal scheduled sampling (default: 20000)')
     parser.add_argument('--physics-reg-weight', type=float, default=0.01,
                        help='Physics regularization weight (default: 0.01)')
+    parser.add_argument('--physics-warmup-steps', type=int, default=5000,
+                       help='Steps for physics warmup - neural scale anneals 0→1 (default: 5000, 0=disabled)')
 
     # =========================================================================
     # Tree Search (Phase 3) - Predictive tree search for risk-adjusted rewards
@@ -1078,6 +317,19 @@ def main():
                        help='Save periodic tensor snapshots for analysis (every 100 epochs)')
     parser.add_argument('--ds24-grad-norms', action='store_true', default=False,
                        help='Track per-head gradient norms (slower, ~20%% overhead)')
+
+    # TASK_025: Per-head gradient clipping
+    parser.add_argument('--per-head-clipping', action='store_true', default=False,
+                       help='Enable per-head gradient clipping (prevents one head dominating)')
+    parser.add_argument('--clip-grad-value', type=float, default=1.0,
+                       help='Max gradient norm for value head (default: 1.0)')
+    parser.add_argument('--clip-grad-policy', type=float, default=1.0,
+                       help='Max gradient norm for policy head (default: 1.0)')
+    parser.add_argument('--clip-grad-dynamics', type=float, default=1.0,
+                       help='Max gradient norm for dynamics network (default: 1.0)')
+    parser.add_argument('--clip-grad-encoder', type=float, default=1.0,
+                       help='Max gradient norm for encoder (default: 1.0)')
+
     # Dynamic level boosting (reduces overhead while getting periodic deep insights)
     parser.add_argument('--ds24-boost-every', type=int, default=10,
                        help='Boost to DS24 L4 every N epochs (default: 10, 0=disabled)')
@@ -1099,6 +351,8 @@ def main():
                        help='Number of best checkpoints to keep (default: 3)')
     parser.add_argument('--lr-decay-on-rollback', type=float, default=0.5,
                        help='Learning rate decay factor after rollback (default: 0.5)')
+    parser.add_argument('--no-checkpoint', action='store_true', default=False,
+                       help='Disable checkpoint saving (for sweeps/experiments)')
 
     # =========================================================================
     # Generalization Evaluation (Curriculum Training Metrics)
@@ -1270,6 +524,14 @@ def main():
                 window_size=60,
                 position_size_pct=0.1,
                 rng_key=jax.random.PRNGKey(42),
+                # TASK_047/052: Market realism
+                probabilistic_fills=args.probabilistic_fills,
+                # TASK_055: Borrowing cost
+                borrow_rate_annual=args.borrow_rate,
+                # TASK_049: Synthetic noise
+                synthetic_noise=args.synthetic_noise,
+                # TASK_053: Episode variance
+                episode_variance=args.episode_variance,
             )
             print(f"   ✅ JAX env ready: {args.parallel_envs} envs, {jax_prices.shape[0]} price steps")
 
@@ -1316,6 +578,8 @@ def main():
     if args.use_prediction_loss:
         mode_str = "PHYSICS-ONLY" if args.physics_only else "HYBRID (physics+neural)"
         print(f"DEBUG: Prediction head ENABLED (λ_pred: {args.prediction_loss_initial} -> {args.prediction_loss_weight}, mode: {mode_str}, size: {args.pred_head_size})")
+        if args.physics_warmup_steps > 0:
+            print(f"DEBUG: Physics warmup ENABLED - neural scale 0→1 over {args.physics_warmup_steps} steps (TASK_035)")
     if args.use_popart:
         print(f"DEBUG: PopArt normalization ENABLED (β={args.popart_beta})")
 
@@ -1329,6 +593,7 @@ def main():
             multi_step_k=args.multi_step_k,
             scheduled_sampling_steps=args.scheduled_sampling_steps,
             physics_reg_weight=args.physics_reg_weight,
+            physics_warmup_steps=args.physics_warmup_steps,  # TASK_035
         )
 
     trainer = MuZeroTrainer(
@@ -1346,6 +611,12 @@ def main():
         # Value loss configuration
         value_loss_type=args.value_loss_type,
         value_huber_delta=args.value_huber_delta,
+        # TASK_024: LR schedule
+        lr_schedule_type=args.lr_schedule,
+        lr_min=args.lr_min,
+        lr_warmup_epochs=args.lr_warmup_epochs,
+        total_epochs=args.epochs,
+        steps_per_epoch=100,  # Approximate; depends on buffer size / batch size
         # Prediction loss (Phase 2)
         use_prediction_loss=args.use_prediction_loss,
         prediction_config=prediction_config,
@@ -1354,6 +625,12 @@ def main():
         # PopArt value normalization (TASK_021)
         use_popart=args.use_popart,
         popart_beta=args.popart_beta,
+        # TASK_025: Per-head gradient clipping
+        per_head_clipping=args.per_head_clipping,
+        clip_grad_value=args.clip_grad_value,
+        clip_grad_policy=args.clip_grad_policy,
+        clip_grad_dynamics=args.clip_grad_dynamics,
+        clip_grad_encoder=args.clip_grad_encoder,
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -1407,16 +684,27 @@ def main():
         param_estimate = "custom"
     print(f"Model size: state_dim={state_dim} ({param_estimate} params)")
     
+    # TASK_039: Apply aggressive Dirichlet if requested
+    dirichlet_alpha = args.noise
+    exploration_fraction = args.noise_frac
+    if args.dirichlet_aggressive:
+        dirichlet_alpha = 0.5
+        exploration_fraction = 0.5
+        print(f"  Using aggressive Dirichlet noise: α={dirichlet_alpha}, ε={exploration_fraction}")
+
     search_kwargs = {
         'num_simulations': args.sims,
         'use_gumbel': True,
         'gumbel_scale': args.gumbel_scale,
-        'dirichlet_alpha': args.noise,
-        'exploration_fraction': args.noise_frac,
+        'dirichlet_alpha': dirichlet_alpha,
+        'exploration_fraction': exploration_fraction,
         'value_scale': args.value_scale,
-        'value_shift': args.value_shift
+        'value_shift': args.value_shift,
+        'epsilon_greedy': args.epsilon_greedy,  # TASK_037
     }
     print(f"MCTS Search: {args.sims} sims | Gumbel scale: {args.gumbel_scale} | Use Gumbel: True")
+    if args.epsilon_greedy > 0:
+        print(f"  ε-greedy training target: {args.epsilon_greedy:.0%} uniform mixed in")
     if args.value_scale != 1.0 or args.value_shift != 0.0:
         print(f"Value Calibration: scale={args.value_scale}, shift={args.value_shift}")
     
@@ -1593,6 +881,8 @@ def main():
         'policy_entropy', 'avg_value', 'value_std',
         # Value calibration
         'value_scale', 'value_shift',
+        # TASK_031: PopArt normalization stats (for denormalizing logged values)
+        'popart_mean', 'popart_std',
         # Tree search (Phase 3)
         'uncertainty',
         # Config reference
@@ -1661,6 +951,17 @@ def main():
     if args.eval_every > 0:
         print(f"📊 Generalization eval: Every {args.eval_every} epochs on synthetic L{args.eval_level}")
 
+    # TASK_042: ReDo dormancy monitor
+    dormancy_monitor = None
+    if args.redo:
+        from mcts_trader.jax_agent.redo import DormancyMonitor
+        dormancy_monitor = DormancyMonitor(
+            dormancy_threshold=args.redo_threshold,
+            check_interval=args.redo_interval,
+            min_samples=1000,
+        )
+        print(f"🔄 ReDo enabled: check every {args.redo_interval} epochs, threshold={args.redo_threshold}")
+
     try:
         for epoch in range(args.epochs):
             # Update MCTS sims if warmup schedule active
@@ -1703,6 +1004,14 @@ def main():
                     window_size=60,
                     position_size_pct=0.1,
                     rng_key=regen_rng,
+                    # TASK_047/052: Market realism
+                    probabilistic_fills=args.probabilistic_fills,
+                    # TASK_055: Borrowing cost
+                    borrow_rate_annual=args.borrow_rate,
+                    # TASK_049: Synthetic noise
+                    synthetic_noise=args.synthetic_noise,
+                    # TASK_053: Episode variance
+                    episode_variance=args.episode_variance,
                 )
                 if epoch % 50 == 0:  # Log occasionally
                     print(f"   🔄 Regenerated synthetic data (epoch {epoch})")
@@ -1713,6 +1022,9 @@ def main():
                 from mcts_trader.env.jax_trading_env import jit_batch_reset
                 reset_keys = jax.random.split(search_rng, args.parallel_envs)
                 jax_env_states = jit_batch_reset(reset_keys, jax_prices, jax_env_config)
+
+                # TASK_031: Get PopArt state for value denormalization
+                popart_state = trainer.popart.state if trainer.use_popart and trainer.popart else None
 
                 trajectories, scores = run_self_play_jax(
                     jax_env_states,
@@ -1726,11 +1038,17 @@ def main():
                     confidence_threshold=args.confidence_threshold,
                     support_size=model.support_size,
                     discount=args.discount,
+                    popart_state=popart_state,
+                    use_gae=args.use_gae,
+                    gae_lambda=args.gae_lambda,
                 )
                 # Use average score for display
                 score = np.mean(scores)
                 trajectory = trajectories[0]  # Use first for action stats below
             elif args.parallel_envs > 1:
+                # TASK_031: Get PopArt state for value denormalization
+                popart_state = trainer.popart.state if trainer.use_popart and trainer.popart else None
+
                 trajectories, scores = run_self_play_batched(
                     parallel_envs,
                     search,
@@ -1742,11 +1060,17 @@ def main():
                     support_size=model.support_size,
                     collect_prices=args.use_prediction_loss,
                     discount=args.discount,
+                    popart_state=popart_state,
+                    use_gae=args.use_gae,
+                    gae_lambda=args.gae_lambda,
                 )
                 # Use average score for display, add all trajectories
                 score = np.mean(scores)
                 trajectory = trajectories[0]  # Use first for action stats below
             else:
+                # TASK_031: Get PopArt state for value denormalization
+                popart_state = trainer.popart.state if trainer.use_popart and trainer.popart else None
+
                 trajectory, score = run_self_play(
                     env,
                     search,
@@ -1760,6 +1084,9 @@ def main():
                     risk_adjust_fn=risk_adjust_fn,  # Phase 3
                     pred_params=pred_params_for_tree,  # Dynamic tree search params
                     discount=args.discount,
+                    popart_state=popart_state,
+                    use_gae=args.use_gae,
+                    gae_lambda=args.gae_lambda,
                 )
                 trajectories = [trajectory]  # Wrap in list for uniform handling
                 scores = [score]
@@ -1905,6 +1232,10 @@ def main():
 
                 # Log to CSV (use global epoch count)
                 global_epoch = epoch + 1 + epoch_offset
+                # TASK_031: Get PopArt stats for logging
+                popart_mean = float(trainer.popart.mean) if trainer.use_popart and trainer.popart else 0.0
+                popart_std = float(trainer.popart.std) if trainer.use_popart and trainer.popart else 1.0
+
                 base_row = [
                     global_epoch, score, reward_ma20, env.trading_fee_bps, len(trajectory['actions']),
                     alpha, market_return, agent_return,  # Market baseline metrics
@@ -1915,6 +1246,7 @@ def main():
                     pred_loss, lambda_pred, physics_reg,
                     policy_entropy, avg_value, value_std,
                     search.value_scale, search.value_shift,
+                    popart_mean, popart_std,  # TASK_031
                     avg_uncertainty,
                     args.synthetic_level, args.model_size, args.name,
                     # Generalization evaluation (curriculum training)
@@ -1935,46 +1267,70 @@ def main():
                 csv_file.flush()
                 os.fsync(csv_file.fileno())  # Force OS to write to disk
 
-                # Checkpoint management
-                if safe_ckpt_manager is not None:
-                    # Safe checkpoint: only save on improvement
-                    if safe_ckpt_manager.should_save(score):
-                        checkpoint_data = {
-                            'params': trainer.state.params,
-                            'opt_state': trainer.state.opt_state,
-                            'step': trainer.state.step,
-                        }
-                        safe_ckpt_manager.save_checkpoint(checkpoint_data, epoch, score)
-                        print(f"  🛡️ Safe checkpoint saved (metric: {score:.2f})")
+                # Checkpoint management (skip if --no-checkpoint)
+                if not args.no_checkpoint:
+                    if safe_ckpt_manager is not None:
+                        # Safe checkpoint: only save on improvement
+                        if safe_ckpt_manager.should_save(score):
+                            checkpoint_data = {
+                                'params': trainer.state.params,
+                                'opt_state': trainer.state.opt_state,
+                                'step': trainer.state.step,
+                            }
+                            safe_ckpt_manager.save_checkpoint(checkpoint_data, epoch, score)
+                            print(f"  🛡️ Safe checkpoint saved (metric: {score:.2f})")
 
-                    # Check for rollback
-                    if safe_ckpt_manager.should_rollback(score):
-                        if rollback_count >= args.max_rollbacks:
-                            print(f"  ❌ Max rollbacks ({args.max_rollbacks}) exceeded! Failing.")
-                            raise RuntimeError(f"Training failed: max rollbacks exceeded at epoch {epoch}")
+                        # Check for rollback
+                        if safe_ckpt_manager.should_rollback(score):
+                            if rollback_count >= args.max_rollbacks:
+                                print(f"  ❌ Max rollbacks ({args.max_rollbacks}) exceeded! Failing.")
+                                raise RuntimeError(f"Training failed: max rollbacks exceeded at epoch {epoch}")
 
-                        print(f"  🔄 ROLLBACK #{rollback_count + 1}: Loading best checkpoint...")
-                        checkpoint_data, rollback_epoch = safe_ckpt_manager.load_best_checkpoint()
+                            print(f"  🔄 ROLLBACK #{rollback_count + 1}: Loading best checkpoint...")
+                            checkpoint_data, rollback_epoch = safe_ckpt_manager.load_best_checkpoint()
 
-                        # Restore model state
-                        trainer.state = trainer.state.replace(
-                            params=checkpoint_data['params'],
-                            opt_state=checkpoint_data['opt_state'],
-                            step=checkpoint_data['step'],
-                        )
+                            # Restore model state
+                            trainer.state = trainer.state.replace(
+                                params=checkpoint_data['params'],
+                                opt_state=checkpoint_data['opt_state'],
+                                step=checkpoint_data['step'],
+                            )
 
-                        # TODO: Add LR decay on rollback
-                        # Currently Optax doesn't easily support runtime LR changes
-                        # Would need to recreate optimizer with new LR
-                        if args.lr_decay_on_rollback < 1.0:
-                            print(f"  ⚠️ LR decay on rollback not yet implemented")
+                            # TODO: Add LR decay on rollback
+                            # Currently Optax doesn't easily support runtime LR changes
+                            # Would need to recreate optimizer with new LR
+                            if args.lr_decay_on_rollback < 1.0:
+                                print(f"  ⚠️ LR decay on rollback not yet implemented")
 
-                        rollback_count += 1
-                        print(f"  ✓ Rolled back to epoch {rollback_epoch}")
-                elif (epoch + 1) % 10 == 0:
-                    # Standard checkpoint save (every 10 epochs)
-                    trainer.save_checkpoint(checkpoint_dir)
-                    print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
+                            rollback_count += 1
+                            print(f"  ✓ Rolled back to epoch {rollback_epoch}")
+                    elif (epoch + 1) % 10 == 0:
+                        # Standard checkpoint save (every 10 epochs)
+                        trainer.save_checkpoint(checkpoint_dir)
+                        print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
+
+                # =========================================================================
+                # TASK_042: ReDo - Dormant Neuron Recycling
+                # =========================================================================
+                # Note: Full activation capture requires model changes. This is a framework
+                # that logs dormancy stats. Actual recycling would need intermediate activations.
+                if dormancy_monitor is not None and dormancy_monitor.should_check(epoch + 1):
+                    stats = dormancy_monitor.get_dormancy_stats()
+                    if stats['total_neurons'] > 0:
+                        print(f"  🔬 ReDo: {stats['dormant_neurons']}/{stats['total_neurons']} "
+                              f"dormant ({stats['dormancy_percent']:.1f}%)")
+                        # Note: Actual recycling would be:
+                        # if stats['dormant_neurons'] > 0:
+                        #     from mcts_trader.jax_agent.redo import recycle_dormant_neurons
+                        #     rng, recycle_rng = jax.random.split(rng)
+                        #     new_params = recycle_dormant_neurons(
+                        #         trainer.state.params,
+                        #         dormancy_monitor.get_dormant_mask(),
+                        #         recycle_rng,
+                        #         init_scale=args.redo_init_scale,
+                        #     )
+                        #     trainer.state = trainer.state.replace(params=new_params)
+                        dormancy_monitor.reset()
 
                 # =========================================================================
                 # Generalization Evaluation (Curriculum Training)
@@ -2091,6 +1447,10 @@ def main():
 
                 # Log warmup to CSV (no train metrics, use global epoch count)
                 global_epoch = epoch + 1 + epoch_offset
+                # TASK_031: Get PopArt stats for logging (may be default during warmup)
+                popart_mean = float(trainer.popart.mean) if trainer.use_popart and trainer.popart else 0.0
+                popart_std = float(trainer.popart.std) if trainer.use_popart and trainer.popart else 1.0
+
                 base_row = [
                     global_epoch, score, reward_ma20, env.trading_fee_bps, len(trajectory['actions']),
                     alpha, market_return, agent_return,  # Market baseline metrics
@@ -2101,6 +1461,7 @@ def main():
                     0, 0, 0,            # pred_loss, lambda_pred, physics_reg all 0
                     policy_entropy, avg_value, value_std,
                     search.value_scale, search.value_shift,
+                    popart_mean, popart_std,  # TASK_031
                     avg_uncertainty,
                     args.synthetic_level, args.model_size, args.name,
                     # Generalization evaluation (curriculum training) - empty during warmup

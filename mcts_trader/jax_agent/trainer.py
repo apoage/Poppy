@@ -10,6 +10,12 @@ import chex
 
 from .muzero_model import MuZeroNetworks
 
+# TASK_034: Reward scaling for categorical binning
+# Per-step symlog rewards are tiny (~0.001 to 0.05) and would collapse to
+# bins 99-100 out of 201 without scaling. Scale by 100 to spread across bins.
+# This makes reward range [-5, +5] (typical) map to [-5, +5] in support space.
+REWARD_SCALE = 100.0
+
 
 def _compute_per_head_grad_norms(grads: flax.core.FrozenDict) -> Dict[str, float]:
     """
@@ -54,6 +60,81 @@ def _compute_per_head_grad_norms(grads: flax.core.FrozenDict) -> Dict[str, float
     return result
 
 
+def _clip_gradients_per_head(
+    grads: flax.core.FrozenDict,
+    max_norm_value: float = 1.0,
+    max_norm_policy: float = 1.0,
+    max_norm_dynamics: float = 1.0,
+    max_norm_encoder: float = 1.0,
+) -> flax.core.FrozenDict:
+    """
+    TASK_025: Clip gradients separately for each network head.
+
+    This prevents one head (e.g., value head with large gradients) from
+    dominating training and starving other heads.
+
+    Args:
+        grads: Gradient pytree
+        max_norm_value: Max gradient norm for value head
+        max_norm_policy: Max gradient norm for policy head (TRM reasoning)
+        max_norm_dynamics: Max gradient norm for dynamics network
+        max_norm_encoder: Max gradient norm for encoder/CNN
+
+    Returns:
+        Clipped gradient pytree with same structure
+    """
+    flat_grads = traverse_util.flatten_dict(grads, sep='/')
+
+    # Categorize gradients by head
+    value_keys = []
+    policy_keys = []
+    dynamics_keys = []
+    encoder_keys = []
+    other_keys = []
+
+    for key in flat_grads.keys():
+        key_lower = key.lower()
+        if 'value_head' in key_lower:
+            value_keys.append(key)
+        elif 'output_refiner' in key_lower or 'trmreasoning' in key_lower:
+            policy_keys.append(key)
+        elif 'dynamics' in key_lower or 'action_embedding' in key_lower:
+            dynamics_keys.append(key)
+        elif 'encoder' in key_lower or 'cnn' in key_lower:
+            encoder_keys.append(key)
+        else:
+            other_keys.append(key)
+
+    def clip_subset(keys, max_norm):
+        """Clip a subset of gradients to max_norm."""
+        if not keys:
+            return {}
+
+        # Extract gradients for this subset
+        subset = {k: flat_grads[k] for k in keys}
+        subset_tree = traverse_util.unflatten_dict(subset, sep='/')
+
+        # Compute norm and scale factor
+        norm = optax.global_norm(subset_tree)
+        scale = jnp.minimum(1.0, max_norm / (norm + 1e-8))
+
+        # Apply clipping
+        clipped = {k: v * scale for k, v in subset.items()}
+        return clipped
+
+    # Clip each subset
+    clipped_flat = {}
+    clipped_flat.update(clip_subset(value_keys, max_norm_value))
+    clipped_flat.update(clip_subset(policy_keys, max_norm_policy))
+    clipped_flat.update(clip_subset(dynamics_keys, max_norm_dynamics))
+    clipped_flat.update(clip_subset(encoder_keys, max_norm_encoder))
+    # Keep other gradients unchanged (they'll still get global clip from optax)
+    clipped_flat.update({k: flat_grads[k] for k in other_keys})
+
+    # Reconstruct pytree
+    return flax.core.freeze(traverse_util.unflatten_dict(clipped_flat, sep='/'))
+
+
 from .mctx_search import create_mctx_search
 from .replay_buffer import JAXReplayBuffer
 
@@ -84,6 +165,11 @@ class PredictionLossConfig:
     # Physics regularization
     physics_reg_weight: float = 0.01  # Physics regularization
 
+    # TASK_035: Physics warmup - neural corrector scale annealing
+    # During warmup, neural_scale goes from 0 → 1
+    # This gives physics a "head start" to learn basic dynamics
+    physics_warmup_steps: int = 5000  # Steps for neural warmup (0 = disabled)
+
 
 def compute_annealed_lambda(step: int, config: PredictionLossConfig) -> float:
     """Compute annealed prediction loss weight."""
@@ -97,6 +183,27 @@ def compute_scheduled_sampling_prob(step: int, config: PredictionLossConfig) -> 
     return config.scheduled_sampling_start + progress * (
         config.scheduled_sampling_end - config.scheduled_sampling_start
     )
+
+
+def compute_neural_scale(step, config: PredictionLossConfig):
+    """
+    Compute neural corrector scale for physics warmup (TASK_035).
+
+    During warmup, neural_scale goes from 0 → 1, giving physics a head start.
+    After warmup, neural_scale = 1.0 (full neural contribution).
+
+    Args:
+        step: Current training step (can be JAX traced array)
+        config: Prediction loss configuration
+
+    Returns:
+        neural_scale: Scale factor for neural corrector [0, 1] (JAX array)
+    """
+    if config.physics_warmup_steps <= 0:
+        return jnp.array(1.0)  # No warmup, full neural from start
+
+    progress = jnp.clip(step / config.physics_warmup_steps, 0.0, 1.0)
+    return progress  # Keep as JAX array for JIT compatibility
 
 
 class MuZeroTrainer:
@@ -121,15 +228,48 @@ class MuZeroTrainer:
         reward_loss_weight: float = 1.0,
         policy_loss_weight: float = 1.0,
         entropy_coef: float = 0.01,
+        # Value loss configuration
+        value_loss_type: str = 'mse',  # 'mse' or 'huber'
+        value_huber_delta: float = 1.0,  # Delta for Huber loss
         target_update_interval: int = 100,
+        # TASK_024: LR schedule
+        lr_schedule_type: str = 'constant',  # 'constant', 'cosine', 'linear'
+        lr_min: float = 1e-6,
+        lr_warmup_epochs: int = 10,
+        total_epochs: int = 500,
+        steps_per_epoch: int = 100,
         # Prediction loss parameters (Phase 2)
         use_prediction_loss: bool = False,
         prediction_config: Optional[PredictionLossConfig] = None,
         # DS24 gradient monitoring
         track_grad_norms: bool = False,
+        # PopArt normalization (TASK_021)
+        use_popart: bool = False,
+        popart_beta: float = 0.0001,
+        # TASK_025: Per-head gradient clipping
+        per_head_clipping: bool = False,
+        clip_grad_value: float = 1.0,
+        clip_grad_policy: float = 1.0,
+        clip_grad_dynamics: float = 1.0,
+        clip_grad_encoder: float = 1.0,
     ):
         self.model = model
         self.track_grad_norms = track_grad_norms
+
+        # TASK_025: Per-head gradient clipping
+        self.per_head_clipping = per_head_clipping
+        self.clip_grad_value = clip_grad_value
+        self.clip_grad_policy = clip_grad_policy
+        self.clip_grad_dynamics = clip_grad_dynamics
+        self.clip_grad_encoder = clip_grad_encoder
+
+        # PopArt value normalization
+        self.use_popart = use_popart
+        if use_popart:
+            from .popart import PopArtNormalizer
+            self.popart = PopArtNormalizer(beta=popart_beta)
+        else:
+            self.popart = None
         self.batch_size = batch_size
         self.unroll_steps = unroll_steps
         self.td_steps = td_steps
@@ -142,21 +282,40 @@ class MuZeroTrainer:
         self.policy_loss_weight = policy_loss_weight
         self.entropy_coef = entropy_coef
 
+        # Value loss configuration
+        self.value_loss_type = value_loss_type
+        self.value_huber_delta = value_huber_delta
+
         # Prediction loss (Phase 2)
         self.use_prediction_loss = use_prediction_loss and model.use_prediction_head
         self.prediction_config = prediction_config or PredictionLossConfig()
 
         # Create MCTX search
+        self.num_simulations = num_simulations
         self.search = create_mctx_search(
             model,
             num_simulations=num_simulations,
             use_gumbel=True
         )
 
-        # Create optimizer (AdamW with gradient clipping)
+        # TASK_024: Create optimizer with LR schedule
+        self.lr_schedule_type = lr_schedule_type
+        if lr_schedule_type == 'constant':
+            lr_schedule = learning_rate
+        else:
+            from .schedules import LRSchedule
+            lr_sched = LRSchedule(
+                initial_lr=learning_rate,
+                final_lr=lr_min,
+                warmup_epochs=lr_warmup_epochs,
+                total_epochs=total_epochs,
+                schedule_type=lr_schedule_type,
+            )
+            lr_schedule = lr_sched.to_optax_schedule(steps_per_epoch)
+
         self.optimizer = optax.chain(
             optax.clip_by_global_norm(10.0),
-            optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
+            optax.adamw(learning_rate=lr_schedule, weight_decay=weight_decay)
         )
 
         # Initialize training state
@@ -164,6 +323,24 @@ class MuZeroTrainer:
 
         # JIT-compile training step
         self.train_step_fn = jax.jit(self._train_step)
+
+    def update_simulations(self, num_simulations: int) -> None:
+        """
+        Update MCTS simulation count (for warmup schedule).
+
+        Recreates the search function with new simulation count.
+        Used during sims warmup to gradually increase planning depth.
+
+        Args:
+            num_simulations: New number of MCTS simulations
+        """
+        if num_simulations != self.num_simulations:
+            self.num_simulations = num_simulations
+            self.search = create_mctx_search(
+                self.model,
+                num_simulations=num_simulations,
+                use_gumbel=True
+            )
 
     def init_train_state(self, rng: chex.PRNGKey, dummy_obs: jnp.ndarray) -> TrainState:
         """Initialize training state with model parameters"""
@@ -250,28 +427,57 @@ class MuZeroTrainer:
         value_logits: jnp.ndarray,
         target_values: jnp.ndarray,
         mse_weight: float = 0.8,
-        debug: bool = False
+        debug: bool = False,
+        valid_mask: jnp.ndarray = None,
+        num_valid: jnp.ndarray = None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
-        Compute hybrid MSE + Categorical value loss.
+        Compute hybrid MSE/Huber + Categorical value loss.
 
-        MSE directly penalizes mean prediction error (prevents collapse to bin 50).
+        MSE/Huber directly penalizes mean prediction error (prevents collapse to bin 50).
         Categorical maintains distributional information.
+        Huber loss is more robust to outliers than MSE.
 
         Args:
             value_logits: (batch, support_size) predicted value distribution logits
             target_values: (batch,) scalar target values
-            mse_weight: Weight for MSE component (0.8 = 80% MSE, 20% categorical)
+            mse_weight: Weight for MSE/Huber component (0.8 = 80% MSE, 20% categorical)
             debug: Print debug info
+            valid_mask: (batch,) boolean mask for valid samples (BUG_002 fix)
+            num_valid: Number of valid samples (for masked mean)
 
         Returns:
             total_loss: Combined loss
-            mse_loss: MSE component (for metrics)
+            mse_loss: MSE/Huber component (for metrics)
             cat_loss: Categorical component (for metrics)
         """
-        # MSE on expected value
+        # MSE or Huber on expected value
         predicted_values = self._logits_to_scalar(value_logits)
-        mse_loss = jnp.mean((predicted_values - target_values) ** 2)
+
+        if self.value_loss_type == 'huber':
+            # Huber loss: quadratic for small errors, linear for large
+            # More robust to high-variance targets
+            delta = self.value_huber_delta
+            abs_error = jnp.abs(predicted_values - target_values)
+            quadratic = 0.5 * abs_error ** 2
+            linear = delta * (abs_error - 0.5 * delta)
+            per_sample_mse = jnp.where(abs_error <= delta, quadratic, linear)
+        else:
+            # Standard MSE
+            per_sample_mse = (predicted_values - target_values) ** 2
+
+        # Categorical cross-entropy (keep some distributional learning)
+        target_dist = self._scalar_to_categorical(target_values)
+        per_sample_cat = optax.softmax_cross_entropy(value_logits, target_dist)
+
+        # BUG_002 FIX: Apply valid_mask before averaging
+        if valid_mask is not None and num_valid is not None:
+            valid_mask_float = valid_mask.astype(jnp.float32)
+            mse_loss = jnp.sum(per_sample_mse * valid_mask_float) / num_valid
+            cat_loss = jnp.sum(per_sample_cat * valid_mask_float) / num_valid
+        else:
+            mse_loss = jnp.mean(per_sample_mse)
+            cat_loss = jnp.mean(per_sample_cat)
 
         # Debug: Check if predictions vary
         if debug:
@@ -280,10 +486,6 @@ class MuZeroTrainer:
             tgt_mean = jnp.mean(target_values)
             tgt_std = jnp.std(target_values)
             print(f"    [VALUE DEBUG] Pred: mean={pred_mean:.4f} std={pred_std:.4f} | Tgt: mean={tgt_mean:.4f} std={tgt_std:.4f}")
-
-        # Categorical cross-entropy (keep some distributional learning)
-        target_dist = self._scalar_to_categorical(target_values)
-        cat_loss = optax.softmax_cross_entropy(value_logits, target_dist).mean()
 
         # Combine
         total_loss = mse_weight * mse_loss + (1.0 - mse_weight) * cat_loss
@@ -320,6 +522,9 @@ class MuZeroTrainer:
         # Get scheduled sampling probability
         teacher_prob = compute_scheduled_sampling_prob(step, config)
 
+        # TASK_035: Get neural scale for physics warmup
+        neural_scale = compute_neural_scale(step, config)
+
         # Get ground truth multi-step sequence
         # Shape: (batch, sequence_length, n_assets)
         teacher_sequence = batch.get('log_price_sequence')
@@ -330,6 +535,7 @@ class MuZeroTrainer:
                 'step_1_mse': 0.0,
                 'step_k_mse': 0.0,
                 'teacher_forcing_prob': teacher_prob,
+                'neural_scale': neural_scale,
             }
 
         # Get features
@@ -343,7 +549,7 @@ class MuZeroTrainer:
         else:
             action_sequence = None
 
-        # Multi-step prediction
+        # Multi-step prediction - TASK_035: Pass neural_scale for physics warmup
         predictions, _ = self.model.apply(
             {'params': params},
             latent_states,
@@ -353,6 +559,7 @@ class MuZeroTrainer:
             num_steps=config.multi_step_k,
             teacher_sequence=teacher_sequence,
             scheduled_sampling_prob=teacher_prob,
+            neural_scale=neural_scale,
             method=self.model.predict_multi_step,
         )
 
@@ -377,6 +584,7 @@ class MuZeroTrainer:
             'step_1_mse': jnp.mean(step_mse[:, 0]) if k > 0 else 0.0,
             'step_k_mse': jnp.mean(step_mse[:, -1]) if k > 0 else 0.0,
             'teacher_forcing_prob': teacher_prob,
+            'neural_scale': neural_scale,  # TASK_035: Track physics warmup progress
         }
 
         return loss_prediction, metrics
@@ -388,11 +596,16 @@ class MuZeroTrainer:
         """
         Physics regularization loss to prevent degenerate solutions.
 
-        Soft constraints on physics parameters:
-        - alpha (momentum): encourage small positive values
-        - beta (reversion): encourage small positive values
-        - sigma (volatility): bounded variance
-        - factor_loadings: sparsity penalty
+        TASK_035 FIX: Changed from ceiling-only to two-sided TARGET regularization.
+        The old ceiling-only approach (max(x - ceiling, 0)²) had ZERO penalty for
+        low values, causing α and β to collapse to zero.
+
+        New approach: Pull parameters toward sensible targets with bidirectional penalty.
+        - alpha (momentum): target ~0.05 (small positive momentum)
+        - beta (reversion): target ~0.03 (small mean reversion)
+        - sigma (volatility): target ~0.01 (typical 1% volatility)
+        - GARCH persistence: floor at 0.85, ceiling at 1.0
+        - factor_loadings: L1 sparsity for interpretability
         """
         # Navigate to prediction head params
         pred_params = params.get('price_predictor', {})
@@ -400,19 +613,23 @@ class MuZeroTrainer:
 
         reg_loss = jnp.array(0.0)
 
-        # Momentum: soft constraint alpha in [0, 0.3]
+        # TASK_035 FIX: Two-sided TARGET regularization for momentum
+        # OLD (broken): jnp.maximum(alpha - 0.3, 0.0) ** 2  → α=0 has ZERO penalty
+        # NEW: Pull toward target with bidirectional penalty
         if 'alpha' in physics_params:
-            alpha = jax.nn.softplus(physics_params['alpha'])
-            reg_loss = reg_loss + jnp.mean(jnp.maximum(alpha - 0.3, 0.0) ** 2)
+            alpha = jax.nn.softplus(physics_params['alpha']) * 0.3  # Scale to [0, ~0.3]
+            alpha_target = 0.05  # Target: small positive momentum
+            reg_loss = reg_loss + jnp.mean((alpha - alpha_target) ** 2) * 0.5
 
-        # Reversion: soft constraint beta in [0, 0.2]
+        # TASK_035 FIX: Two-sided TARGET regularization for mean-reversion
         if 'beta' in physics_params:
-            beta = jax.nn.softplus(physics_params['beta'])
-            reg_loss = reg_loss + jnp.mean(jnp.maximum(beta - 0.2, 0.0) ** 2)
+            beta = jax.nn.softplus(physics_params['beta']) * 0.2  # Scale to [0, ~0.2]
+            beta_target = 0.03  # Target: small mean reversion
+            reg_loss = reg_loss + jnp.mean((beta - beta_target) ** 2) * 0.5
 
-        # Volatility: penalize extreme values (want ~0.01)
+        # Volatility: penalize extreme values (want ~0.01) - already two-sided
         if 'sigma' in physics_params:
-            sigma = jax.nn.softplus(physics_params['sigma'])
+            sigma = jax.nn.softplus(physics_params['sigma']) * 0.1
             reg_loss = reg_loss + jnp.mean((sigma - 0.01) ** 2)
 
         # Low-rank correlation: L1 sparsity on factor loadings
@@ -420,6 +637,22 @@ class MuZeroTrainer:
         if 'factor_loadings' in correlation_params:
             loadings = correlation_params['factor_loadings']
             reg_loss = reg_loss + 0.01 * jnp.mean(jnp.abs(loadings))
+
+        # TASK_035 FIX: GARCH persistence floor + ceiling
+        # OLD: Only ceiling at 0.99, no floor → persistence collapsed to 0.096
+        # NEW: Floor at 0.85, ceiling at 1.0 for realistic volatility clustering
+        garch_params = physics_params.get('garch', {})
+        if 'alpha_garch' in garch_params and 'beta_garch' in garch_params:
+            alpha_g = jax.nn.softplus(garch_params['alpha_garch']) * 0.3
+            beta_g = jax.nn.softplus(garch_params['beta_garch']) * 0.99
+            persistence = alpha_g + beta_g
+
+            # Floor: penalize if persistence < 0.85 (too low = no volatility memory)
+            floor_penalty = jnp.mean(jnp.maximum(0.85 - persistence, 0.0) ** 2)
+            # Ceiling: penalize if persistence > 1.0 (non-stationary)
+            ceiling_penalty = jnp.mean(jnp.maximum(persistence - 1.0, 0.0) ** 2)
+            # Strong weight to enforce realistic GARCH behavior
+            reg_loss = reg_loss + (floor_penalty + ceiling_penalty) * 2.0
 
         return reg_loss
 
@@ -453,6 +686,7 @@ class MuZeroTrainer:
         # Validity mask for handling buffer wraparound (BUG_006 fix)
         valid_mask = batch.get('valid', jnp.ones(observations.shape[0], dtype=jnp.bool_))
         num_valid = jnp.maximum(jnp.sum(valid_mask), 1.0)  # Avoid div by zero
+        valid_mask_float = valid_mask.astype(jnp.float32)
 
         batch_size, unroll_steps = actions.shape[:2]
 
@@ -463,20 +697,25 @@ class MuZeroTrainer:
             mode='initial_inference'
         )
 
-        # Compute initial losses using HYBRID value loss (MSE + Categorical)
+        # BUG_002 FIX: Compute initial losses with valid_mask
         value_loss, value_mse, value_cat = self._hybrid_value_loss(
             initial_output['value'],
-            target_values[:, 0]
+            target_values[:, 0],
+            valid_mask=valid_mask,
+            num_valid=num_valid,
         )
 
-        policy_loss = optax.softmax_cross_entropy(
+        # BUG_002 FIX: Per-sample policy loss, masked before averaging
+        per_sample_policy = optax.softmax_cross_entropy(
             initial_output['policy_logits'],
             target_policies[:, 0]
-        ).mean()
+        )
+        policy_loss = jnp.sum(per_sample_policy * valid_mask_float) / num_valid
 
         # Compute policy entropy for regularization (prevent collapse)
         policy_probs = jax.nn.softmax(initial_output['policy_logits'], axis=-1)
-        policy_entropy = -jnp.sum(policy_probs * jnp.log(policy_probs + 1e-10), axis=-1).mean()
+        per_sample_entropy = -jnp.sum(policy_probs * jnp.log(policy_probs + 1e-10), axis=-1)
+        policy_entropy = jnp.sum(per_sample_entropy * valid_mask_float) / num_valid
 
         reward_loss = jnp.array(0.0)  # No reward at root
 
@@ -499,28 +738,39 @@ class MuZeroTrainer:
             # Update latent state
             latent_state = recurrent_output['latent_state']
 
-            # Compute losses for this step using HYBRID value loss
+            # BUG_002 FIX: Compute losses for this step with valid_mask
             step_value_loss, step_value_mse, step_value_cat = self._hybrid_value_loss(
                 recurrent_output['value'],
-                target_values[:, t]
+                target_values[:, t],
+                valid_mask=valid_mask,
+                num_valid=num_valid,
             )
             value_loss += step_value_loss
             total_value_mse += step_value_mse
             total_value_cat += step_value_cat
 
-            policy_loss += optax.softmax_cross_entropy(
+            # BUG_002 FIX: Per-sample policy loss, masked
+            per_sample_step_policy = optax.softmax_cross_entropy(
                 recurrent_output['policy_logits'],
                 target_policies[:, t]
-            ).mean()
+            )
+            policy_loss += jnp.sum(per_sample_step_policy * valid_mask_float) / num_valid
 
-            reward_loss += optax.softmax_cross_entropy(
+            # BUG_001 FIX: Reward target must match action index (t-1, not t)
+            # BUG_002 FIX: Per-sample reward loss, masked
+            # TASK_034 FIX: Scale rewards before categorical binning
+            # Raw symlog rewards (~0.001) would collapse to 1-2 bins without scaling
+            scaled_rewards = rewards[:, t - 1] * REWARD_SCALE
+            per_sample_reward = optax.softmax_cross_entropy(
                 recurrent_output['reward'],
-                self._scalar_to_categorical(rewards[:, t])
-            ).mean()
+                self._scalar_to_categorical(scaled_rewards)
+            )
+            reward_loss += jnp.sum(per_sample_reward * valid_mask_float) / num_valid
 
-            # Accumulate entropy
+            # Accumulate entropy (masked)
             step_policy_probs = jax.nn.softmax(recurrent_output['policy_logits'], axis=-1)
-            policy_entropy += -jnp.sum(step_policy_probs * jnp.log(step_policy_probs + 1e-10), axis=-1).mean()
+            per_sample_step_entropy = -jnp.sum(step_policy_probs * jnp.log(step_policy_probs + 1e-10), axis=-1)
+            policy_entropy += jnp.sum(per_sample_step_entropy * valid_mask_float) / num_valid
 
         # Average over unroll steps
         value_loss /= unroll_steps
@@ -626,6 +876,16 @@ class MuZeroTrainer:
         grad_fn = jax.value_and_grad(self._loss_fn, has_aux=True)
         (loss, metrics), grads = grad_fn(state.params, batch, rng, state.step_count, entropy_coef)
 
+        # TASK_025: Apply per-head gradient clipping before optimizer
+        if self.per_head_clipping:
+            grads = _clip_gradients_per_head(
+                grads,
+                max_norm_value=self.clip_grad_value,
+                max_norm_policy=self.clip_grad_policy,
+                max_norm_dynamics=self.clip_grad_dynamics,
+                max_norm_encoder=self.clip_grad_encoder,
+            )
+
         # Update parameters
         new_state = state.apply_gradients(grads=grads)
 
@@ -709,6 +969,22 @@ class MuZeroTrainer:
                     print(f"  Mean: {jnp.mean(v)}")
                     raise ValueError(f"NaNs/Infs detected in training batch key '{k}'!")
 
+            # PopArt: normalize targets and correct value head weights (TASK_021)
+            if self.use_popart and self.popart is not None:
+                # Get raw value targets (MC returns)
+                raw_values = batch['values'].flatten()
+
+                # Update statistics, normalize targets, correct weights
+                norm_values, corrected_params = self.popart.normalize_and_correct(
+                    raw_values, self.state.params
+                )
+
+                # Reshape back to original batch shape and update batch
+                batch = {**batch, 'values': norm_values.reshape(batch['values'].shape)}
+
+                # Update state with corrected params (preserves outputs after normalization change)
+                self.state = self.state.replace(params=corrected_params)
+
             # Training step (pass entropy_coef dynamically so adaptive entropy works)
             rng, train_rng = jax.random.split(rng)
             self.state, metrics = self.train_step_fn(self.state, batch, train_rng, self.entropy_coef)
@@ -763,6 +1039,7 @@ class MuZeroTrainer:
         """Save model checkpoint with additional metadata"""
         import os
         import json
+        import numpy as np
         from flax.training import checkpoints
 
         # Save main state
@@ -774,19 +1051,39 @@ class MuZeroTrainer:
             overwrite=True
         )
 
-        # Save additional trainer metadata (BUG_019 fix)
+        # Save additional trainer metadata (BUG_019 fix + architecture info)
         metadata = {
             'entropy_coef': float(self.entropy_coef),
             'step_count': int(self.state.step_count),
+            # Architecture info for compatibility checking
+            'use_prediction_loss': self.use_prediction_loss,
+            'h_cycles': self.model.H_cycles,
+            'l_cycles': self.model.L_cycles,
+            'state_dim': self.model.state_dim,
+            'use_prediction_head': self.model.use_prediction_head,
+            'physics_only': getattr(self.model, 'physics_only', False),
         }
         metadata_path = os.path.join(path, 'trainer_metadata.json')
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f)
 
+        # Save PopArt state if enabled (critical for curriculum continuity)
+        if self.use_popart and self.popart is not None:
+            popart_path = os.path.join(path, 'popart_state.npz')
+            np.savez(
+                popart_path,
+                mean=float(self.popart.state.mean),
+                var=float(self.popart.state.var),
+                count=int(self.popart.state.count),
+                mean_old=float(self.popart.state.mean_old),
+                std_old=float(self.popart.state.std_old),
+            )
+
     def load_checkpoint(self, path: str, step: int = None):
         """Load model checkpoint with additional metadata"""
         import os
         import json
+        import numpy as np
         from flax.training import checkpoints
 
         restored_state = checkpoints.restore_checkpoint(
@@ -803,8 +1100,59 @@ class MuZeroTrainer:
                     metadata = json.load(f)
                 self.entropy_coef = metadata.get('entropy_coef', self.entropy_coef)
                 print(f"   Restored entropy_coef: {self.entropy_coef}")
+
+                # Check architecture compatibility
+                ckpt_pred = metadata.get('use_prediction_head', False)
+                ckpt_physics = metadata.get('physics_only', False)
+                ckpt_h = metadata.get('h_cycles')
+                ckpt_l = metadata.get('l_cycles')
+                ckpt_dim = metadata.get('state_dim')
+
+                # Warn on prediction head mismatch (CRITICAL)
+                if not ckpt_pred and self.model.use_prediction_head:
+                    print(f"   ⚠️  WARNING: Checkpoint has NO prediction head, but model has prediction enabled!")
+                    print(f"      Prediction weights will be RANDOM (not from checkpoint)")
+                    print(f"      Consider: --prediction-loss-weight 0 or use matching checkpoint")
+                elif ckpt_pred and not self.model.use_prediction_head:
+                    print(f"   ℹ️  Note: Checkpoint has prediction head, model does not (weights ignored)")
+
+                # Warn on physics_only mismatch
+                if ckpt_pred and ckpt_physics != getattr(self.model, 'physics_only', False):
+                    ckpt_mode = "physics-only" if ckpt_physics else "hybrid"
+                    model_mode = "physics-only" if self.model.physics_only else "hybrid"
+                    print(f"   ℹ️  Note: Checkpoint mode={ckpt_mode}, model mode={model_mode}")
+
+                # Error on architecture mismatch that would cause shape errors
+                if ckpt_h is not None and ckpt_h != self.model.H_cycles:
+                    print(f"   ⚠️  WARNING: Checkpoint H_cycles={ckpt_h}, model H_cycles={self.model.H_cycles}")
+                if ckpt_l is not None and ckpt_l != self.model.L_cycles:
+                    print(f"   ⚠️  WARNING: Checkpoint L_cycles={ckpt_l}, model L_cycles={self.model.L_cycles}")
+                if ckpt_dim is not None and ckpt_dim != self.model.state_dim:
+                    print(f"   ⚠️  WARNING: Checkpoint state_dim={ckpt_dim}, model state_dim={self.model.state_dim}")
+
             except Exception as e:
                 print(f"   Warning: Could not load trainer metadata: {e}")
+
+        # Restore PopArt state if present and enabled (critical for curriculum)
+        if self.use_popart and self.popart is not None:
+            popart_path = os.path.join(path, 'popart_state.npz')
+            if os.path.exists(popart_path):
+                try:
+                    from .popart import PopArtState
+                    data = np.load(popart_path)
+                    self.popart.state = PopArtState(
+                        mean=jnp.array(data['mean']),
+                        var=jnp.array(data['var']),
+                        count=int(data['count']),
+                        mean_old=jnp.array(data['mean_old']),
+                        std_old=jnp.array(data['std_old']),
+                    )
+                    print(f"   Restored PopArt state: mean={float(self.popart.state.mean):.4f}, "
+                          f"std={float(self.popart.std):.4f}, count={self.popart.state.count}")
+                except Exception as e:
+                    print(f"   Warning: Could not load PopArt state: {e}")
+            else:
+                print(f"   ℹ️  No PopArt state in checkpoint (starting fresh)")
 
         return restored_state
 
