@@ -417,7 +417,12 @@ class DS24TrainingHooks:
             # 2. Run forward pass to get G components (if price data available)
             G_momentum, G_reversion, G_volatility, G_correlation = None, None, None, None
 
-            if 'prices' in trajectory and len(trajectory['prices']) > 0:
+            has_prices = 'prices' in trajectory and len(trajectory['prices']) > 0
+            # Debug: log once per 50 epochs if prices missing
+            if not has_prices and (epoch == 0 or epoch % 50 == 0):
+                print(f"  [DS24] Physics: No prices in trajectory (keys: {list(trajectory.keys())[:5]}...)")
+
+            if has_prices:
                 # Use sample price data from trajectory (up to 32 steps for better MA)
                 sample_prices = jnp.array(trajectory['prices'][:min(32, len(trajectory['prices']))])
                 log_prices = jnp.log(sample_prices + 1e-8)

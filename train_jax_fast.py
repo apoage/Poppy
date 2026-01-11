@@ -1192,6 +1192,22 @@ def main():
                 # Reward MA20
                 reward_ma20 = np.mean(all_rewards[-20:]) if len(all_rewards) >= 20 else np.mean(all_rewards)
 
+                # =========================================================================
+                # TASK_042: ReDo - Compute Dormancy Stats (before DS24 logging)
+                # =========================================================================
+                redo_stats = None
+                if dormancy_monitor is not None and dormancy_monitor.should_check(epoch + 1):
+                    stats = dormancy_monitor.get_dormancy_stats()
+                    if stats['total_neurons'] > 0:
+                        redo_stats = {
+                            'dormant_neurons': stats['dormant_neurons'],
+                            'dormancy_percent': stats['dormancy_percent'],
+                            'recycled_count': 0,  # Not implementing actual recycling yet
+                        }
+                        print(f"  🔬 ReDo: {stats['dormant_neurons']}/{stats['total_neurons']} "
+                              f"dormant ({stats['dormancy_percent']:.1f}%)")
+                        dormancy_monitor.reset()
+
                 # DS24 Enhanced Logging (via hooks module)
                 if ds24_hooks is not None:
                     # Extract last training metrics for gradient norms (Level 4+)
@@ -1206,7 +1222,9 @@ def main():
                         trajectory=trajectory,
                         trainer_state=trainer.state,
                         args=args,
-                        train_metrics=train_metrics_last
+                        train_metrics=train_metrics_last,
+                        redo_stats=redo_stats,
+                        atc_stats=None,  # ATC not yet implemented in trainer
                     )
 
                 calib_str = f" | Calib: {search.value_scale:.2f}/{search.value_shift:.2f}" if (search.value_scale != 1.0 or search.value_shift != 0.0) else ""
@@ -1322,28 +1340,7 @@ def main():
                         trainer.save_checkpoint(checkpoint_dir)
                         print(f"  ✓ Checkpoint saved to {checkpoint_dir}")
 
-                # =========================================================================
-                # TASK_042: ReDo - Dormant Neuron Recycling
-                # =========================================================================
-                # Note: Full activation capture requires model changes. This is a framework
-                # that logs dormancy stats. Actual recycling would need intermediate activations.
-                if dormancy_monitor is not None and dormancy_monitor.should_check(epoch + 1):
-                    stats = dormancy_monitor.get_dormancy_stats()
-                    if stats['total_neurons'] > 0:
-                        print(f"  🔬 ReDo: {stats['dormant_neurons']}/{stats['total_neurons']} "
-                              f"dormant ({stats['dormancy_percent']:.1f}%)")
-                        # Note: Actual recycling would be:
-                        # if stats['dormant_neurons'] > 0:
-                        #     from mcts_trader.jax_agent.redo import recycle_dormant_neurons
-                        #     rng, recycle_rng = jax.random.split(rng)
-                        #     new_params = recycle_dormant_neurons(
-                        #         trainer.state.params,
-                        #         dormancy_monitor.get_dormant_mask(),
-                        #         recycle_rng,
-                        #         init_scale=args.redo_init_scale,
-                        #     )
-                        #     trainer.state = trainer.state.replace(params=new_params)
-                        dormancy_monitor.reset()
+                # Note: TASK_042 ReDo stats computation moved before DS24 logging (line ~1195)
 
                 # =========================================================================
                 # Generalization Evaluation (Curriculum Training)
