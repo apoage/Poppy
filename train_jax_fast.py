@@ -889,6 +889,12 @@ def main():
         'synthetic_level', 'model_size', 'run_id',
         # Generalization evaluation (curriculum training)
         'eval_level', 'eval_reward', 'eval_alpha', 'eval_pct_hold',
+        # TASK_022: GAE returns config
+        'use_gae', 'gae_lambda',
+        # TASK_025: Per-head gradient clipping
+        'per_head_clipping', 'clip_value', 'clip_policy', 'clip_dynamics', 'clip_encoder',
+        # Exploration: epsilon-greedy
+        'epsilon_greedy',
     ]
 
     # Combine base + DS24 columns
@@ -1254,6 +1260,13 @@ def main():
                     last_eval_result.get('eval_reward', ''),
                     last_eval_result.get('eval_alpha', ''),
                     last_eval_result.get('eval_pct_hold', ''),
+                    # TASK_022: GAE returns config
+                    args.use_gae, args.gae_lambda,
+                    # TASK_025: Per-head gradient clipping
+                    args.per_head_clipping, args.clip_grad_value, args.clip_grad_policy,
+                    args.clip_grad_dynamics, args.clip_grad_encoder,
+                    # Exploration: epsilon-greedy
+                    args.epsilon_greedy,
                 ]
 
                 # Append DS24 values if enabled
@@ -1466,6 +1479,13 @@ def main():
                     args.synthetic_level, args.model_size, args.name,
                     # Generalization evaluation (curriculum training) - empty during warmup
                     '', '', '', '',
+                    # TASK_022: GAE returns config
+                    args.use_gae, args.gae_lambda,
+                    # TASK_025: Per-head gradient clipping
+                    args.per_head_clipping, args.clip_grad_value, args.clip_grad_policy,
+                    args.clip_grad_dynamics, args.clip_grad_encoder,
+                    # Exploration: epsilon-greedy
+                    args.epsilon_greedy,
                 ]
 
                 # Append empty DS24 values if enabled (warmup has no TRM data)
