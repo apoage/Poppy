@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DS24 - Enhanced Training Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="styles.css">
+    <!-- Chart.js for scalar metrics -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Plotly.js for heatmaps and 3D -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1>DS24</h1>
+                <span class="subtitle">Enhanced Training Metrics Dashboard</span>
+            </div>
+            <div class="header-right">
+                <div class="status-badges">
+                    <span id="training-status" class="badge badge-idle">IDLE</span>
+                    <span id="gpu-status" class="badge badge-gpu">GPU: --</span>
+                </div>
+                <select id="run-selector" class="run-selector">
+                    <option value="">Select Training Run...</option>
+                </select>
+                <label class="auto-refresh">
+                    <input type="checkbox" id="auto-refresh-toggle">
+                    Auto-refresh (10s)
+                </label>
+            </div>
+        </header>
+
+        <!-- Progress Bar -->
+        <div class="progress-container" id="progress-container" style="display: none;">
+            <div class="progress-bar" id="progress-bar"></div>
+            <span class="progress-text" id="progress-text">--</span>
+        </div>
+
+        <!-- Epoch Filter Bar -->
+        <div class="filter-bar" id="filter-bar">
+            <div class="filter-group">
+                <label class="filter-label">Epoch Range:</label>
+                <div class="filter-presets">
+                    <button class="filter-preset active" data-filter="all">All</button>
+                    <button class="filter-preset" data-filter="last50">Last 50</button>
+                    <button class="filter-preset" data-filter="last100">Last 100</button>
+                    <button class="filter-preset" data-filter="last250">Last 250</button>
+                    <button class="filter-preset" data-filter="skip5">Skip 5</button>
+                    <button class="filter-preset" data-filter="skip10">Skip 10</button>
+                    <button class="filter-preset" data-filter="custom">Custom</button>
+                </div>
+            </div>
+            <div class="filter-custom" id="filter-custom" style="display: none;">
+                <div class="filter-input-group">
+                    <label>From:</label>
+                    <input type="number" id="filter-from" min="0" value="0" placeholder="Start">
+                </div>
+                <div class="filter-input-group">
+                    <label>To:</label>
+                    <input type="number" id="filter-to" min="0" value="" placeholder="End (empty=all)">
+                </div>
+                <button class="btn btn-sm" id="apply-filter">Apply</button>
+            </div>
+            <div class="filter-info">
+                <span id="filter-status">Showing all epochs</span>
+                <span id="epoch-range-display"></span>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="tabs">
+            <button class="tab active" data-tab="metrics">Metrics</button>
+            <button class="tab" data-tab="reasoning">Reasoning Dynamics</button>
+            <button class="tab" data-tab="physics">Physics Model</button>
+            <button class="tab" data-tab="planning">Planning Analysis</button>
+            <button class="tab" data-tab="interactions">Component Interactions</button>
+            <button class="tab" data-tab="analysis">Analysis</button>
+            <button class="tab" data-tab="checkpoints">Checkpoints</button>
+            <button class="tab" data-tab="logs">Logs</button>
+        </nav>
+
+        <!-- Tab Content -->
+        <main class="tab-content">
+            <!-- METRICS TAB -->
+            <section id="metrics-tab" class="tab-panel active">
+                <div class="stats-summary" id="stats-summary">
+                    <div class="stat-card">
+                        <span class="stat-label">Status</span>
+                        <span class="stat-value" id="stat-status">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Reward (MA50)</span>
+                        <span class="stat-value" id="stat-reward">--</span>
+                    </div>
+                    <div class="stat-card stat-card-alpha">
+                        <span class="stat-label">Alpha (α)</span>
+                        <span class="stat-value" id="stat-alpha">--</span>
+                    </div>
+                    <div class="stat-card stat-card-alpha">
+                        <span class="stat-label">Alpha MA30</span>
+                        <span class="stat-value" id="stat-alpha-ma30">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Value MSE</span>
+                        <span class="stat-value" id="stat-value-mse">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Policy Entropy</span>
+                        <span class="stat-value" id="stat-entropy">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Epochs</span>
+                        <span class="stat-value" id="stat-epochs">--</span>
+                    </div>
+                </div>
+
+                <!-- Training Config Panel -->
+                <div class="config-panel" id="config-panel">
+                    <h3>Training Config</h3>
+                    <div class="config-grid">
+                        <div class="config-item">
+                            <span class="config-label">GAE</span>
+                            <span class="config-value" id="config-gae">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">GAE λ</span>
+                            <span class="config-value" id="config-gae-lambda">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">Per-head Clip</span>
+                            <span class="config-value" id="config-per-head-clip">-</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">ε-greedy</span>
+                            <span class="config-value" id="config-epsilon">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container">
+                        <h3>Reward Over Time</h3>
+                        <canvas id="reward-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Market Baseline (Alpha)</h3>
+                        <p class="chart-description">Alpha = Agent Return - Market Return. Positive = beating buy-and-hold.</p>
+                        <canvas id="alpha-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Loss Components</h3>
+                        <div class="chart-controls">
+                            <label><input type="checkbox" id="log-scale-toggle"> Log Scale</label>
+                        </div>
+                        <canvas id="loss-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Action Distribution</h3>
+                        <canvas id="action-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Value Calibration (MSE & Std)</h3>
+                        <canvas id="value-cal-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Policy Entropy</h3>
+                        <canvas id="entropy-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Training Speed</h3>
+                        <canvas id="speed-chart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- REASONING DYNAMICS TAB -->
+            <section id="reasoning-tab" class="tab-panel">
+                <div class="info-banner" id="reasoning-info">
+                    <p>TRM Recursive Reasoning visualizes how the Tiny Recursive Model refines its latent representation through H×L cycles.</p>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container wide">
+                        <h3>TRM Cycle Utilization Heatmap</h3>
+                        <p class="chart-description">Shows delta magnitude per (H, L) cycle. Brighter = more active refinement.</p>
+                        <div id="trm-heatmap" class="plotly-chart"></div>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Policy Crystallization</h3>
+                        <p class="chart-description">Output delta norm per H_cycle - shows decision formation.</p>
+                        <canvas id="crystallization-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Latent Magnitude Over Training</h3>
+                        <p class="chart-description">Final latent vector norm - representation strength.</p>
+                        <canvas id="latent-norm-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Cycle Contribution Analysis</h3>
+                        <p class="chart-description">Fraction of total delta contributed by each cycle.</p>
+                        <canvas id="cycle-contribution-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>TRM Utilization Score</h3>
+                        <p class="chart-description">% of cycles with significant delta (>threshold).</p>
+                        <canvas id="trm-utilization-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="no-data-message" id="reasoning-no-data" style="display: none;">
+                    <h3>TRM Dynamics Not Available</h3>
+                    <p>To enable TRM visualization, add cycle delta logging to your training script.</p>
+                    <pre>
+# Add to train_jax_fast.py logging:
+'latent_delta_norm_h0', 'latent_delta_norm_h1', ...
+'output_delta_norm_h0', 'output_delta_norm_h1', ...
+'trm_utilization'
+                    </pre>
+                </div>
+            </section>
+
+            <!-- PHYSICS MODEL TAB -->
+            <section id="physics-tab" class="tab-panel">
+                <div class="info-banner" id="physics-info">
+                    <p>Neural ODE Physics Components: G_momentum (trend), G_reversion (mean-pull), G_volatility (noise), G_correlation (cross-asset).</p>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container wide">
+                        <h3>Physics Component Breakdown</h3>
+                        <p class="chart-description">Stacked area showing contribution of each physics term.</p>
+                        <canvas id="physics-components-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Learned Parameters (α, β)</h3>
+                        <p class="chart-description">Momentum (α) and mean-reversion (β) coefficients.</p>
+                        <canvas id="physics-params-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>GARCH Persistence (α+β)</h3>
+                        <p class="chart-description">Volatility persistence - should stay below 1.0 for stationarity.</p>
+                        <canvas id="garch-chart"></canvas>
+                    </div>
+                    <div class="chart-container wide">
+                        <h3>Correlation Matrix (Γ)</h3>
+                        <p class="chart-description">Learned asset correlation structure from low-rank factors.</p>
+                        <div id="correlation-heatmap" class="plotly-chart"></div>
+                    </div>
+                </div>
+
+                <div class="no-data-message" id="physics-no-data" style="display: none;">
+                    <h3>Physics Model Data Not Available</h3>
+                    <p>To enable physics visualization, add G_component logging to your training script.</p>
+                    <pre>
+# Add to train_jax_fast.py logging:
+'G_momentum_mean', 'G_reversion_mean', 'G_volatility_mean', 'G_correlation_mean'
+'physics_alpha_mean', 'physics_beta_mean', 'garch_persistence'
+                    </pre>
+                </div>
+            </section>
+
+            <!-- PLANNING ANALYSIS TAB -->
+            <section id="planning-tab" class="tab-panel">
+                <div class="info-banner" id="planning-info">
+                    <p>MCTS Planning Analysis: Visualize value prediction accuracy across different planning horizons.</p>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container wide">
+                        <h3>Horizon Accuracy Curves</h3>
+                        <p class="chart-description">Value prediction error at different lookahead depths (1, 5, 10 steps).</p>
+                        <canvas id="horizon-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>MCTS Root Value vs Actual Reward</h3>
+                        <p class="chart-description">Scatter plot comparing predicted vs realized returns.</p>
+                        <canvas id="mcts-calibration-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Search Utilization (Visit Entropy)</h3>
+                        <p class="chart-description">Higher entropy = more exploration in tree search.</p>
+                        <canvas id="visit-entropy-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Simulation ROI</h3>
+                        <p class="chart-description">Reward improvement per additional MCTS simulation.</p>
+                        <canvas id="sim-roi-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="no-data-message" id="planning-no-data" style="display: none;">
+                    <h3>Planning Data Not Available</h3>
+                    <p>To enable planning analysis, add MCTS diagnostic logging.</p>
+                    <pre>
+# Add to train_jax_fast.py logging:
+'mcts_root_value', 'mcts_visit_entropy'
+'value_horizon_1_error', 'value_horizon_5_error', 'value_horizon_10_error'
+                    </pre>
+                </div>
+            </section>
+
+            <!-- COMPONENT INTERACTIONS TAB -->
+            <section id="interactions-tab" class="tab-panel">
+                <div class="info-banner" id="interactions-info">
+                    <p>Multi-task learning diagnostics: loss contributions, gradient analysis, and component alignment.</p>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-container wide">
+                        <h3>Loss Contribution (Normalized)</h3>
+                        <p class="chart-description">Percentage contribution of each loss term to total loss.</p>
+                        <canvas id="loss-contribution-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Gradient Norms by Head</h3>
+                        <p class="chart-description">Gradient magnitude per prediction head - detect conflicts.</p>
+                        <canvas id="gradient-norms-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>TRM ↔ Physics Alignment</h3>
+                        <p class="chart-description">Correlation between latent representation and physics model.</p>
+                        <canvas id="alignment-chart"></canvas>
+                    </div>
+                    <div class="chart-container wide">
+                        <h3>Prediction Head Correlation Matrix</h3>
+                        <p class="chart-description">Correlation between outputs of different heads.</p>
+                        <div id="head-correlation-heatmap" class="plotly-chart"></div>
+                    </div>
+
+                    <!-- ReDo Dormancy Panel (TASK_042) -->
+                    <div class="chart-container" id="redo-panel">
+                        <h3>ReDo: Dormant Neurons</h3>
+                        <p class="chart-description">Dormant neuron detection and recycling (TASK_042).</p>
+                        <canvas id="redo-chart"></canvas>
+                        <div class="metric-row">
+                            <span class="metric-label">Dormant:</span>
+                            <span class="metric-value" id="redo-dormant-count">-</span>
+                            <span class="metric-pct" id="redo-dormant-pct">(-)</span>
+                            <span class="metric-label">Recycled:</span>
+                            <span class="metric-value" id="redo-recycled-count">-</span>
+                        </div>
+                    </div>
+
+                    <!-- ATC Contrastive Panel (TASK_043) -->
+                    <div class="chart-container" id="atc-panel">
+                        <h3>ATC: Contrastive Loss</h3>
+                        <p class="chart-description">Augmented Temporal Contrast for representation learning (TASK_043).</p>
+                        <canvas id="atc-chart"></canvas>
+                        <div class="metric-row">
+                            <span class="metric-label">Pos Sim:</span>
+                            <span class="metric-value" id="atc-pos-sim">-</span>
+                            <span class="metric-label">Neg Sim:</span>
+                            <span class="metric-value" id="atc-neg-sim">-</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ANALYSIS TAB -->
+            <section id="analysis-tab" class="tab-panel">
+                <div class="analysis-grid">
+                    <div class="analysis-section">
+                        <h3>Insights</h3>
+                        <ul id="insights-list" class="insight-list"></ul>
+                    </div>
+                    <div class="analysis-section">
+                        <h3>Warnings</h3>
+                        <ul id="warnings-list" class="warning-list"></ul>
+                    </div>
+                </div>
+
+                <div class="analysis-grid">
+                    <div class="analysis-section">
+                        <h3>Training Phases</h3>
+                        <div id="phases-timeline" class="phases-timeline"></div>
+                    </div>
+                    <div class="analysis-section">
+                        <h3>Detailed Metrics</h3>
+                        <div id="detailed-metrics" class="metrics-grid"></div>
+                    </div>
+                </div>
+
+                <div class="analysis-section wide">
+                    <h3>Component Health Summary</h3>
+                    <div id="health-summary" class="health-grid"></div>
+                </div>
+            </section>
+
+            <!-- CHECKPOINTS TAB -->
+            <section id="checkpoints-tab" class="tab-panel">
+                <div class="checkpoints-header">
+                    <h3>Available Checkpoints</h3>
+                    <button id="refresh-checkpoints" class="btn">Refresh</button>
+                </div>
+                <div id="checkpoints-list" class="checkpoints-list"></div>
+
+                <div class="checkpoint-details" id="checkpoint-details" style="display: none;">
+                    <h3>Checkpoint Details</h3>
+                    <div id="checkpoint-info"></div>
+                </div>
+            </section>
+
+            <!-- LOGS TAB -->
+            <section id="logs-tab" class="tab-panel">
+                <div class="logs-layout">
+                    <div class="logs-sidebar">
+                        <h3>Log Files</h3>
+                        <ul id="log-files-list" class="log-files-list"></ul>
+                    </div>
+                    <div class="logs-viewer">
+                        <div class="logs-header">
+                            <span id="current-log-name">Select a log file...</span>
+                            <div class="logs-controls">
+                                <label>Lines: <input type="number" id="log-lines" value="200" min="50" max="1000"></label>
+                                <button id="refresh-log" class="btn">Refresh</button>
+                            </div>
+                        </div>
+                        <pre id="log-content" class="log-content"></pre>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <span>DS24 - TRM+MuZero Enhanced Dashboard</span>
+            <span id="last-update">Last update: --</span>
+        </footer>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
