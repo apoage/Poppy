@@ -105,34 +105,46 @@ def _clip_gradients_per_head(
         else:
             other_keys.append(key)
 
-    def clip_subset(keys, max_norm):
-        """Clip a subset of gradients to max_norm."""
+    def compute_scale(keys, max_norm):
+        """Compute scale factor for a subset of gradients."""
         if not keys:
-            return {}
+            return 1.0
 
-        # Extract gradients for this subset
-        subset = {k: flat_grads[k] for k in keys}
-        subset_tree = traverse_util.unflatten_dict(subset, sep='/')
-
-        # Compute norm and scale factor
-        norm = optax.global_norm(subset_tree)
+        # Extract gradients for this subset and compute norm
+        subset_grads = [flat_grads[k] for k in keys]
+        norm = optax.global_norm(subset_grads)
         scale = jnp.minimum(1.0, max_norm / (norm + 1e-8))
+        return scale
 
-        # Apply clipping
-        clipped = {k: v * scale for k, v in subset.items()}
-        return clipped
+    # Compute scale factors for each head
+    scale_value = compute_scale(value_keys, max_norm_value)
+    scale_policy = compute_scale(policy_keys, max_norm_policy)
+    scale_dynamics = compute_scale(dynamics_keys, max_norm_dynamics)
+    scale_encoder = compute_scale(encoder_keys, max_norm_encoder)
 
-    # Clip each subset
-    clipped_flat = {}
-    clipped_flat.update(clip_subset(value_keys, max_norm_value))
-    clipped_flat.update(clip_subset(policy_keys, max_norm_policy))
-    clipped_flat.update(clip_subset(dynamics_keys, max_norm_dynamics))
-    clipped_flat.update(clip_subset(encoder_keys, max_norm_encoder))
-    # Keep other gradients unchanged (they'll still get global clip from optax)
-    clipped_flat.update({k: flat_grads[k] for k in other_keys})
+    # Build key->scale mapping
+    key_to_scale = {}
+    for k in value_keys:
+        key_to_scale[k] = scale_value
+    for k in policy_keys:
+        key_to_scale[k] = scale_policy
+    for k in dynamics_keys:
+        key_to_scale[k] = scale_dynamics
+    for k in encoder_keys:
+        key_to_scale[k] = scale_encoder
+    for k in other_keys:
+        key_to_scale[k] = 1.0  # No clipping for uncategorized
 
-    # Reconstruct pytree
-    return flax.core.freeze(traverse_util.unflatten_dict(clipped_flat, sep='/'))
+    # Apply clipping using jax.tree_util to preserve structure
+    def clip_fn(path, grad):
+        # Convert path tuple to string key
+        path_str = '/'.join(str(p.key) if hasattr(p, 'key') else str(p) for p in path)
+        scale = key_to_scale.get(path_str, 1.0)
+        return grad * scale
+
+    # Use tree_map_with_path to preserve exact structure
+    clipped = jax.tree_util.tree_map_with_path(clip_fn, grads)
+    return clipped
 
 
 from .mctx_search import create_mctx_search
