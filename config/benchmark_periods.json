@@ -1,0 +1,41 @@
+{
+  "description": "Benchmark periods for dojo curriculum evaluation",
+  "note": "Each period is 7 days of minute data (1440 steps/day = 10080 steps total)",
+  "periods": [
+    {
+      "name": "bull",
+      "description": "ETF rally - strong uptrend",
+      "start_date": "2024-02-24",
+      "end_date": "2024-03-02",
+      "btc_change_pct": 23.1,
+      "expected_assets": 657,
+      "market_context": "Bitcoin ETF approval rally, strong institutional inflows"
+    },
+    {
+      "name": "bear",
+      "description": "Post-Luna crash - strong downtrend",
+      "start_date": "2022-06-10",
+      "end_date": "2022-06-17",
+      "btc_change_pct": -31.5,
+      "expected_assets": 587,
+      "market_context": "Aftermath of Luna/UST collapse, broad crypto selloff"
+    },
+    {
+      "name": "sideways",
+      "description": "Summer 2023 - range-bound consolidation",
+      "start_date": "2023-07-01",
+      "end_date": "2023-07-08",
+      "btc_change_pct": 5.8,
+      "expected_assets": 651,
+      "market_context": "Post-banking-crisis stability, low volatility period"
+    }
+  ],
+  "benchmark_config": {
+    "epochs_per_period": 7,
+    "steps_per_epoch": 1440,
+    "parallel_envs": 4,
+    "warmup_epochs": 7,
+    "eval_mode": true,
+    "save_checkpoint": false
+  }
+}

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import chex
 
 from .muzero_model import MuZeroNetworks
+from .atc import compute_atc_loss, create_atc_encoder_fn
 
 # TASK_034: Reward scaling for categorical binning
 # Per-step symlog rewards are tiny (~0.001 to 0.05) and would collapse to
@@ -264,6 +265,12 @@ class MuZeroTrainer:
         clip_grad_policy: float = 1.0,
         clip_grad_dynamics: float = 1.0,
         clip_grad_encoder: float = 1.0,
+        # TASK_043: ATC contrastive learning
+        atc_loss: bool = False,
+        atc_weight: float = 0.1,
+        atc_k_step: int = 5,
+        atc_temperature: float = 0.1,
+        atc_num_negatives: int = 32,
     ):
         self.model = model
         self.track_grad_norms = track_grad_norms
@@ -274,6 +281,17 @@ class MuZeroTrainer:
         self.clip_grad_policy = clip_grad_policy
         self.clip_grad_dynamics = clip_grad_dynamics
         self.clip_grad_encoder = clip_grad_encoder
+
+        # TASK_043: ATC contrastive learning
+        self.atc_loss = atc_loss
+        self.atc_weight = atc_weight
+        self.atc_k_step = atc_k_step
+        self.atc_temperature = atc_temperature
+        self.atc_num_negatives = atc_num_negatives
+        if atc_loss:
+            self.atc_encoder_fn = create_atc_encoder_fn(model.apply)
+        else:
+            self.atc_encoder_fn = None
 
         # PopArt value normalization
         self.use_popart = use_popart
@@ -858,6 +876,25 @@ class MuZeroTrainer:
             total_loss = muzero_loss
             metrics['loss_prediction'] = 0.0
             metrics['lambda_pred'] = 0.0
+
+        # ================================================================
+        # TASK_043: ATC Contrastive Loss
+        # ================================================================
+        if self.atc_loss and self.atc_encoder_fn is not None:
+            rng, atc_rng = jax.random.split(rng)
+            atc_loss_val = compute_atc_loss(
+                encoder_fn=self.atc_encoder_fn,
+                params=params,
+                observations=batch['observations'],
+                k_step=self.atc_k_step,
+                num_negatives=self.atc_num_negatives,
+                temperature=self.atc_temperature,
+                rng=atc_rng,
+            )
+            total_loss = total_loss + self.atc_weight * atc_loss_val
+            metrics['atc_loss'] = atc_loss_val
+        else:
+            metrics['atc_loss'] = 0.0
 
         metrics['total_loss'] = total_loss
 

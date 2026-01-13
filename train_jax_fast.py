@@ -631,6 +631,12 @@ def main():
         clip_grad_policy=args.clip_grad_policy,
         clip_grad_dynamics=args.clip_grad_dynamics,
         clip_grad_encoder=args.clip_grad_encoder,
+        # TASK_043: ATC contrastive learning
+        atc_loss=args.atc_loss,
+        atc_weight=args.atc_weight,
+        atc_k_step=args.atc_k_step,
+        atc_temperature=args.atc_temperature,
+        atc_num_negatives=args.atc_num_negatives,
     )
 
     rng, init_rng = jax.random.split(rng)
@@ -968,6 +974,9 @@ def main():
         )
         print(f"🔄 ReDo enabled: check every {args.redo_interval} epochs, threshold={args.redo_threshold}")
 
+    if args.atc_loss:
+        print(f"🔗 ATC enabled: weight={args.atc_weight}, k_step={args.atc_k_step}, temp={args.atc_temperature}")
+
     try:
         for epoch in range(args.epochs):
             # Update MCTS sims if warmup schedule active
@@ -1217,6 +1226,14 @@ def main():
                             k: v[-1] if isinstance(v, list) and v else v
                             for k, v in metrics.items()
                         }
+                    # Build ATC stats from training metrics
+                    atc_stats = None
+                    if args.atc_loss and train_metrics_last and 'atc_loss' in train_metrics_last:
+                        atc_stats = {
+                            'loss': float(train_metrics_last.get('atc_loss', 0.0)),
+                            'temperature': args.atc_temperature,
+                        }
+
                     ds24_hooks.on_epoch_end(
                         epoch=epoch,
                         trajectory=trajectory,
@@ -1224,7 +1241,7 @@ def main():
                         args=args,
                         train_metrics=train_metrics_last,
                         redo_stats=redo_stats,
-                        atc_stats=None,  # ATC not yet implemented in trainer
+                        atc_stats=atc_stats,
                     )
 
                 calib_str = f" | Calib: {search.value_scale:.2f}/{search.value_shift:.2f}" if (search.value_scale != 1.0 or search.value_shift != 0.0) else ""
