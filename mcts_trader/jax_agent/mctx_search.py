@@ -1,8 +1,11 @@
 import jax
 import jax.numpy as jnp
 import mctx
-from typing import Callable, Tuple, Any
+from typing import Callable, Tuple, Any, Optional
 import chex
+
+from .exploration import apply_epsilon_greedy
+
 
 class MuZeroMCTXSearch:
     """
@@ -22,7 +25,8 @@ class MuZeroMCTXSearch:
         exploration_fraction: float = 0.25,
         gumbel_scale: float = 1.0,
         value_scale: float = 1.0,
-        value_shift: float = 0.0
+        value_shift: float = 0.0,
+        epsilon_greedy: float = 0.0,
     ):
         """
         Args:
@@ -37,6 +41,8 @@ class MuZeroMCTXSearch:
             gumbel_scale: Scale of Gumbel noise (for Gumbel MuZero)
             value_scale: Calibration scale for value predictions (default 1.0)
             value_shift: Calibration shift for value predictions (default 0.0)
+            epsilon_greedy: Mix uniform into training target (TASK_037).
+                           0.0 = pure MCTS, 0.2 = 20% uniform. Prevents policy collapse.
         """
         self.model_apply_fn = model_apply_fn
         self.num_simulations = num_simulations
@@ -49,6 +55,7 @@ class MuZeroMCTXSearch:
         self.gumbel_scale = gumbel_scale
         self.value_scale = value_scale
         self.value_shift = value_shift
+        self.epsilon_greedy = epsilon_greedy
 
         # JIT-compile search functions to XLA
         # static_argnums not needed for pure function call if self is mostly static config
@@ -98,7 +105,9 @@ class MuZeroMCTXSearch:
         )
 
         # Convert categorical outputs to scalars
-        reward_scalar = self._categorical_to_scalar(output['reward'])
+        # TASK_034: Rewards are trained with 100× scaling for better bin resolution
+        # Descale here to match actual environment reward scale
+        reward_scalar = self._categorical_to_scalar(output['reward']) / 100.0
         value_scalar = self._categorical_to_scalar(output['value'])
 
         recurrent_output = mctx.RecurrentFnOutput(
@@ -185,15 +194,17 @@ class MuZeroMCTXSearch:
 
         if self.use_gumbel:
             # Gumbel MuZero (recommended)
+            # BUG_005 FIX: Pass invalid_actions for proper masking in mctx internals
             policy_output = mctx.gumbel_muzero_policy(
-                params=params, 
+                params=params,
                 rng_key=rng,
                 root=root,
                 recurrent_fn=recurrent_fn,
                 num_simulations=self.num_simulations,
                 max_num_considered_actions=self.max_num_considered_actions,
                 qtransform=mctx.qtransform_by_parent_and_siblings,  # Improved Q-transform
-                gumbel_scale=self.gumbel_scale
+                gumbel_scale=self.gumbel_scale,
+                invalid_actions=~action_mask.astype(bool) if action_mask is not None else None,
             )
         else:
             # Standard MuZero with PUCT
@@ -213,10 +224,21 @@ class MuZeroMCTXSearch:
         actions = policy_output.action
         policy_probs = policy_output.action_weights
 
+        # TASK_037: Apply ε-greedy mixing to training targets
+        # This breaks the feedback loop where MCTS sharpening → policy sharpening
+        # Action selection uses pure MCTS, but training target gets exploration mixed in
+        if self.epsilon_greedy > 0:
+            policy_probs = apply_epsilon_greedy(
+                policy_probs,
+                epsilon=self.epsilon_greedy,
+                action_mask=action_mask,
+            )
+
         # Collect search statistics
         search_stats = {
             'root_value': root.value,
-            'search_tree': policy_output.search_tree if hasattr(policy_output, 'search_tree') else None
+            'search_tree': policy_output.search_tree if hasattr(policy_output, 'search_tree') else None,
+            'epsilon_greedy': self.epsilon_greedy,
         }
 
         return actions, policy_probs, search_stats
