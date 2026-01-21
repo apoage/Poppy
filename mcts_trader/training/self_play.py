@@ -322,6 +322,7 @@ def run_self_play_batched(
     popart_state: Optional[PopArtState] = None,
     use_gae: bool = False,
     gae_lambda: float = 0.95,
+    start_offsets: Optional[List[int]] = None,
 ) -> Tuple[List[Dict], List[float]]:
     """Batched self-play across N parallel environments.
 
@@ -339,16 +340,19 @@ def run_self_play_batched(
         support_size: Value support size
         collect_prices: Whether to collect price data
         discount: Discount factor for returns
+        start_offsets: Optional list of start indices for each env (TASK_064).
+                       If provided, enables smart allocation with distributed tiling.
 
     Returns:
         Tuple of (list of trajectory dicts, list of episode scores)
     """
     n_envs = len(envs)
 
-    # Reset all envs
+    # Reset all envs with optional smart allocation offsets (TASK_064)
     obs_dicts = []
-    for env in envs:
-        obs_dict, _ = env.reset()
+    for i, env in enumerate(envs):
+        offset = start_offsets[i] if start_offsets else None
+        obs_dict, _ = env.reset(start_offset=offset)
         obs_dicts.append(obs_dict)
 
     # Per-env trajectory storage

@@ -13,3 +13,5 @@ rm mcts_trader/jax_agent/sac_entropy.py.bak
 rm mcts_trader/jax_agent/exploration.py
 rm mcts_trader/jax_agent/exploration.py.bak
 rm mcts_trader/jax_agent/sac_entropy.py.bak
+rm mcts_trader/jax_agent/exploration.py.old
+rm train_jax_fast.py.bak
