@@ -28,10 +28,11 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
 # Import refactored components
 from mcts_trader.training.cli import parse_args
-from mcts_trader.training.setup import setup_environment, setup_model_and_trainer
+from mcts_trader.training.setup import setup_environment, setup_model_and_trainer, setup_jax_environment
 from mcts_trader.jax_agent.mctx_search import create_mctx_search
 from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
-from mcts_trader.training.self_play import run_self_play, run_self_play_batched, N_ACTIONS_PER_ASSET
+from mcts_trader.jax_agent.smart_allocation import compute_env_start_offsets
+from mcts_trader.training.self_play import run_self_play, run_self_play_batched, run_self_play_jax, N_ACTIONS_PER_ASSET
 
 def main():
     # 1. Parse configuration
@@ -54,8 +55,29 @@ def main():
 
     # 3. Initialize Environment
     print("[1/4] Initializing Environment...")
-    env, parallel_envs = setup_environment(config)
-    n_assets = env.n_assets
+    
+    jax_env_states = None
+    jax_prices = None
+    jax_env_config = None
+    env = None
+    parallel_envs = []
+    period_data = None
+    n_assets = 64
+
+    use_jax_env = getattr(config, 'use_jax_env', False)
+    if use_jax_env:
+        if config.synthetic_level is not None:
+            print("   Initializing JAX-vectorized environment...")
+            jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config)
+            n_assets = jax_env_config.n_assets
+        else:
+            logging.warning("--jax-env requires --synthetic-level. Falling back to Python env.")
+            use_jax_env = False
+
+    if not use_jax_env:
+        env, parallel_envs, period_data = setup_environment(config)
+        n_assets = env.n_assets
+    
     action_space_size = n_assets * 5
     
     # 4. Initialize Model and Trainer
@@ -82,7 +104,14 @@ def main():
     
     # 7. Warmup
     print("[4/4] Warmup (JIT compilation)...")
-    _, _ = run_self_play(env, search, model.apply, trainer.state.params, rng, steps=5)
+    if jax_env_states is not None:
+        _, _ = run_self_play_jax(
+            jax_env_states, jax_prices, jax_env_config,
+            search, model.apply, trainer.state.params, rng,
+            steps=5, collect_prices=config.use_prediction_loss
+        )
+    else:
+        _, _ = run_self_play(env, search, model.apply, trainer.state.params, rng, steps=5)
     print("✅ Warmup done")
 
     # 8. Simplified Training Loop (Router logic)
@@ -99,15 +128,49 @@ def main():
             start = time.time()
             rng, search_rng = jax.random.split(rng)
             
+            # TASK_064: Smart allocation & Period Swapping
+            start_offsets = None
+            if config.smart_allocation and period_data:
+                current_period_idx = period_data['current_idx']
+                period_lengths = period_data['lengths']
+                
+                new_period_idx, start_offsets = compute_env_start_offsets(
+                    period_lengths=period_lengths,
+                    n_envs=config.parallel_envs,
+                    n_steps=config.steps,
+                    epoch=epoch,
+                    jitter_minutes=config.jitter_minutes,
+                    seed=epoch
+                )
+                
+                # Check for period switch
+                if new_period_idx != current_period_idx:
+                    print(f"   [STRATIFIED] Switching to period P{new_period_idx}")
+                    new_prices = period_data['prices'][new_period_idx]
+                    for penv in parallel_envs:
+                        penv.set_prices(new_prices)
+                    period_data['current_idx'] = new_period_idx
+
             # Self-play
-            if config.parallel_envs > 1:
+            if jax_env_states is not None:
+                trajectories, scores = run_self_play_jax(
+                    jax_env_states, jax_prices, jax_env_config,
+                    search, model.apply, trainer.state.params, search_rng,
+                    steps=config.steps,
+                    collect_prices=config.use_prediction_loss
+                )
+                score = np.mean(scores)
+            elif config.parallel_envs > 1:
                 trajectories, scores = run_self_play_batched(
-                    parallel_envs, search, model.apply, trainer.state.params, search_rng, steps=config.steps
+                    parallel_envs, search, model.apply, trainer.state.params, search_rng, steps=config.steps,
+                    collect_prices=config.use_prediction_loss,
+                    start_offsets=start_offsets
                 )
                 score = np.mean(scores)
             else:
                 trajectory, score = run_self_play(
-                    env, search, model.apply, trainer.state.params, search_rng, steps=config.steps
+                    env, search, model.apply, trainer.state.params, search_rng, steps=config.steps,
+                    collect_prices=config.use_prediction_loss
                 )
                 trajectories = [trajectory]
             

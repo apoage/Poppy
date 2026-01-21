@@ -39,8 +39,14 @@ def setup_jax_environment(config: TrainingConfig):
     )
     return jax_env_states, jax_prices, jax_env_config
 
-def setup_environment(config: TrainingConfig) -> Tuple[VectorBTTradingEnv, List[VectorBTTradingEnv]]:
-    """Initialize trading environments based on config."""
+def setup_environment(config: TrainingConfig) -> Tuple[VectorBTTradingEnv, List[VectorBTTradingEnv], Optional[Dict]]:
+    """Initialize trading environments based on config.
+    
+    Returns:
+        env: Main environment
+        parallel_envs: List of parallel environments
+        period_data: Dictionary with 'prices' (dict of period_idx -> prices) and 'lengths' (list of lengths), or None
+    """
     env_kwargs = dict(
         n_assets=64, # Default, will be updated by env
         initial_cash=10000.0,
@@ -49,11 +55,28 @@ def setup_environment(config: TrainingConfig) -> Tuple[VectorBTTradingEnv, List[
         max_steps=config.steps,
         action_points=config.action_points,
         tp_sl_enabled=config.tp_sl_enabled,
+        # Burning money settings
+        burning_money=config.burning_money,
+        burn_market_linked=config.burn_market_linked,
+        burn_base_rate=config.burn_base_rate,
+        burn_random=config.burn_random,
+        burn_random_prob=config.burn_random_prob,
     )
 
     if config.synthetic_level is not None:
         env_kwargs['synthetic_level'] = config.synthetic_level
         env_kwargs['synthetic_n_steps'] = config.synthetic_steps
+    elif config.periods_file:
+        # TASK_064: Multi-period stratified mode - load first period for initial env
+        import json
+        with open(config.periods_file, 'r') as f:
+            periods_config = json.load(f)
+        first_period = periods_config['periods'][0]
+        env_kwargs['db_path'] = config.db_path
+        env_kwargs['start_date'] = first_period['start_date']
+        env_kwargs['end_date'] = first_period['end_date']
+        if first_period.get('assets'):
+            env_kwargs['specific_symbols'] = first_period['assets']
     elif config.db_path:
         env_kwargs['db_path'] = config.db_path
         env_kwargs['cache_path'] = config.cache_path
@@ -69,10 +92,71 @@ def setup_environment(config: TrainingConfig) -> Tuple[VectorBTTradingEnv, List[
     parallel_envs = []
     if config.parallel_envs > 1:
         parallel_envs = [env]
-        for _ in range(config.parallel_envs - 1):
-            parallel_envs.append(VectorBTTradingEnv(**env_kwargs))
+        
+        # TASK_064: Share prices if possible
+        can_share_prices = (
+            env.synthetic is None and
+            env.prices is not None and
+            hasattr(env, 'symbols')
+        )
+        
+        if can_share_prices:
+            # Create shared kwargs referencing same prices array
+            shared_kwargs = dict(env_kwargs)
+            shared_kwargs['prices'] = env.prices
+            # Remove paths to prevent reloading
+            shared_kwargs.pop('db_path', None)
+            shared_kwargs.pop('periods_file', None) # Not a real kwarg but good to be safe
             
-    return env, parallel_envs
+            for _ in range(config.parallel_envs - 1):
+                parallel_envs.append(VectorBTTradingEnv(**shared_kwargs))
+        else:
+            for _ in range(config.parallel_envs - 1):
+                parallel_envs.append(VectorBTTradingEnv(**env_kwargs))
+            
+    # TASK_064: Load multi-period data for swapping
+    period_data = None
+    if config.periods_file:
+        import json
+        logging.info(f"Loading multi-period data from {config.periods_file}...")
+        with open(config.periods_file, 'r') as f:
+            periods_config = json.load(f)
+        
+        periods_list = periods_config.get('periods', [])
+        period_prices = {}
+        period_lengths = []
+        
+        for period_idx, period in enumerate(periods_list):
+            # Load prices using temporary env
+            temp_env = VectorBTTradingEnv(
+                db_path=config.db_path,
+                n_assets=64, # Fixed asset count for model
+                start_date=period['start_date'],
+                end_date=period['end_date'],
+                specific_symbols=period.get('assets'),
+                initial_cash=10000.0,
+                max_steps=100,
+            )
+            prices = temp_env.prices
+            
+            # Pad to N_ASSETS if needed
+            N_ASSETS = 64
+            if prices.shape[1] < N_ASSETS:
+                n_loaded = prices.shape[1]
+                pad_indices = [i % n_loaded for i in range(N_ASSETS)]
+                prices = prices[:, pad_indices]
+                
+            period_prices[period_idx] = prices
+            period_lengths.append(len(prices))
+            logging.info(f"  P{period_idx}: {period['start_date'][:10]} -> {period['end_date'][:10]} ({len(prices)} steps)")
+            
+        period_data = {
+            'prices': period_prices,
+            'lengths': period_lengths,
+            'current_idx': 0
+        }
+            
+    return env, parallel_envs, period_data
 
 def setup_model_and_trainer(config: TrainingConfig, n_assets: int) -> Tuple[MuZeroNetworks, MuZeroTrainer]:
     """Initialize model and trainer based on config."""
@@ -135,6 +219,9 @@ def setup_model_and_trainer(config: TrainingConfig, n_assets: int) -> Tuple[MuZe
         clip_grad_policy=config.clip_grad_policy,
         clip_grad_dynamics=config.clip_grad_dynamics,
         clip_grad_encoder=config.clip_grad_encoder,
+        redo=config.redo,
+        redo_interval=config.redo_interval,
+        redo_threshold=config.redo_threshold,
         atc_loss=config.atc_loss,
         atc_weight=config.atc_weight,
         atc_k_step=config.atc_k_step,
