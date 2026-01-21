@@ -532,6 +532,7 @@ class MuZeroTrainer:
         Compute multi-step prediction loss in LOG-SPACE.
 
         Loss: sum_{k=1}^{K} gamma^{k-1} * MSE(pred_log_p_{t+k}, true_log_p_{t+k})
+        + decoder_loss (reconstruction of initial state)
 
         Args:
             params: Model parameters
@@ -556,15 +557,35 @@ class MuZeroTrainer:
         # Get ground truth multi-step sequence
         # Shape: (batch, sequence_length, n_assets)
         teacher_sequence = batch.get('log_price_sequence')
+        teacher_log_returns = batch.get('log_returns')
+        teacher_moving_avg = batch.get('moving_avg')
+
         if teacher_sequence is None:
             # No auxiliary data available
             return jnp.array(0.0), {
                 'loss_prediction_raw': 0.0,
+                'loss_decoder': 0.0,
                 'step_1_mse': 0.0,
                 'step_k_mse': 0.0,
                 'teacher_forcing_prob': teacher_prob,
                 'neural_scale': neural_scale,
             }
+
+        # TASK_106: Explicit Decoder Reconstruction Loss
+        # Decode current latent state to market state
+        market_state = self.model.apply(
+            {'params': params},
+            latent_states,
+            method=self.model.decode_latent_to_market
+        )
+        
+        # MSE against ground truth initial state (t=0)
+        # We use a high weight for decoder loss to force the encoder to preserve these features
+        loss_p = jnp.mean((market_state['log_prices'] - teacher_sequence[:, 0, :]) ** 2)
+        loss_r = jnp.mean((market_state['log_returns'] - teacher_log_returns) ** 2) if teacher_log_returns is not None else 0.0
+        loss_m = jnp.mean((market_state['moving_avg'] - teacher_moving_avg) ** 2) if teacher_moving_avg is not None else 0.0
+        
+        loss_decoder = loss_p + loss_r + loss_m
 
         # Get features
         features = batch.get('features', jnp.zeros((batch_size, self.model.n_features)))
@@ -578,6 +599,7 @@ class MuZeroTrainer:
             action_sequence = None
 
         # Multi-step prediction - TASK_035: Pass neural_scale for physics warmup
+        # TASK_106: Pass teacher state for initial state forcing
         predictions, _ = self.model.apply(
             {'params': params},
             latent_states,
@@ -586,6 +608,8 @@ class MuZeroTrainer:
             action_sequence=action_sequence,
             num_steps=config.multi_step_k,
             teacher_sequence=teacher_sequence,
+            teacher_log_returns=teacher_log_returns,
+            teacher_moving_avg=teacher_moving_avg,
             scheduled_sampling_prob=teacher_prob,
             neural_scale=neural_scale,
             method=self.model.predict_multi_step,
@@ -605,10 +629,12 @@ class MuZeroTrainer:
         step_weights = jnp.array([config.step_decay ** i for i in range(k)])
         weighted_mse = jnp.sum(step_mse * step_weights[None, :], axis=-1)  # (batch,)
 
-        loss_prediction = jnp.mean(weighted_mse)
+        # Total prediction loss combines decoder reconstruction + trajectory prediction
+        loss_prediction = jnp.mean(weighted_mse) + loss_decoder
 
         metrics = {
-            'loss_prediction_raw': loss_prediction,
+            'loss_prediction_raw': jnp.mean(weighted_mse),
+            'loss_decoder': loss_decoder,
             'step_1_mse': jnp.mean(step_mse[:, 0]) if k > 0 else 0.0,
             'step_k_mse': jnp.mean(step_mse[:, -1]) if k > 0 else 0.0,
             'teacher_forcing_prob': teacher_prob,
