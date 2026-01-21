@@ -47,14 +47,16 @@ class AssetTransformerEncoder(nn.Module):
         )(x_flat)
         x_assets = nn.gelu(x_assets)
         
-        # Add per-asset position embeddings (since asset order might carry meaning in some contexts)
-        # or just to give the model a reference for "Asset i"
+        # Add per-asset position embeddings
         pos_embed = self.param(
             'asset_identity_embed',
             nn.initializers.normal(stddev=0.02),
             (1, self.n_assets, self.embed_dim)
         )
-        x_assets = x_assets + pos_embed
+        
+        # Slicing if n_assets in input is smaller than n_assets in config (test case)
+        # Or just use the first N if they match.
+        x_assets = x_assets + pos_embed[:, :n_assets, :]
         
         # 3. Cross-Asset Attention
         # MODEL: How do assets influence each other?
