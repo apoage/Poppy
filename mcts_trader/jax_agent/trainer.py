@@ -153,8 +153,7 @@ from .replay_buffer import JAXReplayBuffer
 
 
 class TrainState(train_state.TrainState):
-    """Extended train state with additional metrics/target params"""
-    target_params: flax.core.FrozenDict = None
+    """Extended train state with additional metrics"""
     step_count: int = 0
 
 
@@ -381,7 +380,6 @@ class MuZeroTrainer:
         state = TrainState.create(
             apply_fn=self.model.apply,
             params=params,
-            target_params=params,  # Initialize target network
             tx=self.optimizer,
             step_count=0
         )
@@ -938,19 +936,10 @@ class MuZeroTrainer:
         # Update parameters
         new_state = state.apply_gradients(grads=grads)
 
-        # Update target network periodically
+        # Update step count
         new_step_count = state.step_count + 1
-        should_update_target = (new_step_count % self.target_update_interval) == 0
-
-        # Use jax.lax.cond for conditional update inside JIT
-        new_target_params = jax.lax.cond(
-            should_update_target,
-            lambda: new_state.params,  # True branch: copy current params
-            lambda: state.target_params # False branch: keep old target params
-        )
 
         new_state = new_state.replace(
-            target_params=new_target_params,
             step_count=new_step_count
         )
 
