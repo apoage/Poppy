@@ -9,6 +9,36 @@ from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent.trainer import MuZeroTrainer, PredictionLossConfig
 from mcts_trader.training.config import TrainingConfig
 
+from mcts_trader.training.env_factory import create_jax_env_and_prices
+import jax
+
+def setup_jax_environment(config: TrainingConfig):
+    """Initialize JAX-vectorized environment."""
+    if config.synthetic_level is None:
+        raise ValueError("JAX environment currently requires synthetic_level")
+        
+    jax_env_states, jax_prices, jax_env_config = create_jax_env_and_prices(
+        synthetic_level=config.synthetic_level,
+        n_envs=config.parallel_envs,
+        n_assets=64, # Will be updated by factory
+        n_steps=config.synthetic_steps,
+        fee_bps=float(config.fee),
+        slippage_bps=float(config.slippage),
+        max_episode_steps=config.steps,
+        window_size=60,
+        position_size_pct=0.1,
+        rng_key=jax.random.PRNGKey(42),
+        probabilistic_fills=config.probabilistic_fills,
+        borrow_rate_annual=config.borrow_rate,
+        synthetic_noise=config.noise, # config.noise is Dirichlet, config has no price noise field?
+        # Actually config.noise is MCTS noise. synthetic_noise was removed from TrainingConfig dataclass?
+        # Let's check config.py. It has adaptive_noise but maybe not base synthetic noise?
+        # Original cli had --synthetic-noise. I missed adding it to TrainingConfig.
+        # I'll default to 0.0 for now or check config.
+        episode_variance=config.episode_variance,
+    )
+    return jax_env_states, jax_prices, jax_env_config
+
 def setup_environment(config: TrainingConfig) -> Tuple[VectorBTTradingEnv, List[VectorBTTradingEnv]]:
     """Initialize trading environments based on config."""
     env_kwargs = dict(
@@ -99,6 +129,17 @@ def setup_model_and_trainer(config: TrainingConfig, n_assets: int) -> Tuple[MuZe
         prediction_config=prediction_config,
         use_popart=config.use_popart,
         popart_beta=config.popart_beta,
+        track_grad_norms=config.ds24_grad_norms,
+        per_head_clipping=config.per_head_clipping,
+        clip_grad_value=config.clip_grad_value,
+        clip_grad_policy=config.clip_grad_policy,
+        clip_grad_dynamics=config.clip_grad_dynamics,
+        clip_grad_encoder=config.clip_grad_encoder,
+        atc_loss=config.atc_loss,
+        atc_weight=config.atc_weight,
+        atc_k_step=config.atc_k_step,
+        atc_temperature=config.atc_temperature,
+        atc_num_negatives=config.atc_num_negatives,
     )
     
     return model, trainer

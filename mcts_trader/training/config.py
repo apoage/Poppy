@@ -59,6 +59,11 @@ class TrainingConfig:
     lr_warmup_epochs: int = 10
     discount: float = 0.997
     entropy_coef: float = 0.01
+    per_head_clipping: bool = False
+    clip_grad_value: float = 1.0
+    clip_grad_policy: float = 1.0
+    clip_grad_dynamics: float = 1.0
+    clip_grad_encoder: float = 1.0
     
     # Advanced features
     use_gae: bool = False
@@ -75,6 +80,14 @@ class TrainingConfig:
     scheduled_sampling_steps: int = 20000
     physics_reg_weight: float = 0.01
     physics_warmup_steps: int = 5000
+    redo: bool = False
+    redo_interval: int = 10
+    redo_threshold: float = 0.01
+    atc_loss: bool = False
+    atc_weight: float = 0.1
+    atc_k_step: int = 5
+    atc_temperature: float = 0.1
+    atc_num_negatives: int = 32
     
     # Training interventions
     adaptive_noise: bool = False
@@ -89,6 +102,8 @@ class TrainingConfig:
     episode_variance: int = 0
     adaptive_entropy: bool = False
     entropy_hold_threshold: float = 0.70
+    entropy_boost_low: float = 0.15
+    entropy_boost_high: float = 0.30
     sac_entropy: bool = False
     
     # Checkpointing & Logging
@@ -99,6 +114,9 @@ class TrainingConfig:
     ds24_level: int = 0
     ds24_save_tensors: bool = False
     ds24_grad_norms: bool = False
+    ds24_intermediates_every: int = 10
+    ds24_boost_every: int = 10
+    ds24_snapshot_every: int = 50
     
     def __post_init__(self):
         """Handle derivative configuration."""

@@ -59,6 +59,11 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--lr-warmup-epochs', type=int, default=10)
     parser.add_argument('--discount', type=float, default=0.997)
     parser.add_argument('--entropy-coef', type=float, default=0.01)
+    parser.add_argument('--per-head-clipping', action='store_true')
+    parser.add_argument('--clip-grad-value', type=float, default=1.0)
+    parser.add_argument('--clip-grad-policy', type=float, default=1.0)
+    parser.add_argument('--clip-grad-dynamics', type=float, default=1.0)
+    parser.add_argument('--clip-grad-encoder', type=float, default=1.0)
     
     # Advanced features
     parser.add_argument('--use-gae', action='store_true')
@@ -70,12 +75,23 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--physics-only', action='store_true')
     parser.add_argument('--pred-head-size', type=str, default='small')
     parser.add_argument('--prediction-loss-weight', type=float, default=0.2)
+    parser.add_argument('--redo', action='store_true')
+    parser.add_argument('--redo-interval', type=int, default=10)
+    parser.add_argument('--atc-loss', action='store_true')
+    parser.add_argument('--atc-weight', type=float, default=0.1)
     
     # Interventions
     parser.add_argument('--adaptive-noise', action='store_true')
     parser.add_argument('--adaptive-fees', action='store_true')
+    parser.add_argument('--fee-reward-threshold', type=float, default=2.5)
+    parser.add_argument('--fee-upgrade-epochs', type=int, default=10)
     parser.add_argument('--smart-allocation', action='store_true')
+    parser.add_argument('--jitter-minutes', type=int, default=360)
     parser.add_argument('--sac-entropy', action='store_true')
+    parser.add_argument('--adaptive-entropy', action='store_true')
+    parser.add_argument('--entropy-hold-threshold', type=float, default=0.70)
+    parser.add_argument('--entropy-boost-low', type=float, default=0.15)
+    parser.add_argument('--entropy-boost-high', type=float, default=0.30)
     
     # Checkpointing & Logging
     parser.add_argument('--load-checkpoint', type=str, default=None)
@@ -83,6 +99,7 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--safe-checkpoints', action='store_true')
     parser.add_argument('--ds24-logging', action='store_true')
     parser.add_argument('--ds24-level', type=int, default=0)
+    parser.add_argument('--ds24-intermediates-every', type=int, default=10)
     
     # Extra JAX flags
     parser.add_argument('--jax-env', action='store_true', dest='use_jax_env')
