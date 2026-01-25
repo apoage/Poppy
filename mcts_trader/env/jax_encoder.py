@@ -88,7 +88,15 @@ def encode_observation(
 
     Returns:
         Observation tensor of shape (27, n_assets, n_assets)
+
+    Raises:
+        AssertionError: If window_size < 60 (required for all feature computations)
     """
+    # Validate window size - features use 5, 15, 30, 60 step lookbacks
+    assert config.window_size >= 60, (
+        f"window_size must be >= 60 for all features, got {config.window_size}"
+    )
+
     n = config.n_assets
     ws = config.window_size
 
@@ -478,14 +486,32 @@ def batch_encode_simple(
     )(window_starts)
 
 
-@partial(jax.jit, static_argnames=['config'])
+@partial(jax.jit, static_argnames=['config', 'per_env'])
 def jit_batch_encode_simple(
     prices: chex.Array,
     window_starts: chex.Array,
     config: EncoderConfig,
+    per_env: bool = False,
 ) -> chex.Array:
-    """JIT-compiled batched simplified encoder."""
-    return batch_encode_simple(prices, window_starts, config)
+    """JIT-compiled batched simplified encoder.
+
+    Args:
+        prices: (n_steps, n_assets) for shared mode, (n_envs, n_steps, n_assets) for per_env mode
+        window_starts: (n_envs,) array of starting indices
+        config: Encoder configuration
+        per_env: If True, prices is (n_envs, n_steps, n_assets) with unique data per env
+
+    Returns:
+        (n_envs, n_channels, n_assets, n_assets) encoded observations
+    """
+    if per_env:
+        # Each env has its own price data
+        return jax.vmap(
+            lambda p, ws: encode_observation_simple(p, ws, config)
+        )(prices, window_starts)
+    else:
+        # Shared prices across all envs
+        return batch_encode_simple(prices, window_starts, config)
 
 
 # =============================================================================

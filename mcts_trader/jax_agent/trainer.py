@@ -10,6 +10,7 @@ import chex
 
 from .muzero_model import MuZeroNetworks
 from .atc import compute_atc_loss, create_atc_encoder_fn
+from .cycle_balance import compute_cycle_balance_loss, compute_cycle_atc_loss
 
 # TASK_034: Reward scaling for categorical binning
 # Per-step symlog rewards are tiny (~0.001 to 0.05) and would collapse to
@@ -153,7 +154,8 @@ from .replay_buffer import JAXReplayBuffer
 
 
 class TrainState(train_state.TrainState):
-    """Extended train state with additional metrics"""
+    """Extended train state with additional metrics and target network"""
+    target_params: flax.core.FrozenDict = None  # RESTORED: Target network for Double Q-learning
     step_count: int = 0
 
 
@@ -243,6 +245,9 @@ class MuZeroTrainer:
         # Value loss configuration
         value_loss_type: str = 'mse',  # 'mse' or 'huber'
         value_huber_delta: float = 1.0,  # Delta for Huber loss
+        # Prediction loss configuration
+        pred_loss_type: str = 'mse',  # 'mse' or 'huber'
+        pred_huber_delta: float = 1.0,  # Delta for prediction Huber loss
         target_update_interval: int = 100,
         # TASK_024: LR schedule
         lr_schedule_type: str = 'constant',  # 'constant', 'cosine', 'linear'
@@ -264,15 +269,46 @@ class MuZeroTrainer:
         clip_grad_policy: float = 1.0,
         clip_grad_dynamics: float = 1.0,
         clip_grad_encoder: float = 1.0,
+        # TASK_042: ReDo - Recycling Dormant Neurons
+        redo: bool = False,
+        redo_interval: int = 10,
+        redo_threshold: float = 0.01,
         # TASK_043: ATC contrastive learning
         atc_loss: bool = False,
         atc_weight: float = 0.1,
         atc_k_step: int = 5,
         atc_temperature: float = 0.1,
         atc_num_negatives: int = 32,
+        # TASK_110: Cycle Balance (prevent H0 dominance)
+        cycle_balance: bool = False,
+        cycle_balance_weight: float = 0.1,
+        cycle_balance_target_cv: float = 0.3,
+        cycle_atc: bool = False,
+        cycle_atc_weight: float = 0.05,
+        cycle_atc_temperature: float = 0.1,
+        # TASK_066: Physics configuration (extracted magic numbers)
+        reward_scale: float = 100.0,
+        alpha_target: float = 0.05,
+        beta_target: float = 0.03,
+        sigma_target: float = 0.01,
+        label_smoothing: float = 0.1,
+        min_entropy: float = 3.0,
     ):
         self.model = model
         self.track_grad_norms = track_grad_norms
+
+        # TASK_066: Physics configuration
+        self.reward_scale = reward_scale
+        self.alpha_target = alpha_target
+        self.beta_target = beta_target
+        self.sigma_target = sigma_target
+        self.label_smoothing = label_smoothing
+        self.min_entropy = min_entropy
+
+        # TASK_042: ReDo
+        self.redo = redo
+        self.redo_interval = redo_interval
+        self.redo_threshold = redo_threshold
 
         # TASK_025: Per-head gradient clipping
         self.per_head_clipping = per_head_clipping
@@ -291,6 +327,14 @@ class MuZeroTrainer:
             self.atc_encoder_fn = create_atc_encoder_fn(model.apply)
         else:
             self.atc_encoder_fn = None
+
+        # TASK_110: Cycle Balance (prevent H0 dominance)
+        self.cycle_balance = cycle_balance
+        self.cycle_balance_weight = cycle_balance_weight
+        self.cycle_balance_target_cv = cycle_balance_target_cv
+        self.cycle_atc = cycle_atc
+        self.cycle_atc_weight = cycle_atc_weight
+        self.cycle_atc_temperature = cycle_atc_temperature
 
         # PopArt value normalization
         self.use_popart = use_popart
@@ -314,6 +358,10 @@ class MuZeroTrainer:
         # Value loss configuration
         self.value_loss_type = value_loss_type
         self.value_huber_delta = value_huber_delta
+
+        # Prediction loss configuration
+        self.pred_loss_type = pred_loss_type
+        self.pred_huber_delta = pred_huber_delta
 
         # Prediction loss (Phase 2)
         self.use_prediction_loss = use_prediction_loss and model.use_prediction_head
@@ -380,6 +428,7 @@ class MuZeroTrainer:
         state = TrainState.create(
             apply_fn=self.model.apply,
             params=params,
+            target_params=params,  # RESTORED: Initialize target network with same params
             tx=self.optimizer,
             step_count=0
         )
@@ -387,14 +436,14 @@ class MuZeroTrainer:
         self.state = state
         return state
 
-    def _scalar_to_categorical(self, scalar: jnp.ndarray, support_size: int = None, smoothing: float = 0.1) -> jnp.ndarray:
+    def _scalar_to_categorical(self, scalar: jnp.ndarray, support_size: int = None, smoothing: float = None) -> jnp.ndarray:
         """
         Convert scalar value to categorical distribution with label smoothing.
 
         Args:
             scalar: (batch,) scalar values in range [-10, 10]
             support_size: Number of bins (defaults to model's support_size)
-            smoothing: Label smoothing factor (0.1 = 10% uniform, 90% target)
+            smoothing: Label smoothing factor (defaults to self.label_smoothing)
 
         Returns:
             targets: (batch, support_size) smoothed probability distribution
@@ -402,6 +451,9 @@ class MuZeroTrainer:
         # Use model's support_size if not provided
         if support_size is None:
             support_size = self.model.support_size
+        # TASK_066: Use configured smoothing
+        if smoothing is None:
+            smoothing = self.label_smoothing
 
         # Use centralized support range config
         from . import get_support_range, get_bin_width
@@ -548,6 +600,11 @@ class MuZeroTrainer:
         config = self.prediction_config
         batch_size = latent_states.shape[0]
 
+        # HIGH-011 FIX: Extract valid_mask for proper loss masking
+        valid_mask = batch.get('valid', jnp.ones(batch_size, dtype=jnp.bool_))
+        valid_mask_float = valid_mask.astype(jnp.float32)
+        num_valid = jnp.maximum(jnp.sum(valid_mask_float), 1.0)  # Avoid div by zero
+
         # Get scheduled sampling probability
         teacher_prob = compute_scheduled_sampling_prob(step, config)
 
@@ -565,8 +622,8 @@ class MuZeroTrainer:
             return jnp.array(0.0), {
                 'loss_prediction_raw': 0.0,
                 'loss_decoder': 0.0,
-                'step_1_mse': 0.0,
-                'step_k_mse': 0.0,
+                'step_1_loss': 0.0,
+                'step_k_loss': 0.0,
                 'teacher_forcing_prob': teacher_prob,
                 'neural_scale': neural_scale,
             }
@@ -581,10 +638,22 @@ class MuZeroTrainer:
         
         # MSE against ground truth initial state (t=0)
         # We use a high weight for decoder loss to force the encoder to preserve these features
-        loss_p = jnp.mean((market_state['log_prices'] - teacher_sequence[:, 0, :]) ** 2)
-        loss_r = jnp.mean((market_state['log_returns'] - teacher_log_returns) ** 2) if teacher_log_returns is not None else 0.0
-        loss_m = jnp.mean((market_state['moving_avg'] - teacher_moving_avg) ** 2) if teacher_moving_avg is not None else 0.0
-        
+        # HIGH-011 FIX: Apply valid_mask before averaging
+        per_sample_loss_p = jnp.mean((market_state['log_prices'] - teacher_sequence[:, 0, :]) ** 2, axis=-1)  # (batch,)
+        loss_p = jnp.sum(per_sample_loss_p * valid_mask_float) / num_valid
+
+        if teacher_log_returns is not None:
+            per_sample_loss_r = jnp.mean((market_state['log_returns'] - teacher_log_returns) ** 2, axis=-1)
+            loss_r = jnp.sum(per_sample_loss_r * valid_mask_float) / num_valid
+        else:
+            loss_r = 0.0
+
+        if teacher_moving_avg is not None:
+            per_sample_loss_m = jnp.mean((market_state['moving_avg'] - teacher_moving_avg) ** 2, axis=-1)
+            loss_m = jnp.sum(per_sample_loss_m * valid_mask_float) / num_valid
+        else:
+            loss_m = 0.0
+
         loss_decoder = loss_p + loss_r + loss_m
 
         # Get features
@@ -622,21 +691,59 @@ class MuZeroTrainer:
         target_sequence = teacher_sequence[:, 1:k+1, :]  # (batch, K, n_assets)
         pred_sequence = predictions[:, :k, :]
 
-        # Per-step MSE
-        step_mse = jnp.mean((pred_sequence - target_sequence) ** 2, axis=-1)  # (batch, K)
+        # TASK_110 FIX: Use STEP-TO-STEP RETURNS (scale-invariant) instead of absolute log-prices
+        # This fixes the scale mismatch between synthetic (~100) and historical (~30,000) prices
+        #
+        # Problem with baseline subtraction:
+        #   pred_sequence is at decoder scale (~4.6 from synthetic)
+        #   baseline is at historical scale (~10.3)
+        #   pred - baseline = 4.6 - 10.3 = -5.7 ← STILL WRONG!
+        #
+        # Solution: Compare step-to-step CHANGES (actual log-returns)
+        #   Both pred and target step changes are ~0.001-0.01 regardless of absolute scale
+        #
+        # For K predictions, we get K-1 step-to-step returns
+        # Prepend a "step 0" return using teacher's initial price for full coverage
+        teacher_initial = teacher_sequence[:, 0:1, :]  # (batch, 1, n_assets)
+
+        # Predicted returns: change from previous step
+        pred_step0 = pred_sequence[:, 0:1, :] - teacher_initial  # First pred vs teacher initial
+        pred_step_changes = pred_sequence[:, 1:, :] - pred_sequence[:, :-1, :]  # Subsequent steps
+        pred_returns = jnp.concatenate([pred_step0, pred_step_changes], axis=1)  # (batch, K, n_assets)
+
+        # Target returns: change from previous step
+        target_step0 = target_sequence[:, 0:1, :] - teacher_initial  # First target vs initial
+        target_step_changes = target_sequence[:, 1:, :] - target_sequence[:, :-1, :]  # Subsequent
+        target_returns = jnp.concatenate([target_step0, target_step_changes], axis=1)  # (batch, K, n_assets)
+
+        # Per-step loss (MSE or Huber) on RETURNS, not absolute prices
+        if self.pred_loss_type == 'huber':
+            # Huber loss: quadratic for small errors, linear for large
+            # More robust to outliers from hard-to-predict levels (e.g., L6 triangle_arb)
+            delta = self.pred_huber_delta
+            abs_error = jnp.abs(pred_returns - target_returns)
+            quadratic = 0.5 * abs_error ** 2
+            linear = delta * (abs_error - 0.5 * delta)
+            per_element_loss = jnp.where(abs_error <= delta, quadratic, linear)
+            step_loss = jnp.mean(per_element_loss, axis=-1)  # (batch, K)
+        else:
+            # Standard MSE on returns (scale-invariant)
+            step_loss = jnp.mean((pred_returns - target_returns) ** 2, axis=-1)  # (batch, K)
 
         # Weighted sum with decay
         step_weights = jnp.array([config.step_decay ** i for i in range(k)])
-        weighted_mse = jnp.sum(step_mse * step_weights[None, :], axis=-1)  # (batch,)
+        weighted_loss = jnp.sum(step_loss * step_weights[None, :], axis=-1)  # (batch,)
 
         # Total prediction loss combines decoder reconstruction + trajectory prediction
-        loss_prediction = jnp.mean(weighted_mse) + loss_decoder
+        # HIGH-011 FIX: Apply valid_mask before averaging
+        loss_prediction_raw = jnp.sum(weighted_loss * valid_mask_float) / num_valid
+        loss_prediction = loss_prediction_raw + loss_decoder
 
         metrics = {
-            'loss_prediction_raw': jnp.mean(weighted_mse),
+            'loss_prediction_raw': loss_prediction_raw,  # HIGH-011: Now properly masked
             'loss_decoder': loss_decoder,
-            'step_1_mse': jnp.mean(step_mse[:, 0]) if k > 0 else 0.0,
-            'step_k_mse': jnp.mean(step_mse[:, -1]) if k > 0 else 0.0,
+            'step_1_loss': jnp.sum(step_loss[:, 0] * valid_mask_float) / num_valid if k > 0 else 0.0,
+            'step_k_loss': jnp.sum(step_loss[:, -1] * valid_mask_float) / num_valid if k > 0 else 0.0,
             'teacher_forcing_prob': teacher_prob,
             'neural_scale': neural_scale,  # TASK_035: Track physics warmup progress
         }
@@ -670,21 +777,21 @@ class MuZeroTrainer:
         # TASK_035 FIX: Two-sided TARGET regularization for momentum
         # OLD (broken): jnp.maximum(alpha - 0.3, 0.0) ** 2  → α=0 has ZERO penalty
         # NEW: Pull toward target with bidirectional penalty
+        # TASK_066: Use configurable targets
         if 'alpha' in physics_params:
             alpha = jax.nn.softplus(physics_params['alpha']) * 0.3  # Scale to [0, ~0.3]
-            alpha_target = 0.05  # Target: small positive momentum
-            reg_loss = reg_loss + jnp.mean((alpha - alpha_target) ** 2) * 0.5
+            reg_loss = reg_loss + jnp.mean((alpha - self.alpha_target) ** 2) * 0.5
 
         # TASK_035 FIX: Two-sided TARGET regularization for mean-reversion
+        # TASK_066: Use configurable targets
         if 'beta' in physics_params:
             beta = jax.nn.softplus(physics_params['beta']) * 0.2  # Scale to [0, ~0.2]
-            beta_target = 0.03  # Target: small mean reversion
-            reg_loss = reg_loss + jnp.mean((beta - beta_target) ** 2) * 0.5
+            reg_loss = reg_loss + jnp.mean((beta - self.beta_target) ** 2) * 0.5
 
-        # Volatility: penalize extreme values (want ~0.01) - already two-sided
+        # Volatility: penalize extreme values - TASK_066: configurable target
         if 'sigma' in physics_params:
             sigma = jax.nn.softplus(physics_params['sigma']) * 0.1
-            reg_loss = reg_loss + jnp.mean((sigma - 0.01) ** 2)
+            reg_loss = reg_loss + jnp.mean((sigma - self.sigma_target) ** 2)
 
         # Low-rank correlation: L1 sparsity on factor loadings
         correlation_params = physics_params.get('correlation', {})
@@ -744,11 +851,13 @@ class MuZeroTrainer:
 
         batch_size, unroll_steps = actions.shape[:2]
 
-        # Initial inference
+        # Initial inference (with intermediates if cycle balance is enabled)
+        need_intermediates = self.cycle_balance or self.cycle_atc
         initial_output = self.model.apply(
             {'params': params},
             observations[:, 0],  # First observation
-            mode='initial_inference'
+            mode='initial_inference',
+            return_intermediates=need_intermediates
         )
 
         # BUG_002 FIX: Compute initial losses with valid_mask
@@ -814,7 +923,8 @@ class MuZeroTrainer:
             # BUG_002 FIX: Per-sample reward loss, masked
             # TASK_034 FIX: Scale rewards before categorical binning
             # Raw symlog rewards (~0.001) would collapse to 1-2 bins without scaling
-            scaled_rewards = rewards[:, t - 1] * REWARD_SCALE
+            # TASK_066: Use configurable reward scale
+            scaled_rewards = rewards[:, t - 1] * self.reward_scale
             per_sample_reward = optax.softmax_cross_entropy(
                 recurrent_output['reward'],
                 self._scalar_to_categorical(scaled_rewards)
@@ -836,10 +946,10 @@ class MuZeroTrainer:
 
         # Adaptive entropy bonus - stronger push when entropy drops too low
         # Target entropy ~4.0 (near-uniform over 192 actions = ln(192) ≈ 5.26)
-        min_entropy = 3.0  # Danger zone threshold
+        # TASK_066: Use configurable min_entropy threshold
         adaptive_bonus = jnp.where(
-            policy_entropy < min_entropy,
-            entropy_coef * 5.0 * (min_entropy - policy_entropy),  # 5x stronger push when too low
+            policy_entropy < self.min_entropy,
+            entropy_coef * 5.0 * (self.min_entropy - policy_entropy),  # 5x stronger push when too low
             0.0
         )
 
@@ -920,6 +1030,41 @@ class MuZeroTrainer:
         else:
             metrics['atc_loss'] = 0.0
 
+        # ================================================================
+        # TASK_110: Cycle Balance Loss (prevent H0 dominance)
+        # ================================================================
+        if (self.cycle_balance or self.cycle_atc) and 'trm_intermediates' in initial_output:
+            intermediates = initial_output['trm_intermediates']
+
+            # Cycle balance loss (penalize imbalanced utilization)
+            if self.cycle_balance:
+                cycle_bal_loss = compute_cycle_balance_loss(
+                    intermediates,
+                    h_cycles=self.model.H_cycles,
+                    l_cycles=self.model.L_cycles,
+                    target_cv=self.cycle_balance_target_cv,
+                )
+                total_loss = total_loss + self.cycle_balance_weight * cycle_bal_loss
+                metrics['cycle_balance_loss'] = cycle_bal_loss
+            else:
+                metrics['cycle_balance_loss'] = 0.0
+
+            # Cycle ATC loss (force H0/H3 diversity)
+            if self.cycle_atc:
+                cycle_atc_loss = compute_cycle_atc_loss(
+                    intermediates,
+                    temperature=self.cycle_atc_temperature,
+                    early_cycle='h0',
+                    late_cycle=f'h{self.model.H_cycles - 1}',  # Last H-cycle
+                )
+                total_loss = total_loss + self.cycle_atc_weight * cycle_atc_loss
+                metrics['cycle_atc_loss'] = cycle_atc_loss
+            else:
+                metrics['cycle_atc_loss'] = 0.0
+        else:
+            metrics['cycle_balance_loss'] = 0.0
+            metrics['cycle_atc_loss'] = 0.0
+
         metrics['total_loss'] = total_loss
 
         return total_loss, metrics
@@ -965,7 +1110,16 @@ class MuZeroTrainer:
         # Update step count
         new_step_count = state.step_count + 1
 
+        # RESTORED: Update target network periodically (Double Q-learning stability)
+        should_update_target = (new_step_count % self.target_update_interval) == 0
+        new_target_params = jax.lax.cond(
+            should_update_target,
+            lambda: new_state.params,      # True: copy current params to target
+            lambda: state.target_params    # False: keep old target params
+        )
+
         new_state = new_state.replace(
+            target_params=new_target_params,
             step_count=new_step_count
         )
 
@@ -1010,8 +1164,8 @@ class MuZeroTrainer:
             'loss_prediction': [],
             'loss_physics_reg': [],
             'lambda_pred': [],
-            'step_1_mse': [],
-            'step_k_mse': [],
+            'step_1_loss': [],
+            'step_k_loss': [],
             # Per-head gradient norms (DS24 Level 4)
             'grad_norm_value': [],
             'grad_norm_policy': [],
@@ -1023,31 +1177,44 @@ class MuZeroTrainer:
             rng, sample_rng = jax.random.split(rng)
             batch = replay_buffer.sample_batch(sample_rng)
 
-            # Debug: Check for NaNs/Infs in batch
-            for k, v in batch.items():
-                if jnp.isnan(v).any() or jnp.isinf(v).any():
-                    print(f"!!! CRITICAL BATCH FAILURE at iteration {iteration} !!!")
-                    print(f"Key: {k}")
-                    print(f"  Min: {jnp.min(v)}")
-                    print(f"  Max: {jnp.max(v)}")
-                    print(f"  Mean: {jnp.mean(v)}")
-                    raise ValueError(f"NaNs/Infs detected in training batch key '{k}'!")
+            # Debug: Check for NaNs/Infs in batch (only every 50 iterations to avoid GPU sync overhead)
+            if iteration % 50 == 0:
+                for k, v in batch.items():
+                    if jnp.isnan(v).any() or jnp.isinf(v).any():
+                        print(f"!!! CRITICAL BATCH FAILURE at iteration {iteration} !!!")
+                        print(f"Key: {k}")
+                        print(f"  Min: {jnp.min(v)}")
+                        print(f"  Max: {jnp.max(v)}")
+                        print(f"  Mean: {jnp.mean(v)}")
+                        raise ValueError(f"NaNs/Infs detected in training batch key '{k}'!")
 
             # PopArt: normalize targets and correct value head weights (TASK_021)
+            # PERF: Only update PopArt stats every 10 iterations to reduce GPU sync overhead
+            # Normalization still happens every iteration using current stats
             if self.use_popart and self.popart is not None:
-                # Get raw value targets (MC returns)
                 raw_values = batch['values'].flatten()
 
-                # Update statistics, normalize targets, correct weights
-                norm_values, corrected_params = self.popart.normalize_and_correct(
-                    raw_values, self.state.params
-                )
+                # HIGH-010 FIX: Only use VALID samples for statistics update
+                # Invalid samples (padding) would corrupt the running mean/variance
+                valid_mask = batch.get('valid', jnp.ones(batch['values'].shape[0], dtype=jnp.bool_))
+                valid_mask_flat = jnp.repeat(valid_mask, batch['values'].shape[1])  # Expand for flattened shape
 
-                # Reshape back to original batch shape and update batch
+                # Update statistics less frequently (amortizes sync cost)
+                if iteration % 10 == 0:
+                    # Only pass valid values to update statistics
+                    valid_values = raw_values[valid_mask_flat]
+                    if valid_values.shape[0] > 0:
+                        _, corrected_params = self.popart.normalize_and_correct(
+                            valid_values, self.state.params
+                        )
+                        self.state = self.state.replace(params=corrected_params)
+                    # Normalize ALL values (invalid ones masked in loss anyway)
+                    norm_values = self.popart.normalize(raw_values)
+                else:
+                    # Just normalize using current stats (no param correction)
+                    norm_values = self.popart.normalize(raw_values)
+
                 batch = {**batch, 'values': norm_values.reshape(batch['values'].shape)}
-
-                # Update state with corrected params (preserves outputs after normalization change)
-                self.state = self.state.replace(params=corrected_params)
 
             # Training step (pass entropy_coef dynamically so adaptive entropy works)
             rng, train_rng = jax.random.split(rng)
@@ -1061,12 +1228,14 @@ class MuZeroTrainer:
                 if metrics['value_mse'] < 0.01 and float(jnp.std(tgt_vals)) > 0.5:
                     print(f"    ⚠️  WARNING: MSE={metrics['value_mse']:.6f} too low for target std={float(jnp.std(tgt_vals)):.2f}")
 
-            # Record metrics
+            # Record metrics (store JAX arrays as futures - no GPU sync)
+            # Converting to float() every iteration causes CPU-GPU sync stall
             for key, value in metrics.items():
                 if key in history:
-                    history[key].append(float(value))
+                    history[key].append(value)  # Keep as JAX array
 
-            if jnp.isnan(metrics['total_loss']):
+            # NaN check only every 50 iterations to avoid GPU sync overhead
+            if (iteration + 1) % 50 == 0 and jnp.isnan(metrics['total_loss']):
                 print(f"!!! NAN LOSS DETECTED at iteration {iteration} !!!")
                 print(f"Value Loss: {metrics['value_loss']}")
                 print(f"Policy Loss: {metrics['policy_loss']}")
@@ -1091,11 +1260,21 @@ class MuZeroTrainer:
                 if self.use_prediction_loss and metrics.get('loss_prediction', 0.0) > 0:
                     loss_line += f"\n                       Pred: {metrics['loss_prediction']:.6f}"
                     loss_line += f" (λ={metrics.get('lambda_pred', 0.0):.3f})"
-                    loss_line += f" | Step1: {metrics.get('step_1_mse', 0.0):.6f}"
-                    loss_line += f" | StepK: {metrics.get('step_k_mse', 0.0):.6f}"
+                    loss_line += f" | Step1: {metrics.get('step_1_loss', 0.0):.6f}"
+                    loss_line += f" | StepK: {metrics.get('step_k_loss', 0.0):.6f}"
                     loss_line += f" | PhysReg: {metrics.get('loss_physics_reg', 0.0):.6f}"
 
                 print(loss_line)
+
+        # Batch convert JAX arrays to floats (single sync point at end)
+        # This avoids per-iteration GPU sync overhead from float() calls
+        for key in history:
+            if history[key]:
+                # Check if first element is a JAX array (not already a Python float)
+                first = history[key][0]
+                if not isinstance(first, (int, float)):
+                    # Block until all computations complete, then convert
+                    history[key] = [float(v) for v in history[key]]
 
         return history
 
