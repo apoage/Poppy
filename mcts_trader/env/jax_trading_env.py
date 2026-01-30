@@ -65,6 +65,7 @@ import jax.numpy as jnp
 import chex
 from typing import Tuple
 from functools import partial
+from mcts_trader.utils.transforms import symlog
 
 
 # =============================================================================
@@ -107,6 +108,21 @@ class EnvConfig:
     default_limit_order_ttl: int = 100
     limit_offset_pct: float = 0.002  # 0.2%
     liquidation_threshold_pct: float = 0.01  # 1% of initial
+    # TASK_047: Probabilistic limit order fills
+    probabilistic_fills: bool = False  # Disabled by default for backwards compat
+    # TASK_055: Borrowing cost for short positions
+    borrow_rate_annual: float = 0.0  # Annual rate (e.g., 0.05 = 5%)
+    # TASK_053: Episode length variance (anti-exploit)
+    episode_variance: int = 0  # ±N steps variance (0 = fixed length)
+    # TASK_051: Burning money (cash opportunity cost)
+    burning_money: bool = False
+    burn_market_linked: bool = True
+    burn_base_rate: float = 0.00005  # 0.005% per step baseline
+    # Random burns (wife with debit card extreme mode)
+    burn_random: bool = False
+    burn_random_prob: float = 0.02  # 2% chance per step
+    burn_random_max: float = 500.0  # Max random burn amount
+    burn_random_limit: int = 10  # Max burns per episode
 
 
 # =============================================================================
@@ -177,6 +193,12 @@ class TradingState:
     # Random key for stochastic elements
     rng_key: chex.PRNGKey               # (2,)
 
+    # TASK_053: Episode length variance
+    max_episode_steps: chex.Array       # () - actual max steps for this episode
+
+    # TASK_051: Random burns counter (wife with debit card mode)
+    random_burns_remaining: chex.Array  # () - burns left this episode
+
 
 # =============================================================================
 # Pure Helper Functions
@@ -224,11 +246,6 @@ def apply_fee_and_slippage(price: chex.Array, is_buy: chex.Array,
     total_cost_bps = fee_bps + slippage_bps
     multiplier = 1.0 + total_cost_bps / 10000.0
     return jnp.where(is_buy, price * multiplier, price / multiplier)
-
-
-def symlog(x: chex.Array, threshold: float = 1.0) -> chex.Array:
-    """Symmetric logarithm transformation."""
-    return jnp.sign(x) * jnp.log1p(jnp.abs(x) / threshold) * threshold
 
 
 # =============================================================================
@@ -302,33 +319,169 @@ def apply_tp_sl_closures(state: TradingState, current_prices: chex.Array,
 
 
 # =============================================================================
+# Margin Call / Liquidation Functions
+# =============================================================================
+
+def process_margin_call(state: TradingState, current_prices: chex.Array,
+                       config: EnvConfig) -> TradingState:
+    """Handle margin call when cash goes negative (short losses exceed cash).
+
+    Realistic margin mechanics:
+    1. Cash < 0 from short losses → liquidate long positions to cover
+    2. Holding longs with no spare cash → perfectly fine (you own assets)
+    3. Can't cover even after liquidating all longs → bankruptcy (portfolio wiped)
+
+    This should be called AFTER any operation that might make cash negative
+    (primarily short position closures).
+    """
+    # Only process if cash is negative
+    needs_margin_call = state.cash < 0
+
+    # Calculate deficit to cover
+    deficit = jnp.abs(jnp.minimum(state.cash, 0.0))
+
+    # Find long positions we can liquidate
+    is_long = state.pos_active & (state.pos_side == 1)
+    long_values = jnp.where(is_long, state.pos_size * current_prices, 0.0)
+
+    # Apply fees to get net proceeds
+    fee_rate = config.fee_bps / 10000.0
+    slippage_rate = config.slippage_bps / 10000.0
+    net_rate = 1.0 - fee_rate - slippage_rate
+    long_proceeds = long_values * net_rate
+
+    # Calculate cumulative proceeds (in asset order)
+    cumulative_proceeds = jnp.cumsum(long_proceeds)
+
+    # Determine which longs to liquidate to cover deficit
+    # Liquidate all longs where cumulative proceeds before this one < deficit
+    # (i.e., we still need more cash)
+    prev_cumulative = jnp.concatenate([jnp.array([0.0]), cumulative_proceeds[:-1]])
+    should_liquidate = is_long & (prev_cumulative < deficit) & needs_margin_call
+
+    # Calculate actual proceeds from liquidated positions
+    liquidation_proceeds = jnp.where(should_liquidate, long_proceeds, 0.0)
+    total_liquidation_proceeds = jnp.sum(liquidation_proceeds)
+
+    # New cash after liquidation
+    new_cash = jnp.where(needs_margin_call,
+                         state.cash + total_liquidation_proceeds,
+                         state.cash)
+
+    # Clear liquidated positions
+    new_pos_active = jnp.where(should_liquidate, False, state.pos_active)
+    new_pos_side = jnp.where(should_liquidate, 0, state.pos_side)
+    new_pos_size = jnp.where(should_liquidate, 0.0, state.pos_size)
+    new_pos_entry = jnp.where(should_liquidate, 0.0, state.pos_entry)
+    new_pos_sl = jnp.where(should_liquidate, 0.0, state.pos_sl)
+    new_pos_tp = jnp.where(should_liquidate, 0.0, state.pos_tp)
+
+    # Check for bankruptcy: cash still negative after liquidating all longs
+    # In this case, we zero out everything (portfolio wiped)
+    total_long_value = jnp.sum(long_proceeds)
+    is_bankrupt = needs_margin_call & (deficit > total_long_value)
+
+    # Bankruptcy: wipe remaining positions and set cash to 0
+    # (Can't go more negative - this is the floor)
+    new_cash = jnp.where(is_bankrupt, 0.0, new_cash)
+    new_pos_active = jnp.where(is_bankrupt, False, new_pos_active)
+    new_pos_side = jnp.where(is_bankrupt, 0, new_pos_side)
+    new_pos_size = jnp.where(is_bankrupt, 0.0, new_pos_size)
+    new_pos_entry = jnp.where(is_bankrupt, 0.0, new_pos_entry)
+    new_pos_sl = jnp.where(is_bankrupt, 0.0, new_pos_sl)
+    new_pos_tp = jnp.where(is_bankrupt, 0.0, new_pos_tp)
+
+    # Also cancel all pending orders on bankruptcy
+    new_order_active = jnp.where(is_bankrupt, False, state.order_active)
+    new_order_side = jnp.where(is_bankrupt, 0, state.order_side)
+    new_order_size = jnp.where(is_bankrupt, 0.0, state.order_size)
+    new_order_price = jnp.where(is_bankrupt, 0.0, state.order_price)
+    new_order_reserved = jnp.where(is_bankrupt, 0.0, state.order_reserved)
+
+    return state.replace(
+        cash=new_cash,
+        pos_active=new_pos_active,
+        pos_side=new_pos_side,
+        pos_size=new_pos_size,
+        pos_entry=new_pos_entry,
+        pos_sl=new_pos_sl,
+        pos_tp=new_pos_tp,
+        order_active=new_order_active,
+        order_side=new_order_side,
+        order_size=new_order_size,
+        order_price=new_order_price,
+        order_reserved=new_order_reserved,
+    )
+
+
+# =============================================================================
 # Limit Order Functions
 # =============================================================================
 
 def process_limit_orders(state: TradingState, current_prices: chex.Array,
-                        config: EnvConfig) -> TradingState:
+                        config: EnvConfig, rng_key: chex.PRNGKey = None) -> TradingState:
     """Process pending limit orders - check fills and expirations.
 
+    LAZY EXECUTION: No reserved cash - just clear expired orders.
     This is called at the START of each step, before the action.
+
+    TASK_047: Probabilistic fills based on distance from market.
+    TASK_052: Random fill priority (no asset index bias).
     """
     # Check expiration: (current_step - created) >= ttl
     expired = state.order_active & ((state.current_step - state.order_created) >= state.order_ttl)
 
-    # Return reserved cash for expired buy orders
-    expired_buy_cash = jnp.sum(jnp.where(expired & (state.order_side == 1),
-                                          state.order_reserved, 0.0))
+    # No reserved cash to return in lazy mode - orders just expire
 
     # Check fill conditions
     # Buy: fills when current_price <= limit_price
     # Sell: fills when current_price >= limit_price
     can_fill_buy = state.order_active & (state.order_side == 1) & (current_prices <= state.order_price)
     can_fill_sell = state.order_active & (state.order_side == 2) & (current_prices >= state.order_price)
-    can_fill = (can_fill_buy | can_fill_sell) & ~expired
+    can_fill_basic = (can_fill_buy | can_fill_sell) & ~expired
 
-    # Process fills
-    state = fill_limit_orders(state, current_prices, can_fill, config)
+    # TASK_047: Probabilistic fill model
+    # Orders far from market fill easily; orders close to market may not fill (queue position)
+    if rng_key is not None and config.probabilistic_fills:
+        key1, key2 = jax.random.split(rng_key)
 
-    # Clear expired orders and update cash
+        # Calculate distance from market as fraction of price
+        # For buys: (limit_price - market_price) / market_price (negative when in-the-money)
+        # For sells: (market_price - limit_price) / market_price (negative when in-the-money)
+        buy_distance = (state.order_price - current_prices) / (current_prices + 1e-8)
+        sell_distance = (current_prices - state.order_price) / (current_prices + 1e-8)
+        distance = jnp.where(state.order_side == 1, buy_distance, sell_distance)
+
+        # Marketable orders (distance <= 0) always fill
+        is_marketable = distance <= 0
+
+        # For non-marketable orders, fill probability based on distance
+        # Base probability: starts at 0.1 for orders very close to market
+        # Increases with distance (farther = more aggressive = higher fill prob)
+        # At 2% distance: ~50% fill prob; at 5% distance: ~95% fill prob
+        # Formula: p = min(0.95, 0.1 + distance * 20)
+        base_prob = jnp.clip(0.1 + jnp.abs(distance) * 20.0, 0.0, 0.95)
+
+        # Order age bonus: +5% per step, max +30%
+        order_age = state.current_step - state.order_created
+        age_bonus = jnp.clip(order_age * 0.05, 0.0, 0.30)
+
+        fill_prob = jnp.where(is_marketable, 1.0, jnp.clip(base_prob + age_bonus, 0.0, 0.95))
+
+        # Random fill decision
+        random_vals = jax.random.uniform(key1, shape=fill_prob.shape)
+        probabilistic_fill = random_vals < fill_prob
+
+        can_fill = can_fill_basic & probabilistic_fill
+        rng_for_priority = key2
+    else:
+        can_fill = can_fill_basic
+        rng_for_priority = rng_key
+
+    # Process fills (handles insufficient funds by cancelling)
+    state = fill_limit_orders(state, current_prices, can_fill, config, rng_for_priority)
+
+    # Clear expired orders (no cash change in lazy mode)
     new_order_active = jnp.where(expired, False, state.order_active)
     new_order_side = jnp.where(expired, 0, state.order_side)
     new_order_size = jnp.where(expired, 0.0, state.order_size)
@@ -338,7 +491,6 @@ def process_limit_orders(state: TradingState, current_prices: chex.Array,
     new_order_ttl = jnp.where(expired, 0, state.order_ttl)
 
     return state.replace(
-        cash=state.cash + expired_buy_cash,
         order_active=new_order_active,
         order_side=new_order_side,
         order_size=new_order_size,
@@ -350,54 +502,138 @@ def process_limit_orders(state: TradingState, current_prices: chex.Array,
 
 
 def fill_limit_orders(state: TradingState, current_prices: chex.Array,
-                     can_fill: chex.Array, config: EnvConfig) -> TradingState:
-    """Fill limit orders that meet their price conditions."""
+                     can_fill: chex.Array, config: EnvConfig,
+                     rng_key: chex.PRNGKey = None) -> TradingState:
+    """Fill limit orders that meet their price conditions.
+
+    LAZY EXECUTION: Checks funds/position at fill time.
+    Orders cancelled (soft penalty) if resources unavailable.
+
+    Accounting Safety Guarantees:
+    1. Buy orders (opening_long) use CUMULATIVE cash check to prevent overdraw
+       - TASK_052: Orders processed in RANDOM order (no asset bias)
+       - Sell proceeds (closing_long) counted towards available cash first
+    2. Sell orders (closing_long, opening_short) don't consume cash, they generate it
+    3. Closing short operations settle margin - may have P&L impact
+
+    Edge Cases:
+    - Multiple simultaneous buys: Handled by cumulative check (fixed 2026-01-04)
+    - Short closing when deeply underwater: May impact cash if loss > margin
+      (rare edge case, requires 100%+ loss which is margin-call territory)
+    """
     # Maker fee for limit orders (typically lower than taker)
     maker_fee_rate = config.maker_fee_bps / 10000.0
 
     # Process each fillable order vectorized
-    is_buy_fill = can_fill & (state.order_side == 1)
-    is_sell_fill = can_fill & (state.order_side == 2)
+    is_buy_order = can_fill & (state.order_side == 1)
+    is_sell_order = can_fill & (state.order_side == 2)
 
     # Buy fill: open long or close short
-    # Cash: return reserved, deduct actual cost + fee
-    buy_fill_price = state.order_price  # Fill at limit price
+    # FIX: Fill at LIMIT price, not market price (Magic Fill bug fix).
+    # Old logic: jnp.minimum(order, market) gave unrealistic "better price"
+    # e.g., Limit $98, Market $90 -> Fill $90 = free $8 alpha
+    # Reality: As price drops from $100 to $90, it crosses $98 first -> fills at $98
+    buy_fill_price = state.order_price
     buy_cost = state.order_size * buy_fill_price
     buy_fee = buy_cost * maker_fee_rate
+    total_buy_cost = buy_cost + buy_fee
 
-    # For buys: check if closing short or opening long
-    closing_short = is_buy_fill & state.pos_active & (state.pos_side == 2)
-    opening_long = is_buy_fill & ~state.pos_active
+    # LAZY CHECK: For sell orders that close longs, calculate proceeds first
+    # These generate cash that can fund buy orders
+    closing_long_tentative = is_sell_order & state.pos_active & (state.pos_side == 1)
+    # FIX: Fill at LIMIT price, not market price (Magic Fill bug fix).
+    # Old logic: jnp.maximum(order, market) gave unrealistic "better price"
+    # e.g., Limit $100, Market $110 -> Fill $110 = free $10 alpha
+    # Reality: As price rises from $95 to $110, it crosses $100 first -> fills at $100
+    sell_actual_price = state.order_price
+    sell_proceeds = state.order_size * sell_actual_price
+    sell_fee = sell_proceeds * maker_fee_rate
+    sell_proceeds_net = jnp.where(closing_long_tentative, sell_proceeds - sell_fee, 0.0)
+    total_sell_proceeds = jnp.sum(sell_proceeds_net)
+
+    # Available cash for buys = current cash + proceeds from closing longs
+    available_cash_for_buys = state.cash + total_sell_proceeds
+
+    # For buy orders opening long, use CUMULATIVE check to prevent overdraw
+    wants_to_open_long = is_buy_order & ~state.pos_active
+    buy_cost_if_opening = jnp.where(wants_to_open_long, total_buy_cost, 0.0)
+
+    # TASK_052: Randomize fill priority to prevent asset index bias
+    # Without this, asset 0 always fills before asset 63 when cash is limited
+    n_assets = buy_cost_if_opening.shape[0]
+    if rng_key is not None:
+        # Shuffle costs, do cumsum, then unshuffle result
+        priority_order = jax.random.permutation(rng_key, n_assets)
+        inverse_order = jnp.argsort(priority_order)
+        shuffled_costs = buy_cost_if_opening[priority_order]
+        cumulative_shuffled = jnp.cumsum(shuffled_costs)
+        can_afford_shuffled = cumulative_shuffled <= available_cash_for_buys
+        can_afford_cumulative = can_afford_shuffled[inverse_order]
+    else:
+        # Fallback: deterministic order (for backwards compatibility)
+        cumulative_buy_cost = jnp.cumsum(buy_cost_if_opening)
+        can_afford_cumulative = cumulative_buy_cost <= available_cash_for_buys
+
+    # For closing short, always allow - margin call handles negative cash
+    # This is realistic: you can't refuse to close a losing short, you owe the money
+    # The margin call system will liquidate longs or bankrupt if needed
+    closing_short = is_buy_order & state.pos_active & (state.pos_side == 2)
+
+    # Final execution flags
+    opening_long = wants_to_open_long & can_afford_cumulative
+
+    # Cancel buy orders that can't be funded (opening_long only - shorts always close)
+    buy_cancelled = is_buy_order & ~state.pos_active & ~opening_long
 
     # Close short proceeds: 2 * size * entry - size * fill_price
     short_close_proceeds = state.pos_size * (2.0 * state.pos_entry - buy_fill_price)
     short_close_fee = jnp.abs(short_close_proceeds) * maker_fee_rate
 
     # Sell fill: close long or open short
-    sell_fill_price = state.order_price
-    sell_proceeds = state.order_size * sell_fill_price
-    sell_fee = sell_proceeds * maker_fee_rate
+    # (sell_proceeds and sell_fee already calculated above for closing_long_tentative)
+    # sell_actual_price is now just order_price (Magic Fill fix)
+    sell_fill_price = sell_actual_price
 
-    closing_long = is_sell_fill & state.pos_active & (state.pos_side == 1)
-    opening_short = is_sell_fill & ~state.pos_active & config.allow_short
+    # Use closing_long_tentative as the final closing_long (same condition)
+    closing_long = closing_long_tentative
 
-    # Calculate cash changes
-    # Buy to open long: +reserved - cost - fee
-    # Buy to close short: +reserved + short_proceeds - fee
+    # TASK_124 FIX: Short opening via limit order needs margin deduction!
+    # Previously: opening_short didn't deduct cash = FREE MONEY BUG
+    # Short margin = position_size * entry_price (same as market order)
+    short_margin_cost = state.order_size * sell_fill_price
+    short_margin_fee = short_margin_cost * maker_fee_rate
+    total_short_margin = short_margin_cost + short_margin_fee
+
+    # Check if can afford short margin (like buy orders)
+    # Must have cash AFTER close_long proceeds but BEFORE buy costs
+    available_for_short = state.cash + total_sell_proceeds  # Like buy orders
+    wants_to_open_short = is_sell_order & ~state.pos_active & config.allow_short
+    can_afford_short = total_short_margin <= available_for_short
+    opening_short = wants_to_open_short & can_afford_short
+
+    # Cancel sell orders if position no longer exists (was market sold) OR can't afford
+    sell_cancelled = is_sell_order & ~state.pos_active & ~config.allow_short
+    sell_cancelled = sell_cancelled | (wants_to_open_short & ~can_afford_short)
+
+    # Calculate cash changes (no reserved cash in lazy mode)
+    # Buy to open long: -cost - fee
+    # Buy to close short: +short_proceeds - fee
     # Sell to close long: +proceeds - fee
-    # Sell to open short: -cost - fee (no reserved for short)
+    # Sell to open short: -margin - fee (TASK_124 FIX: was 0.0!)
 
-    cash_change_buy_long = jnp.where(opening_long,
-                                      state.order_reserved - buy_cost - buy_fee, 0.0)
+    cash_change_buy_long = jnp.where(opening_long, -total_buy_cost, 0.0)
     cash_change_buy_short = jnp.where(closing_short,
-                                       state.order_reserved + short_close_proceeds - short_close_fee, 0.0)
+                                       short_close_proceeds - short_close_fee, 0.0)
     cash_change_sell_long = jnp.where(closing_long,
                                        sell_proceeds - sell_fee, 0.0)
-    cash_change_sell_short = jnp.where(opening_short,
-                                        -buy_cost - buy_fee, 0.0)  # Short sale generates cash later
+    cash_change_sell_short = jnp.where(opening_short, -total_short_margin, 0.0)  # TASK_124 FIX
 
     total_cash_change = jnp.sum(cash_change_buy_long + cash_change_buy_short +
                                 cash_change_sell_long + cash_change_sell_short)
+
+    # Track which orders actually filled vs cancelled
+    actually_filled = (opening_long | closing_short | closing_long | opening_short)
+    cancelled = buy_cancelled | sell_cancelled
 
     # Update positions
     # Opening long
@@ -444,15 +680,15 @@ def fill_limit_orders(state: TradingState, current_prices: chex.Array,
                            sell_fill_price * (1.0 - config.default_take_profit_pct),
                            new_pos_tp)
 
-    # Clear filled orders
-    filled = can_fill
-    new_order_active = jnp.where(filled, False, state.order_active)
-    new_order_side = jnp.where(filled, 0, state.order_side)
-    new_order_size = jnp.where(filled, 0.0, state.order_size)
-    new_order_price = jnp.where(filled, 0.0, state.order_price)
-    new_order_reserved = jnp.where(filled, 0.0, state.order_reserved)
-    new_order_created = jnp.where(filled, 0, state.order_created)
-    new_order_ttl = jnp.where(filled, 0, state.order_ttl)
+    # Clear filled AND cancelled orders (both should be removed)
+    to_clear = actually_filled | cancelled
+    new_order_active = jnp.where(to_clear, False, state.order_active)
+    new_order_side = jnp.where(to_clear, 0, state.order_side)
+    new_order_size = jnp.where(to_clear, 0.0, state.order_size)
+    new_order_price = jnp.where(to_clear, 0.0, state.order_price)
+    new_order_reserved = jnp.where(to_clear, 0.0, state.order_reserved)
+    new_order_created = jnp.where(to_clear, 0, state.order_created)
+    new_order_ttl = jnp.where(to_clear, 0, state.order_ttl)
 
     return state.replace(
         cash=state.cash + total_cash_change,
@@ -504,7 +740,8 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
     # (lines 1118-1122 in vectorbt_env.py)
     available_cash = state.cash * 0.99  # Leave 1% buffer like VectorBT
     actual_cost = jnp.minimum(ideal_cost, available_cash)
-    shares_to_buy = actual_cost / buy_exec_price
+    # BUG_009 FIX: Guard against division by zero (price should never be 0, but defensive)
+    shares_to_buy = actual_cost / jnp.maximum(buy_exec_price, 1e-10)
     cost = actual_cost
 
     has_position = state.pos_active[asset_idx]
@@ -527,8 +764,11 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
     new_long_size = jnp.where(has_position & is_long,
                                current_size + shares_to_buy,
                                shares_to_buy)
+    # BUG_009 FIX: Guard against division by zero in weighted average entry price
+    # Even if the result isn't used, NaN in computation can affect gradients/JIT
+    safe_divisor = jnp.maximum(new_long_size, 1e-10)
     new_long_entry = jnp.where(has_position & is_long,
-                                (current_size * current_entry + shares_to_buy * buy_exec_price) / new_long_size,
+                                (current_size * current_entry + shares_to_buy * buy_exec_price) / safe_divisor,
                                 buy_exec_price)
 
     # Determine which case applies
@@ -577,6 +817,11 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
                           state.pos_tp[asset_idx]))
     )
 
+    # FIX: Cancel pending limit orders to prevent "Ghost Fills"
+    # Market order = "I want this NOW", old conditional orders are stale
+    # JAX env uses lazy execution (no reserved cash), so just deactivate
+    new_order_active = state.order_active.at[asset_idx].set(False)
+
     return state.replace(
         cash=new_cash,
         pos_active=new_pos_active,
@@ -585,6 +830,7 @@ def execute_buy(state: TradingState, asset_idx: chex.Array,
         pos_entry=new_pos_entry,
         pos_sl=new_pos_sl,
         pos_tp=new_pos_tp,
+        order_active=new_order_active,
     )
 
 
@@ -620,7 +866,8 @@ def execute_sell(state: TradingState, asset_idx: chex.Array,
     ideal_short_cost = ideal_trade_value  # Cash needed for margin
     available_cash = state.cash * 0.99  # Leave 1% buffer like VectorBT
     actual_short_cost = jnp.minimum(ideal_short_cost, available_cash)
-    shares_to_sell = actual_short_cost / price
+    # BUG_009 FIX: Guard against division by zero (price should never be 0, but defensive)
+    shares_to_sell = actual_short_cost / jnp.maximum(price, 1e-10)
     short_cost = actual_short_cost
 
     fee_on_open = short_cost * config.fee_bps / 10000.0
@@ -670,6 +917,11 @@ def execute_sell(state: TradingState, asset_idx: chex.Array,
                           state.pos_tp[asset_idx]))
     )
 
+    # FIX: Cancel pending limit orders to prevent "Ghost Fills"
+    # Market order = "I want this NOW", old conditional orders are stale
+    # JAX env uses lazy execution (no reserved cash), so just deactivate
+    new_order_active = state.order_active.at[asset_idx].set(False)
+
     return state.replace(
         cash=new_cash,
         pos_active=new_pos_active,
@@ -678,38 +930,31 @@ def execute_sell(state: TradingState, asset_idx: chex.Array,
         pos_entry=new_pos_entry,
         pos_sl=new_pos_sl,
         pos_tp=new_pos_tp,
+        order_active=new_order_active,
     )
 
 
 def execute_limit_buy(state: TradingState, asset_idx: chex.Array,
                      current_prices: chex.Array, config: EnvConfig) -> TradingState:
-    """Execute LIMIT BUY action - place buy order below current price."""
+    """Execute LIMIT BUY action - place buy order below current price.
+
+    LAZY EXECUTION: Does NOT reserve cash. Funds checked at fill time.
+    If insufficient funds when price triggers, order is cancelled (soft penalty).
+    """
     price = current_prices[asset_idx]
     limit_price = price * (1.0 - config.limit_offset_pct)
 
-    # Cancel existing order for this asset (return reserved if buy)
-    existing_reserved = jnp.where(
-        state.order_active[asset_idx] & (state.order_side[asset_idx] == 1),
-        state.order_reserved[asset_idx],
-        0.0
-    )
-
-    # Calculate order size
+    # Calculate intended order size (based on current portfolio, but no reservation)
     portfolio_value = compute_portfolio_value(state, current_prices)
     order_value = portfolio_value * config.position_size_pct
-    estimated_fee = order_value * config.maker_fee_bps / 10000.0
-    total_reserve = order_value + estimated_fee
+    shares = order_value / limit_price
 
-    # Adjust if not enough cash
-    available_cash = state.cash + existing_reserved
-    total_reserve = jnp.minimum(total_reserve, available_cash * 0.99)
-    shares = (total_reserve - total_reserve * config.maker_fee_bps / 10000.0) / limit_price
-
-    # Skip if already have position or can't afford
+    # Can place if no existing position on this asset
+    # (multiple limit orders allowed - no ~has_pending check)
     has_position = state.pos_active[asset_idx]
-    can_place = ~has_position & (shares > 0) & (available_cash >= 10.0)
+    can_place = ~has_position & (shares > 0)
 
-    # Update order arrays
+    # Update order arrays - just record intent, no cash movement
     new_order_active = state.order_active.at[asset_idx].set(
         jnp.where(can_place, True, state.order_active[asset_idx])
     )
@@ -722,8 +967,9 @@ def execute_limit_buy(state: TradingState, asset_idx: chex.Array,
     new_order_price = state.order_price.at[asset_idx].set(
         jnp.where(can_place, limit_price, state.order_price[asset_idx])
     )
+    # No reservation - set to 0
     new_order_reserved = state.order_reserved.at[asset_idx].set(
-        jnp.where(can_place, total_reserve, state.order_reserved[asset_idx])
+        jnp.where(can_place, 0.0, state.order_reserved[asset_idx])
     )
     new_order_created = state.order_created.at[asset_idx].set(
         jnp.where(can_place, state.current_step, state.order_created[asset_idx])
@@ -732,15 +978,8 @@ def execute_limit_buy(state: TradingState, asset_idx: chex.Array,
         jnp.where(can_place, config.default_limit_order_ttl, state.order_ttl[asset_idx])
     )
 
-    # Update cash: only change when can_place=True
-    # BUG FIX: Previously returned existing_reserved even when can_place=False,
-    # but order_reserved wasn't cleared, causing money printing.
-    # Now only adjust cash when actually placing a new order.
-    reserved_change = jnp.where(can_place, existing_reserved - total_reserve, 0.0)
-    new_cash = state.cash + reserved_change
-
+    # NO cash change - lazy execution
     return state.replace(
-        cash=new_cash,
         order_active=new_order_active,
         order_side=new_order_side,
         order_size=new_order_size,
@@ -753,16 +992,14 @@ def execute_limit_buy(state: TradingState, asset_idx: chex.Array,
 
 def execute_limit_sell(state: TradingState, asset_idx: chex.Array,
                       current_prices: chex.Array, config: EnvConfig) -> TradingState:
-    """Execute LIMIT SELL action - place sell order above current price."""
+    """Execute LIMIT SELL action - place sell order above current price.
+
+    LAZY EXECUTION: Does NOT block shares. Position checked at fill time.
+    If position no longer exists when price triggers, order is cancelled (soft penalty).
+    Does NOT cancel existing limit orders - multiple orders allowed.
+    """
     price = current_prices[asset_idx]
     limit_price = price * (1.0 + config.limit_offset_pct)
-
-    # Cancel existing order (return reserved if buy)
-    existing_reserved = jnp.where(
-        state.order_active[asset_idx] & (state.order_side[asset_idx] == 1),
-        state.order_reserved[asset_idx],
-        0.0
-    )
 
     has_position = state.pos_active[asset_idx]
     is_long = state.pos_side[asset_idx] == 1
@@ -781,7 +1018,7 @@ def execute_limit_sell(state: TradingState, asset_idx: chex.Array,
     can_place = (has_position & is_long) | (~has_position & config.allow_short)
     can_place = can_place & (order_size > 0)
 
-    # Update order arrays
+    # Update order arrays - just record intent, no position blocking
     new_order_active = state.order_active.at[asset_idx].set(
         jnp.where(can_place, True, state.order_active[asset_idx])
     )
@@ -795,7 +1032,7 @@ def execute_limit_sell(state: TradingState, asset_idx: chex.Array,
         jnp.where(can_place, limit_price, state.order_price[asset_idx])
     )
     new_order_reserved = state.order_reserved.at[asset_idx].set(
-        jnp.where(can_place, 0.0, state.order_reserved[asset_idx])  # Sell orders don't reserve
+        jnp.where(can_place, 0.0, state.order_reserved[asset_idx])
     )
     new_order_created = state.order_created.at[asset_idx].set(
         jnp.where(can_place, state.current_step, state.order_created[asset_idx])
@@ -804,13 +1041,8 @@ def execute_limit_sell(state: TradingState, asset_idx: chex.Array,
         jnp.where(can_place, config.default_limit_order_ttl, state.order_ttl[asset_idx])
     )
 
-    # Update cash: only return reserved when can_place=True
-    # BUG FIX: Same issue as execute_limit_buy - only change cash when placing order
-    reserved_change = jnp.where(can_place, existing_reserved, 0.0)
-    new_cash = state.cash + reserved_change
-
+    # NO cash/position changes - lazy execution
     return state.replace(
-        cash=new_cash,
         order_active=new_order_active,
         order_side=new_order_side,
         order_size=new_order_size,
@@ -831,9 +1063,26 @@ def reset(rng_key: chex.PRNGKey, prices: chex.Array,
     n_steps = prices.shape[0]
     n_assets = config.n_assets
 
-    key1, key2 = jax.random.split(rng_key)
-    max_start = n_steps - config.max_steps - config.window_size
-    episode_start = jax.random.randint(key1, (), 0, max_start)
+    key1, key2, key3 = jax.random.split(rng_key, 3)
+
+    # TASK_053: Variable episode length
+    if config.episode_variance > 0:
+        # Random episode length: base ± variance
+        length_offset = jax.random.randint(key3, (), -config.episode_variance, config.episode_variance + 1)
+        actual_max_steps = jnp.maximum(config.max_steps + length_offset, 100)  # Min 100 steps
+    else:
+        actual_max_steps = jnp.array(config.max_steps)
+
+    # TASK_121: Fix observation window to be LOOKBACK (not forward)
+    # TASK_124: min_start now needs window_size (not window_size-1) because
+    # observation window ends at t-1 to prevent same-step leak
+    # At step 0: start_idx = episode_start - window_size, needs >= 0
+    # max_start: need room for max_steps of trading after episode_start
+    min_start = config.window_size
+    max_start = n_steps - actual_max_steps - 1
+    # TASK_122: Ensure at least 10 valid starting positions for diversity
+    max_start = jnp.maximum(max_start, min_start + 10)
+    episode_start = jax.random.randint(key1, (), min_start, max_start)
 
     return TradingState(
         cash=jnp.array(config.initial_cash),
@@ -856,6 +1105,8 @@ def reset(rng_key: chex.PRNGKey, prices: chex.Array,
         prev_portfolio_value=jnp.array(config.initial_cash),
         cumulative_return=jnp.array(0.0),
         rng_key=key2,
+        max_episode_steps=actual_max_steps,  # TASK_053
+        random_burns_remaining=jnp.array(config.burn_random_limit),  # TASK_051
     )
 
 
@@ -865,18 +1116,34 @@ def step(state: TradingState, action: chex.Array,
 
     Order of operations:
     1. Process pending limit orders (fills and expirations)
+    1b. Process margin calls (short losses from limit fills)
     2. Check TP/SL guardrails
     3. Execute the action
-    4. Check liquidation
-    5. Compute reward and observation
+    4. Process margin calls (short losses from action)
+    5. Check liquidation threshold
+    6. Compute reward and observation
+
+    Margin call mechanics:
+    - Cash < 0 from short losses → liquidate longs to cover
+    - Holding longs with $0 cash → perfectly fine
+    - Can't cover → bankruptcy (portfolio wiped, cash = 0)
     """
     # Get current prices
+    # FIX: Remove +window_size offset that caused 60-step future leakage
+    # Trading must happen at same time as observation ends (current_step)
     current_prices = get_current_prices(
-        prices, state.current_step + config.window_size, state.episode_start_idx
+        prices, state.current_step, state.episode_start_idx
     )
 
-    # 1. Process limit orders
-    state = process_limit_orders(state, current_prices, config)
+    # Split RNG for stochastic operations (TASK_047, TASK_052)
+    rng_key, limit_order_key = jax.random.split(state.rng_key)
+
+    # 1. Process limit orders (with probabilistic fills and random priority)
+    state = process_limit_orders(state, current_prices, config, limit_order_key)
+    # Update RNG key in state
+    state = state.replace(rng_key=rng_key)
+    # Margin call after limit orders (limit buy might close short at loss)
+    state = process_margin_call(state, current_prices, config)
 
     # 2. Check TP/SL guardrails
     state = apply_tp_sl_closures(state, current_prices, config)
@@ -897,22 +1164,112 @@ def step(state: TradingState, action: chex.Array,
         state, asset_idx, current_prices, config
     )
 
-    # 4. Check liquidation
+    # 4. Process margin calls (if cash went negative from short losses)
+    # This liquidates longs to cover, or bankrupts if can't cover
+    new_state = process_margin_call(new_state, current_prices, config)
+
+    # 5. Check liquidation
     new_portfolio_value = compute_portfolio_value(new_state, current_prices)
     liquidation_threshold = config.initial_cash * config.liquidation_threshold_pct
     is_liquidated = new_portfolio_value < liquidation_threshold
 
-    # 5. Compute reward
-    portfolio_change = new_portfolio_value - state.prev_portfolio_value
-    portfolio_return_pct = portfolio_change / (state.prev_portfolio_value + 1e-8) * 100.0
-    reward = jnp.where(is_liquidated, symlog(-50.0), symlog(portfolio_return_pct))
+    # TASK_055: Compute borrowing cost for short positions
+    # Annual rate converted to per-step rate (assuming ~400 steps = 1 day trading)
+    # 252 trading days * 400 steps/day = 100,800 steps/year
+    if config.borrow_rate_annual > 0:
+        borrow_rate_step = config.borrow_rate_annual / 100800.0
+        # Calculate value of short positions
+        is_short = new_state.pos_active & (new_state.pos_side == 2)
+        short_values = jnp.where(is_short, new_state.pos_size * current_prices, 0.0)
+        total_short_value = jnp.sum(short_values)
+        borrow_cost = total_short_value * borrow_rate_step
+    else:
+        borrow_cost = 0.0
+
+    # FIX Bug #4 (Phantom Tax): Actually deduct borrow cost from cash
+    # Before: borrow_cost penalized reward but agent kept all money
+    # After: borrow_cost deducted from cash (affects portfolio value and future trades)
+    new_cash_after_borrow = new_state.cash - borrow_cost
+    new_state = new_state.replace(cash=new_cash_after_borrow)
+    new_portfolio_value = new_portfolio_value - borrow_cost  # Adjust for reward calc
+
+    # 5. Compute reward using Log Returns for geometric consistency (Bug #6 fix)
+    # Arithmetic returns are biased: +50% then -33% (net zero) yields positive reward sum
+    # Log returns are symmetric: log(1.5) + log(0.66) ≈ 0
+    # We then apply symlog for range compression (MuZero value support)
+    safe_prev = jnp.maximum(state.prev_portfolio_value, 1e-8)
+    safe_new = jnp.maximum(new_portfolio_value, 1e-8)
+    log_return = jnp.log(safe_new / safe_prev) * 100.0
+    reward = jnp.where(is_liquidated, symlog(-50.0), symlog(log_return))
+
+    # TASK_051: Burning money (cash opportunity cost) - wife with debit card simulation
+    if config.burning_money:
+        # Cash ratio (fraction uninvested)
+        cash_ratio = new_state.cash / jnp.maximum(new_portfolio_value, 1e-8)
+        cash_ratio = jnp.clip(cash_ratio, 0.0, 1.0)
+
+        burn = jnp.array(0.0)
+
+        # Market-linked burn (opportunity cost)
+        if config.burn_market_linked:
+            # Current step prices vs previous step
+            step_idx = state.episode_start_idx + state.current_step
+            prev_step_idx = jnp.maximum(step_idx - 1, 0)
+            current_prices_step = prices[step_idx]
+            prev_prices_step = prices[prev_step_idx]
+
+            # Average market return this step
+            returns = (current_prices_step - prev_prices_step) / jnp.maximum(prev_prices_step, 1e-8)
+            market_return = jnp.mean(returns)
+
+            # Cash "missed" this return (positive market = penalty for holding cash)
+            market_burn = market_return * cash_ratio
+            burn = burn + market_burn
+
+        # Base decay (constant pressure to deploy capital)
+        base_burn = config.burn_base_rate * cash_ratio
+        burn = burn + base_burn
+
+        # Subtract burn from reward (apply symlog to keep in same scale)
+        reward = reward - symlog(burn * 100.0)  # Scale to match log_return scale
+
+    # TASK_051: Random burns (wife with debit card extreme mode)
+    # Split RNG key for random burn decision
+    rng_key, burn_key1, burn_key2 = jax.random.split(new_state.rng_key, 3)
+    new_state = new_state.replace(rng_key=rng_key)
+
+    if config.burn_random:
+        # Roll for random burn
+        roll = jax.random.uniform(burn_key1, ())
+        burn_amount = jax.random.uniform(burn_key2, (), minval=0.0, maxval=config.burn_random_max)
+
+        # Conditions: probability check AND burns remaining AND enough cash
+        should_burn = (roll < config.burn_random_prob) & (new_state.random_burns_remaining > 0)
+        actual_burn = jnp.where(should_burn, jnp.minimum(burn_amount, new_state.cash), 0.0)
+
+        # Apply burn: deduct from cash and reward
+        new_cash = new_state.cash - actual_burn
+        new_state = new_state.replace(cash=new_cash)
+
+        # Decrement counter only if burn happened
+        new_burns_remaining = jnp.where(
+            should_burn,
+            new_state.random_burns_remaining - 1,
+            new_state.random_burns_remaining
+        )
+        new_state = new_state.replace(random_burns_remaining=new_burns_remaining)
+
+        # Add burn penalty to reward (proportional to portfolio, symlog scaled)
+        burn_pct = actual_burn / jnp.maximum(new_portfolio_value, 1e-8) * 100.0
+        reward = reward - symlog(burn_pct)
 
     # Update tracking
     new_cumulative_return = (new_portfolio_value / state.initial_portfolio_value - 1.0) * 100.0
 
     # Advance step and check termination
+    # TASK_053: Use per-episode max_steps for variable length episodes
     new_step = state.current_step + 1
-    done = (new_step >= config.max_steps) | is_liquidated
+    done = (new_step >= state.max_episode_steps) | is_liquidated
 
     final_state = new_state.replace(
         current_step=new_step,
@@ -960,7 +1317,12 @@ def compute_observation_27ch(state: TradingState, prices: chex.Array,
         n_channels=27,
     )
 
-    window_start = state.episode_start_idx + state.current_step
+    # TASK_121: Use LOOKBACK window (not forward)
+    # TASK_122: Clamp to prevent negative index if episode_start_idx < window_size-1
+    # TASK_124: Fix same-step observation leak - window ends at t-1, not t
+    # Agent observes [t-window, t-1], executes at t (no look-ahead bias)
+    window_start = state.episode_start_idx + state.current_step - config.window_size
+    window_start = jnp.maximum(window_start, 0)
 
     # Use simple encoder (prices only, synthetic-compatible)
     return encode_27ch_simple(prices, window_start, encoder_config)
@@ -982,7 +1344,11 @@ def compute_observation_31ch(state: TradingState, prices: chex.Array,
         n_channels=27,
     )
 
-    window_start = state.episode_start_idx + state.current_step
+    # TASK_121: Use LOOKBACK window (not forward)
+    # TASK_122: Clamp to prevent negative index
+    # TASK_124: Fix same-step observation leak - window ends at t-1, not t
+    window_start = state.episode_start_idx + state.current_step - config.window_size
+    window_start = jnp.maximum(window_start, 0)
 
     return encode_27ch_with_state(
         prices, None, None, None, window_start,
@@ -1005,7 +1371,12 @@ def compute_observation(state: TradingState, prices: chex.Array,
 
     Shape: (5, 1, n_assets)
     """
-    start_idx = state.episode_start_idx + state.current_step
+    # TASK_121: Use LOOKBACK window (not forward)
+    # TASK_122: Clamp to prevent negative index
+    # TASK_124: Fix same-step observation leak - window ends at t-1, not t
+    # Agent observes [t-window, t-1], executes at t (no look-ahead bias)
+    start_idx = state.episode_start_idx + state.current_step - config.window_size
+    start_idx = jnp.maximum(start_idx, 0)
     window = jax.lax.dynamic_slice(
         prices,
         (start_idx, 0),
@@ -1123,11 +1494,12 @@ def compute_action_mask(state: TradingState, current_prices: chex.Array,
     # [2] BUY: close short OR can open long
     can_buy = has_short | can_open
 
-    # [3] LIMIT SELL: same as sell
+    # [3] LIMIT SELL: same as sell (lazy execution - multiple orders allowed)
     can_limit_sell = can_sell
 
-    # [4] LIMIT BUY: same as buy AND no pending order for this asset
-    can_limit_buy = can_buy & ~has_pending
+    # [4] LIMIT BUY: same as buy (lazy execution - multiple orders allowed)
+    # No ~has_pending check - agent can place multiple limit orders
+    can_limit_buy = can_buy
 
     # Stack into (n_assets, 5) then flatten to (n_assets * 5,)
     mask_per_asset = jnp.stack([
@@ -1175,14 +1547,49 @@ def jit_batch_compute_action_mask(states: TradingState, current_prices: chex.Arr
 
 def batch_reset(rng_keys: chex.Array, prices: chex.Array,
                 config: EnvConfig) -> TradingState:
-    """Reset multiple environments in parallel."""
+    """Reset multiple environments in parallel (shared prices)."""
     return jax.vmap(lambda k: reset(k, prices, config))(rng_keys)
 
 
 def batch_step(states: TradingState, actions: chex.Array,
                prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
-    """Step multiple environments in parallel."""
+    """Step multiple environments in parallel (shared prices)."""
     return jax.vmap(lambda s, a: step(s, a, prices, config))(states, actions)
+
+
+# =============================================================================
+# Per-Env Unique Prices (each env has independent price data)
+# =============================================================================
+
+def batch_reset_unique(rng_keys: chex.Array, prices: chex.Array,
+                       config: EnvConfig) -> TradingState:
+    """Reset multiple environments with unique prices per env.
+
+    Args:
+        rng_keys: (n_envs, 2) array of RNG keys
+        prices: (n_envs, n_steps, n_assets) - each env has its own price data
+        config: Environment config
+
+    Returns:
+        Batched TradingState
+    """
+    return jax.vmap(lambda k, p: reset(k, p, config))(rng_keys, prices)
+
+
+def batch_step_unique(states: TradingState, actions: chex.Array,
+                      prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """Step multiple environments with unique prices per env.
+
+    Args:
+        states: Batched TradingState
+        actions: (n_envs,) actions
+        prices: (n_envs, n_steps, n_assets) - each env has its own price data
+        config: Environment config
+
+    Returns:
+        (new_states, observations, rewards, dones)
+    """
+    return jax.vmap(lambda s, a, p: step(s, a, p, config))(states, actions, prices)
 
 
 # =============================================================================
@@ -1211,6 +1618,20 @@ def jit_batch_reset(rng_keys: chex.Array, prices: chex.Array,
 
 
 @partial(jax.jit, static_argnames=['config'])
+def jit_batch_reset_unique(rng_keys: chex.Array, prices: chex.Array,
+                           config: EnvConfig) -> TradingState:
+    """JIT-compiled batched reset with unique prices per env."""
+    return batch_reset_unique(rng_keys, prices, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_batch_step_unique(states: TradingState, actions: chex.Array,
+                          prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """JIT-compiled batched step with unique prices per env."""
+    return batch_step_unique(states, actions, prices, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
 def jit_batch_step(states: TradingState, actions: chex.Array,
                    prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
     """JIT-compiled batched step."""
@@ -1224,8 +1645,9 @@ def jit_batch_step(states: TradingState, actions: chex.Array,
 def get_info(state: TradingState, prices: chex.Array,
              config: EnvConfig) -> dict:
     """Extract info dict for debugging (NOT JIT-compatible)."""
+    # FIX: Remove +window_size offset (same fix as step function)
     current_prices = get_current_prices(
-        prices, state.current_step + config.window_size, state.episode_start_idx
+        prices, state.current_step, state.episode_start_idx
     )
     portfolio_value = compute_portfolio_value(state, current_prices)
 

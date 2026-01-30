@@ -5,7 +5,10 @@ This module contains three variants of self-play:
 - run_self_play: Single-environment episode generation
 - run_self_play_batched: Batched Python (VectorBT) environments
 - run_self_play_jax: Fully GPU-accelerated JAX environments
+
+TASK_121: Fixed observation window to use LOOKBACK (not forward).
 """
+print("[TASK_121] self_play.py loaded with LOOKBACK window fix")
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -413,14 +416,22 @@ def run_self_play_batched(
             value_probs = jax.nn.softmax(output['value'], axis=-1)
             values_batch = jnp.sum(value_probs * support, axis=-1)
 
+        # G1 FIX (TASK_107): Batch convert JAX arrays to numpy ONCE to avoid 60,000+ CPU-GPU sync events
+        # This reduces sync events from (n_envs * steps * 3) to just 4 per step
+        # Gemini analysis: GPU utilization 35% -> 80% expected improvement
+        actions_np = np.array(actions_jax)
+        policies_np = np.array(policies_jax)
+        values_np = np.array(values_batch)
+        obs_np = np.array(obs_batch)
+
         # Step each active env (this is still serial but env.step is fast ~2ms)
         # BUG_004 FIX: Now batch uses env_idx directly (not batch_idx) since all envs in batch
         for env_idx in active_indices:
-            action_int = int(actions_jax[env_idx])
+            action_int = int(actions_np[env_idx])
 
             # Confidence thresholding
             # TASK_034 FIX: Also update policy when forcing HOLD to avoid action-policy mismatch
-            policy_to_store = np.array(policies_jax[env_idx])
+            policy_to_store = policies_np[env_idx].copy()
             if confidence_threshold > 0:
                 probs = policy_to_store
                 max_prob = np.max(probs)
@@ -436,15 +447,15 @@ def run_self_play_batched(
             next_obs_dict, reward, terminated, truncated, info = envs[env_idx].step(action_int)
             done = terminated or truncated
 
-            # Store trajectory data
-            all_observations[env_idx].append(obs_batch[env_idx])
+            # Store trajectory data (using pre-converted numpy arrays - G1 FIX)
+            all_observations[env_idx].append(obs_np[env_idx])
             all_actions[env_idx].append(action_int)
             all_rewards[env_idx].append(reward)
-            all_values[env_idx].append(float(values_batch[env_idx]))
+            all_values[env_idx].append(float(values_np[env_idx]))
             all_policy_probs[env_idx].append(policy_to_store)
             all_dones[env_idx].append(done)
             # TASK_031: Denormalize MCTS root values for meaningful diagnostics
-            raw_value = float(values_batch[env_idx])
+            raw_value = float(values_np[env_idx])
             denorm_value = denormalize_value(raw_value, popart_state)
             all_mcts_root_values[env_idx].append(denorm_value)
 
@@ -535,15 +546,18 @@ def run_self_play_jax(
     steps: int = 200,
     confidence_threshold: float = 0.0,
     support_size: int = VALUE_SUPPORT_SIZE,
+    collect_prices: bool = False,
     discount: float = 0.997,
     popart_state: Optional[PopArtState] = None,
     use_gae: bool = False,
     gae_lambda: float = 0.95,
+    max_positions: int = 16,
+    min_cash_threshold: float = 100.0,
 ) -> Tuple[List[Dict], List[float]]:
-    """Fully GPU-accelerated self-play using JAX environment.
+    """Fully GPU-accelerated self-play using lax.scan to eliminate Python loop overhead.
 
-    This replaces run_self_play_batched with a JAX-native implementation
-    that keeps all computation on GPU.
+    This fuses the entire episode (200-400 steps) into a single GPU kernel launch,
+    maximizing GPU utilization on high-end GPUs like RTX 3090.
 
     Args:
         jax_env_states: Batched TradingState from jit_batch_reset
@@ -563,18 +577,24 @@ def run_self_play_jax(
         Tuple of (list of trajectory dicts, list of episode scores)
     """
     from mcts_trader.env.jax_trading_env import (
-        jit_batch_step, compute_observation_27ch,
+        jit_batch_step, jit_batch_step_unique,
+        compute_observation_27ch,
         compute_portfolio_value, get_current_prices,
         jit_batch_compute_action_mask,
     )
     from mcts_trader.env.jax_encoder import (
         EncoderConfig as FullEncoderConfig,
         jit_batch_encode_simple,
+        batch_encode_simple,
     )
 
     n_envs = jax_env_states.cash.shape[0]
     n_assets = jax_env_config.n_assets
     n_actions = n_assets * N_ACTIONS_PER_ASSET
+
+    # Detect unique prices mode (3D = per-env, 2D = shared)
+    unique_prices_mode = prices.ndim == 3
+    env_indices = jnp.arange(n_envs) if unique_prices_mode else None
 
     # Create encoder config
     encoder_config = FullEncoderConfig(
@@ -583,204 +603,131 @@ def run_self_play_jax(
         n_channels=27,
     )
 
-    # Storage for trajectories - PRE-ALLOCATED arrays (TASK_028 Phase 1)
-    # This eliminates 20,000+ list.append() calls and their memory fragmentation
-    # Using fp16 for large arrays (obs, policies) to halve bandwidth
-    all_observations = np.zeros((n_envs, steps, 27, n_assets, n_assets), dtype=np.float16)
-    all_actions = np.zeros((n_envs, steps), dtype=np.int32)
-    all_rewards = np.zeros((n_envs, steps), dtype=np.float32)
-    all_values = np.zeros((n_envs, steps), dtype=np.float32)
-    all_policy_probs = np.zeros((n_envs, steps, n_actions), dtype=np.float16)
-    all_dones = np.zeros((n_envs, steps), dtype=np.bool_)
-    all_mcts_root_values = np.zeros((n_envs, steps), dtype=np.float32)
-    step_counts = np.zeros(n_envs, dtype=np.int32)  # Track actual steps per env
+    # Define the scan-compatible step function
+    # This runs entirely on GPU without Python loop overhead
+    def episode_step(carry, _):
+        """Single episode step for lax.scan - runs on GPU."""
+        state, key = carry
 
-    scores = np.zeros(n_envs, dtype=np.float32)
-    active = np.ones(n_envs, dtype=bool)  # Track active envs
-    states = jax_env_states
-    rng = rng_key
+        # A. Observation & Mask Encoding (GPU)
+        # TASK_121: Fix to use LOOKBACK window (not forward window)
+        # TASK_124: Fix same-step observation leak - window ends at t-1, not t
+        # price_idx: index of current trading price (we trade at this price)
+        # window_starts: start of lookback window (we observe up to price BEFORE trading)
+        price_idx = state.episode_start_idx + state.current_step
+        # Window should be [price_idx - window_size, price_idx - 1] so we DON'T see execution price
+        window_starts = price_idx - encoder_config.window_size  # TASK_124: Removed + 1 to fix same-step leak
 
-    # TASK_028 Phase 2: Batched GPU transfers
-    # Accumulate JAX arrays on GPU, transfer in batches every BATCH_STEPS
-    BATCH_STEPS = 50  # Transfer every 50 steps (4 transfers instead of 200)
-    gpu_obs_buffer = []
-    gpu_actions_buffer = []
-    gpu_rewards_buffer = []
-    gpu_values_buffer = []
-    gpu_policies_buffer = []
-    gpu_dones_buffer = []
-    batch_start_step = 0
-
-    def flush_gpu_buffers(batch_start, gpu_obs, gpu_actions, gpu_rewards,
-                          gpu_values, gpu_policies, gpu_dones, active_states):
-        """Transfer accumulated GPU buffers to CPU storage.
-
-        WARNING: This function captures mutable closures (all_observations, etc).
-        Do NOT JIT this function - it relies on external array mutation.
-        """
-        nonlocal all_observations, all_actions, all_rewards, all_values
-        nonlocal all_policy_probs, all_dones, all_mcts_root_values
-
-        if not gpu_obs:
-            return
-
-        # Stack on GPU (fast) then single transfer
-        obs_stacked = jnp.stack(gpu_obs, axis=1)  # (n_envs, batch_steps, 27, n_assets, n_assets)
-        actions_stacked = jnp.stack(gpu_actions, axis=1)  # (n_envs, batch_steps)
-        rewards_stacked = jnp.stack(gpu_rewards, axis=1)
-        values_stacked = jnp.stack(gpu_values, axis=1)
-        policies_stacked = jnp.stack(gpu_policies, axis=1)
-        dones_stacked = jnp.stack(gpu_dones, axis=1)
-
-        # Single batch transfer (much fewer PCIe roundtrips)
-        obs_np = np.array(obs_stacked, dtype=np.float16)
-        actions_np = np.array(actions_stacked, dtype=np.int32)
-        rewards_np = np.array(rewards_stacked, dtype=np.float32)
-        values_np = np.array(values_stacked, dtype=np.float32)
-        policies_np = np.array(policies_stacked, dtype=np.float16)
-        dones_np = np.array(dones_stacked, dtype=np.bool_)
-
-        batch_len = obs_np.shape[1]
-        end_step = batch_start + batch_len
-
-        # TASK_031: Denormalize MCTS root values for meaningful diagnostics
-        if popart_state is not None:
-            std = float(jnp.sqrt(popart_state.var + 1e-8))
-            mean = float(popart_state.mean)
-            values_denorm = values_np * std + mean
+        # Handle unique prices mode (3D) vs shared prices (2D)
+        if unique_prices_mode:
+            # Unique prices: prices[env_idx, step_idx, asset_idx]
+            # For encoder, extract per-env price windows
+            obs = jit_batch_encode_simple(prices, window_starts, encoder_config, per_env=True)
+            current_prices = prices[env_indices, price_idx]
         else:
-            values_denorm = values_np
+            # Shared prices: prices[step_idx, asset_idx]
+            obs = jit_batch_encode_simple(prices, window_starts, encoder_config)
+            current_prices = prices[price_idx]
 
-        # Copy to pre-allocated arrays
-        all_observations[:, batch_start:end_step] = obs_np
-        all_actions[:, batch_start:end_step] = actions_np
-        all_rewards[:, batch_start:end_step] = rewards_np
-        all_values[:, batch_start:end_step] = values_np
-        all_policy_probs[:, batch_start:end_step] = policies_np
-        all_dones[:, batch_start:end_step] = dones_np
-        all_mcts_root_values[:, batch_start:end_step] = values_denorm  # Use denormalized values
-
-    for step in range(steps):
-        n_active = int(np.sum(active))
-        if n_active == 0:
-            break
-
-        rng, step_rng = jax.random.split(rng)
-
-        # Get window starts for observation encoding
-        window_starts = states.episode_start_idx + states.current_step
-
-        # Encode observations using 27-channel encoder (batched)
-        obs_batch = jit_batch_encode_simple(
-            prices, window_starts, encoder_config
-        )  # (n_envs, 27, n_assets, n_assets)
-
-        # Get current prices for each env (for action masking)
-        current_step_indices = states.episode_start_idx + states.current_step
-        current_prices_batch = prices[current_step_indices]  # (n_envs, n_assets)
-
-        # Compute proper action mask based on portfolio state (matches VectorBT behavior)
-        mask_batch = jit_batch_compute_action_mask(
-            states, current_prices_batch, jax_env_config,
-            max_positions=16, min_cash_threshold=100.0
+        mask = jit_batch_compute_action_mask(
+            state, current_prices, jax_env_config,
+            max_positions=max_positions, min_cash_threshold=min_cash_threshold
         )
 
-        # Batched MCTS - single GPU call
-        actions_jax, policies_jax, stats = search_fn(params, step_rng, obs_batch, mask_batch)
+        # B. Neural MCTS Search (GPU)
+        key, step_rng = jax.random.split(key)
+        actions, policies, stats = search_fn(params, step_rng, obs, mask)
 
-        # Get values
-        if 'root_value' in stats:
-            values_batch = stats['root_value']
-        else:
-            output = model_apply_fn({'params': params}, obs_batch, mode='initial_inference')
-            support = get_value_support()
-            value_probs = jax.nn.softmax(output['value'], axis=-1)
-            values_batch = jnp.sum(value_probs * support, axis=-1)
+        # C. Value Extraction (root_value is always present in stats)
+        values = stats['root_value']
 
-        # Confidence thresholding
-        # TASK_034 FIX: Also update policy when forcing HOLD to avoid action-policy mismatch
+        # D. Confidence Gating (GPU-native via jnp.where)
+        # Note: confidence_threshold is captured as static value at trace time
         if confidence_threshold > 0:
-            max_probs = jnp.max(policies_jax, axis=-1)
-            low_confidence = max_probs < confidence_threshold
-            asset_indices = actions_jax // N_ACTIONS_PER_ASSET
-            hold_actions = asset_indices * N_ACTIONS_PER_ASSET + 1
-            actions_jax = jnp.where(low_confidence, hold_actions, actions_jax)
+            max_probs = jnp.max(policies, axis=-1)
+            low_conf = max_probs < confidence_threshold
+            hold_actions = (actions // N_ACTIONS_PER_ASSET) * N_ACTIONS_PER_ASSET + 1
+            actions = jnp.where(low_conf, hold_actions, actions)
 
-            # Create synthetic confident HOLD policy for low-confidence cases
-            # 90% on HOLD action, 10% spread across others
-            n_actions = policies_jax.shape[-1]
-            base_prob = 0.1 / (n_actions - 1)
-            synthetic_policies = jnp.ones_like(policies_jax) * base_prob
-            # Set 90% probability on the HOLD action for each env
-            # Use advanced indexing to set hold_actions probabilities
-            env_indices = jnp.arange(policies_jax.shape[0])
-            synthetic_policies = synthetic_policies.at[env_indices, hold_actions].set(0.9)
-            # Replace policies for low-confidence envs
-            policies_jax = jnp.where(low_confidence[:, None], synthetic_policies, policies_jax)
+            # Update policy to match forced HOLD
+            base_p = 0.1 / (n_actions - 1)
+            synth_p = jnp.ones_like(policies) * base_p
+            synth_p = synth_p.at[jnp.arange(n_envs), hold_actions].set(0.9)
+            policies = jnp.where(low_conf[:, None], synth_p, policies)
 
-        # Batched JAX step - GPU accelerated!
-        new_states, obs_new, rewards, dones = jit_batch_step(
-            states, actions_jax, prices, jax_env_config
-        )
+        # E. Environment Step (GPU)
+        if unique_prices_mode:
+            new_state, _, rewards, dones = jit_batch_step_unique(state, actions, prices, jax_env_config)
+        else:
+            new_state, _, rewards, dones = jit_batch_step(state, actions, prices, jax_env_config)
 
-        # TASK_028 Phase 2: Accumulate on GPU instead of per-step transfer
-        gpu_obs_buffer.append(obs_batch)
-        gpu_actions_buffer.append(actions_jax)
-        gpu_rewards_buffer.append(rewards)
-        gpu_values_buffer.append(values_batch)
-        gpu_policies_buffer.append(policies_jax)
-        gpu_dones_buffer.append(dones)
+        # Pack step data for accumulation
+        # NOTE: Don't store observations (4.4GB!) - store window_starts instead
+        # and reconstruct observations on CPU
+        step_data = {
+            'window_starts': window_starts,  # (n_envs,) int32 - tiny!
+            'actions': actions,
+            'rewards': rewards,
+            'values': values,
+            'policy_probs': policies.astype(jnp.float16),
+            'dones': dones,
+        }
 
-        # Flush buffer every BATCH_STEPS (4 transfers instead of 200)
-        if len(gpu_obs_buffer) >= BATCH_STEPS or step == steps - 1:
-            flush_gpu_buffers(batch_start_step, gpu_obs_buffer, gpu_actions_buffer,
-                              gpu_rewards_buffer, gpu_values_buffer, gpu_policies_buffer,
-                              gpu_dones_buffer, active)
-            batch_start_step = step + 1
-            gpu_obs_buffer = []
-            gpu_actions_buffer = []
-            gpu_rewards_buffer = []
-            gpu_values_buffer = []
-            gpu_policies_buffer = []
-            gpu_dones_buffer = []
+        return (new_state, key), step_data
 
-        # Update step counts and scores (need per-step for done detection)
-        # Small transfer for dones check only
-        dones_np = np.array(dones, dtype=np.bool_)
-        rewards_np = np.array(rewards, dtype=np.float32)
-        step_counts[active] += 1
-        scores[active] += rewards_np[active]
+    # Execute fused episode loop (ONE kernel launch for entire episode!)
+    # This eliminates ~200 Python iterations and PCIe roundtrips
+    (final_states, _), trajectory_batch = jax.lax.scan(
+        episode_step, (jax_env_states, rng_key), None, length=steps
+    )
 
-        # Mark done envs as inactive
-        active[dones_np] = False
+    # Single device-to-host transfer (massive PCIe efficiency gain)
+    # Shape: (steps, n_envs, ...) -> (n_envs, steps, ...)
+    def fetch(x):
+        return np.array(jnp.swapaxes(x, 0, 1))
 
-        states = new_states
+    # Fetch small arrays from GPU
+    cpu_window_starts = fetch(trajectory_batch['window_starts'])  # (n_envs, steps) - tiny
+    cpu_actions = fetch(trajectory_batch['actions'])
+    cpu_rewards = fetch(trajectory_batch['rewards'])
+    cpu_values = fetch(trajectory_batch['values'])
+    cpu_policies = fetch(trajectory_batch['policy_probs'])
+    cpu_dones = fetch(trajectory_batch['dones'])
+    cpu_prices = np.array(prices)  # Fetch once
 
-    # Compute MC returns and package results
+    # Observations will be reconstructed lazily per-env by the caller
+    # This prevents allocating ~10GB of RAM for 15 envs * 1440 steps * (27*64*64) floats
+
+    # Compute scores from accumulated rewards
+    scores = np.sum(cpu_rewards, axis=1)
+
+    # CPU packaging & return computation
     results = []
 
-    # Convert prices once (not per-env!) - fixes performance bug
-    prices_np = np.array(prices)  # (n_steps, n_assets)
-
     for i in range(n_envs):
-        # Use step_counts to slice pre-allocated arrays to actual trajectory length
-        n_steps_i = int(step_counts[i])
+        # Determine actual sequence length (first done or full episode)
+        dones_i = cpu_dones[i]
+        if np.any(dones_i):
+            n_steps_i = int(np.argmax(dones_i) + 1)
+        else:
+            n_steps_i = steps
+
         if n_steps_i == 0:
-            # Empty trajectory, skip
             continue
 
-        # Slice to actual trajectory length (TASK_028: no extra copies)
-        rewards_arr = all_rewards[i, :n_steps_i]
-        values_arr = all_values[i, :n_steps_i]  # Original value predictions
-        dones_arr = all_dones[i, :n_steps_i]
-
+        # Slice to actual trajectory length
+        rewards_arr = cpu_rewards[i, :n_steps_i]
+        values_arr = cpu_values[i, :n_steps_i]
+        dones_arr = cpu_dones[i, :n_steps_i]
+        
+        # Store compressed observation data (lazy reconstruction)
+        # Caller must reconstruct using reconstruct_observations()
+        env_window_starts = cpu_window_starts[i, :n_steps_i]
+        
         # BUG_003 NOTE: For JAX env, we approximate truncation as hitting step limit
-        # If env completed before max_steps, it was terminated. Otherwise, bootstrap.
-        # This is approximate because the env could have terminated exactly at max_steps.
-        was_truncated = (n_steps_i >= steps) and dones_arr[-1] if n_steps_i > 0 else False
+        was_truncated = (n_steps_i == steps) and not dones_arr[-1]
 
         if was_truncated:
-            # Bootstrap from final value estimate
             bootstrap_value = float(values_arr[-1])
         else:
             bootstrap_value = 0.0
@@ -796,63 +743,122 @@ def run_self_play_jax(
             gae_lambda=gae_lambda,
         )
 
-        # Horizon-specific returns for DS24
+        # Horizon-specific returns for DS24 (vectorized)
         horizon_returns = {}
         for h in [1, 5, 10]:
             h_returns = np.zeros(n_steps_i, dtype=np.float32)
+            disc_powers = discount ** np.arange(h)
             for t in range(n_steps_i):
                 end_idx = min(t + h, n_steps_i)
-                running = 0.0
-                for j in range(end_idx - 1, t - 1, -1):
-                    running = rewards_arr[j] + discount * running
-                h_returns[t] = running
+                window = rewards_arr[t:end_idx]
+                h_returns[t] = np.dot(window, disc_powers[:len(window)])
             horizon_returns[h] = h_returns
 
         # Get final portfolio metrics
-        final_return = float(states.cumulative_return[i]) if n_steps_i > 0 else 0.0
+        final_return = float(final_states.cumulative_return[i]) if n_steps_i > 0 else 0.0
 
         # Compute market return (buy & hold baseline)
         start_idx = int(jax_env_states.episode_start_idx[i])
         end_idx = start_idx + n_steps_i
-        if end_idx < len(prices_np) and n_steps_i > 0:
-            start_prices = prices_np[start_idx]
-            end_prices = prices_np[end_idx - 1]
-            # Average return across all assets (equal weight buy & hold)
+        if end_idx < len(cpu_prices) and n_steps_i > 0:
+            start_prices = cpu_prices[start_idx]
+            end_prices = cpu_prices[end_idx - 1]
             asset_returns = (end_prices - start_prices) / (start_prices + 1e-8)
-            market_return = float(np.mean(asset_returns)) * 100  # As percentage
+            market_return = float(np.mean(asset_returns)) * 100
         else:
             market_return = 0.0
 
-        # Slice pre-allocated arrays to actual trajectory length
-        # fp16 arrays converted back to fp32 for trainer compatibility
+        # Denormalize MCTS root values for DS24
+        mcts_root_values = values_arr.copy()
+        if popart_state is not None:
+            std = float(jnp.sqrt(popart_state.var + 1e-8))
+            mean = float(popart_state.mean)
+            mcts_root_values = mcts_root_values * std + mean
+
+        # Package result (fp16 -> fp32 for trainer compatibility)
         result = {
-            'observations': all_observations[i, :n_steps_i].astype(np.float32),
-            'actions': all_actions[i, :n_steps_i],
+            # 'observations': REMOVED (Lazy reconstruction)
+            'window_starts': env_window_starts, # Store for reconstruction
+            'actions': cpu_actions[i, :n_steps_i],
             'rewards': rewards_arr,
             'values': returns,  # TASK_022: MC or GAE returns
-            'policy_probs': all_policy_probs[i, :n_steps_i].astype(np.float32),
+            'policy_probs': cpu_policies[i, :n_steps_i].astype(np.float32),
             'dones': dones_arr,
-            'mcts_root_values': all_mcts_root_values[i, :n_steps_i],
+            'mcts_root_values': mcts_root_values,
             'horizon_returns': horizon_returns,
             'market_return': market_return,
             'agent_return': final_return,
-            'alpha': final_return - market_return,  # True alpha vs market
+            'alpha': final_return - market_return,
         }
 
         # Add prices for prediction loss and DS24 physics logging
-        # Use trajectory's actual time indices from the price array
-        if n_steps_i > 0 and end_idx <= len(prices_np):
-            result['prices'] = prices_np[start_idx:end_idx]
-            # next_prices: shifted by 1, with last step using same price
-            next_end = min(end_idx + 1, len(prices_np))
-            result['next_prices'] = prices_np[start_idx + 1:next_end]
-            # Pad if needed to match length
+        if collect_prices and n_steps_i > 0 and end_idx <= len(cpu_prices):
+            result['prices'] = cpu_prices[start_idx:end_idx]
+            next_end = min(end_idx + 1, len(cpu_prices))
+            result['next_prices'] = cpu_prices[start_idx + 1:next_end]
             if len(result['next_prices']) < n_steps_i:
                 result['next_prices'] = np.concatenate([
                     result['next_prices'],
-                    prices_np[next_end - 1:next_end]  # Repeat last price
+                    cpu_prices[next_end - 1:next_end]
                 ])
+        
+        # Always pass full prices reference for observation reconstruction
+        # window_starts are absolute indices into the FULL price array,
+        # so reconstruction always needs the full array (not the sliced 'prices')
+        result['_full_prices_ref'] = cpu_prices
 
         results.append(result)
 
     return results, list(scores)
+
+
+def reconstruct_observations(
+    trajectory: Dict,
+    n_assets: int = 64,
+    window_size: int = 60,
+    n_channels: int = 27,
+) -> np.ndarray:
+    """
+    Lazy reconstruction of observations from compressed trajectory data.
+    
+    Used to avoid massive RAM spikes during self-play data collection.
+    
+    Args:
+        trajectory: Trajectory dictionary with 'window_starts' and prices data
+        n_assets: Number of assets
+        window_size: Lookback window size
+        n_channels: Number of encoder channels
+        
+    Returns:
+        observations: (T, C, N, N) numpy array
+    """
+    from mcts_trader.env.jax_encoder import (
+        EncoderConfig, batch_encode_simple
+    )
+    
+    # Get prices source
+    if '_full_prices_ref' in trajectory:
+        prices = trajectory['_full_prices_ref']
+        window_starts = trajectory['window_starts']
+    elif 'prices' in trajectory:
+        # 'prices' is a slice, but window_starts are absolute indices into the FULL array.
+        # This shouldn't happen as run_self_play_jax now always adds _full_prices_ref.
+        raise ValueError("Cannot reconstruct: missing full price reference (ensure _full_prices_ref is present)")
+    else:
+        raise ValueError("Cannot reconstruct: no price data found")
+        
+    
+    # Create config
+    config = EncoderConfig(
+        n_assets=n_assets,
+        window_size=window_size,
+        n_channels=n_channels,
+    )
+    
+    # Reconstruct on GPU -> CPU
+    # This copies only ONE trajectory's observations (600MB vs 10GB)
+    obs = np.array(batch_encode_simple(
+        jnp.array(prices), jnp.array(window_starts), config
+    ))
+    
+    return obs.astype(np.float32)
