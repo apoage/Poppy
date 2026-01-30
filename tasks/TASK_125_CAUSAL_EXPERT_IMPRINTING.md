@@ -494,22 +494,206 @@ EXPECTED OUTPUT:
 
 ---
 
+## Research Findings (from docs/imprinting/)
+
+### Theoretical Validation: NO CAUSALITY VIOLATION
+
+**Key insight:** Training on hindsight-optimal demonstrations computed AFTER episode completion uses future information only to construct better *training targets*—the learned policy π(a|s) conditions solely on current state at inference.
+
+This mirrors HER's proof (Andrychowicz et al., 2017): "The goal being pursued influences the agent's actions but NOT the environment dynamics."
+
+### Q-Filter: Recommended BC Weight Strategy
+
+Instead of fixed or decaying BC weight, use **Q-Filter**:
+
+```python
+# Apply BC loss ONLY when demo action is better than current policy
+L_BC = Σ||π(s_i) - a_i||² · 𝟙[Q(s_i, a_i) > Q(s_i, π(s_i))]
+```
+
+This automatically:
+- Dominates early training (when policy is worse than demos)
+- Diminishes as policy exceeds demonstrator quality
+- Prevents BC from limiting improvement beyond expert
+
+### Hyperparameter Recommendations
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| BC weight λ_BC | 1.0 → 0.01 | Decay over 50% of training (or use Q-filter) |
+| Demo buffer size | 10⁴-10⁵ | Permanent, boosted priority |
+| Agent buffer size | 10⁵-10⁶ | FIFO eviction |
+| Demo samples/batch | 128/1024 (~12.5%) | Mixed minibatch |
+| HER relabeling k | 4-8 | Future strategy |
+| PER α (priority exp) | 0.6 | |
+| PER β (IS weight) | 0.4 → 1.0 | Anneal over training |
+| Demo priority boost ε_D | 0.001 | |
+| Recency decay λ | 0.01 | Half-life ~70 days |
+
+### Demonstration Selection: Diversity Over Volume
+
+**RDES finding:** A diverse buffer of moderately successful trades OUTPERFORMS a homogeneous buffer of best trades.
+
+```python
+# Selection criteria
+- Store top 60-70% quantile by return (NOT top 10%)
+- K-means clustering on state representations
+- Each cluster contributes proportionally
+- Use PER with demo priority boost
+```
+
+### Dual Buffer Architecture (DDPGfD Style)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Demo Buffer R_D (10⁴-10⁵)                               │
+│ - Permanent storage                                      │
+│ - Boosted sampling priority (ε_D = 0.001)               │
+│ - Hindsight-optimal demonstrations                       │
+├─────────────────────────────────────────────────────────┤
+│ Agent Buffer R (10⁵-10⁶)                                │
+│ - FIFO eviction                                          │
+│ - Self-play experience                                   │
+│ - Can promote good trajectories to demo buffer          │
+└─────────────────────────────────────────────────────────┘
+
+Minibatch: 128 demo + 896 agent = 1024 transitions
+```
+
+### HER for Trading: Return-Target Relabeling
+
+```python
+def relabel_trading_trajectory(trajectory, k=4):
+    """HER with continuous return goals."""
+    relabeled = []
+    for i, (s, a, r, s_next, goal) in enumerate(trajectory):
+        relabeled.append((s, a, r, s_next, goal))  # Original
+
+        # Future strategy: sample k achieved returns from AFTER current step
+        future_returns = [traj[j].achieved_return for j in range(i+1, len(trajectory))]
+        for new_goal in random.sample(future_returns, min(k, len(future_returns))):
+            new_r = 0 if current_return >= new_goal else -1
+            relabeled.append((s, a, new_r, s_next, new_goal))
+    return relabeled
+```
+
+**Multi-dimensional goals:** goal = {return_target: 0.05, max_drawdown: 0.02, holding_period: 5}
+
+### Distribution Shift: Regime-Aware Management
+
+**Three complementary strategies:**
+
+1. **Regime tagging:** Label demos with detected regime (bull/bear/sideways/high-vol)
+   - Sample matching regime with 3x probability boost
+   - Maintain 20% cross-regime sampling for robustness
+
+2. **Recency weighting:** `w(t) = exp(-λ · age_days)` with λ≈0.01
+   - Half-life ~70 trading days
+   - Combine: `final_weight = recency × regime_match × performance`
+
+3. **Elastic Weight Consolidation (EWC):** Protect learned patterns
+   - `L = L_new + λ Σ_i F_i(θ_i - θ*_i)²`
+   - Prevents forgetting bull patterns while learning bear behavior
+
+### Causal TCN Encoder Architecture
+
+```python
+class CausalTCNEncoder(nn.Module):
+    """Temporal Convolutional Network with CAUSAL (left-only) padding."""
+    hidden_dim: int = 128
+    num_layers: int = 4
+    kernel_size: int = 3
+
+    @nn.compact
+    def __call__(self, x):  # x: [batch, time, features]
+        for i in range(self.num_layers):
+            dilation = 2 ** i
+            pad = (self.kernel_size - 1) * dilation
+            x_padded = jnp.pad(x, ((0,0), (pad,0), (0,0)))  # LEFT-PAD ONLY!
+            x = nn.Conv(self.hidden_dim, (self.kernel_size,),
+                       kernel_dilation=(dilation,))(x_padded)
+            x = nn.gelu(x)
+        return x[:, -1, :]  # Final embedding
+```
+
+**Critical:** Left-padding ensures output at time t depends ONLY on inputs ≤t.
+
+### LUPI: Learning Using Privileged Information
+
+The expert has access to privileged space X* (future prices), student only has X (current data).
+
+```
+Expert sees:   (x, x*, y)  where x* = future prices, y = optimal action
+Student sees:  (x, y)      and must find latent precursors in x that predict y
+
+The mapping f(x) approximates f*(x*) by learning CAUSAL features.
+```
+
+### DQfD Loss Function
+
+```python
+L_Total = L_TD + λ₁·L_n_step + λ₂·L_BC + λ₃·L_L2
+
+# With Large Margin Classification for BC:
+L_BC(s, a*) = max_a[Q(s,a) + l(a*,a)] - Q(s, a*)
+# Where l(a*,a) = 0 if a=a*, else margin δ
+
+# Forces Q(expert_action) to exceed ALL other actions by margin δ
+```
+
+### Conservative Q-Learning (CQL) for OOD Safety
+
+```python
+# Penalize Q-values of out-of-distribution actions
+L_CQL = α · Σ_s [ log Σ_a exp(Q(s,a)) - Q(s, a_expert) ]
+```
+
+This pushes down values of non-expert actions → "Risk Aversion" prior.
+
+### Failure Modes and Mitigations
+
+| Failure Mode | Mechanism | Mitigation |
+|--------------|-----------|------------|
+| BC limiting improvement | High BC weight prevents exceeding demos | Q-Filter |
+| Covariate shift | Policy visits OOD states | DAgger online collection |
+| Demo overfitting | Memorizes limited data | L2 (10⁻⁵), dropout, early stop |
+| Regime mismatch | Past demos mislead current | Regime tagging + recency + EWC |
+| Hindsight goal gap | Training/deploy goal mismatch | Goal coverage curriculum |
+| Model error | Dynamics diverge | EfficientZero consistency loss |
+
+### MuZero Integration: Reanalyse
+
+```
+Stored trajectory → Current network runs MCTS → Improved targets
+                                ↓
+                    Policy learns to exceed original demos
+                                ↓
+                    At deployment: MCTS uses only current obs
+```
+
+**ROSMO alternative:** One-step lookahead achieves 5.6% compute of full MCTS with competitive performance.
+
+---
+
 ## Related Literature
 
 ### Core Papers
 1. **DAgger** (Ross et al., 2011) - Dataset Aggregation for imitation learning
 2. **HER** (Andrychowicz et al., 2017) - Hindsight Experience Replay
 3. **GAIL** (Ho & Ermon, 2016) - Generative Adversarial Imitation Learning
-4. **Demonstrations in Deep RL** (Hester et al., 2018) - DQfD
+4. **DQfD** (Hester et al., 2018) - Deep Q-learning from Demonstrations
+5. **DDPGfD** (Nair et al., 2018) - Overcoming Exploration with Demonstrations
 
 ### Relevant for Trading
-5. **Decision Transformer** (Chen et al., 2021) - Sequence modeling for RL
-6. **Offline RL** (Levine et al., 2020) - Learning from fixed datasets
-7. **Conservative Q-Learning** (Kumar et al., 2020) - Safe offline learning
+6. **Decision Transformer** (Chen et al., 2021) - Sequence modeling for RL
+7. **MuZero Unplugged** (Schrittwieser et al., 2021) - Offline MuZero
+8. **Conservative Q-Learning** (Kumar et al., 2020) - Safe offline learning
+9. **PPO-HER for Portfolio** (Zhang & Xie, 2025) - HER in trading
 
-### Causality in ML
-8. **Causal Inference in Statistics** (Pearl, 2009)
-9. **Time Series Causal Discovery** (Runge et al., 2019)
+### Causality and Representation
+10. **LUPI** (Vapnik & Izmailov, 2015) - Learning Using Privileged Information
+11. **TF-C** (NeurIPS 2022) - Time-Frequency Consistency
+12. **Proto-RL** (Yarats et al., 2021) - Prototype-based exploration
 
 ---
 
