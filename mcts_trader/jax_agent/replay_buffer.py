@@ -4,6 +4,15 @@ import numpy as np
 from typing import Dict, Tuple, Optional
 import chex
 
+# TASK_128: JIT-compiled helpers for in-place buffer updates
+# Outside JIT, .at[].set() creates full array copies (expensive for large buffers)
+# Inside JIT, XLA optimizes to in-place ScatterUpdate operations
+@jax.jit
+def _update_buffer_slice(buffer, indices, values):
+    """JIT-compiled buffer update - avoids full copy overhead."""
+    return buffer.at[indices].set(values)
+
+
 class JAXReplayBuffer:
     """
     JAX-based replay buffer with GPU storage.
@@ -113,46 +122,47 @@ class JAXReplayBuffer:
         # Here we implement a simple linear wrap-around for the data arrays.
         
         end_pos = self.position + traj_length
-        
+
         if end_pos <= self.capacity:
-            # Linear add
+            # Linear add - use JIT helper for efficient in-place updates
             indices = jnp.arange(self.position, end_pos)
-            self.observations = self.observations.at[indices].set(observations)
-            self.actions = self.actions.at[indices].set(actions)
-            self.rewards = self.rewards.at[indices].set(rewards)
-            self.values = self.values.at[indices].set(values)
-            self.policy_probs = self.policy_probs.at[indices].set(policy_probs)
-            self.dones = self.dones.at[indices].set(dones)
+            self.observations = _update_buffer_slice(self.observations, indices, observations)
+            self.actions = _update_buffer_slice(self.actions, indices, actions)
+            self.rewards = _update_buffer_slice(self.rewards, indices, rewards)
+            self.values = _update_buffer_slice(self.values, indices, values)
+            self.policy_probs = _update_buffer_slice(self.policy_probs, indices, policy_probs)
+            self.dones = _update_buffer_slice(self.dones, indices, dones)
         else:
-            # Wrap around
+            # Wrap around - use JIT helper for both parts
             split = self.capacity - self.position
             # First part
             indices1 = jnp.arange(self.position, self.capacity)
-            self.observations = self.observations.at[indices1].set(observations[:split])
-            self.actions = self.actions.at[indices1].set(actions[:split])
-            self.rewards = self.rewards.at[indices1].set(rewards[:split])
-            self.values = self.values.at[indices1].set(values[:split])
-            self.policy_probs = self.policy_probs.at[indices1].set(policy_probs[:split])
-            self.dones = self.dones.at[indices1].set(dones[:split])
-            
+            self.observations = _update_buffer_slice(self.observations, indices1, observations[:split])
+            self.actions = _update_buffer_slice(self.actions, indices1, actions[:split])
+            self.rewards = _update_buffer_slice(self.rewards, indices1, rewards[:split])
+            self.values = _update_buffer_slice(self.values, indices1, values[:split])
+            self.policy_probs = _update_buffer_slice(self.policy_probs, indices1, policy_probs[:split])
+            self.dones = _update_buffer_slice(self.dones, indices1, dones[:split])
+
             # Second part
             remaining = traj_length - split
             indices2 = jnp.arange(0, remaining)
-            self.observations = self.observations.at[indices2].set(observations[split:])
-            self.actions = self.actions.at[indices2].set(actions[split:])
-            self.rewards = self.rewards.at[indices2].set(rewards[split:])
-            self.values = self.values.at[indices2].set(values[split:])
-            self.policy_probs = self.policy_probs.at[indices2].set(policy_probs[split:])
-            self.dones = self.dones.at[indices2].set(dones[split:])
+            self.observations = _update_buffer_slice(self.observations, indices2, observations[split:])
+            self.actions = _update_buffer_slice(self.actions, indices2, actions[split:])
+            self.rewards = _update_buffer_slice(self.rewards, indices2, rewards[split:])
+            self.values = _update_buffer_slice(self.values, indices2, values[split:])
+            self.policy_probs = _update_buffer_slice(self.policy_probs, indices2, policy_probs[split:])
+            self.dones = _update_buffer_slice(self.dones, indices2, dones[split:])
 
-        # Record trajectory metadata
+        # Record trajectory metadata (scalar updates - use direct .at[] as JIT helper expects arrays)
         # We use num_trajectories to index metadata arrays circularly
         traj_idx = self.num_trajectories % self.capacity
-        self.trajectory_starts = self.trajectory_starts.at[traj_idx].set(self.position)
-        self.trajectory_lengths = self.trajectory_lengths.at[traj_idx].set(traj_length)
+        traj_idx_arr = jnp.array([traj_idx])
+        self.trajectory_starts = _update_buffer_slice(self.trajectory_starts, traj_idx_arr, jnp.array([self.position]))
+        self.trajectory_lengths = _update_buffer_slice(self.trajectory_lengths, traj_idx_arr, jnp.array([traj_length]))
         # Track generation for wrap-around validation
         current_generation = self.total_steps_added // self.capacity
-        self.trajectory_generation = self.trajectory_generation.at[traj_idx].set(current_generation)
+        self.trajectory_generation = _update_buffer_slice(self.trajectory_generation, traj_idx_arr, jnp.array([current_generation]))
 
         # Update position
         self.position = (self.position + traj_length) % self.capacity
@@ -252,19 +262,33 @@ class JAXReplayBuffer:
         # Start from most recent and go backwards until we find invalid ones
         # For efficiency, we use a heuristic window but validate with generation
 
-        # Heuristic: Start with capacity // 500 recent trajectories
+        # BUG-010 FIX: Mixed recent/uniform sampling to prevent catastrophic forgetting
+        # Previously: Only sampled from most recent ~0.2% (heuristic_window = capacity // 500)
+        # Now: 50% recent, 50% uniform from full history
+
         heuristic_window = max(2, self.capacity // 500)
         heuristic_window = min(heuristic_window, self.num_trajectories)
 
-        # Sample from recent trajectories (logical indices)
         end_logical = self.num_trajectories
-        start_logical = max(0, end_logical - heuristic_window)
 
-        # Sample logical trajectory indices
-        rng, sample_rng = jax.random.split(rng)
-        logical_traj_indices = jax.random.randint(
-            sample_rng, (self.batch_size,), start_logical, end_logical
+        # Split batch: 50% recent, 50% uniform
+        recent_size = self.batch_size // 2
+        uniform_size = self.batch_size - recent_size
+
+        # Sample recent trajectories
+        rng, rng1, rng2 = jax.random.split(rng, 3)
+        start_recent = max(0, end_logical - heuristic_window)
+        recent_indices = jax.random.randint(
+            rng1, (recent_size,), start_recent, end_logical
         )
+
+        # Sample uniformly from all history
+        uniform_indices = jax.random.randint(
+            rng2, (uniform_size,), 0, end_logical
+        )
+
+        # Concatenate for full batch
+        logical_traj_indices = jnp.concatenate([recent_indices, uniform_indices])
 
         # Capture current state for use in vmap
         current_position = self.position

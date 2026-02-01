@@ -17,6 +17,7 @@ from typing import Dict, List, Tuple, Optional, Callable, Any
 from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support, get_value_support_np
 from mcts_trader.jax_agent.popart import PopArtState
 from mcts_trader.jax_agent.returns import compute_returns
+from mcts_trader.jax_agent.path_solver import compute_optimal_path
 
 
 def denormalize_value(value: float, popart_state: Optional[PopArtState]) -> float:
@@ -55,6 +56,7 @@ def run_self_play(
     popart_state: Optional[PopArtState] = None,
     use_gae: bool = False,
     gae_lambda: float = 0.95,
+    on_episode_complete: Optional[Callable[[Dict, float], None]] = None,  # TASK_125
 ) -> Tuple[Dict, float]:
     """Self-play with timing. Optionally collects price data for prediction loss and risk-adjusted rewards.
 
@@ -74,6 +76,9 @@ def run_self_play(
                      risk_adjust_fn(prices, reward, rng).
         discount: Discount factor for returns
         popart_state: PopArt state for denormalizing MCTS root values (or None to skip)
+        on_episode_complete: TASK_125 callback for Causal Expert Imprinting.
+                             Called with (trajectory_dict, episode_score) after episode ends.
+                             Used to add trajectory to expert buffer for hindsight analysis.
 
     Returns:
         Tuple of (trajectory_dict, episode_score)
@@ -211,7 +216,13 @@ def run_self_play(
         actions.append(action_int)
         rewards.append(reward)
         values.append(float(value_scalar))
-        policy_probs.append(np.array(policy_jax[0]))
+        # BUG-005 FIX: Ensure policy targets are normalized probability distributions
+        # mctx action_weights should already be normalized, but add defensive normalization
+        policy_array = np.array(policy_jax[0])
+        policy_sum = np.sum(policy_array)
+        if policy_sum > 0:
+            policy_array = policy_array / policy_sum
+        policy_probs.append(policy_array)
         dones.append(done)
 
         # Collect price data for prediction loss (Phase 2)
@@ -308,6 +319,12 @@ def run_self_play(
     if len(uncertainty_samples) > 0:
         result['uncertainty'] = np.array(uncertainty_samples)
 
+    # TASK_125: Episode completion callback for Causal Expert Imprinting
+    # Called AFTER episode ends to add trajectory to expert buffer
+    # The hindsight-optimal path is computed in the callback (causal validity)
+    if on_episode_complete is not None:
+        on_episode_complete(result, score)
+
     return result, score
 
 
@@ -326,6 +343,7 @@ def run_self_play_batched(
     use_gae: bool = False,
     gae_lambda: float = 0.95,
     start_offsets: Optional[List[int]] = None,
+    on_episode_complete: Optional[Callable[[Dict, float], None]] = None,  # TASK_125
 ) -> Tuple[List[Dict], List[float]]:
     """Batched self-play across N parallel environments.
 
@@ -345,6 +363,8 @@ def run_self_play_batched(
         discount: Discount factor for returns
         start_offsets: Optional list of start indices for each env (TASK_064).
                        If provided, enables smart allocation with distributed tiling.
+        on_episode_complete: TASK_125 callback for Causal Expert Imprinting.
+                             Called per-env with (trajectory_dict, episode_score).
 
     Returns:
         Tuple of (list of trajectory dicts, list of episode scores)
@@ -530,6 +550,10 @@ def run_self_play_batched(
             result['prices'] = np.array(all_prices[i])
             result['next_prices'] = np.array(all_next_prices[i])
 
+        # TASK_125: Episode completion callback for Causal Expert Imprinting
+        if on_episode_complete is not None:
+            on_episode_complete(result, scores[i])
+
         results.append(result)
 
     return results, scores
@@ -553,6 +577,7 @@ def run_self_play_jax(
     gae_lambda: float = 0.95,
     max_positions: int = 16,
     min_cash_threshold: float = 100.0,
+    on_episode_complete: Optional[Callable[[Dict, float], None]] = None,  # TASK_125
 ) -> Tuple[List[Dict], List[float]]:
     """Fully GPU-accelerated self-play using lax.scan to eliminate Python loop overhead.
 
@@ -572,6 +597,8 @@ def run_self_play_jax(
         support_size: Value support size
         discount: Discount factor for returns
         popart_state: PopArt state for denormalizing MCTS root values (or None to skip)
+        on_episode_complete: TASK_125 callback for Causal Expert Imprinting.
+                             Called per-env with (trajectory_dict, episode_score).
 
     Returns:
         Tuple of (list of trajectory dicts, list of episode scores)
@@ -681,6 +708,11 @@ def run_self_play_jax(
         episode_step, (jax_env_states, rng_key), None, length=steps
     )
 
+    # TASK_128 FIX: Ensure GPU kernel completes before starting CPU work
+    # This prevents potential deadlock when starting new JIT compilation
+    # while previous GPU operations are still queued
+    jax.block_until_ready(trajectory_batch['rewards'])
+
     # Single device-to-host transfer (massive PCIe efficiency gain)
     # Shape: (steps, n_envs, ...) -> (n_envs, steps, ...)
     def fetch(x):
@@ -698,8 +730,17 @@ def run_self_play_jax(
     # Observations will be reconstructed lazily per-env by the caller
     # This prevents allocating ~10GB of RAM for 15 envs * 1440 steps * (27*64*64) floats
 
-    # Compute scores from accumulated rewards
-    scores = np.sum(cpu_rewards, axis=1)
+    # Compute scores from accumulated rewards (TASK_126: mask post-termination)
+    # BUG FIX: Previously summed ALL steps including post-done, causing -30.99 spikes
+    scores = []
+    for i in range(n_envs):
+        dones_i = cpu_dones[i]
+        if np.any(dones_i):
+            n_valid = int(np.argmax(dones_i) + 1)  # Include the terminal step
+        else:
+            n_valid = steps
+        scores.append(np.sum(cpu_rewards[i, :n_valid]))
+    scores = np.array(scores)
 
     # CPU packaging & return computation
     results = []
@@ -765,8 +806,27 @@ def run_self_play_jax(
             end_prices = cpu_prices[end_idx - 1]
             asset_returns = (end_prices - start_prices) / (start_prices + 1e-8)
             market_return = float(np.mean(asset_returns)) * 100
+
+            # TASK_126: Compute episode optimal_alpha on SAME data as market_return
+            # This fixes the data source mismatch where trainer computed on batch data
+            episode_prices = cpu_prices[start_idx:end_idx]
+            if len(episode_prices) > 1:
+                # Compute log returns for path solver (consistent with trainer)
+                log_prices = np.log(episode_prices + 1e-8)
+                log_returns = log_prices[1:] - log_prices[:-1]  # (T-1, n_assets)
+                # Compute optimal path with no transaction cost (theoretical max)
+                try:
+                    optimal_path = compute_optimal_path(
+                        jnp.array(log_returns), k=4, method='greedy', transaction_cost=0.0
+                    )
+                    episode_optimal_alpha = float(optimal_path.total_alpha) * 100.0  # Scale to %
+                except Exception:
+                    episode_optimal_alpha = 0.0
+            else:
+                episode_optimal_alpha = 0.0
         else:
             market_return = 0.0
+            episode_optimal_alpha = 0.0
 
         # Denormalize MCTS root values for DS24
         mcts_root_values = values_arr.copy()
@@ -789,6 +849,7 @@ def run_self_play_jax(
             'market_return': market_return,
             'agent_return': final_return,
             'alpha': final_return - market_return,
+            'episode_optimal_alpha': episode_optimal_alpha,  # TASK_126: Oracle on same data
         }
 
         # Add prices for prediction loss and DS24 physics logging
@@ -806,6 +867,10 @@ def run_self_play_jax(
         # window_starts are absolute indices into the FULL price array,
         # so reconstruction always needs the full array (not the sliced 'prices')
         result['_full_prices_ref'] = cpu_prices
+
+        # TASK_125: Episode completion callback for Causal Expert Imprinting
+        if on_episode_complete is not None:
+            on_episode_complete(result, scores[i])
 
         results.append(result)
 
