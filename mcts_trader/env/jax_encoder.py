@@ -181,8 +181,10 @@ def _compute_all_channels(
     # Channel 4-7: Log returns at 1, 5, 15, 60 min
     # =========================================================================
 
-    # 1-min return
-    returns_1m = jnp.diff(prices, axis=1, prepend=prices[:, 0:1]) / (prices + 1e-8)
+    # 1-min return: (price[t] - price[t-1]) / price[t-1]
+    # TASK_122: Fixed denominator to use previous price, not current
+    prev_prices = jnp.concatenate([prices[:, 0:1], prices[:, :-1]], axis=1)
+    returns_1m = (prices - prev_prices) / (prev_prices + 1e-8)
     returns_1m = jnp.clip(returns_1m, -config.return_clip, config.return_clip)
     output = output.at[4].set(jnp.tile(returns_1m[:, -1:], (1, n)))
 
@@ -536,3 +538,245 @@ def validate_encoder_output(obs: chex.Array, config: EncoderConfig) -> bool:
         return False
 
     return True
+
+
+# =============================================================================
+# TASK_136a: Compressed Encoder (Pre-encode demos without tiling)
+# =============================================================================
+# All 27 channels use jnp.tile(value, (1, n)) which is 100% redundant.
+# Compressed storage: (27, n_assets) instead of (27, n_assets, n_assets)
+# Memory savings: 64× compression → 345 MB vs 22.1 GB for 50k demos
+
+def _compute_all_channels_compressed(
+    prices: chex.Array,   # (n_assets, window_size)
+    volumes: chex.Array,  # (n_assets, window_size)
+    highs: chex.Array,    # (n_assets, window_size)
+    lows: chex.Array,     # (n_assets, window_size)
+    config: EncoderConfig,
+) -> chex.Array:
+    """Compute all 27 channels WITHOUT tiling - compressed format.
+
+    Returns (27, n_assets) instead of (27, n_assets, n_assets).
+    Each channel stores the 1D feature vector that would be tiled.
+    """
+    n = config.n_assets
+
+    # Initialize output (27, n) - compressed!
+    output = jnp.zeros((27, n), dtype=jnp.float32)
+
+    # =========================================================================
+    # Normalization (same as full encoder)
+    # =========================================================================
+    price_min = jnp.min(prices, axis=1, keepdims=True)  # (n, 1)
+    price_max = jnp.max(prices, axis=1, keepdims=True)  # (n, 1)
+    price_range = price_max - price_min
+    price_range = jnp.where(price_range < 1e-8, 1.0, price_range)
+
+    norm_prices = (prices - price_min) / price_range  # (n, ws)
+    norm_highs = (highs - price_min) / price_range
+    norm_lows = (lows - price_min) / price_range
+
+    # Volume normalization (z-score)
+    vol_mean = jnp.mean(volumes, axis=1, keepdims=True)  # (n, 1)
+    vol_std = jnp.std(volumes, axis=1, keepdims=True) + 1e-8
+    norm_volumes = jnp.clip((volumes - vol_mean) / vol_std, -3, 3) / 3.0  # [-1, 1]
+
+    # =========================================================================
+    # Channel 0-3: Latest OHLC (normalized) - NO TILING
+    # =========================================================================
+    output = output.at[0].set(norm_prices[:, -1])    # Close
+    output = output.at[1].set(norm_highs[:, -1])     # High
+    output = output.at[2].set(norm_lows[:, -1])      # Low
+    output = output.at[3].set(norm_volumes[:, -1])   # Volume
+
+    # =========================================================================
+    # Channel 4-7: Log returns at 1, 5, 15, 60 min
+    # =========================================================================
+    prev_prices = jnp.concatenate([prices[:, 0:1], prices[:, :-1]], axis=1)
+    returns_1m = (prices - prev_prices) / (prev_prices + 1e-8)
+    returns_1m = jnp.clip(returns_1m, -config.return_clip, config.return_clip)
+    output = output.at[4].set(returns_1m[:, -1])
+
+    returns_5m = (prices[:, -1] - prices[:, -5]) / (prices[:, -5] + 1e-8)
+    returns_5m = jnp.clip(returns_5m, -config.return_clip, config.return_clip)
+    output = output.at[5].set(returns_5m)
+
+    returns_15m = (prices[:, -1] - prices[:, -15]) / (prices[:, -15] + 1e-8)
+    returns_15m = jnp.clip(returns_15m, -config.return_clip, config.return_clip)
+    output = output.at[6].set(returns_15m)
+
+    returns_60m = (prices[:, -1] - prices[:, 0]) / (prices[:, 0] + 1e-8)
+    returns_60m = jnp.clip(returns_60m, -config.return_clip, config.return_clip)
+    output = output.at[7].set(returns_60m)
+
+    # =========================================================================
+    # Channel 8-11: Volume patterns (recent vs average)
+    # =========================================================================
+    vol_ratio_5m = jnp.mean(volumes[:, -5:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_15m = jnp.mean(volumes[:, -15:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_30m = jnp.mean(volumes[:, -30:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_60m = jnp.mean(volumes, axis=1) / (vol_mean[:, 0] + 1e-8)
+
+    output = output.at[8].set(jnp.clip(vol_ratio_5m, 0, 5) / 5.0)
+    output = output.at[9].set(jnp.clip(vol_ratio_15m, 0, 5) / 5.0)
+    output = output.at[10].set(jnp.clip(vol_ratio_30m, 0, 5) / 5.0)
+    output = output.at[11].set(jnp.clip(vol_ratio_60m, 0, 5) / 5.0)
+
+    # =========================================================================
+    # Channel 12-15: Price momentum (rate of change)
+    # =========================================================================
+    momentum_5 = (prices[:, -1] - prices[:, -5]) / (price_range[:, 0] + 1e-8)
+    momentum_15 = (prices[:, -1] - prices[:, -15]) / (price_range[:, 0] + 1e-8)
+    momentum_30 = (prices[:, -1] - prices[:, -30]) / (price_range[:, 0] + 1e-8)
+    momentum_60 = (prices[:, -1] - prices[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    output = output.at[12].set(jnp.clip(momentum_5, -1, 1))
+    output = output.at[13].set(jnp.clip(momentum_15, -1, 1))
+    output = output.at[14].set(jnp.clip(momentum_30, -1, 1))
+    output = output.at[15].set(jnp.clip(momentum_60, -1, 1))
+
+    # =========================================================================
+    # Channel 16-19: Volatility (rolling std of returns)
+    # =========================================================================
+    vol_5 = jnp.std(returns_1m[:, -5:], axis=1)
+    vol_15 = jnp.std(returns_1m[:, -15:], axis=1)
+    vol_30 = jnp.std(returns_1m[:, -30:], axis=1)
+    vol_60 = jnp.std(returns_1m, axis=1)
+
+    output = output.at[16].set(jnp.clip(vol_5 * config.vol_scale, 0, 1))
+    output = output.at[17].set(jnp.clip(vol_15 * config.vol_scale, 0, 1))
+    output = output.at[18].set(jnp.clip(vol_30 * config.vol_scale, 0, 1))
+    output = output.at[19].set(jnp.clip(vol_60 * config.vol_scale, 0, 1))
+
+    # =========================================================================
+    # Channel 20-23: Price percentiles (position in recent range)
+    # =========================================================================
+    def compute_percentile(window_prices: chex.Array, window: int) -> chex.Array:
+        window_data = window_prices[:, -window:]
+        w_min = jnp.min(window_data, axis=1)
+        w_max = jnp.max(window_data, axis=1)
+        w_range = w_max - w_min
+        w_range = jnp.where(w_range < 1e-8, 1.0, w_range)
+        return (window_prices[:, -1] - w_min) / w_range
+
+    output = output.at[20].set(compute_percentile(prices, 5))
+    output = output.at[21].set(compute_percentile(prices, 15))
+    output = output.at[22].set(compute_percentile(prices, 30))
+    output = output.at[23].set(compute_percentile(prices, 60))
+
+    # =========================================================================
+    # Channel 24-26: VWAP and bands
+    # =========================================================================
+    vwap_window = 20
+    vwap_prices = prices[:, -vwap_window:]
+    vwap_volumes = volumes[:, -vwap_window:]
+    vol_sum = jnp.sum(vwap_volumes, axis=1, keepdims=True) + 1e-8
+    vwap = jnp.sum(vwap_prices * vwap_volumes, axis=1) / vol_sum[:, 0]
+    vwap_norm = (vwap - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    price_std = jnp.std(vwap_prices, axis=1)
+    upper_band = (vwap + price_std - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+    lower_band = (vwap - price_std - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    output = output.at[24].set(vwap_norm)
+    output = output.at[25].set(jnp.clip(upper_band, 0, 1))
+    output = output.at[26].set(jnp.clip(lower_band, 0, 1))
+
+    return output
+
+
+def encode_observation_compressed(
+    prices: chex.Array,        # (n_steps, n_assets)
+    window_start: chex.Array,  # ()
+    config: EncoderConfig,
+) -> chex.Array:
+    """Encode to compressed format (27, n_assets) without tiling.
+
+    Use this for pre-encoding demos. At sample time, use tile_compressed_observation()
+    to expand to full (27, n_assets, n_assets) format.
+    """
+    n = config.n_assets
+    ws = config.window_size
+
+    # Extract window
+    price_window = jax.lax.dynamic_slice(prices, (window_start, 0), (ws, n))
+
+    # Use prices for OHLCV (synthetic data)
+    prices_T = price_window.T      # (n, ws)
+    volumes_T = jnp.ones_like(prices_T)
+
+    return _compute_all_channels_compressed(prices_T, volumes_T, prices_T, prices_T, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_encode_compressed(
+    prices: chex.Array,
+    window_start: chex.Array,
+    config: EncoderConfig,
+) -> chex.Array:
+    """JIT-compiled compressed encoder."""
+    return encode_observation_compressed(prices, window_start, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_batch_encode_compressed(
+    prices: chex.Array,        # (n_steps, n_assets)
+    window_starts: chex.Array, # (batch,)
+    config: EncoderConfig,
+) -> chex.Array:
+    """JIT-compiled batched compressed encoder.
+
+    Args:
+        prices: (n_steps, n_assets) price data
+        window_starts: (batch,) array of window start indices
+        config: Encoder configuration
+
+    Returns:
+        (batch, 27, n_assets) compressed observations
+    """
+    return jax.vmap(
+        lambda ws: encode_observation_compressed(prices, ws, config)
+    )(window_starts)
+
+
+def tile_compressed_observation(
+    compressed: chex.Array,  # (27, n_assets)
+    n_assets: int,
+) -> chex.Array:
+    """Expand compressed observation to full format.
+
+    Args:
+        compressed: (27, n_assets) compressed observation
+        n_assets: Number of assets (for tiling)
+
+    Returns:
+        (27, n_assets, n_assets) full observation
+    """
+    # Tile each channel: (n,) → (n, n) by repeating across columns
+    return jnp.tile(compressed[:, :, None], (1, 1, n_assets))
+
+
+@partial(jax.jit, static_argnames=['n_assets'])
+def jit_tile_compressed(
+    compressed: chex.Array,
+    n_assets: int,
+) -> chex.Array:
+    """JIT-compiled tiling of compressed observations."""
+    return tile_compressed_observation(compressed, n_assets)
+
+
+@partial(jax.jit, static_argnames=['n_assets'])
+def jit_batch_tile_compressed(
+    compressed_batch: chex.Array,  # (batch, 27, n_assets)
+    n_assets: int,
+) -> chex.Array:
+    """JIT-compiled batched tiling of compressed observations.
+
+    Args:
+        compressed_batch: (batch, 27, n_assets) compressed observations
+        n_assets: Number of assets (for tiling)
+
+    Returns:
+        (batch, 27, n_assets, n_assets) full observations
+    """
+    return jax.vmap(lambda c: tile_compressed_observation(c, n_assets))(compressed_batch)

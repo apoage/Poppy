@@ -49,7 +49,7 @@ from mcts_trader.jax_agent.mctx_search import create_mctx_search
 from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
 from mcts_trader.jax_agent.smart_allocation import compute_env_start_offsets
 from mcts_trader.jax_agent.expert_buffer import UnifiedIndexBuffer, create_expert_buffer
-from mcts_trader.jax_agent.price_cache import PriceCache, create_price_cache
+# TASK_135: Removed price_cache import - now stores prices directly in expert_buffer
 from mcts_trader.training.self_play import run_self_play, run_self_play_batched, run_self_play_jax, N_ACTIONS_PER_ASSET
 
 # DS24 Enhanced Logging
@@ -330,25 +330,18 @@ def main():
     )
 
     # TASK_125: Initialize Expert Buffer for Causal Expert Imprinting
+    # TASK_135: Eliminated disk-based price_cache - stores prices in RAM
     expert_buffer = None
-    price_cache = None
     if getattr(config, 'imprint', False):
         print("[TASK_125] Initializing Causal Expert Imprinting...")
-        from pathlib import Path
-        cache_dir = Path(f"./.price_cache_{config.name}")
-        price_cache = create_price_cache(
-            cache_dir=str(cache_dir),
-            max_episodes=10000,
-            n_assets=n_assets,
-        )
         expert_buffer = create_expert_buffer(
-            price_cache=price_cache,
+            n_assets=n_assets,
             demo_capacity=getattr(config, 'expert_demo_capacity', 50000),
             agent_capacity=500000,
             window_size=60,
         )
         print(f"   Expert buffer: {expert_buffer.demo_capacity} demos, {expert_buffer.agent_capacity} agent")
-        print(f"   Price cache: {cache_dir}")
+        print(f"   TASK_135: Prices stored in RAM (no disk cache)")
 
     # 6. Initialize parameters
     # TASK_124: Use time-based seed for model initialization to prevent
@@ -562,8 +555,10 @@ def main():
     expert_confidence_threshold = getattr(config, 'expert_confidence_threshold', 0.001)
 
     def on_episode_complete_callback(result: dict, score: float):
-        """TASK_125: Called when episode completes to populate expert buffer."""
-        if expert_buffer is None or price_cache is None:
+        """TASK_125: Called when episode completes to populate expert buffer.
+        TASK_135: Uses expert_buffer.add_episode() instead of price_cache.
+        """
+        if expert_buffer is None:
             return
 
         # Get episode data
@@ -571,43 +566,39 @@ def main():
         agent_alpha = result.get('alpha', 0.0)
         prices = result.get('prices')
 
+        # BUG FIX (TASK_131c): Count ALL episodes processed (not just stored)
+        episode_counter[0] += 1
+
         if prices is None or episode_optimal_alpha <= 0:
+            # Log skip reason periodically
+            if episode_counter[0] % 50 == 0:
+                reason = "no prices" if prices is None else f"oracle_α={episode_optimal_alpha:.2f}%"
+                print(f"[IMPRINT] Skip ep {episode_counter[0]}: {reason}", flush=True)
             return
 
-        # Compute confidence: agent_alpha / optimal_alpha
-        # 1.0 = agent matched oracle, 0.0 = agent captured nothing
-        confidence = max(0.0, agent_alpha / max(episode_optimal_alpha, 1e-6))
+        # BUG FIX (TASK_131a): Confidence should be based on ORACLE quality, not agent performance
+        # Old: confidence = agent_alpha / optimal_alpha (circular dependency - bad agent = no learning)
+        # New: confidence = 1.0 for all oracle demos (oracle is ground truth, always valid)
+        # The oracle's optimal path is independent of agent performance
+        confidence = 1.0
 
-        # TASK_125: Store episodes with positive alpha (better than market)
-        # Use confidence as weight in BC loss, but store all positive-alpha episodes
-        # Threshold only filters the worst - any positive alpha is potentially useful
-        should_store = agent_alpha > 0  # Simple: store any market-beating episode
+        # BUG FIX (TASK_131a): Remove agent_alpha > 0 filter
+        # Old: should_store = agent_alpha > 0 (circular - need demos to learn, need learning to get demos)
+        # New: Store ALL episodes where oracle found alpha > 0 (oracle found opportunity)
+        # This breaks the circular dependency and lets BC learning start immediately
+        should_store = True  # Oracle already filtered by episode_optimal_alpha > 0 above
 
         # Debug: Log callback invocation
         if episode_counter[0] % 10 == 0:
-            print(f"[TASK_125-DEBUG] Episode {episode_counter[0]}: alpha={agent_alpha:.2f}%, store={should_store}, confidence={confidence:.6f}", flush=True)
+            print(f"[IMPRINT] Episode {episode_counter[0]}: agent_α={agent_alpha:.2f}%, oracle_α={episode_optimal_alpha:.2f}%", flush=True)
 
-        # Skip if not storing
-        if not should_store:
-            return
+        # TASK_135: Store prices directly in expert_buffer (no disk cache)
+        # expert_buffer.add_episode handles both (T, n_assets) and (T, n_assets, 5) formats
+        episode_id = expert_buffer.add_episode(prices)
 
-        # Store prices in cache
-        # Prices shape: (T, n_assets) - need to expand to (T, n_assets, 5) for OHLCV
-        if len(prices.shape) == 2:
-            # Create OHLCV from close prices (use close for all)
-            prices_ohlcv = np.stack([prices] * 5, axis=-1)  # (T, n_assets, 5)
-        else:
-            prices_ohlcv = prices
-
-        try:
-            episode_id = price_cache.add_episode(
-                prices_ohlcv,
-                start_date=0,  # No date for synthetic
-                regime_tag=getattr(config, 'synthetic_level', 0) or 0,
-            )
-        except RuntimeError:
-            # Price cache full - ok to skip
-            return
+        # TASK_136a: Pre-encode observations (compressed format) at add time
+        # This avoids expensive encoding at sample time - 25× speedup
+        expert_buffer.preencode_episode(episode_id)
 
         # Compute optimal actions for each step using path_solver
         from mcts_trader.jax_agent.path_solver import compute_optimal_path, optimal_path_to_policy
@@ -638,8 +629,15 @@ def main():
         episode_return = score
 
         # Add demos to buffer
+        # TASK_132e: Skip steps < window_size to prevent future leakage
+        # At step=30 with window_size=60, encoder would see prices[0:60] including future
+        window_size = expert_buffer.window_size if expert_buffer else 60
         n_steps = min(len(log_returns), len(actions))
         for step in range(n_steps):
+            # Skip early steps where observation window would leak future data
+            if step < window_size:
+                continue
+
             # Get optimal action for this step from path
             # optimal_path.indices[step]: (k,) - top-k asset indices selected by oracle
             selected_indices = np.array(optimal_path.indices[step])  # (k,)
@@ -659,12 +657,13 @@ def main():
                 best_asset = int(selected_indices[best_local_idx])
                 best_return = float(selected_returns[best_local_idx])
 
-                if best_return > 0.001:  # Positive return threshold
+                # BUG FIX: Remove threshold - oracle selected this asset for a reason
+                # Old threshold (0.001 = 0.1%) caused mostly HOLD actions
+                if best_return > 0:
                     optimal_action = best_asset * 5 + 2  # Buy
-                elif best_return < -0.001:  # Negative return threshold
-                    optimal_action = best_asset * 5 + 0  # Sell
                 else:
-                    optimal_action = best_asset * 5 + 1  # Hold
+                    optimal_action = best_asset * 5 + 0  # Sell
+                # Never HOLD - if oracle selected asset, there's a directional signal
             else:
                 # No clear signal - Hold on asset 0
                 optimal_action = 1  # Hold asset 0
@@ -680,7 +679,7 @@ def main():
                 regime_tag=getattr(config, 'synthetic_level', 0) or 0,
             )
 
-        episode_counter[0] += 1
+        # Counter already incremented at start of callback (TASK_131c fix)
 
     # Set callback to None if imprinting disabled
     imprint_callback = on_episode_complete_callback if getattr(config, 'imprint', False) else None
@@ -710,7 +709,8 @@ def main():
         # TASK_119: Optimal hindsight path metrics
         'amax_regret_loss', 'amax_imprint_loss', 'amax_alpha_capture', 'amax_optimal_gain',
         # TASK_125: Causal Expert Imprinting metrics
-        'bc_loss', 'bc_weight', 'expert_action_agreement', 'expert_demo_count',
+        'bc_loss', 'bc_weight', 'expert_action_agreement', 'expert_acceptance_rate', 'expert_demo_count',
+        'expert_batch_size', 'bc_ce_loss', 'bc_margin_loss',
         # Generalization eval metrics
         'eval_level', 'eval_reward', 'eval_alpha', 'eval_pct_hold',
     ]
@@ -775,6 +775,9 @@ def main():
                         config.synthetic_noise = noise_cfg.price_noise
                         # TASK_124: Use epoch-based seed to prevent memorization
                         jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000)
+                        # TASK_135: Clear expert buffer (prices are stale after noise change)
+                        if expert_buffer:
+                            expert_buffer.clear()
 
             # ==== Async Regeneration: Check for completed background tasks ====
             if async_regenerator and pending_regenerations:
@@ -818,6 +821,9 @@ def main():
 
                         # TASK_122: Clear JIT cache to prevent stale price references
                         jax.clear_caches()
+                        # TASK_135: Clear expert buffer (prices are stale after level switch)
+                        if expert_buffer:
+                            expert_buffer.clear()
                         print(f"  [DATA] L{new_level} (regen L{old_level} in bg, JIT cleared)")
                     elif jax_env_states is not None:
                         print(f"  [DATA] Regenerating synthetic data (epoch {epoch + 1})")
@@ -826,6 +832,9 @@ def main():
                         jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000)
                         # TASK_122: Clear JIT cache to prevent stale price references
                         jax.clear_caches()
+                        # TASK_135: Clear expert buffer (prices are stale after regeneration)
+                        if expert_buffer:
+                            expert_buffer.clear()
                     else:
                         if env is not None and hasattr(env, 'market') and hasattr(env.market, 'regenerate'):
                             env.market.regenerate()
@@ -855,6 +864,9 @@ def main():
                     for penv in parallel_envs:
                         penv.set_prices(new_prices)
                     period_data['current_idx'] = new_period_idx
+                    # TASK_135: Clear expert buffer (prices are stale after period switch)
+                    if expert_buffer:
+                        expert_buffer.clear()
 
             # Self-play (C2 fix: pass all required parameters)
             # Update PopArt state for value denormalization
@@ -868,6 +880,9 @@ def main():
                     prices_for_play = generate_bella_prices_on_device(
                         bella_generator, gen_rng, n_envs=config.parallel_envs
                     )
+                    # TASK_135: Clear expert buffer every epoch (Bella generates fresh prices)
+                    if expert_buffer:
+                        expert_buffer.clear()
                 # ==== TASK_110: On-the-fly adversarial generation ====
                 # Generate fresh adversarial prices each epoch (~5ms)
                 elif fast_gen_model is not None and fast_gen_params is not None:
@@ -1285,9 +1300,14 @@ def main():
                 'amax_alpha_capture': get_last(metrics.get('alpha_capture', [0])),
                 'amax_optimal_gain': get_last(metrics.get('optimal_gain', [0])),
                 # TASK_125: Causal Expert Imprinting metrics
-                'bc_loss': get_last(metrics.get('bc_loss', [])) if metrics.get('bc_loss') else None,
-                'bc_weight': get_last(metrics.get('bc_weight', [])) if metrics.get('bc_weight') else None,
-                'expert_acceptance_rate': expert_buffer.demo_count / max(1, episode_counter[0] * config.steps) if expert_buffer else None,
+                # TASK_132B FIX: Use 'key' in metrics, not metrics.get('key') - falsy check fails on 0.0
+                'bc_loss': get_last(metrics.get('bc_loss', [0])) if 'bc_loss' in metrics else None,
+                'bc_weight': get_last(metrics.get('bc_weight', [0])) if 'bc_weight' in metrics else None,
+                'expert_action_agreement': get_last(metrics.get('expert_action_agreement', [0])) if 'expert_action_agreement' in metrics else None,
+                'expert_acceptance_rate': get_last(metrics.get('expert_acceptance_rate', [0])) if 'expert_acceptance_rate' in metrics else None,
+                'expert_batch_size': get_last(metrics.get('expert_batch_size', [0])) if 'expert_batch_size' in metrics else 0,
+                'bc_ce_loss': get_last(metrics.get('bc_ce_loss', [0])) if 'bc_ce_loss' in metrics else None,
+                'bc_margin_loss': get_last(metrics.get('bc_margin_loss', [0])) if 'bc_margin_loss' in metrics else None,
                 'expert_demo_count': expert_buffer.demo_count if expert_buffer else 0,
                 # Eval metrics (filled later if eval runs this epoch)
                 'eval_level': 0,
@@ -1351,7 +1371,8 @@ def main():
                     ds24_logger.log_expert_buffer(
                         bc_loss=get_last(metrics.get('bc_loss', [])) if metrics.get('bc_loss') else None,
                         bc_weight=get_last(metrics.get('bc_weight', [])) if metrics.get('bc_weight') else None,
-                        expert_acceptance_rate=expert_buffer.demo_count / max(1, episode_counter[0] * config.steps),
+                        # TASK_132B: Renamed to storage_rate (demos/steps), distinct from action_agreement
+                        expert_storage_rate=expert_buffer.demo_count / max(1, episode_counter[0] * config.steps),
                         demo_count=expert_buffer.demo_count,
                         agent_count=expert_buffer.agent_count,
                         buffer_capacity=expert_buffer.demo_capacity + expert_buffer.agent_capacity,
