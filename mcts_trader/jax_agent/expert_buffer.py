@@ -593,6 +593,9 @@ class UnifiedIndexBuffer:
                     obs_idx = step - self.window_size
                     if 0 <= obs_idx < compressed.shape[0]:
                         compressed_samples.append((batch_idx, compressed[obs_idx]))
+                    else:
+                        # DEBUG: obs_idx out of range - this shouldn't happen often
+                        encode_samples.append((batch_idx, int(ep_id), step))
             else:
                 # Fall back to encoding (agent samples or missing compression)
                 for batch_idx, step in zip(batch_indices, steps):
@@ -717,6 +720,9 @@ class UnifiedIndexBuffer:
         Called on data regeneration (level switch, Bella generation, etc.)
         """
         with self._lock:
+            old_demo_count = self.demo_count
+            old_compressed_count = len(self._compressed_obs)
+
             self.demo_count = 0
             self.agent_count = 0
             self.agent_write_idx = self.demo_capacity
@@ -731,7 +737,11 @@ class UnifiedIndexBuffer:
             self._episode_prices.clear()
             self._next_episode_id = 0
 
-            print(f"[ExpertBuffer] Cleared {self.total_capacity} entries, {ep_count} episodes ({price_mb:.1f} MB)")
+            # TASK_136a FIX: Also clear compressed observations!
+            compressed_mb = self.get_compressed_obs_mb()
+            self._compressed_obs.clear()
+
+            print(f"[ExpertBuffer] Cleared {old_demo_count} demos, {ep_count} episodes ({price_mb:.1f} MB prices, {compressed_mb:.1f} MB compressed)")
 
     def reset_for_level(self, new_level: int, keep_fraction: float = 0.0):
         """
