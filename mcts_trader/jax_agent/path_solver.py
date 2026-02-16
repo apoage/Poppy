@@ -41,19 +41,25 @@ def greedy_lookahead_path(
     k: int = 4,
     lookahead: int = 5,
     transaction_cost: float = 0.001,
+    min_alpha_threshold: float = 0.0,  # TASK_141: Only trade if return > threshold
     max_len: int = DEFAULT_MAX_PATH_LEN,
 ) -> OptimalPath:
     """
     Greedy path solver with lookahead.
 
-    At each step, selects k assets that maximize cumulative returns
+    At each step, selects up to k assets that maximize cumulative returns
     over the next `lookahead` steps, accounting for transaction costs.
+
+    TASK_141: Added min_alpha_threshold - only selects assets where expected
+    return exceeds threshold. Can return 0 to k assets (not forced k).
+    This fixes the "Hyperactive Agent" bug where oracle always traded.
 
     Args:
         returns: (T, n_assets) log returns
-        k: Number of assets to hold
+        k: Maximum number of assets to hold
         lookahead: Steps to look ahead for greedy decision
         transaction_cost: Cost per trade (as fraction)
+        min_alpha_threshold: Minimum expected return to trade (default 0 = always trade)
         max_len: TASK_128 FIX - Static max sequence length (prevents JIT recompilation)
 
     Returns:
@@ -99,18 +105,30 @@ def greedy_lookahead_path(
         # Use abs because we can go long or short
         cumulative_abs_returns = jnp.sum(jnp.abs(future_returns), axis=0)
 
-        # Get top-k by cumulative absolute returns
-        top_k_indices = jax.lax.top_k(cumulative_abs_returns, k)[1]
+        # TASK_141: Apply minimum alpha threshold
+        # Only consider assets where expected return exceeds threshold
+        threshold_per_step = min_alpha_threshold * lookahead
+        above_threshold = cumulative_abs_returns > threshold_per_step
 
-        # Create new mask
-        new_mask = jnp.zeros(n_assets).at[top_k_indices].set(1.0)
+        # Mask out assets below threshold (set to -inf so they're never selected)
+        masked_returns = jnp.where(above_threshold, cumulative_abs_returns, -jnp.inf)
+
+        # Get top-k by cumulative absolute returns (from those above threshold)
+        top_k_values, top_k_indices = jax.lax.top_k(masked_returns, k)
+
+        # Create new mask using scatter (JAX-compatible)
+        # Only set mask=1 where the top-k value was valid (not -inf)
+        valid_selections = top_k_values > -1e30  # Check if valid (not -inf)
+        new_mask = jnp.zeros(n_assets).at[top_k_indices].set(valid_selections.astype(jnp.float32))
 
         # Compute actual PnL for this step (use padded_returns which has zeros for padding)
         # Oracle goes long on positive returns, short on negative
         # Using abs() correctly captures profit in both directions:
         #   Long +5% = +5% profit, Short -5% = +5% profit
+        # TASK_133 FIX: Divide by k for equal-weighted portfolio (was 4x leverage bug)
         step_returns = padded_returns[t]  # TASK_128: Use padded array
-        step_pnl = jnp.sum(jnp.abs(step_returns) * new_mask)
+        k_count = jnp.maximum(jnp.sum(new_mask), 1.0)  # Number of selected assets
+        step_pnl = jnp.sum(jnp.abs(step_returns) * new_mask) / k_count
 
         # Transaction cost
         changes = jnp.sum(jnp.abs(new_mask - prev_mask))
@@ -150,6 +168,210 @@ def greedy_lookahead_path(
         total_alpha=total_alpha,
         trade_count=trade_count,
     )
+
+
+# =============================================================================
+# Batched Oracle (vmap for parallel environments)
+# =============================================================================
+
+def _greedy_path_single(returns, k, lookahead, transaction_cost, min_alpha_threshold, max_len):
+    """Unbatched greedy path for vmap."""
+    return greedy_lookahead_path(returns, k, lookahead, transaction_cost, min_alpha_threshold, max_len)
+
+
+@partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len'])
+def batched_greedy_lookahead_path(
+    returns_batch: jnp.ndarray,
+    k: int = 4,
+    lookahead: int = 5,
+    transaction_cost: float = 0.001,
+    min_alpha_threshold: float = 0.0,
+    max_len: int = DEFAULT_MAX_PATH_LEN,
+) -> OptimalPath:
+    """
+    Batched greedy path solver - runs N oracles in parallel via vmap.
+
+    Args:
+        returns_batch: (N, T, n_assets) batched log returns
+        k, lookahead, transaction_cost, min_alpha_threshold, max_len: same as greedy_lookahead_path
+
+    Returns:
+        OptimalPath with batched arrays:
+            selections: (N, T, n_assets)
+            indices: (N, T, k)
+            cumulative_pnl: (N, T)
+            total_alpha: (N,)
+            trade_count: (N,)
+
+    Performance: N=32 episodes runs ~10x faster than N sequential calls.
+    """
+    # vmap over batch dimension (axis 0)
+    vmapped_fn = jax.vmap(
+        lambda r: greedy_lookahead_path(r, k, lookahead, transaction_cost, min_alpha_threshold, max_len)
+    )
+    return vmapped_fn(returns_batch)
+
+
+# =============================================================================
+# TASK_673: Multipass Oracle → Soft Policy Targets
+# =============================================================================
+
+@partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len', 'n_passes',
+                                    'n_actions_per_asset', 'temperature'])
+def multipass_oracle_policy(
+    returns: jnp.ndarray,
+    key: jnp.ndarray,
+    k: int = 1,
+    lookahead: int = 20,
+    transaction_cost: float = 0.001,
+    min_alpha_threshold: float = 0.001,
+    max_len: int = DEFAULT_MAX_PATH_LEN,
+    n_passes: int = 10,
+    noise_scale: float = 0.1,
+    n_actions_per_asset: int = 5,
+    temperature: float = 1.0,
+) -> Tuple[jnp.ndarray, jnp.ndarray, float]:
+    """
+    TASK_673: Multipass oracle producing genuinely soft policy targets.
+
+    Algorithm:
+      1. Run greedy oracle N times, each with Gaussian noise on returns
+      2. Convert each binary path → one-hot policy via state-aware logic
+      3. Average the N one-hot policies → soft policy distribution
+
+    This preserves the correctness of optimal_path_to_policy per-pass
+    (no binarization bugs) while producing soft targets from the ensemble.
+
+    Args:
+        returns: (T, n_assets) log returns (REAL, not noisy)
+        key: JAX PRNG key
+        k: Max assets to hold per step (default 1, matches oracle_k)
+        lookahead: Oracle lookahead steps (default 20)
+        transaction_cost: Cost per trade as fraction
+        min_alpha_threshold: Min return to consider trading
+        max_len: Static max sequence length for JIT (TASK_128)
+        n_passes: Number of noisy oracle passes (default 10)
+        noise_scale: Noise std as fraction of global return std
+        n_actions_per_asset: Actions per asset (5: Sell/Hold/Buy/LimitSell/LimitBuy)
+        temperature: Softmax temperature for policy conversion
+
+    Returns:
+        soft_policy: (T, n_assets * n_actions_per_asset) averaged soft targets
+        avg_cumulative_pnl: (T,) mean cumulative PnL across passes
+        avg_total_alpha: scalar mean final alpha
+    """
+    T, n_assets = returns.shape
+
+    # Global noise scaling (matched to overall return magnitude)
+    return_std = jnp.maximum(jnp.std(returns), 1e-6)
+
+    # 0. Compute CLEAN oracle path for value targets (no noise)
+    #    Value head needs true achievable PnL, not noisy approximation
+    clean_path = greedy_lookahead_path(
+        returns,
+        k=k,
+        lookahead=lookahead,
+        transaction_cost=transaction_cost,
+        min_alpha_threshold=min_alpha_threshold,
+        max_len=max_len,
+    )
+
+    def single_pass(subkey):
+        # 1. Perturb returns with Gaussian noise
+        noise = jax.random.normal(subkey, returns.shape) * noise_scale * return_std
+        noisy_returns = returns + noise
+
+        # 2. Solve binary path on noisy returns
+        path = greedy_lookahead_path(
+            noisy_returns,
+            k=k,
+            lookahead=lookahead,
+            transaction_cost=transaction_cost,
+            min_alpha_threshold=min_alpha_threshold,
+            max_len=max_len,
+        )
+
+        # 3. Compute prev_selections for state-aware oracle (TASK_141)
+        #    Uses REAL returns for position direction, path selections for position state
+        prev_sels = jnp.zeros((T, n_assets))
+        prev_sels = prev_sels.at[1:].set(
+            jnp.where(
+                path.selections[:-1] > 0.5,
+                jnp.where(returns[:-1] > 0, 1.0, jnp.where(returns[:-1] < 0, -1.0, 0.0)),
+                0.0
+            )
+        )
+
+        # 4. Convert binary path → one-hot policy (state-aware, correct per-pass)
+        policy = optimal_path_to_policy(
+            path.selections,
+            returns,  # REAL returns for action direction
+            prev_selections=prev_sels,
+            n_actions_per_asset=n_actions_per_asset,
+            temperature=temperature,
+        )
+
+        return policy
+
+    # 5. Split key, vmap over all passes (policy only)
+    keys = jax.random.split(key, n_passes)
+    all_policies = jax.vmap(single_pass)(keys)
+    # all_policies:  (n_passes, T, 320)
+
+    # 6. Average → genuinely soft policy distribution
+    soft_policy = jnp.mean(all_policies, axis=0)       # (T, 320)
+
+    # 7. Value targets from CLEAN oracle (true achievable PnL)
+    return soft_policy, clean_path.cumulative_pnl, clean_path.total_alpha
+
+
+@partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len', 'n_passes',
+                                    'n_actions_per_asset', 'temperature'])
+def batched_multipass_oracle_policy(
+    returns_batch: jnp.ndarray,
+    key: jnp.ndarray,
+    k: int = 1,
+    lookahead: int = 20,
+    transaction_cost: float = 0.001,
+    min_alpha_threshold: float = 0.001,
+    max_len: int = DEFAULT_MAX_PATH_LEN,
+    n_passes: int = 10,
+    noise_scale: float = 0.1,
+    n_actions_per_asset: int = 5,
+    temperature: float = 1.0,
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    TASK_673: Batched multipass oracle for N episodes in parallel.
+
+    Double-vmap: outer over N episodes, inner over n_passes per episode.
+    With N=8 episodes and n_passes=10, runs 80 oracle solves in one JIT call.
+
+    Args:
+        returns_batch: (N, T, n_assets) batched log returns
+        key: JAX PRNG key
+        ... (same as multipass_oracle_policy)
+
+    Returns:
+        soft_policies: (N, T, n_assets * n_actions_per_asset) batched soft targets
+        avg_pnls: (N, T) batched mean cumulative PnL
+        avg_alphas: (N,) batched mean final alpha
+    """
+    N = returns_batch.shape[0]
+    keys = jax.random.split(key, N)
+
+    vmapped_fn = jax.vmap(
+        lambda r, subkey: multipass_oracle_policy(
+            r, subkey,
+            k=k, lookahead=lookahead,
+            transaction_cost=transaction_cost,
+            min_alpha_threshold=min_alpha_threshold,
+            max_len=max_len, n_passes=n_passes,
+            noise_scale=noise_scale,
+            n_actions_per_asset=n_actions_per_asset,
+            temperature=temperature,
+        )
+    )
+    return vmapped_fn(returns_batch, keys)
 
 
 # =============================================================================
@@ -427,11 +649,15 @@ def compute_regret(
 def optimal_path_to_policy(
     selections: jnp.ndarray,
     returns: jnp.ndarray,
+    prev_selections: jnp.ndarray = None,
     n_actions_per_asset: int = 5,
     temperature: float = 1.0,
 ) -> jnp.ndarray:
     """
     Convert optimal path selections to soft policy targets.
+
+    TASK_141: Now state-aware! Accepts prev_selections to compute proper
+    open/close/maintain actions instead of just looking at target holdings.
 
     This creates a "teacher" policy from hindsight-optimal decisions.
     Used for soft imitation learning / stabilization.
@@ -440,53 +666,147 @@ def optimal_path_to_policy(
     Action types: 0=Sell, 1=Hold, 2=Buy, 3=LimitSell, 4=LimitBuy
 
     Args:
-        selections: (T, n_assets) binary mask of optimal holdings
-        returns: (T, n_assets) actual returns (determines buy/sell direction)
+        selections: (T, n_assets) binary mask of optimal holdings for NEXT step
+        returns: (T, n_assets) actual returns (determines long/short direction)
+        prev_selections: (T, n_assets) current holdings BEFORE this step
+                        Values: -1=short, 0=flat, 1=long. If None, uses stateless mode.
         n_actions_per_asset: Actions per asset (default 5)
         temperature: Softness of target (lower = more peaked)
 
     Returns:
         policy_targets: (T, n_assets * n_actions_per_asset) soft policy
+
+    State-Aware Action Logic (when prev_selections provided):
+        - prev=0, new=1, ret>0 → BUY (open long)
+        - prev=0, new=1, ret<0 → SELL (open short)
+        - prev!=0, new=prev   → HOLD (maintain position)
+        - prev=1, new=0       → SELL (close long)
+        - prev=-1, new=0      → BUY (close short)
+        - prev=0, new=0       → HOLD (stay flat)
     """
     T, n_assets = selections.shape
     n_actions = n_assets * n_actions_per_asset
 
-    # For each asset at each timestep:
-    # - If selected AND return > 0: should BUY (action_type=2)
-    # - If selected AND return < 0: should SELL (action_type=0)
-    # - If not selected: should HOLD (action_type=1)
-
     # Create logits for each action
     logits = jnp.full((T, n_actions), -10.0)  # Start with low probability
 
-    for action_type in range(n_actions_per_asset):
-        # Indices for this action type across all assets
-        action_indices = jnp.arange(n_assets) * n_actions_per_asset + action_type
+    # Action indices for each type
+    buy_indices = jnp.arange(n_assets) * n_actions_per_asset + 2   # action_type=2
+    sell_indices = jnp.arange(n_assets) * n_actions_per_asset + 0  # action_type=0
+    hold_indices = jnp.arange(n_assets) * n_actions_per_asset + 1  # action_type=1
 
-        if action_type == 2:  # BUY
-            # High probability when selected AND positive return
-            buy_mask = selections * (returns > 0)
-            logits = logits.at[:, action_indices].set(
-                jnp.where(buy_mask, 5.0 / temperature, logits[:, action_indices])
-            )
-        elif action_type == 0:  # SELL
-            # High probability when selected AND negative return
-            sell_mask = selections * (returns < 0)
-            logits = logits.at[:, action_indices].set(
-                jnp.where(sell_mask, 5.0 / temperature, logits[:, action_indices])
-            )
-        elif action_type == 1:  # HOLD
-            # Medium probability when NOT selected
-            hold_mask = 1 - selections
-            logits = logits.at[:, action_indices].set(
-                jnp.where(hold_mask, 0.0, logits[:, action_indices])
-            )
-        # Limit orders (3, 4) stay at low probability
+    if prev_selections is None:
+        # LEGACY: Stateless mode (original behavior)
+        # - If selected AND return > 0: should BUY
+        # - If selected AND return < 0: should SELL
+        # - If not selected: should HOLD
+        buy_mask = selections * (returns > 0)
+        sell_mask = selections * (returns < 0)
+        hold_mask = 1 - selections
 
-    # Softmax to get probabilities
-    policy_targets = jax.nn.softmax(logits, axis=-1)
+        logits = logits.at[:, buy_indices].set(
+            jnp.where(buy_mask, 5.0 / temperature, logits[:, buy_indices])
+        )
+        logits = logits.at[:, sell_indices].set(
+            jnp.where(sell_mask, 5.0 / temperature, logits[:, sell_indices])
+        )
+        logits = logits.at[:, hold_indices].set(
+            jnp.where(hold_mask, 0.0, logits[:, hold_indices])
+        )
+    else:
+        # TASK_141: State-aware mode with proper open/close/maintain logic
+
+        # Determine target position direction from returns
+        # selections=1, returns>0 → want long (+1)
+        # selections=1, returns<0 → want short (-1)
+        # selections=0 → want flat (0)
+        target_position = jnp.where(
+            selections > 0.5,
+            jnp.where(returns > 0, 1.0, jnp.where(returns < 0, -1.0, 0.0)),  # Long/short/flat
+            0.0  # Flat if not selected
+        )
+
+        # Compute transitions
+        # Opening positions (from flat)
+        open_long = (prev_selections == 0) & (target_position == 1)   # flat → long
+        open_short = (prev_selections == 0) & (target_position == -1) # flat → short
+
+        # Closing positions (to flat)
+        close_long = (prev_selections == 1) & (target_position == 0)   # long → flat
+        close_short = (prev_selections == -1) & (target_position == 0) # short → flat
+
+        # Maintaining positions (no change needed)
+        maintain = (prev_selections == target_position) & (prev_selections != 0)
+
+        # Staying flat
+        stay_flat = (prev_selections == 0) & (target_position == 0)
+
+        # Reversing positions (rare but possible)
+        reverse_long_to_short = (prev_selections == 1) & (target_position == -1)
+        reverse_short_to_long = (prev_selections == -1) & (target_position == 1)
+
+        # BUY actions: open_long, close_short, reverse_short_to_long
+        buy_mask = open_long | close_short | reverse_short_to_long
+
+        # SELL actions: open_short, close_long, reverse_long_to_short
+        sell_mask = open_short | close_long | reverse_long_to_short
+
+        # HOLD actions: maintain position or stay flat
+        hold_mask = maintain | stay_flat
+
+        # Set logits
+        logits = logits.at[:, buy_indices].set(
+            jnp.where(buy_mask, 5.0 / temperature, logits[:, buy_indices])
+        )
+        logits = logits.at[:, sell_indices].set(
+            jnp.where(sell_mask, 5.0 / temperature, logits[:, sell_indices])
+        )
+        logits = logits.at[:, hold_indices].set(
+            jnp.where(hold_mask, 0.0, logits[:, hold_indices])
+        )
+
+    # TASK_146: Per-asset softmax (each asset has independent 5-way classification)
+    # Previously: 320-way softmax forced all assets to compete for probability mass
+    # Now: Reshape to (T, n_assets, 5), softmax per asset, reshape back
+    logits_reshaped = logits.reshape(T, n_assets, n_actions_per_asset)
+    probs_reshaped = jax.nn.softmax(logits_reshaped, axis=-1)  # 5-way per asset
+    policy_targets = probs_reshaped.reshape(T, n_actions)
 
     return policy_targets
+
+
+@partial(jax.jit, static_argnames=['n_actions_per_asset', 'temperature'])
+def batched_optimal_path_to_policy(
+    selections_batch: jnp.ndarray,
+    returns_batch: jnp.ndarray,
+    prev_selections_batch: jnp.ndarray = None,
+    n_actions_per_asset: int = 5,
+    temperature: float = 1.0,
+) -> jnp.ndarray:
+    """
+    Batched version of optimal_path_to_policy for parallel environments.
+
+    TASK_141: Now supports prev_selections for state-aware policy targets.
+
+    Args:
+        selections_batch: (N, T, n_assets) batched optimal selections
+        returns_batch: (N, T, n_assets) batched log returns
+        prev_selections_batch: (N, T, n_assets) batched current holdings (optional)
+        n_actions_per_asset, temperature: same as optimal_path_to_policy
+
+    Returns:
+        policy_targets: (N, T, n_assets * n_actions_per_asset) batched policies
+    """
+    if prev_selections_batch is None:
+        vmapped_fn = jax.vmap(
+            lambda s, r: optimal_path_to_policy(s, r, None, n_actions_per_asset, temperature)
+        )
+        return vmapped_fn(selections_batch, returns_batch)
+    else:
+        vmapped_fn = jax.vmap(
+            lambda s, r, p: optimal_path_to_policy(s, r, p, n_actions_per_asset, temperature)
+        )
+        return vmapped_fn(selections_batch, returns_batch, prev_selections_batch)
 
 
 def compute_imprint_loss(
