@@ -32,6 +32,7 @@ class EasyConfig:
     # === Training ===
     epochs: int = 100
     batch_size: int = 256
+    steps_per_epoch: int = 200  # TASK_675: Explicit (was argparse-only default)
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     warmup_steps: int = 1000
@@ -41,9 +42,8 @@ class EasyConfig:
     policy_weight: float = 1.0
     value_weight: float = 0.5
     value_scale: float = 2.0  # TASK_674: Was 1.0, under-utilized 401-bin support. 2.0 uses ~30% of bins, safe for PnL≤5
-    # DEPRECATED: trade_loss_weight is no longer used (TASK_149 uses adaptive per-batch weighting)
-    # Kept for checkpoint compatibility. Adaptive weight = n_holds / n_trades per batch.
-    trade_loss_weight: float = 60.0  # Legacy, ignored
+    # DEPRECATED (TASK_149): Replaced by adaptive per-batch weighting. Kept only for checkpoint compat.
+    trade_loss_weight: float = 60.0
     # TASK_151: Warmup epochs for trade weight ramping (prevents gradient shock on fresh models)
     weight_warmup_epochs: int = 50  # Ramp from 1.0 to full adaptive weight over this many epochs
 

@@ -72,7 +72,7 @@ class EasyTrainer:
             init_value=0.0,
             peak_value=config.learning_rate,
             warmup_steps=config.warmup_steps,
-            decay_steps=config.epochs * 1000,  # Approximate
+            decay_steps=config.epochs * config.steps_per_epoch,  # TASK_675: Exact
             end_value=config.learning_rate * 0.1,
         )
 
@@ -290,12 +290,19 @@ class EasyTrainer:
 
     def evaluate_batch(self, batch: Dict[str, Any]) -> Dict[str, float]:
         """Evaluate single batch (accepts JAX arrays directly)."""
-        # TASK_152: Observations are now full temporal format (B, 27, 64, 64)
-        output = self.model.apply(
-            {'params': self.params},
-            observation=batch['observations'],
-            mode='initial_inference'
-        )
+        # TASK_675: Use latent cache if available (matches training mode)
+        if 'latent_states' in batch and batch['latent_states'] is not None:
+            output = self.model.apply(
+                {'params': self.params},
+                latent_state=batch['latent_states'],
+                mode='prediction_only'
+            )
+        else:
+            output = self.model.apply(
+                {'params': self.params},
+                observation=batch['observations'],
+                mode='initial_inference'
+            )
         policy_logits = output['policy_logits']
         value_logits = output['value']
 
@@ -341,9 +348,9 @@ class EasyTrainer:
         value_pred = self._value_to_scalar(value_logits) / self.config.value_scale
         value_mse = float(jnp.mean((value_pred - batch['returns']) ** 2))
 
-        # TASK_670B: Hold ratio tracking
-        oracle_hold_ratio = float(jnp.mean((oracle_labels % 5) == 1))
-        pred_hold_ratio = float(jnp.mean((predicted_actions % 5) == 1))
+        # TASK_675: Hold ratio from per-asset argmax (matches training method)
+        oracle_hold_ratio = float(jnp.mean(oracle_action_type == 1))
+        pred_hold_ratio = float(jnp.mean(pred_action_type == 1))
 
         return {
             'oracle_agreement': balanced_agreement,   # TASK_147: Balanced accuracy (THE metric)

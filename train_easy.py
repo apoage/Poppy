@@ -151,6 +151,7 @@ class OnTheFlyGenerator:
         self._thread_local = threading.local()
         self._market_lock = threading.Lock()
         self._base_seed = seed
+        self._thread_counter = 0  # TASK_675: Atomic counter for unique thread seeds
 
         # Start background thread for price generation (only for synthetic)
         self.executor = ThreadPoolExecutor(max_workers=self.N_WORKERS)
@@ -176,13 +177,14 @@ class OnTheFlyGenerator:
             self._thread_local.markets = {}
 
         if level not in self._thread_local.markets:
-            # Create new market for this thread
+            # TASK_675: Atomic counter ensures unique seeds per thread (no hash collisions)
             with self._market_lock:
-                thread_seed = self._base_seed + hash(threading.current_thread().ident) % (2**31)
+                thread_seed = self._base_seed + self._thread_counter
+                self._thread_counter += 1
             self._thread_local.markets[level] = SyntheticMarket(
                 level=level,
                 n_assets=self.config.n_assets,
-                n_steps=self.config.episode_length + self.config.window_size + 20,
+                n_steps=self.config.episode_length + self.config.window_size + self.config.oracle_lookahead + 5,
                 seed=thread_seed + level,
                 noise_level=self.config.synthetic_noise,
             )
@@ -220,7 +222,11 @@ class OnTheFlyGenerator:
             result = future.result()
             self.price_queue.put(result, timeout=1.0)
         except Exception as e:
-            pass  # Ignore errors, will regenerate
+            self._prefetch_failures = getattr(self, '_prefetch_failures', 0) + 1
+            if self._prefetch_failures <= 3 or self._prefetch_failures % 50 == 0:
+                logger.warning(f"Price generation failed ({self._prefetch_failures}x): {e}")
+            if self._prefetch_failures > 50:
+                logger.error("Excessive prefetch failures — check GPU/data pipeline")
 
     def _generate_episode_data(self, level: int, prices_cpu: np.ndarray) -> dict:
         """Process raw prices into training data using GPU."""
@@ -424,7 +430,9 @@ class OnTheFlyGenerator:
             if self._use_latent_cache and self._encoder_fn is not None:
                 ep_data['latent_states'] = self._encoder_fn(ep_data['observations'])
 
-            episode_datas.append(ep_data)
+            # TASK_675: Filter zero-sample episodes (short price series edge case)
+            if ep_data['n_samples'] > 0:
+                episode_datas.append(ep_data)
 
         return episode_datas
 
@@ -977,12 +985,14 @@ def main():
     )
 
     # TASK_674: Separate validation generator (different seed, no train data leakage)
+    # TASK_675: Smaller buffer — val only runs 20 batches/epoch, no need for full buffer
+    val_buffer_size = max(args.buffer_size // 4, 4)
     val_generator = OnTheFlyGenerator(
         config,
         seed=config.seed + 7919,  # Different seed for val data
         bella_generator=bella_generator,
         n_envs=args.n_envs,
-        buffer_size=args.buffer_size,
+        buffer_size=val_buffer_size,
         samples_per_episode=args.samples_per_episode,
         mix_ratio=args.mix_ratio,
         secondary_bella_generator=secondary_bella_generator,
@@ -1037,85 +1047,88 @@ def main():
 
     training_start = time.time()
 
-    for epoch in range(start_epoch, config.epochs):
-        epoch_start = time.time()
+    # TASK_675: try/finally for clean shutdown on crash
+    try:
+        for epoch in range(start_epoch, config.epochs):
+            epoch_start = time.time()
 
-        # Train (on-the-fly generation, no disk I/O)
-        train_metrics = train_epoch(trainer, generator, config, epoch)
+            # Train (on-the-fly generation, no disk I/O)
+            train_metrics = train_epoch(trainer, generator, config, epoch)
 
-        # Validate
-        if (epoch + 1) % config.eval_every == 0 or epoch == config.epochs - 1:
-            val_metrics = validate(trainer, val_generator, config, n_batches=20)
-        else:
-            val_metrics = {}
+            # Validate
+            if (epoch + 1) % config.eval_every == 0 or epoch == config.epochs - 1:
+                val_metrics = validate(trainer, val_generator, config, n_batches=20)
+            else:
+                val_metrics = {}
 
-        epoch_time = time.time() - epoch_start
+            epoch_time = time.time() - epoch_start
 
-        # Log metrics
-        logger.info(
-            f"Epoch {epoch:3d} | "
-            f"Loss: {train_metrics['total_loss']:.4f} | "
-            f"Train Agree: {train_metrics['oracle_agreement']:.1%} | "
-            f"Val Agree: {val_metrics.get('oracle_agreement', 0):.1%} | "
-            f"Val MSE: {val_metrics.get('value_mse', 0):.4f} | "
-            f"Time: {epoch_time:.1f}s"
-        )
-
-        # CSV logging (TASK_667)
-        csv_logger.log(epoch, {
-            **train_metrics,
-            **{f'val_{k}': v for k, v in val_metrics.items()},
-            'best_agreement': best_agreement,
-        }, epoch_time)
-
-        # Check for improvement
-        current_agreement = val_metrics.get('oracle_agreement', train_metrics['oracle_agreement'])
-
-        if current_agreement > best_agreement:
-            best_agreement = current_agreement
-            trainer.save_checkpoint(
-                str(output_dir / 'phase1_best.pkl'),
-                epoch,
-                {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
+            # Log metrics
+            logger.info(
+                f"Epoch {epoch:3d} | "
+                f"Loss: {train_metrics['total_loss']:.4f} | "
+                f"Train Agree: {train_metrics['oracle_agreement']:.1%} | "
+                f"Val Agree: {val_metrics.get('oracle_agreement', 0):.1%} | "
+                f"Val MSE: {val_metrics.get('value_mse', 0):.4f} | "
+                f"Time: {epoch_time:.1f}s"
             )
-            logger.info(f"  ★ New best agreement: {best_agreement:.1%}")
 
-        # Regular checkpoint
-        if (epoch + 1) % config.save_every == 0:
-            trainer.save_checkpoint(
-                str(output_dir / f'phase1_epoch{epoch}.pkl'),
-                epoch,
-                {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
-            )
-            # TASK_144: Tiered cleanup (keep last 5 + milestones)
-            cleanup_tiered_checkpoints(output_dir, keep_recent=5, milestone_interval=100)
+            # CSV logging (TASK_667)
+            csv_logger.log(epoch, {
+                **train_metrics,
+                **{f'val_{k}': v for k, v in val_metrics.items()},
+                'best_agreement': best_agreement,
+            }, epoch_time)
 
-        # Check success criteria
-        if current_agreement >= config.target_oracle_agreement:
-            logger.info("=" * 60)
-            logger.info(f"SUCCESS! Oracle agreement {current_agreement:.1%} >= {config.target_oracle_agreement:.1%}")
-            logger.info("Phase 1 training complete!")
-            logger.info("=" * 60)
+            # Check for improvement
+            current_agreement = val_metrics.get('oracle_agreement', train_metrics['oracle_agreement'])
 
-            trainer.save_checkpoint(
-                str(output_dir / 'phase1_complete.pkl'),
-                epoch,
-                {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
-            )
-            break
+            if current_agreement > best_agreement:
+                best_agreement = current_agreement
+                trainer.save_checkpoint(
+                    str(output_dir / 'phase1_best.pkl'),
+                    epoch,
+                    {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
+                )
+                logger.info(f"  ★ New best agreement: {best_agreement:.1%}")
 
-    # Training complete
-    total_time = time.time() - training_start
-    logger.info("=" * 60)
-    logger.info(f"Training completed in {total_time/60:.1f} minutes")
-    logger.info(f"Best oracle agreement: {best_agreement:.1%}")
-    logger.info(f"Checkpoints saved to: {output_dir}")
-    logger.info(f"CSV metrics: {csv_logger.csv_path}")
-    logger.info("=" * 60)
+            # Regular checkpoint
+            if (epoch + 1) % config.save_every == 0:
+                trainer.save_checkpoint(
+                    str(output_dir / f'phase1_epoch{epoch}.pkl'),
+                    epoch,
+                    {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
+                )
+                # TASK_144: Tiered cleanup (keep last 5 + milestones)
+                cleanup_tiered_checkpoints(output_dir, keep_recent=5, milestone_interval=100)
 
-    # Clean shutdown
-    csv_logger.close()
-    generator.shutdown()
+            # Check success criteria
+            if current_agreement >= config.target_oracle_agreement:
+                logger.info("=" * 60)
+                logger.info(f"SUCCESS! Oracle agreement {current_agreement:.1%} >= {config.target_oracle_agreement:.1%}")
+                logger.info("Phase 1 training complete!")
+                logger.info("=" * 60)
+
+                trainer.save_checkpoint(
+                    str(output_dir / 'phase1_complete.pkl'),
+                    epoch,
+                    {**train_metrics, **{f'val_{k}': v for k, v in val_metrics.items()}}
+                )
+                break
+
+        # Training complete
+        total_time = time.time() - training_start
+        logger.info("=" * 60)
+        logger.info(f"Training completed in {total_time/60:.1f} minutes")
+        logger.info(f"Best oracle agreement: {best_agreement:.1%}")
+        logger.info(f"Checkpoints saved to: {output_dir}")
+        logger.info(f"CSV metrics: {csv_logger.csv_path}")
+        logger.info("=" * 60)
+
+    finally:
+        csv_logger.close()
+        generator.shutdown()
+        val_generator.shutdown()
 
 
 if __name__ == '__main__':

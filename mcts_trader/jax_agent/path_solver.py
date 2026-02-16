@@ -313,9 +313,9 @@ def multipass_oracle_policy(
 
         return policy
 
-    # 5. Split key, vmap over all passes (policy only)
+    # 5. Split key, lax.map over all passes (TASK_675: caps VRAM at 1-pass peak)
     keys = jax.random.split(key, n_passes)
-    all_policies = jax.vmap(single_pass)(keys)
+    all_policies = jax.lax.map(single_pass, keys)
     # all_policies:  (n_passes, T, 320)
 
     # 6. Average → genuinely soft policy distribution
