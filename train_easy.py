@@ -616,6 +616,8 @@ class OnTheFlyGenerator:
             if not available:
                 # All exhausted, refill buffer (batched CPU work)
                 self._refill_buffer()
+                if not self.buffer:
+                    raise RuntimeError("Buffer empty after refill — check price generation pipeline")
                 available = list(range(len(self.buffer)))
 
             # Pick random available episode
@@ -800,7 +802,7 @@ def train_epoch(
         if (step + 1) % 50 == 0:
             avg_loss = np.mean(epoch_metrics.get('total_loss', [0])[-50:])
             avg_agree = np.mean(epoch_metrics.get('oracle_agreement', [0])[-50:])
-            logger.info(f"  Epoch {epoch} Step {step+1}/{steps_per_epoch} | Loss: {avg_loss:.4f} | Agree: {avg_agree:.1%}")
+            logger.info(f"  Epoch {epoch} Step {step+1}/{steps_per_epoch} | Loss: {avg_loss:.4f} | Agree: {avg_agree:.2%}")
 
     # Safe averaging (handles empty lists)
     return {k: np.mean(v) if v else 0.0 for k, v in epoch_metrics.items()}
@@ -1067,8 +1069,8 @@ def main():
             logger.info(
                 f"Epoch {epoch:3d} | "
                 f"Loss: {train_metrics['total_loss']:.4f} | "
-                f"Train Agree: {train_metrics['oracle_agreement']:.1%} | "
-                f"Val Agree: {val_metrics.get('oracle_agreement', 0):.1%} | "
+                f"Train Agree: {train_metrics['oracle_agreement']:.2%} | "
+                f"Val Agree: {val_metrics.get('oracle_agreement', 0):.2%} | "
                 f"Val MSE: {val_metrics.get('value_mse', 0):.4f} | "
                 f"Time: {epoch_time:.1f}s"
             )

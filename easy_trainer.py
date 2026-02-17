@@ -152,17 +152,18 @@ class EasyTrainer:
             per_asset_ce = optax.softmax_cross_entropy(policy_reshaped, targets_reshaped)
 
             # TASK_149: Adaptive class balancing - trades and holds have equal gradient mass
-            # HOLD = action type 1. If target[:,1] is high, it's a HOLD.
-            is_trade = targets_reshaped[:, :, 1] < 0.5  # NOT HOLD (bool mask)
+            # TASK_675: Continuous trade weight for soft multipass targets
+            # hold_prob is the soft probability of HOLD (index 1). 1.0 = pure hold, 0.0 = pure trade
+            hold_prob = targets_reshaped[:, :, 1]  # (batch, 64) continuous [0, 1]
+            trade_strength = 1.0 - hold_prob  # 0.0 = hold, 1.0 = trade
 
-            # Count trades and holds in this batch (with floor to avoid div/0)
-            n_trades = jnp.maximum(jnp.sum(is_trade), 1.0)
-            n_holds = jnp.maximum(jnp.sum(~is_trade), 1.0)
+            # Weighted counts: a "40% BUY, 60% HOLD" target contributes 0.4 to trades, 0.6 to holds
+            n_trades = jnp.maximum(jnp.sum(trade_strength), 1.0)
+            n_holds = jnp.maximum(jnp.sum(hold_prob), 1.0)
 
-            # Target weight for 50/50 balance: e.g., 63 holds / 1 trade = 63.0
-            # TASK_157: Cap at 10× to prevent overtrading from extreme imbalance
-            # With k=1, raw weight can reach 166× causing model to spam trades
-            MAX_TRADE_WEIGHT = 10.0
+            # Target weight for equal gradient mass between trades and holds
+            # With k=1: ~63 holds / ~1 trade = 63.0. Cap at 64 (full balance).
+            MAX_TRADE_WEIGHT = 64.0  # TASK_675: Was 10.0 — left 6.3× hold dominance
             target_trade_weight = jnp.minimum(n_holds / n_trades, MAX_TRADE_WEIGHT)
 
             # TASK_151: Warmup ramping - prevent gradient shock on fresh models
@@ -171,8 +172,8 @@ class EasyTrainer:
             # Interpolate: starts at 1.0 (unweighted), ramps to full adaptive weight
             adaptive_trade_weight = 1.0 + (target_trade_weight - 1.0) * warmup_progress
 
-            # Apply weights to per-asset cross entropy
-            loss_weights = jnp.where(is_trade, adaptive_trade_weight, 1.0)  # (batch, 64)
+            # Continuous weighting: blend between 1.0 (hold) and adaptive (trade)
+            loss_weights = 1.0 + trade_strength * (adaptive_trade_weight - 1.0)  # (batch, 64)
             policy_loss = jnp.sum(per_asset_ce * loss_weights) / jnp.sum(loss_weights)
 
             # Value loss: cross-entropy with categorical targets
@@ -203,13 +204,13 @@ class EasyTrainer:
 
             # Agreement on TRADE signals only
             trade_correct = (pred_action_type == oracle_action_type) & oracle_is_trade
-            n_trades = jnp.sum(oracle_is_trade)
-            agree_trade = jnp.where(n_trades > 0, jnp.sum(trade_correct) / n_trades, 0.0)
+            n_trade_actions = jnp.sum(oracle_is_trade)
+            agree_trade = jnp.where(n_trade_actions > 0, jnp.sum(trade_correct) / n_trade_actions, 0.0)
 
             # Agreement on HOLD signals only
             hold_correct = (pred_action_type == oracle_action_type) & oracle_is_hold
-            n_holds = jnp.sum(oracle_is_hold)
-            agree_hold = jnp.where(n_holds > 0, jnp.sum(hold_correct) / n_holds, 0.0)
+            n_hold_actions = jnp.sum(oracle_is_hold)
+            agree_hold = jnp.where(n_hold_actions > 0, jnp.sum(hold_correct) / n_hold_actions, 0.0)
 
             # Balanced accuracy: equal weight to trade and hold performance
             # Turtle (all HOLD) gets 50%, not 98.4%
@@ -449,7 +450,13 @@ class EasyTrainer:
         # We need to rebuild [1][0] (the Adam state) with merged components
 
         try:
-            # Extract template structure
+            # Extract template structure (verify before accessing)
+            # TASK_675 #14: Fail loud if optax.chain order ever changes
+            assert hasattr(template[1][0], 'mu') and hasattr(template[1][0], 'nu'), \
+                f"Expected ScaleByAdamState at opt_state[1][0], got {type(template[1][0])}"
+            assert hasattr(template[1][2], 'count') and not hasattr(template[1][2], 'mu'), \
+                f"Expected ScaleByScheduleState at opt_state[1][2], got {type(template[1][2])}"
+
             clip_state = template[0]  # EmptyState from clip
             adam_state = template[1][0]  # ScaleByAdamState
             scale_empty = template[1][1]  # EmptyState from adamw inner

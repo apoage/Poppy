@@ -2,7 +2,7 @@
 jax>=0.4.0
 jaxlib>=0.4.0
 flax>=0.7.0
-optax>=0.1.7
+optax==0.2.6  # TASK_675 #15: Pinned — rebuild_optimizer_state uses semi-private API
 mctx>=0.0.3
 chex>=0.1.7
 
