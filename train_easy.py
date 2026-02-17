@@ -547,6 +547,14 @@ class OnTheFlyGenerator:
                 start_refill = time.time()
                 episode_datas = self._generate_batch_episodes(prices_list, levels)
                 for ep_data in episode_datas:
+                    # TASK_680: Pre-compute trade index list for biased sampling (O(T) once)
+                    if ep_data['n_samples'] > 0 and self.config.trade_sample_prob > 0:
+                        actions = np.asarray(ep_data['actions'])
+                        actions_5 = actions.reshape(actions.shape[0], self.config.n_assets, 5)
+                        trade_density = 1.0 - actions_5[:, :, 1].mean(axis=1)  # (T,)
+                        ep_data['trade_indices'] = np.where(trade_density > 0.01)[0]
+                    else:
+                        ep_data['trade_indices'] = np.array([], dtype=np.intp)
                     self.buffer.append(ep_data)
                     self.buffer_sample_counts.append(0)
                 
@@ -632,9 +640,17 @@ class OnTheFlyGenerator:
                 self.buffer_sample_counts[ep_idx] = self.SAMPLES_PER_EPISODE  # Mark exhausted
                 continue
 
-            # Random offset within episode
+            # TASK_680: Trade-biased offset selection (coin-flip, O(1))
             max_offset = max(0, n_available - take_count)
-            offset = self.rng.integers(0, max_offset + 1) if max_offset > 0 else 0
+            trade_indices = ep_data.get('trade_indices', np.array([]))
+            if (len(trade_indices) > 0
+                    and max_offset > 0
+                    and self.rng.random() < self.config.trade_sample_prob):
+                # Sample from trade-heavy timesteps, clamp to valid window range
+                idx = self.rng.choice(trade_indices)
+                offset = int(np.clip(idx, 0, max_offset))
+            else:
+                offset = self.rng.integers(0, max_offset + 1) if max_offset > 0 else 0
 
             all_obs.append(ep_data['observations'][offset:offset + take_count])
             if self._use_latent_cache and 'latent_states' in ep_data:

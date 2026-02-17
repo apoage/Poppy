@@ -44,8 +44,9 @@ class EasyConfig:
     value_scale: float = 2.0  # TASK_674: Was 1.0, under-utilized 401-bin support. 2.0 uses ~30% of bins, safe for PnL≤5
     # DEPRECATED (TASK_149): Replaced by adaptive per-batch weighting. Kept only for checkpoint compat.
     trade_loss_weight: float = 60.0
-    # TASK_151: Warmup epochs for trade weight ramping (prevents gradient shock on fresh models)
-    weight_warmup_epochs: int = 50  # Ramp from 1.0 to full adaptive weight over this many epochs
+    # TASK_677: Warmup disabled — full trade weight from step 1 to break turtle trap
+    # Was 50 (TASK_151), but warmup lets model entrench all-HOLD before trades get a voice
+    weight_warmup_epochs: int = 0
 
     # === Oracle Parameters ===
     # TASK_145: k=1 because model executes 1 trade/step. Value head must match.
@@ -54,7 +55,7 @@ class EasyConfig:
     # TASK_152: Increased from 5 to 20 - 5 steps is micro-noise, 20 steps is a regime
     oracle_lookahead: int = 20  # Steps to look ahead
     transaction_cost: float = 0.001  # 0.1% per trade
-    min_alpha_threshold: float = 0.001  # TASK_157: Lowered from 0.002 to increase trade signal (was 4% threshold, now 2%)
+    min_alpha_threshold: float = 0.0005  # TASK_679: Lowered from 0.001 to increase trade density (~1.1% → ~3% trades). Was 0.002 (TASK_157), 0.001 too sparse for balanced accuracy learning
     state_aware_oracle: bool = True  # TASK_141: Use state-aware open/close logic
     invert_returns: bool = False  # Dual-Bella: flip bull/bear for diversity
     # TASK_673: Multipass oracle for soft policy targets
@@ -69,6 +70,9 @@ class EasyConfig:
     synthetic_levels: List[int] = field(default_factory=lambda: list(range(15)))
     episodes_per_level: int = 500
     synthetic_noise: float = 0.1  # Anti-memorization
+    # TASK_680: Trade-biased sampling — coin-flip probability of sampling from trade-heavy timesteps
+    # 0.0 = uniform (off), 0.15 = 15% of windows are trade-biased. Start conservative.
+    trade_sample_prob: float = 0.15
     validation_split: float = 0.1
 
     # === Checkpointing ===
