@@ -247,6 +247,7 @@ class OnTheFlyGenerator:
                 min_alpha_threshold=getattr(self.config, 'min_alpha_threshold', 0.0),
                 n_passes=self.config.oracle_n_passes,
                 noise_scale=self.config.oracle_noise_scale,
+                sharpen_temperature=getattr(self.config, 'oracle_sharpen_temperature', 1.0),
             )
         else:
             optimal_path = greedy_lookahead_path(
@@ -355,6 +356,7 @@ class OnTheFlyGenerator:
                 min_alpha_threshold=getattr(self.config, 'min_alpha_threshold', 0.0),
                 n_passes=self.config.oracle_n_passes,
                 noise_scale=self.config.oracle_noise_scale,
+                sharpen_temperature=getattr(self.config, 'oracle_sharpen_temperature', 1.0),
             )
             # policy_targets: (N, T, 320) - already soft policy
             # cumulative_pnl_batch: (N, T)
@@ -878,6 +880,10 @@ def main():
     parser.add_argument('--invert-regime', action='store_true',
                         help='Invert regime (crash↔rally) for dual-Bella diversity')
 
+    # Encoder
+    parser.add_argument('--encoder-version', type=int, default=2, choices=[2, 3],
+                        help='Encoder version: 2=V2 (flatten), 3=V3 (minGRU temporal)')
+
     # Checkpointing
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Resume from checkpoint')
@@ -941,6 +947,7 @@ def main():
     config.seed = args.seed
     config.checkpoint_dir = args.output_dir
     config.invert_regime = args.invert_regime  # Dual-Bella diversity
+    config.encoder_version = args.encoder_version  # TASK_676: V2 (flatten) or V3 (minGRU)
     if args.oracle_multipass:
         config.oracle_multipass = True  # TASK_673
 

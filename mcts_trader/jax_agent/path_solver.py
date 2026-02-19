@@ -217,7 +217,8 @@ def batched_greedy_lookahead_path(
 # =============================================================================
 
 @partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len', 'n_passes',
-                                    'n_actions_per_asset', 'temperature'])
+                                    'n_actions_per_asset', 'temperature',
+                                    'sharpen_temperature'])
 def multipass_oracle_policy(
     returns: jnp.ndarray,
     key: jnp.ndarray,
@@ -230,6 +231,7 @@ def multipass_oracle_policy(
     noise_scale: float = 0.1,
     n_actions_per_asset: int = 5,
     temperature: float = 1.0,
+    sharpen_temperature: float = 1.0,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, float]:
     """
     TASK_673: Multipass oracle producing genuinely soft policy targets.
@@ -321,12 +323,24 @@ def multipass_oracle_policy(
     # 6. Average → genuinely soft policy distribution
     soft_policy = jnp.mean(all_policies, axis=0)       # (T, 320)
 
-    # 7. Value targets from CLEAN oracle (true achievable PnL)
+    # 7. TASK_677: Post-averaging temperature sharpening
+    #    Amplifies majorities: 70/30 → 99/1. Preserves true ambiguity: 50/50 → 50/50.
+    #    sharpen_temperature=1.0 is no-op, 0.1 = sharp commands.
+    if sharpen_temperature != 1.0:
+        soft_reshaped = soft_policy.reshape(T, n_assets, n_actions_per_asset)
+        sharpened = jax.nn.softmax(
+            jnp.log(jnp.maximum(soft_reshaped, 1e-8)) / sharpen_temperature,
+            axis=-1,
+        )
+        soft_policy = sharpened.reshape(T, n_assets * n_actions_per_asset)
+
+    # 8. Value targets from CLEAN oracle (true achievable PnL)
     return soft_policy, clean_path.cumulative_pnl, clean_path.total_alpha
 
 
 @partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len', 'n_passes',
-                                    'n_actions_per_asset', 'temperature'])
+                                    'n_actions_per_asset', 'temperature',
+                                    'sharpen_temperature'])
 def batched_multipass_oracle_policy(
     returns_batch: jnp.ndarray,
     key: jnp.ndarray,
@@ -339,6 +353,7 @@ def batched_multipass_oracle_policy(
     noise_scale: float = 0.1,
     n_actions_per_asset: int = 5,
     temperature: float = 1.0,
+    sharpen_temperature: float = 1.0,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     TASK_673: Batched multipass oracle for N episodes in parallel.
@@ -369,6 +384,7 @@ def batched_multipass_oracle_policy(
             noise_scale=noise_scale,
             n_actions_per_asset=n_actions_per_asset,
             temperature=temperature,
+            sharpen_temperature=sharpen_temperature,
         )
     )
     return vmapped_fn(returns_batch, keys)

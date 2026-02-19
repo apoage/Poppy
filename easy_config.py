@@ -19,6 +19,8 @@ class EasyConfig:
     seed: int = 42
 
     # === Model Architecture (reuse existing TRM) ===
+    # TASK_676: 2=V2 (flatten, no temporal), 3=V3 (minGRU, preserves temporal ordering)
+    encoder_version: int = 2
     state_dim: int = 64
     n_assets: int = 64
     action_space_size: int = 320  # 5 × 64
@@ -49,9 +51,10 @@ class EasyConfig:
     weight_warmup_epochs: int = 0
 
     # === Oracle Parameters ===
-    # TASK_145: k=1 because model executes 1 trade/step. Value head must match.
-    # k>1 would train value head on unrealizable 10-asset profits → MCTS collapse.
-    oracle_k: int = 1
+    # TASK_666 designed k=4. TASK_143/145 reverted k=10→k=1 (value mismatch).
+    # TASK_681: Restore k=4 — 6.25% trade density vs 1.56% at k=1.
+    # k=4 PnL overestimation is manageable (2-4× vs k=10's 5-10×).
+    oracle_k: int = 4
     # TASK_152: Increased from 5 to 20 - 5 steps is micro-noise, 20 steps is a regime
     oracle_lookahead: int = 20  # Steps to look ahead
     transaction_cost: float = 0.001  # 0.1% per trade
@@ -62,6 +65,7 @@ class EasyConfig:
     oracle_multipass: bool = False         # Disabled by default (backwards compat)
     oracle_n_passes: int = 10              # Number of noisy oracle passes
     oracle_noise_scale: float = 0.03       # Noise as fraction of return std (0.1 was 2x min_alpha, too noisy)
+    oracle_sharpen_temperature: float = 0.1  # TASK_677: Post-averaging sharpening (0.1 = sharp commands, 1.0 = no sharpening)
 
     # === Data ===
     # TASK_152: Changed from 60 to 64 for temporal encoder (rows=time, cols=assets)
