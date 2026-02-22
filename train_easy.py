@@ -296,7 +296,10 @@ def _build_model_state_trajectory(
         new_h_fast = h_fast * decay_fast + trade_strength
         new_h_slow = h_slow * decay_slow + trade_strength
 
-        return (new_pos, new_pnl, new_steps, new_h_fast, new_h_slow, model_confidence), (state_ch, model_confidence)
+        # Emit prev_conf (not model_confidence) so confidence_trajectory[w] =
+        # the confidence the model SAW at step w, matching inference alignment.
+        # model_confidence propagates forward via carry for step w+1.
+        return (new_pos, new_pnl, new_steps, new_h_fast, new_h_slow, model_confidence), (state_ch, prev_conf)
 
     T = market_obs.shape[0]
     _, (model_state_trajectory, confidence_trajectory) = jax.lax.scan(
