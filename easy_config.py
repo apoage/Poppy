@@ -24,12 +24,19 @@ class EasyConfig:
     state_dim: int = 64
     n_assets: int = 64
     action_space_size: int = 320  # 5 × 64
-    n_channels: int = 27
+    n_channels: int = 34  # TASK_689: Was 27. +7 agent state channels (position, pnl, hold_dur, heat×2, capacity, confidence)
     H_cycles: int = 4  # TRM horizontal cycles
     L_cycles: int = 6  # TRM vertical cycles
     hidden_dim: int = 256
+    # TASK_684: TRM reasoning hidden dim. None = state_dim * 16 (backward compat)
+    trm_hidden_dim: Optional[int] = None
     num_heads: int = 8
+    # TASK_683: V3 encoder width (embed_dim per asset, encoder attention heads)
+    embed_dim: int = 32
+    encoder_num_heads: int = 4
     dropout: float = 0.0
+    # TASK_686: Mixed precision. "bfloat16" for ~25% VRAM reduction + speedup on Ampere GPUs
+    compute_dtype: str = "float32"
 
     # === Training ===
     epochs: int = 100
@@ -38,7 +45,7 @@ class EasyConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     warmup_steps: int = 1000
-    grad_clip: float = 1.0
+    grad_clip: float = 5.0  # TASK_685: Was 1.0 — 13-16× over-suppression with observed norms 13-16
 
     # === Loss Weights ===
     policy_weight: float = 1.0
@@ -66,6 +73,17 @@ class EasyConfig:
     oracle_n_passes: int = 10              # Number of noisy oracle passes
     oracle_noise_scale: float = 0.03       # Noise as fraction of return std (0.1 was 2x min_alpha, too noisy)
     oracle_sharpen_temperature: float = 0.1  # TASK_677: Post-averaging sharpening (0.1 = sharp commands, 1.0 = no sharpening)
+    # TASK_691: Oracle entropy — corrupt oracle selections before state channel computation
+    # Bridges train→inference gap by simulating imperfect model actions
+    # TASK_692: DISABLED by default - model-state rollout is the correct fix
+    oracle_entropy: bool = False            # Enable oracle entropy corruption (DISABLED)
+    oracle_drop_rate: float = 0.15          # Max prob of dropping oracle trades (trade→hold)
+    oracle_phantom_rate: float = 0.05       # Max prob of adding phantom trades (hold→trade)
+    entropy_warmup_epochs: int = 50         # Clean oracle for this many epochs, then ramp
+
+    # TASK_692: Model-state rollout — state channels from model's own actions
+    autoregressive_state: bool = True       # Use model-state rollout instead of oracle state
+    state_refresh_fraction: float = 0.2     # Fraction of buffer to refresh per epoch (20%)
 
     # === Data ===
     # TASK_152: Changed from 60 to 64 for temporal encoder (rows=time, cols=assets)
@@ -76,7 +94,7 @@ class EasyConfig:
     synthetic_noise: float = 0.1  # Anti-memorization
     # TASK_680: Trade-biased sampling — coin-flip probability of sampling from trade-heavy timesteps
     # 0.0 = uniform (off), 0.15 = 15% of windows are trade-biased. Start conservative.
-    trade_sample_prob: float = 0.15
+    trade_sample_prob: float = 0.30  # TASK_687: Was 0.15 — double trade example frequency
     validation_split: float = 0.1
 
     # === Checkpointing ===
@@ -144,10 +162,14 @@ def get_large_config() -> EasyConfig:
     """Large model for maximum performance."""
     return EasyConfig(
         name="easy_large",
+        state_dim=128,        # TASK_683: Was 64 — wider representation
         H_cycles=6,
         L_cycles=8,
         hidden_dim=512,
+        trm_hidden_dim=1024,  # TASK_684: Constrain reasoning (was state_dim*16=2048 uncapped)
         num_heads=16,
+        embed_dim=64,         # TASK_683: Was 32 — richer per-asset features
+        encoder_num_heads=8,  # TASK_683: Was 4 — more attention heads for 64-dim
         epochs=200,
         episodes_per_level=1000,
     )

@@ -71,6 +71,241 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# TASK_689: Agent State Channels — Self-Aware Trading
+# =============================================================================
+
+@partial(jax.jit, static_argnames=['n_assets', 'k', 'window_size'])
+def build_state_channels(
+    target_positions,   # (T, n_assets) from oracle {-1, 0, +1}
+    returns,            # (T, n_assets) log returns
+    n_assets=64,
+    k=4,
+    window_size=64,
+    decay_fast=0.80,
+    decay_slow=0.99,
+):
+    """Build 6 per-step state channels via lax.scan.
+
+    Returns:
+        state_channels: (T, 6, n_assets) — ready to tile per window
+    """
+    def step(carry, inputs):
+        prev_pos, pnl, steps, h_fast, h_slow = carry
+        pos, ret = inputs
+
+        # Detect trades (position changed)
+        traded = (pos != prev_pos).astype(jnp.float32)
+        # Flips (long→short or reverse) count as double trade
+        flipped = (prev_pos != 0) & (pos != 0) & (pos != prev_pos)
+        trade_strength = traded + flipped.astype(jnp.float32)
+
+        # Unrealized PnL: signed relative to position direction
+        held = (pos == prev_pos) & (prev_pos != 0)
+        signed_ret = ret * prev_pos  # long: +ret, short: -ret
+        new_pnl = jnp.where(held, pnl + signed_ret, 0.0)
+        new_pnl = jnp.clip(new_pnl, -1.0, 1.0)
+
+        # Hold duration: normalized by window_size
+        new_steps = jnp.where(traded > 0.5, 0.0, steps + 1.0)
+
+        # Multi-scale heat
+        new_h_fast = h_fast * decay_fast + trade_strength
+        new_h_slow = h_slow * decay_slow + trade_strength
+
+        # Global: capacity usage
+        n_active = jnp.sum(jnp.abs(pos) > 0.5)
+        capacity = n_active / k
+
+        out = jnp.stack([
+            pos,                                          # ch27: position
+            new_pnl,                                      # ch28: unrealized PnL
+            jnp.clip(new_steps / window_size, 0.0, 1.0), # ch29: hold duration
+            jnp.clip(new_h_fast, 0.0, 1.0),              # ch30: heat fast
+            jnp.clip(new_h_slow, 0.0, 1.0),              # ch31: heat slow
+            jnp.full(n_assets, capacity),                 # ch32: capacity (broadcast)
+        ])  # (6, n_assets)
+
+        return (pos, new_pnl, new_steps, new_h_fast, new_h_slow), out
+
+    init = tuple(jnp.zeros(n_assets) for _ in range(5))
+    _, channels = jax.lax.scan(step, init, (target_positions, returns))
+    return channels  # (T, 6, n_assets)
+
+
+def corrupt_oracle_selections(selections, key, p_drop=0.15, q_phantom=0.05):
+    """TASK_691: Inject entropy into oracle path before state channel computation.
+
+    Trade drops: oracle selected → force unselected (simulates missed entries)
+    Phantom trades: oracle didn't select → force selected (simulates false entries)
+
+    All downstream state channels remain internally consistent because they're
+    computed FROM the noisy path. Targets stay clean (uncorrupted oracle actions).
+    """
+    k1, k2 = jax.random.split(key)
+    drop_mask = jax.random.bernoulli(k1, p_drop, selections.shape)
+    noisy = jnp.where(drop_mask & (selections > 0.5), 0.0, selections)
+    phantom_mask = jax.random.bernoulli(k2, q_phantom, selections.shape)
+    noisy = jnp.where(phantom_mask & (selections < 0.5), 1.0, noisy)
+    return noisy
+
+
+def compute_target_position(selections, returns):
+    """Derive oracle target position from selections and returns.
+
+    Args:
+        selections: (T, n_assets) binary mask from greedy_lookahead_path
+        returns: (T, n_assets) log returns
+
+    Returns:
+        target_position: (T, n_assets) values in {-1, 0, +1}
+    """
+    return jnp.where(
+        selections > 0.5,
+        jnp.where(returns > 0, 1.0, jnp.where(returns < 0, -1.0, 0.0)),
+        0.0
+    )
+
+
+# =============================================================================
+# TASK_692: Model-State Rollout (Autoregressive State Channels)
+# =============================================================================
+
+@partial(jax.jit, static_argnames=['n_assets', 'k', 'window_size', 'n_actions_per_asset'])
+def _build_model_state_trajectory(
+    market_obs,        # (T, 27, ws, n_assets) pre-encoded market channels
+    returns,           # (T, n_assets) log returns
+    model_params,       # Current model parameters (no gradients)
+    model_apply_fn,    # model.apply function
+    n_assets=64,
+    k=4,
+    window_size=64,
+    decay_fast=0.80,
+    decay_slow=0.99,
+    n_actions_per_asset=5,
+):
+    """Roll model through episode, capture its state trajectory (TASK_692).
+
+    This is an autoregressive rollout where each step's action becomes
+    next step's state input. The model experiences off-diagonal
+    states during training, matching inference behavior.
+
+    TASK_693: Uses incremental position stepping (Buy=step toward +1,
+    Sell=step toward -1) matching benchmark_easy.py inference semantics.
+    Also returns model confidence from softmax for channel 33.
+
+    Args:
+        market_obs: (T, 27, ws, n_assets) pre-encoded market channels
+        returns: (T, n_assets) log returns (for PnL calculation)
+        model_params: Current model parameters
+        model_apply_fn: model.apply function
+        n_assets, k, window_size: State computation parameters
+        decay_fast, decay_slow: Heat decay rates
+
+    Returns:
+        model_state: (T, 6, n_assets) state channels from model's own actions
+        model_confidence: (T, n_assets) softmax confidence per asset
+    """
+    # Initialize neutral state (no positions, no history)
+    init_state = (
+        jnp.zeros(n_assets),  # position
+        jnp.zeros(n_assets),  # pnl
+        jnp.zeros(n_assets),  # steps
+        jnp.zeros(n_assets),  # h_fast
+        jnp.zeros(n_assets),  # h_slow
+    )
+
+    def scan_step(carry, idx):
+        """Single timestep in autoregressive rollout."""
+        pos, pnl, steps, h_fast, h_slow = carry
+
+        # Build state channels from current state
+        capacity = jnp.sum(jnp.abs(pos) > 0.5) / k
+        state_ch = jnp.stack([
+            pos,
+            pnl,
+            jnp.clip(steps / window_size, 0.0, 1.0),
+            jnp.clip(h_fast, 0.0, 1.0),
+            jnp.clip(h_slow, 0.0, 1.0),
+            jnp.full(n_assets, capacity),
+        ])  # (6, n_assets)
+
+        # Confidence from model's own softmax (computed from previous step's
+        # forward pass). First step gets zero confidence (no prior action).
+        # We'll compute confidence AFTER the forward pass and emit it as output.
+
+        # Tile state across window
+        ws = window_size
+        state_tiled = jnp.tile(state_ch[:, None, :], (1, ws, 1))  # (6, ws, n_assets)
+        # Confidence channel: zero placeholder (updated from previous step's output
+        # in the scan output, not fed back into obs — matches benchmark where
+        # confidence at step t reflects the action taken AT step t)
+        conf_tiled = jnp.zeros((1, ws, n_assets))
+
+        # Construct full observation
+        market_t = market_obs[idx]  # (27, ws, n_assets)
+        obs = jnp.concatenate([market_t, state_tiled, conf_tiled], axis=0)  # (34, ws, n_assets)
+        obs_batch = obs[None, ...]  # Add batch dim: (1, 34, ws, n_assets)
+
+        # Run model inference (stop_gradient to prevent backprop through rollout)
+        output = jax.lax.stop_gradient(
+            model_apply_fn({'params': model_params}, observation=obs_batch, mode='initial_inference')
+        )
+        policy_logits = output['policy_logits'][0]  # (320,) remove batch
+
+        # Get action: convert to per-asset action types
+        policy_reshaped = policy_logits.reshape(n_assets, n_actions_per_asset)
+        action_types = jnp.argmax(policy_reshaped, axis=-1)  # (n_assets,)
+
+        # TASK_693: Model confidence from softmax (matches benchmark_easy.py:524-525)
+        softmax_probs = jax.nn.softmax(policy_reshaped, axis=-1)  # (n_assets, 5)
+        model_confidence = jnp.max(softmax_probs, axis=-1)  # (n_assets,)
+
+        # TASK_693: Incremental position stepping (matches benchmark_easy.py:529-537)
+        # Buy: short(-1)→flat(0), flat(0)→long(+1), long(+1)→no-op
+        # Sell: long(+1)→flat(0), flat(0)→short(-1), short(-1)→no-op
+        buy = (action_types == 2) | (action_types == 4)    # Buy or LimitBuy
+        sell = (action_types == 0) | (action_types == 3)   # Sell or LimitSell
+        new_pos = jnp.where(
+            buy,
+            jnp.minimum(pos + 1.0, 1.0),    # step toward long, cap at +1
+            jnp.where(
+                sell,
+                jnp.maximum(pos - 1.0, -1.0),  # step toward short, cap at -1
+                pos  # Hold: no change
+            )
+        )
+
+        # Update state based on action and returns
+        ret = returns[idx]
+
+        # Detect trades
+        traded = (new_pos != pos).astype(jnp.float32)
+        flipped = (pos != 0) & (new_pos != 0) & (new_pos != pos)
+        trade_strength = traded + flipped.astype(jnp.float32)
+
+        # Update PnL
+        held = (new_pos == pos) & (pos != 0)
+        signed_ret = ret * pos
+        new_pnl = jnp.where(held, pnl + signed_ret, 0.0)
+        new_pnl = jnp.clip(new_pnl, -1.0, 1.0)
+
+        # Update hold duration
+        new_steps = jnp.where(traded > 0.5, 0.0, steps + 1.0)
+
+        # Update heat
+        new_h_fast = h_fast * decay_fast + trade_strength
+        new_h_slow = h_slow * decay_slow + trade_strength
+
+        return (new_pos, new_pnl, new_steps, new_h_fast, new_h_slow), (state_ch, model_confidence)
+
+    T = market_obs.shape[0]
+    _, (model_state_trajectory, confidence_trajectory) = jax.lax.scan(
+        scan_step, init_state, jnp.arange(T)
+    )
+    return model_state_trajectory, confidence_trajectory  # (T, 6, n_assets), (T, n_assets)
+
+
+# =============================================================================
 # Asynchronous Data Generation (CPU Background Thread, GPU Foreground)
 # =============================================================================
 
@@ -133,6 +368,14 @@ class OnTheFlyGenerator:
         # Scale workers with buffer size (min 2, max 8)
         self.N_WORKERS = max(2, min(8, buffer_size // 4))
 
+        # TASK_691: Oracle entropy — epoch-dependent noise schedule
+        self._current_epoch = 0
+
+        # TASK_692: Model-state rollout parameters
+        self._model_params = None  # Set by set_model_params() for autoregressive rollout
+        self._model_apply_fn = None  # Cached model.apply function
+        self._model_state_rollout = _build_model_state_trajectory  # Already @jax.jit decorated
+
         # 90/10 Experience Replay (TASK_667)
         self.mix_ratio = mix_ratio
         self.secondary_bella_generator = secondary_bella_generator
@@ -143,6 +386,10 @@ class OnTheFlyGenerator:
         self._encoder_fn = None
         self._use_latent_cache = False
 
+        # TASK_692: Partial FIFO refresh tracking
+        # Track which buffer entries were generated with which params
+        self._buffer_param_ids = []  # List of param version IDs
+
         # Background pre-fetching setup (threading, not multiprocessing)
         self.price_queue = Queue(maxsize=self.N_BUFFER)
         self.shutdown_event = threading.Event()
@@ -152,6 +399,9 @@ class OnTheFlyGenerator:
         self._market_lock = threading.Lock()
         self._base_seed = seed
         self._thread_counter = 0  # TASK_675: Atomic counter for unique thread seeds
+
+        # TASK_692: Counter for model parameter versions (for FIFO refresh)
+        self._param_version = 0
 
         # Start background thread for price generation (only for synthetic)
         self.executor = ThreadPoolExecutor(max_workers=self.N_WORKERS)
@@ -228,6 +478,18 @@ class OnTheFlyGenerator:
             if self._prefetch_failures > 50:
                 logger.error("Excessive prefetch failures — check GPU/data pipeline")
 
+    def _get_entropy_schedule(self):
+        """TASK_691: Compute oracle entropy noise rates based on current epoch."""
+        if not self.config.oracle_entropy:
+            return 0.0, 0.0
+        warmup = self.config.entropy_warmup_epochs
+        if self._current_epoch < warmup:
+            return 0.0, 0.0
+        progress = min((self._current_epoch - warmup) / 150.0, 1.0)
+        p_drop = self.config.oracle_drop_rate * progress
+        q_phantom = self.config.oracle_phantom_rate * progress
+        return p_drop, q_phantom
+
     def _generate_episode_data(self, level: int, prices_cpu: np.ndarray) -> dict:
         """Process raw prices into training data using GPU."""
         prices_jax = jnp.array(prices_cpu)
@@ -238,7 +500,7 @@ class OnTheFlyGenerator:
         # TASK_673: Multipass oracle (soft targets) or single-pass (hard targets)
         if getattr(self.config, 'oracle_multipass', False):
             self.jax_rng, subkey = jax.random.split(self.jax_rng)
-            policy_targets, cumulative_pnl, _ = multipass_oracle_policy(
+            policy_targets, cumulative_pnl, _, oracle_selections = multipass_oracle_policy(
                 log_returns,
                 subkey,
                 k=self.config.oracle_k,
@@ -278,23 +540,108 @@ class OnTheFlyGenerator:
                 temperature=1.0,
             )
             cumulative_pnl = optimal_path.cumulative_pnl
+            oracle_selections = optimal_path.selections
 
         # TASK_670 FIX: Compute REMAINING PnL (future value), not cumulative (past value)
         # MuZero value head must predict expected future returns, not remember past gains
         remaining_pnl = cumulative_pnl[-1] - cumulative_pnl
 
-        # Encode observations (GPU JIT)
+        # TASK_689/692/693: Build state channels + encode observations
+        T, n_assets = log_returns.shape
+        use_state_channels = self.config.n_channels > 27
+        autoregressive_state = getattr(self.config, 'autoregressive_state', False)
+        use_model_rollout = (use_state_channels and autoregressive_state
+                             and self._model_params is not None)
+
         n_valid = len(log_returns) - self.config.window_size
         if n_valid <= 0:
             return None
 
         window_starts = jnp.arange(n_valid)
-        # TASK_152: Use temporal encoder (27, 64, 64) with real time series
-        observations = jit_batch_encode_temporal(prices_jax, window_starts, self.encoder_config)
+
+        if use_model_rollout:
+            # TASK_692/693: Model-state rollout — state from model's own actions
+            # Encode market observations (27ch)
+            observations = jit_batch_encode_temporal(
+                prices_jax, window_starts, self.encoder_config
+            )  # (n_valid, 27, ws, n_assets)
+
+            # Roll model through episode using current params (JIT'd)
+            state_channels, confidence = self._model_state_rollout(
+                observations,   # (n_valid, 27, ws, n_assets)
+                log_returns,    # (T, n_assets)
+                self._model_params,
+                self._model_apply_fn,
+                n_assets=n_assets,
+                k=self.config.oracle_k,
+                window_size=self.config.window_size,
+                decay_fast=0.80,
+                decay_slow=0.99,
+                n_actions_per_asset=5,
+            )  # (n_valid, 6, n_assets), (n_valid, n_assets)
+
+        elif use_state_channels:
+            # TASK_689/691: Oracle-state channels (fallback when model params not available)
+            p_drop, q_phantom = self._get_entropy_schedule()
+            if p_drop > 0 or q_phantom > 0:
+                self.jax_rng, entropy_key = jax.random.split(self.jax_rng)
+                noisy_selections = corrupt_oracle_selections(
+                    oracle_selections, entropy_key, p_drop, q_phantom
+                )
+                target_position = compute_target_position(noisy_selections, log_returns)
+            else:
+                target_position = compute_target_position(oracle_selections, log_returns)
+            state_channels = build_state_channels(
+                target_position, log_returns,
+                n_assets=n_assets,
+                k=self.config.oracle_k,
+                window_size=self.config.window_size,
+            )  # (T, 6, n_assets)
+            # Confidence channel: oracle softmax max per asset
+            oracle_per_asset = policy_targets.reshape(T, n_assets, 5)
+            confidence = jnp.max(oracle_per_asset, axis=-1)  # (T, n_assets)
+
+        # Encode market observations if not already done by model rollout
+        if not use_model_rollout:
+            observations = jit_batch_encode_temporal(
+                prices_jax, window_starts, self.encoder_config
+            )  # (n_valid, 27, ws, n_assets)
 
         # Alignment
         start_idx = self.config.window_size - 1
         end_idx = min(start_idx + n_valid, len(policy_targets))
+
+        # TASK_689/693: Concatenate state channels (tiled across window)
+        if use_state_channels:
+            n_windows = end_idx - start_idx
+            ws = self.config.window_size
+
+            if use_model_rollout:
+                # TASK_693: Model rollout outputs are indexed by WINDOW (0..n_valid-1).
+                # scan output[w] = state BEFORE model processes window w.
+                # For training window w, t-1 state = scan output[w].
+                state_at_windows = state_channels[:n_windows]  # (n_windows, 6, n_assets)
+                conf_at_windows = confidence[:n_windows]       # (n_windows, n_assets)
+            else:
+                # Oracle state channels indexed by RETURN TIMESTEP (0..T-1).
+                # Use t-1 to avoid leaking current oracle action.
+                state_at_windows = state_channels[start_idx - 1:end_idx - 1]  # (n_windows, 6, n_assets)
+                conf_at_windows = confidence[start_idx - 1:end_idx - 1]       # (n_windows, n_assets)
+
+            state_tiled = jnp.tile(
+                state_at_windows[:, :, None, :],  # (n_windows, 6, 1, n_assets)
+                (1, 1, ws, 1)
+            )  # (n_windows, 6, ws, n_assets)
+
+            conf_tiled = jnp.tile(
+                conf_at_windows[:, None, None, :],  # (n_windows, 1, 1, n_assets)
+                (1, 1, ws, 1)
+            )  # (n_windows, 1, ws, n_assets)
+
+            # Market obs: (n_windows, 27, ws, n_assets)
+            market_obs = observations[:n_windows]
+            # Full obs: (n_windows, 34, ws, n_assets)
+            observations = jnp.concatenate([market_obs, state_tiled, conf_tiled], axis=1)
 
         ep_data = {
             'observations': observations[:end_idx - start_idx],
@@ -347,7 +694,7 @@ class OnTheFlyGenerator:
         # TASK_673: Multipass oracle (soft targets) or single-pass (hard targets)
         if getattr(self.config, 'oracle_multipass', False):
             self.jax_rng, subkey = jax.random.split(self.jax_rng)
-            policy_targets, cumulative_pnl_batch, _ = batched_multipass_oracle_policy(
+            policy_targets, cumulative_pnl_batch, _, oracle_selections_batch = batched_multipass_oracle_policy(
                 log_returns,
                 subkey,
                 k=self.config.oracle_k,
@@ -390,6 +737,7 @@ class OnTheFlyGenerator:
                 temperature=1.0,
             )
             cumulative_pnl_batch = optimal_paths.cumulative_pnl  # (N, T)
+            oracle_selections_batch = optimal_paths.selections    # (N, T, n_assets)
 
         # TASK_670 FIX: Compute REMAINING PnL (future value), not cumulative (past value)
         # remaining_pnl[i, t] = final_pnl[i] - cumulative_pnl[i, t]
@@ -412,6 +760,12 @@ class OnTheFlyGenerator:
             self.encoder_config
         )
 
+        # TASK_689: Build state channels per episode
+        use_state_channels = self.config.n_channels > 27
+        autoregressive_state = getattr(self.config, 'autoregressive_state', False)
+        # TASK_691: Oracle entropy schedule (computed once per batch)
+        p_drop, q_phantom = self._get_entropy_schedule() if use_state_channels else (0.0, 0.0)
+
         # Process each episode (alignment and dict creation)
         episode_datas = []
         for i in range(n_batch):
@@ -419,13 +773,68 @@ class OnTheFlyGenerator:
             # Alignment
             start_idx = self.config.window_size - 1
             end_idx = min(start_idx + n_valid, T)
+            n_windows = end_idx - start_idx
+
+            obs_i = all_observations[i, :n_windows]
+
+            # TASK_689/692/693: Append state channels
+            if use_state_channels and autoregressive_state and self._model_params is not None:
+                # TASK_692/693: Model-state rollout with incremental position stepping
+                market_obs_i = all_observations[i]  # (n_valid, 27, ws, n_assets)
+                log_returns_i = log_returns[i, :valid_lengths[i]]  # (T, n_assets)
+                state_ch_i, conf_i = self._model_state_rollout(
+                    market_obs_i,
+                    log_returns_i,
+                    self._model_params,
+                    self._model_apply_fn,
+                    n_assets=n_assets,
+                    k=self.config.oracle_k,
+                    window_size=self.config.window_size,
+                    decay_fast=0.80,
+                    decay_slow=0.99,
+                    n_actions_per_asset=5,
+                )  # (n_valid, 6, n_assets), (n_valid, n_assets)
+
+                ws = self.config.window_size
+                # TASK_693: Model rollout indexed by WINDOW (0..n_valid-1),
+                # not return timestep. scan output[w] = state before window w.
+                state_at_w = state_ch_i[:n_windows]
+                state_tiled = jnp.tile(state_at_w[:, :, None, :], (1, 1, ws, 1))
+                conf_at_w = conf_i[:n_windows]
+                conf_tiled = jnp.tile(conf_at_w[:, None, None, :], (1, 1, ws, 1))
+                obs_i = jnp.concatenate([obs_i, state_tiled, conf_tiled], axis=1)
+
+            elif use_state_channels:
+                # TASK_691: Oracle entropy
+                sel_i = oracle_selections_batch[i, :T]
+                if p_drop > 0 or q_phantom > 0:
+                    self.jax_rng, ek = jax.random.split(self.jax_rng)
+                    sel_i = corrupt_oracle_selections(sel_i, ek, p_drop, q_phantom)
+                target_pos_i = compute_target_position(sel_i, log_returns[i, :T])
+                state_ch_i = build_state_channels(
+                    target_pos_i, log_returns[i, :T],
+                    n_assets=n_assets,
+                    k=self.config.oracle_k,
+                    window_size=self.config.window_size,
+                )  # (T, 6, n_assets)
+
+                oracle_per_asset = policy_targets[i, :T].reshape(T, n_assets, 5)
+                conf_i = jnp.max(oracle_per_asset, axis=-1)  # (T, n_assets)
+
+                ws = self.config.window_size
+                # Use t-1 state to avoid leaking current oracle action
+                state_at_w = state_ch_i[start_idx - 1:end_idx - 1]
+                state_tiled = jnp.tile(state_at_w[:, :, None, :], (1, 1, ws, 1))
+                conf_at_w = conf_i[start_idx - 1:end_idx - 1]
+                conf_tiled = jnp.tile(conf_at_w[:, None, None, :], (1, 1, ws, 1))
+                obs_i = jnp.concatenate([obs_i, state_tiled, conf_tiled], axis=1)
 
             ep_data = {
-                'observations': all_observations[i, :end_idx - start_idx],
+                'observations': obs_i,
                 'actions': policy_targets[i, start_idx:end_idx],    # Soft targets (320-dim)
                 'returns': remaining_pnl[i, start_idx:end_idx],     # Remaining PnL
                 'level': levels[i],
-                'n_samples': end_idx - start_idx,
+                'n_samples': n_windows,
             }
 
             # Pre-compute latent states if caching enabled
@@ -493,6 +902,9 @@ class OnTheFlyGenerator:
                           if cnt < self.SAMPLES_PER_EPISODE]
             self.buffer = [self.buffer[i] for i in keep_indices]
             self.buffer_sample_counts = [self.buffer_sample_counts[i] for i in keep_indices]
+            # TASK_692: Also clean up param version tracking
+            if self._buffer_param_ids:
+                self._buffer_param_ids = [self._buffer_param_ids[i] for i in keep_indices]
 
         needed = self.N_BUFFER - len(self.buffer)
         if needed <= 0:
@@ -559,7 +971,9 @@ class OnTheFlyGenerator:
                         ep_data['trade_indices'] = np.array([], dtype=np.intp)
                     self.buffer.append(ep_data)
                     self.buffer_sample_counts.append(0)
-                
+                    # TASK_692: Track param version for FIFO refresh
+                    self._buffer_param_ids.append(self._param_version)
+
                 refill_time = time.time() - start_refill
                 logger.debug(f"Refilled {len(episode_datas)} episodes in {refill_time:.3f}s")
 
@@ -598,6 +1012,65 @@ class OnTheFlyGenerator:
             if 'latent_states' not in ep_data:
                 ep_data['latent_states'] = self._encoder_fn(ep_data['observations'])
         logger.info(f"Latent state caching enabled ({len(self.buffer)} episodes cached)")
+
+    def set_model_params(self, model, params):
+        """
+        TASK_692: Update model parameters for autoregressive state rollout.
+
+        JIT-safe — params passed as regular arg to model.apply(),
+        not static_argnames. This enables to model to compute its
+        own state channels during training.
+
+        Args:
+            model: MuZeroNetworks instance
+            params: Current model parameters
+        """
+        self._model_params = params
+        self._model_apply_fn = model.apply
+        self._param_version += 1  # Increment version for FIFO refresh
+
+        # TASK_692: Partial FIFO refresh of buffer
+        # Refresh a fraction of episodes with new params to keep
+        # a mix of recent model versions (natural regularizer)
+        if getattr(self.config, 'autoregressive_state', False):
+            self._partial_refresh_buffer()
+
+    def _partial_refresh_buffer(self):
+        """TASK_692: Refresh a fraction of buffer episodes with new params.
+
+        Partial FIFO (DAgger-style):
+        - Buffer holds N episodes (default 32)
+        - Each epoch: refresh X% (default 20% ≈ 6 episodes)
+        - Remaining episodes use params from previous epochs
+        - Natural regularizer: prevents overfitting to current quirks
+
+        Cost: ~7s per epoch (20% refresh) vs ~43s for full refresh.
+        """
+        if not self.buffer:
+            return
+
+        n_total = len(self.buffer)
+        refresh_fraction = getattr(self.config, 'state_refresh_fraction', 0.2)
+        n_refresh = max(1, int(n_total * refresh_fraction))
+
+        # Find oldest entries (FIFO) - those with smallest param_version
+        indices_to_refresh = sorted(
+            range(n_total),
+            key=lambda i: self._buffer_param_ids[i] if i < len(self._buffer_param_ids) else 0
+        )[:n_refresh]
+
+        if indices_to_refresh:
+            logger.debug(f"  [TASK_692] Refreshing {len(indices_to_refresh)}/{n_total} episodes "
+                        f"({refresh_fraction:.0%}) with new model params v{self._param_version}")
+
+            # Mark these entries for regeneration by exhausting them
+            for idx in indices_to_refresh:
+                self.buffer_sample_counts[idx] = self.SAMPLES_PER_EPISODE
+
+            # Remove from param tracking
+            for idx in sorted(indices_to_refresh, reverse=True):
+                if idx < len(self._buffer_param_ids):
+                    del self._buffer_param_ids[idx]
 
     def generate_batch(self, batch_size: int) -> dict:
         """
@@ -790,6 +1263,15 @@ def train_epoch(
     epoch: int,
 ) -> dict:
     """Train for one epoch with on-the-fly generation."""
+    # TASK_691: Update generator's epoch for oracle entropy schedule
+    generator._current_epoch = epoch
+
+    # TASK_692: Update generator's model params for autoregressive state rollout
+    # Call at start of each epoch to refresh partial buffer with new params
+    autoregressive_state = getattr(config, 'autoregressive_state', False)
+    if autoregressive_state:
+        generator.set_model_params(trainer.model, trainer.params)
+
     epoch_metrics = {}  # Dynamic initialization - immune to trainer metric changes
 
     steps_per_epoch = config.steps_per_epoch if hasattr(config, 'steps_per_epoch') else 200
@@ -911,6 +1393,10 @@ def main():
                         help='Disable latent state caching (for debugging)')
     parser.add_argument('--oracle-multipass', action='store_true',
                         help='TASK_673: Enable multipass oracle for soft policy targets')
+    parser.add_argument('--benchmark', action='store_true',
+                        help='TASK_682: Run real data benchmark after training completes')
+    parser.add_argument('--target-agreement', type=float, default=None,
+                        help='Override target oracle agreement for early stopping (default: config value)')
 
     args = parser.parse_args()
 
@@ -950,6 +1436,8 @@ def main():
     config.encoder_version = args.encoder_version  # TASK_676: V2 (flatten) or V3 (minGRU)
     if args.oracle_multipass:
         config.oracle_multipass = True  # TASK_673
+    if args.target_agreement is not None:
+        config.target_oracle_agreement = args.target_agreement
 
     logger.info("=" * 60)
     logger.info("Easy Mode Training - On-the-fly VRAM Generation")
@@ -1035,6 +1523,13 @@ def main():
         generator.set_encoder(trainer.model, trainer.params)
         val_generator.set_encoder(trainer.model, trainer.params)
 
+    # TASK_692: Enable model-state rollout for autoregressive state channels
+    autoregressive_state = getattr(config, 'autoregressive_state', False)
+    if autoregressive_state:
+        logger.info("Enabling autoregressive state channels (model-state rollout)...")
+        generator.set_model_params(trainer.model, trainer.params)
+        val_generator.set_model_params(trainer.model, trainer.params)
+
     # Load checkpoint if provided
     start_epoch = 0
     best_agreement = 0.0
@@ -1082,6 +1577,8 @@ def main():
 
             # Validate
             if (epoch + 1) % config.eval_every == 0 or epoch == config.epochs - 1:
+                # TASK_691: Val generator needs same epoch for entropy schedule
+                val_generator._current_epoch = epoch
                 val_metrics = validate(trainer, val_generator, config, n_batches=20)
             else:
                 val_metrics = {}
@@ -1154,6 +1651,16 @@ def main():
         csv_logger.close()
         generator.shutdown()
         val_generator.shutdown()
+
+    # TASK_682: Post-training benchmark on real market data
+    if args.benchmark:
+        best_ckpt = str(output_dir / 'phase1_best.pkl')
+        if Path(best_ckpt).exists():
+            logger.info("Running real data benchmark (TASK_682)...")
+            from tools.benchmark_easy import run_full_benchmark
+            run_full_benchmark(best_ckpt, db_path="trading_data.db")
+        else:
+            logger.warning(f"No best checkpoint found at {best_ckpt}, skipping benchmark")
 
 
 if __name__ == '__main__':
