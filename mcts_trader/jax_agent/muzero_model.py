@@ -38,6 +38,20 @@ class MuZeroNetworks(nn.Module):
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 
+    # TASK_676: Encoder version (2=V2 flatten, 3=V3 minGRU temporal)
+    encoder_version: int = 2
+
+    # TASK_684: Decouple hidden_dim from state_dim. None = backward compat (state_dim * 16)
+    hidden_dim: Optional[int] = None
+
+    # TASK_683: Encoder width params
+    embed_dim: int = 32
+    encoder_num_heads: int = 4
+
+    # TASK_695: Oracle mask prediction auxiliary head
+    use_oracle_mask_head: bool = False
+    oracle_mask_hidden_dim: int = 256
+
     def setup(self):
         """Initialize all three networks"""
         # Shared TRM backbone (with dtype support)
@@ -45,6 +59,10 @@ class MuZeroNetworks(nn.Module):
             state_dim=self.state_dim,
             n_actions=self.action_space_size,
             value_support_size=self.support_size,
+            encoder_version=self.encoder_version,
+            hidden_dim=self.hidden_dim,
+            embed_dim=self.embed_dim,
+            encoder_num_heads=self.encoder_num_heads,
             dtype=self.dtype,
             param_dtype=self.param_dtype
         )
@@ -94,6 +112,13 @@ class MuZeroNetworks(nn.Module):
                 n_factors=self.pred_n_factors,
             )
 
+        # TASK_695: Oracle mask prediction auxiliary head
+        if self.use_oracle_mask_head:
+            self.oracle_mask_dense1 = nn.Dense(
+                self.oracle_mask_hidden_dim, dtype=self.dtype, param_dtype=self.param_dtype)
+            self.oracle_mask_dense2 = nn.Dense(
+                self.n_assets, dtype=self.dtype, param_dtype=self.param_dtype)
+
     def representation(self, observation: jnp.ndarray) -> jnp.ndarray:
         """
         Encode observation to latent state.
@@ -105,20 +130,41 @@ class MuZeroNetworks(nn.Module):
         """
         return self.trm.encode(observation)
 
-    def prediction(self, latent_state: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def prediction(
+        self,
+        latent_state: jnp.ndarray,
+        return_intermediates: bool = False
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Predict policy and value from latent state.
 
         Args:
             latent_state: (batch, state_dim)
+            return_intermediates: If True, return TRM cycle intermediates for DS24
         Returns:
             policy_logits: (batch, action_space_size)
             value: (batch, support_size)
+            intermediates: (optional) Dict with TRM cycle deltas if return_intermediates=True
         """
-        policy_logits, value, _ = self.trm.compute_policy_value(
-            latent_state, H_cycles=self.H_cycles, L_cycles=self.L_cycles
+        result = self.trm.reasoning(
+            latent_state,
+            H_cycles=self.H_cycles,
+            L_cycles=self.L_cycles,
+            return_intermediates=return_intermediates
         )
-        return policy_logits, value
+
+        if return_intermediates:
+            policy_logits, value, _, intermediates = result
+            return policy_logits, value, intermediates
+        else:
+            policy_logits, value, _ = result
+            return policy_logits, value
+
+    def oracle_mask_prediction(self, latent_state: jnp.ndarray) -> jnp.ndarray:
+        """TASK_695: Predict oracle's top-k selection mask. Returns (batch, n_assets) logits."""
+        x = self.oracle_mask_dense1(latent_state.astype(self.dtype))
+        x = nn.relu(x)
+        return self.oracle_mask_dense2(x).astype(jnp.float32)
 
     def dynamics(
         self,
@@ -162,29 +208,50 @@ class MuZeroNetworks(nn.Module):
 
         return next_state, reward
 
-    def initial_inference(self, observation: jnp.ndarray) -> Dict[str, jnp.ndarray]:
+    def initial_inference(
+        self,
+        observation: jnp.ndarray,
+        return_intermediates: bool = False
+    ) -> Dict[str, jnp.ndarray]:
         """
         Initial inference for root node (Representation + Prediction).
 
         Args:
             observation: (batch, 27, 64, 64)
+            return_intermediates: If True, include TRM cycle intermediates for DS24
         Returns:
             dict with keys: latent_state, policy_logits, value, reward
+            If return_intermediates, also includes 'trm_intermediates'
         """
         latent_state = self.representation(observation)
-        policy_logits, value = self.prediction(latent_state)
+
+        if return_intermediates:
+            policy_logits, value, intermediates = self.prediction(
+                latent_state, return_intermediates=True
+            )
+        else:
+            policy_logits, value = self.prediction(latent_state)
 
         # Reward at root is zero (one-hot at center of support)
         batch_size = observation.shape[0]
         reward = jnp.zeros((batch_size, self.support_size))
         reward = reward.at[:, self.support_size // 2].set(1.0)  # Center bin
 
-        return {
+        result = {
             'latent_state': latent_state,
             'policy_logits': policy_logits,
             'value': value,
             'reward': reward
         }
+
+        if return_intermediates:
+            result['trm_intermediates'] = intermediates
+
+        # TASK_695: Oracle mask prediction
+        if self.use_oracle_mask_head:
+            result['oracle_mask'] = self.oracle_mask_prediction(latent_state)
+
+        return result
 
     def recurrent_inference(
         self,
@@ -201,7 +268,12 @@ class MuZeroNetworks(nn.Module):
             dict with keys: latent_state, policy_logits, value, reward
         """
         next_latent_state, reward = self.dynamics(latent_state, action)
-        policy_logits, value = self.prediction(next_latent_state)
+
+        # BUG-017 FIX: Stop gradients from prediction head to dynamics/encoder
+        # In standard MuZero, dynamics is trained via reward loss + consistency loss only.
+        # Value/policy gradients should not flow back through dynamics to corrupt encoder.
+        # Note: We still return the non-stopped latent_state for MCTS tree expansion.
+        policy_logits, value = self.prediction(jax.lax.stop_gradient(next_latent_state))
 
         return {
             'latent_state': next_latent_state,
@@ -441,9 +513,23 @@ class MuZeroNetworks(nn.Module):
 
         return jnp.stack(predictions, axis=1), {'neural_scale': neural_scale}
 
-    def __call__(self, observation=None, action=None, latent_state=None, mode: str = 'initial_inference') -> Dict[str, jnp.ndarray]:
+    def __call__(
+        self,
+        observation=None,
+        action=None,
+        latent_state=None,
+        mode: str = 'initial_inference',
+        return_intermediates: bool = False
+    ) -> Dict[str, jnp.ndarray]:
         """
         Dispatch to specific inference method.
+
+        Args:
+            observation: Input observation (for initial_inference)
+            action: Action (for recurrent_inference)
+            latent_state: Latent state (for recurrent_inference)
+            mode: 'initial_inference', 'recurrent_inference', or 'initialize_parameters'
+            return_intermediates: If True, return TRM cycle intermediates for DS24 dashboard
         """
         if mode == 'initialize_parameters':
             # Run both paths to initialize all parameters
@@ -468,13 +554,37 @@ class MuZeroNetworks(nn.Module):
                     action,
                 )
 
+            # TASK_695: Initialize oracle mask head if enabled
+            if self.use_oracle_mask_head:
+                self.oracle_mask_prediction(out_init['latent_state'])
+
             return out_init
 
         if mode == 'initial_inference':
-            return self.initial_inference(observation)
+            return self.initial_inference(observation, return_intermediates=return_intermediates)
         elif mode == 'recurrent_inference':
             # When called from mctx, the first positional arg (mapped to 'observation')
             # is actually the embedding/latent_state
             return self.recurrent_inference(observation, action)
+        elif mode == 'initial_inference_with_intermediates':
+            # Explicit mode for DS24 dashboard logging
+            return self.initial_inference(observation, return_intermediates=True)
+        elif mode == 'prediction_only':
+            # TASK_666: Skip representation, run prediction on pre-computed latent states
+            # Used by Easy Mode for latent state caching optimization
+            policy_logits, value = self.prediction(latent_state)
+            batch_size = latent_state.shape[0]
+            reward = jnp.zeros((batch_size, VALUE_SUPPORT_SIZE))
+            reward = reward.at[:, VALUE_SUPPORT_SIZE // 2].set(1.0)
+            result = {
+                'latent_state': latent_state,
+                'policy_logits': policy_logits,
+                'value': value,
+                'reward': reward,
+            }
+            # TASK_695: Oracle mask prediction
+            if self.use_oracle_mask_head:
+                result['oracle_mask'] = self.oracle_mask_prediction(latent_state)
+            return result
         else:
             raise ValueError(f"Unknown mode: {mode}")

@@ -38,6 +38,10 @@ class EasyTrainer:
         self.config = config
         self.rng_key = rng_key
 
+        # TASK_686: Resolve compute dtype
+        dtype_str = getattr(config, 'compute_dtype', 'float32')
+        compute_dtype = jnp.bfloat16 if dtype_str == 'bfloat16' else jnp.float32
+
         # Create model
         self.model = MuZeroNetworks(
             state_dim=config.state_dim,
@@ -47,6 +51,14 @@ class EasyTrainer:
             L_cycles=config.L_cycles,
             use_prediction_head=False,  # No dynamics in Phase 1
             n_assets=config.n_assets,
+            encoder_version=getattr(config, 'encoder_version', 2),
+            hidden_dim=getattr(config, 'trm_hidden_dim', None),  # TASK_684
+            embed_dim=getattr(config, 'embed_dim', 32),            # TASK_683
+            encoder_num_heads=getattr(config, 'encoder_num_heads', 4),  # TASK_683
+            dtype=compute_dtype,            # TASK_686: compute in bfloat16
+            param_dtype=jnp.float32,        # TASK_686: store params in float32
+            use_oracle_mask_head=getattr(config, 'use_oracle_mask_head', False),  # TASK_695
+            oracle_mask_hidden_dim=getattr(config, 'oracle_mask_hidden_dim', 256),  # TASK_695
         )
 
         # Initialize parameters using 'initialize_parameters' mode
@@ -68,11 +80,14 @@ class EasyTrainer:
         print(f"Model parameters: {self.n_params / 1e6:.2f}M")
 
         # Create optimizer with warmup
+        total_steps = config.epochs * config.steps_per_epoch
+        # Guard: decay_steps must exceed warmup_steps (short runs with --epochs 2 etc.)
+        effective_warmup = min(config.warmup_steps, max(total_steps - 1, 0))
         schedule = optax.warmup_cosine_decay_schedule(
             init_value=0.0,
             peak_value=config.learning_rate,
-            warmup_steps=config.warmup_steps,
-            decay_steps=config.epochs * config.steps_per_epoch,  # TASK_675: Exact
+            warmup_steps=effective_warmup,
+            decay_steps=max(total_steps, effective_warmup + 1),  # TASK_675: Exact
             end_value=config.learning_rate * 0.1,
         )
 
@@ -184,10 +199,23 @@ class EasyTrainer:
             value_targets = self._scalar_to_target(scaled_returns)
             value_loss = optax.softmax_cross_entropy(value_logits, value_targets).mean()
 
+            # TASK_695: Oracle mask prediction loss
+            oracle_mask_loss = jnp.array(0.0)
+            oracle_mask_accuracy = jnp.array(0.0)
+            if self.config.use_oracle_mask_head and 'oracle_mask' in batch:
+                oracle_mask_logits = output['oracle_mask']     # (B, 64)
+                oracle_mask_targets = batch['oracle_mask']     # (B, 64) binary
+                oracle_mask_loss = optax.sigmoid_binary_cross_entropy(
+                    oracle_mask_logits, oracle_mask_targets
+                ).mean()
+                oracle_mask_pred = (jax.nn.sigmoid(oracle_mask_logits) > 0.5).astype(jnp.float32)
+                oracle_mask_accuracy = jnp.mean(oracle_mask_pred == oracle_mask_targets)
+
             # Total loss
             total_loss = (
                 self.config.policy_weight * policy_loss +
-                self.config.value_weight * value_loss
+                self.config.value_weight * value_loss +
+                self.config.oracle_mask_weight * oracle_mask_loss
             )
 
             # Metrics
@@ -254,6 +282,8 @@ class EasyTrainer:
                 'pred_hold_ratio': pred_hold_ratio,
                 'adaptive_trade_weight': adaptive_trade_weight,  # TASK_149+151: Ramped per-batch weight
                 'warmup_progress': warmup_progress,  # TASK_151: 0.0 -> 1.0 over warmup epochs
+                'oracle_mask_loss': oracle_mask_loss,          # TASK_695
+                'oracle_mask_accuracy': oracle_mask_accuracy,  # TASK_695
             }
 
             return total_loss, metrics

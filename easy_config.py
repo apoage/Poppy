@@ -81,6 +81,12 @@ class EasyConfig:
     oracle_phantom_rate: float = 0.05       # Max prob of adding phantom trades (hold→trade)
     entropy_warmup_epochs: int = 50         # Clean oracle for this many epochs, then ramp
 
+    # TASK_695: Oracle mask prediction auxiliary head
+    # Trains model to predict oracle's top-k selection mask (RL²F-inspired)
+    use_oracle_mask_head: bool = False
+    oracle_mask_hidden_dim: int = 256
+    oracle_mask_weight: float = 0.1
+
     # TASK_692: Model-state rollout — state channels from model's own actions
     autoregressive_state: bool = True       # Use model-state rollout instead of oracle state
     state_refresh_fraction: float = 0.2     # Fraction of buffer to refresh per epoch (20%)

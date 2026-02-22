@@ -76,6 +76,8 @@ def create_model(config: EasyConfig) -> MuZeroNetworks:
         encoder_num_heads=getattr(config, 'encoder_num_heads', 4), # TASK_683
         dtype=compute_dtype,                                        # TASK_686
         param_dtype=jnp.float32,
+        use_oracle_mask_head=getattr(config, 'use_oracle_mask_head', False),  # TASK_695
+        oracle_mask_hidden_dim=getattr(config, 'oracle_mask_hidden_dim', 256),  # TASK_695
     )
 
 
@@ -115,6 +117,8 @@ class PeriodResult:
     random_pnl: float
     # Value head
     value_mse: float
+    # TASK_695: Oracle mask prediction
+    oracle_mask_accuracy: float = 0.0
 
 
 # =============================================================================
@@ -482,6 +486,8 @@ def run_period_eval(
     BATCH = 128
     window_starts = jnp.arange(n_windows)
 
+    all_oracle_mask_preds = []  # TASK_695
+
     if not use_state_channels:
         # Legacy 27-channel models: batched inference (no state tracking)
         all_model_actions = []
@@ -494,6 +500,11 @@ def run_period_eval(
             logits_per_asset = output['policy_logits'].reshape(-1, n_assets, 5)
             all_model_actions.append(np.array(jnp.argmax(logits_per_asset, axis=-1)))
             all_model_values.append(value_logits_to_scalar(np.array(output['value'])))
+            # TASK_695: Collect oracle mask predictions
+            if 'oracle_mask' in output:
+                all_oracle_mask_preds.append(
+                    np.array(jax.nn.sigmoid(output['oracle_mask']) > 0.5).astype(np.float32)
+                )
         model_actions = np.concatenate(all_model_actions, axis=0)
         model_values = np.concatenate(all_model_values, axis=0)
     else:
@@ -523,6 +534,7 @@ def run_period_eval(
 
         all_model_actions = []
         all_model_values = []
+        all_oracle_mask_preds = []  # TASK_695
 
         for i in range(n_windows):
             # 1. Get pre-encoded market obs (27ch)
@@ -557,6 +569,12 @@ def run_period_eval(
             actions_i = np.array(jnp.argmax(logits_per_asset, axis=-1))[0]  # (n_assets,)
             all_model_actions.append(actions_i)
             all_model_values.append(value_logits_to_scalar(np.array(value_logits))[0])
+
+            # TASK_695: Collect oracle mask prediction
+            if 'oracle_mask' in output:
+                all_oracle_mask_preds.append(
+                    np.array(jax.nn.sigmoid(output['oracle_mask'][0]) > 0.5).astype(np.float32)
+                )
 
             # 5. Update confidence from model's own softmax
             model_softmax = np.array(jax.nn.softmax(logits_per_asset[0], axis=-1))  # (n_assets, 5)
@@ -678,6 +696,14 @@ def run_period_eval(
     oracle_remaining = oracle_cum_pnl[-1] - oracle_cum_pnl[action_return_indices]
     value_mse = float(np.mean((model_values - oracle_remaining * config.value_scale) ** 2))
 
+    # TASK_695: Oracle mask accuracy (compare predictions against oracle selections)
+    oracle_mask_accuracy = 0.0
+    if all_oracle_mask_preds:
+        mask_preds = np.concatenate(
+            [p.reshape(-1, n_assets) for p in all_oracle_mask_preds], axis=0
+        )[:n_windows]  # (n_windows, n_assets)
+        oracle_mask_accuracy = float(np.mean(mask_preds == oracle_sel_aligned))
+
     # P&L capture ratio
     pnl_capture = model_pnl / oracle_pnl if oracle_pnl > 1e-10 else 0.0
 
@@ -709,6 +735,7 @@ def run_period_eval(
         model_trade_rate=model_trade_rate,
         random_pnl=random_pnl,
         value_mse=value_mse,
+        oracle_mask_accuracy=oracle_mask_accuracy,
     )
 
 
@@ -874,6 +901,7 @@ def run_full_benchmark(
                 model_trade_rate=float(np.mean([r.model_trade_rate for r in bella_results])),
                 random_pnl=float(np.mean([r.random_pnl for r in bella_results])),
                 value_mse=float(np.mean([r.value_mse for r in bella_results])),
+                oracle_mask_accuracy=float(np.mean([r.oracle_mask_accuracy for r in bella_results])),
             )
             results.append(bella_avg)
             print(f"  Bella avg: Bal.Acc={bella_avg.balanced_accuracy:.1%}, "

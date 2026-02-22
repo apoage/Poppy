@@ -659,6 +659,10 @@ class OnTheFlyGenerator:
             'n_samples': end_idx - start_idx,
         }
 
+        # TASK_695: Oracle mask for auxiliary prediction head
+        if getattr(self.config, 'use_oracle_mask_head', False):
+            ep_data['oracle_mask'] = oracle_selections[start_idx:end_idx]
+
         # Pre-compute latent states if encoder is available (removes TRM from training loop)
         if self._use_latent_cache and self._encoder_fn is not None:
             ep_data['latent_states'] = self._encoder_fn(ep_data['observations'])
@@ -848,6 +852,10 @@ class OnTheFlyGenerator:
                 'level': levels[i],
                 'n_samples': n_windows,
             }
+
+            # TASK_695: Oracle mask for auxiliary prediction head
+            if getattr(self.config, 'use_oracle_mask_head', False):
+                ep_data['oracle_mask'] = oracle_selections_batch[i, start_idx:end_idx]
 
             # Pre-compute latent states if caching enabled
             if self._use_latent_cache and self._encoder_fn is not None:
@@ -1100,6 +1108,7 @@ class OnTheFlyGenerator:
         all_latents = [] if self._use_latent_cache else None
         all_actions = []
         all_returns = []
+        all_oracle_masks = []  # TASK_695
 
         samples_needed = batch_size
 
@@ -1144,6 +1153,9 @@ class OnTheFlyGenerator:
                 all_latents.append(ep_data['latent_states'][offset:offset + take_count])
             all_actions.append(ep_data['actions'][offset:offset + take_count])
             all_returns.append(ep_data['returns'][offset:offset + take_count])
+            # TASK_695: Oracle mask
+            if 'oracle_mask' in ep_data:
+                all_oracle_masks.append(ep_data['oracle_mask'][offset:offset + take_count])
 
             self.buffer_sample_counts[ep_idx] += take_count
             samples_needed -= take_count
@@ -1158,6 +1170,10 @@ class OnTheFlyGenerator:
         # Add latent states if caching enabled (for prediction_only mode)
         if self._use_latent_cache and all_latents:
             batch['latent_states'] = jnp.concatenate(all_latents, axis=0)[:batch_size]
+
+        # TASK_695: Oracle mask for auxiliary head
+        if all_oracle_masks:
+            batch['oracle_mask'] = jnp.concatenate(all_oracle_masks, axis=0)[:batch_size]
 
         self.global_step += 1
         return batch
@@ -1409,6 +1425,8 @@ def main():
                         help='TASK_682: Run real data benchmark after training completes')
     parser.add_argument('--target-agreement', type=float, default=None,
                         help='Override target oracle agreement for early stopping (default: config value)')
+    parser.add_argument('--oracle-mask-head', action='store_true',
+                        help='TASK_695: Enable oracle mask prediction auxiliary head')
 
     args = parser.parse_args()
 
@@ -1448,6 +1466,8 @@ def main():
     config.encoder_version = args.encoder_version  # TASK_676: V2 (flatten) or V3 (minGRU)
     if args.oracle_multipass:
         config.oracle_multipass = True  # TASK_673
+    if args.oracle_mask_head:
+        config.use_oracle_mask_head = True  # TASK_695
     if args.target_agreement is not None:
         config.target_oracle_agreement = args.target_agreement
 
