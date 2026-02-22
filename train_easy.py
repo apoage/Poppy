@@ -170,7 +170,7 @@ def compute_target_position(selections, returns):
 # TASK_692: Model-State Rollout (Autoregressive State Channels)
 # =============================================================================
 
-@partial(jax.jit, static_argnames=['n_assets', 'k', 'window_size', 'n_actions_per_asset'])
+@partial(jax.jit, static_argnames=['model_apply_fn', 'n_assets', 'k', 'window_size', 'n_actions_per_asset'])
 def _build_model_state_trajectory(
     market_obs,        # (T, 27, ws, n_assets) pre-encoded market channels
     returns,           # (T, n_assets) log returns
@@ -212,11 +212,12 @@ def _build_model_state_trajectory(
         jnp.zeros(n_assets),  # steps
         jnp.zeros(n_assets),  # h_fast
         jnp.zeros(n_assets),  # h_slow
+        jnp.zeros(n_assets),  # prev_confidence (BUG-2 fix)
     )
 
     def scan_step(carry, idx):
         """Single timestep in autoregressive rollout."""
-        pos, pnl, steps, h_fast, h_slow = carry
+        pos, pnl, steps, h_fast, h_slow, prev_conf = carry
 
         # Build state channels from current state
         capacity = jnp.sum(jnp.abs(pos) > 0.5) / k
@@ -236,10 +237,9 @@ def _build_model_state_trajectory(
         # Tile state across window
         ws = window_size
         state_tiled = jnp.tile(state_ch[:, None, :], (1, ws, 1))  # (6, ws, n_assets)
-        # Confidence channel: zero placeholder (updated from previous step's output
-        # in the scan output, not fed back into obs — matches benchmark where
-        # confidence at step t reflects the action taken AT step t)
-        conf_tiled = jnp.zeros((1, ws, n_assets))
+        # BUG-2 fix: Feed previous step's confidence into observation
+        # (matches inference where prev_confidence is carried from step i-1)
+        conf_tiled = jnp.tile(prev_conf[None, None, :], (1, ws, 1))
 
         # Construct full observation
         market_t = market_obs[idx]  # (27, ws, n_assets)
@@ -296,7 +296,7 @@ def _build_model_state_trajectory(
         new_h_fast = h_fast * decay_fast + trade_strength
         new_h_slow = h_slow * decay_slow + trade_strength
 
-        return (new_pos, new_pnl, new_steps, new_h_fast, new_h_slow), (state_ch, model_confidence)
+        return (new_pos, new_pnl, new_steps, new_h_fast, new_h_slow, model_confidence), (state_ch, model_confidence)
 
     T = market_obs.shape[0]
     _, (model_state_trajectory, confidence_trajectory) = jax.lax.scan(
@@ -567,9 +567,14 @@ class OnTheFlyGenerator:
             )  # (n_valid, 27, ws, n_assets)
 
             # Roll model through episode using current params (JIT'd)
+            # BUG-1 fix: Align returns to window decision points.
+            # Window idx covers prices[idx:idx+ws], decision at idx+ws-1.
+            # Slice returns so returns_aligned[idx] = log_returns[idx + ws - 1].
+            ws = self.config.window_size
+            returns_aligned = log_returns[ws - 1:]
             state_channels, confidence = self._model_state_rollout(
-                observations,   # (n_valid, 27, ws, n_assets)
-                log_returns,    # (T, n_assets)
+                observations,       # (n_valid, 27, ws, n_assets)
+                returns_aligned,    # (T - ws + 1, n_assets) — aligned to decision points
                 self._model_params,
                 self._model_apply_fn,
                 n_assets=n_assets,
@@ -781,7 +786,11 @@ class OnTheFlyGenerator:
             if use_state_channels and autoregressive_state and self._model_params is not None:
                 # TASK_692/693: Model-state rollout with incremental position stepping
                 market_obs_i = all_observations[i]  # (n_valid, 27, ws, n_assets)
-                log_returns_i = log_returns[i, :valid_lengths[i]]  # (T, n_assets)
+                # BUG-1 fix: Align returns to window decision points.
+                # valid_lengths[i] is prices length, returns length is valid_lengths[i]-1,
+                # aligned returns start at ws-1.
+                ws = self.config.window_size
+                log_returns_i = log_returns[i, ws - 1:valid_lengths[i] - 1]  # aligned to decision points
                 state_ch_i, conf_i = self._model_state_rollout(
                     market_obs_i,
                     log_returns_i,
@@ -1067,10 +1076,10 @@ class OnTheFlyGenerator:
             for idx in indices_to_refresh:
                 self.buffer_sample_counts[idx] = self.SAMPLES_PER_EPISODE
 
-            # Remove from param tracking
-            for idx in sorted(indices_to_refresh, reverse=True):
+            # LATENT fix: Set sentinel instead of delete (prevents list length desync)
+            for idx in indices_to_refresh:
                 if idx < len(self._buffer_param_ids):
-                    del self._buffer_param_ids[idx]
+                    self._buffer_param_ids[idx] = -1  # Sentinel: lowest in FIFO sort
 
     def generate_batch(self, batch_size: int) -> dict:
         """
@@ -1118,12 +1127,12 @@ class OnTheFlyGenerator:
             # TASK_680: Trade-biased offset selection (coin-flip, O(1))
             max_offset = max(0, n_available - take_count)
             trade_indices = ep_data.get('trade_indices', np.array([]))
-            if (len(trade_indices) > 0
+            # BUG-7 fix: Filter to valid offsets before sampling (prevents pile-up at boundary)
+            valid_trades = trade_indices[trade_indices <= max_offset]
+            if (len(valid_trades) > 0
                     and max_offset > 0
                     and self.rng.random() < self.config.trade_sample_prob):
-                # Sample from trade-heavy timesteps, clamp to valid window range
-                idx = self.rng.choice(trade_indices)
-                offset = int(np.clip(idx, 0, max_offset))
+                offset = int(self.rng.choice(valid_trades))
             else:
                 offset = self.rng.integers(0, max_offset + 1) if max_offset > 0 else 0
 
@@ -1538,7 +1547,12 @@ def main():
         ckpt_path = str(Path(args.checkpoint).resolve())
         checkpoint = trainer.load_checkpoint(ckpt_path)
         start_epoch = checkpoint['epoch'] + 1
-        best_agreement = checkpoint['metrics'].get('oracle_agreement', 0.0)
+        # BUG-6 fix: Merged checkpoints may lack 'oracle_agreement' — check branch keys too
+        best_agreement = max(
+            checkpoint['metrics'].get('oracle_agreement', 0.0),
+            checkpoint['metrics'].get('a_agreement', 0.0),
+            checkpoint['metrics'].get('b_agreement', 0.0),
+        )
         logger.info(f"Resuming from epoch {start_epoch}, best agreement: {best_agreement:.1%}")
 
     # Eval only mode
@@ -1579,6 +1593,9 @@ def main():
             if (epoch + 1) % config.eval_every == 0 or epoch == config.epochs - 1:
                 # TASK_691: Val generator needs same epoch for entropy schedule
                 val_generator._current_epoch = epoch
+                # BUG-5 fix: Update val_generator with current model params
+                if autoregressive_state:
+                    val_generator.set_model_params(trainer.model, trainer.params)
                 val_metrics = validate(trainer, val_generator, config, n_batches=20)
             else:
                 val_metrics = {}

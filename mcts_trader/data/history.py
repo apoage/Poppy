@@ -1,6 +1,8 @@
 import sqlite3
 import logging
 import numpy as np
+import os
+import time
 from typing import Dict, Tuple, Optional
 
 class HistoricalMarket:
@@ -8,21 +10,41 @@ class HistoricalMarket:
     Manages historical data replay for training.
     Reads from SQLite database efficiently.
     """
-    def __init__(self, db_path: str = "trading_data.db", n_assets: int = 64, min_required_assets: int = 10, 
+    def __init__(self, db_path: str = "trading_data.db", n_assets: int = 64, min_required_assets: int = 10,
                  specific_symbols: list = None, start_date: Optional[str] = None, end_date: Optional[str] = None,
-                 use_ram_cache: bool = True):
+                 use_ram_cache: bool = True, skip_validation: bool = False,
+                 cache_path: Optional[str] = None):
         """
         Initialize HistoricalMarket with robust filtering and RAM caching.
+
+        Args:
+            cache_path: If provided, tries to load from cache first.
+                       If cache doesn't exist, saves to it after loading.
+                       Use for faster startup (7min -> 5sec for 102M points).
         """
+        self._loaded_from_cache = False
+
+        # Try loading from cache first (massive speedup for tournament/repeated runs)
+        if cache_path and self._try_load_cache(cache_path):
+            self._loaded_from_cache = True
+            # Still need DB connection for any dynamic queries
+            self.db_path = db_path
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.cursor = self.conn.cursor()
+            self.current_time = max(self.min_time, 0)
+            return  # Skip all the heavy loading
+
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.n_assets = n_assets
         self.min_required_assets = min_required_assets
         self.use_ram_cache = use_ram_cache
+        self.skip_validation = skip_validation  # Skip expensive GROUP BY when date range pre-validated
 
         # Date filtering
-        from datetime import datetime
+        # BUG-10 fix: Use UTC timezone for all conversions (Kraken data is UTC)
+        from datetime import datetime, timezone
         self.filter_start_ts = 0
         self.filter_end_ts = 9999999999
 
@@ -31,10 +53,10 @@ class HistoricalMarket:
                 self.filter_start_ts = int(start_date)
             else:
                 try:
-                    self.filter_start_ts = int(datetime.strptime(str(start_date), '%Y-%m-%d').timestamp())
+                    self.filter_start_ts = int(datetime.strptime(str(start_date), '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
                 except ValueError:
                      try:
-                         self.filter_start_ts = int(datetime.fromisoformat(str(start_date)).timestamp())
+                         self.filter_start_ts = int(datetime.fromisoformat(str(start_date)).replace(tzinfo=timezone.utc).timestamp())
                      except:
                          logging.warning(f"Could not parse start_date: {start_date}, ignoring.")
 
@@ -43,10 +65,10 @@ class HistoricalMarket:
                 self.filter_end_ts = int(end_date)
             else:
                 try:
-                    self.filter_end_ts = int(datetime.strptime(str(end_date), '%Y-%m-%d').timestamp())
+                    self.filter_end_ts = int(datetime.strptime(str(end_date), '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
                 except ValueError:
                      try:
-                         self.filter_end_ts = int(datetime.fromisoformat(str(end_date)).timestamp())
+                         self.filter_end_ts = int(datetime.fromisoformat(str(end_date)).replace(tzinfo=timezone.utc).timestamp())
                      except:
                          logging.warning(f"Could not parse end_date: {end_date}, ignoring.")
 
@@ -69,6 +91,16 @@ class HistoricalMarket:
             raise ValueError("No valid assets found in database")
 
         self.min_time, self.max_time = self._get_time_range()
+
+        # TASK_105: Defensive bounds check - fail fast if requesting future data
+        if self.filter_start_ts > self.max_time:
+            from datetime import datetime
+            req_start = datetime.fromtimestamp(self.filter_start_ts).strftime('%Y-%m-%d')
+            db_max = datetime.fromtimestamp(self.max_time).strftime('%Y-%m-%d')
+            raise ValueError(
+                f"Requested start_date ({req_start}) is beyond database max ({db_max}). "
+                f"No data available for this period."
+            )
 
         logging.info(f"Building valid timestamp index (min {min_required_assets} of our {self.n_assets} assets)...")
         self.valid_timestamps = self._build_valid_timestamps_for_assets()
@@ -103,6 +135,74 @@ class HistoricalMarket:
         
         if self.use_ram_cache and len(self.valid_timestamps) > 0:
             self._preload_to_ram()
+
+        # Save cache if path specified and we loaded from DB
+        if cache_path and self.cache_data is not None and not self._loaded_from_cache:
+            self._save_cache(cache_path)
+
+    def _try_load_cache(self, cache_path: str) -> bool:
+        """Try to load from numpy cache file. Returns True if successful."""
+        if not os.path.exists(cache_path):
+            return False
+
+        try:
+            t0 = time.time()
+            logging.info(f"Loading from cache: {cache_path}")
+            data = np.load(cache_path, allow_pickle=True)
+
+            # Restore state
+            self.valid_timestamps = data['valid_timestamps']
+            self.cache_data = data['cache_data']
+            self.asset_ids = data['asset_ids'].tolist()
+            self.assets = dict(zip(self.asset_ids, data['asset_symbols']))
+            self.id_to_symbol = self.assets
+            self.symbol_to_id = {v: k for k, v in self.assets.items()}
+            self.min_time = int(data['min_time'])
+            self.max_time = int(data['max_time'])
+            self.n_assets = len(self.asset_ids)
+
+            # Rebuild indices
+            self.ts_to_idx = {ts: i for i, ts in enumerate(self.valid_timestamps)}
+            self.id_to_col = {aid: i for i, aid in enumerate(self.asset_ids)}
+
+            # FX data if present
+            if 'fx_matrix' in data and data['fx_matrix'] is not None:
+                self.fx_matrix = data['fx_matrix']
+                self.fx_symbols = data['fx_symbols'].tolist() if 'fx_symbols' in data else []
+                self.fx_sym_to_idx = {s: i for i, s in enumerate(self.fx_symbols)}
+
+            logging.info(f"Loaded from cache in {time.time()-t0:.1f}s: "
+                        f"{len(self.assets)} assets, {len(self.valid_timestamps):,} timestamps")
+            return True
+        except Exception as e:
+            logging.warning(f"Failed to load cache {cache_path}: {e}")
+            return False
+
+    def _save_cache(self, cache_path: str):
+        """Save current state to numpy cache file."""
+        try:
+            t0 = time.time()
+            logging.info(f"Saving cache to: {cache_path}")
+
+            save_dict = {
+                'valid_timestamps': self.valid_timestamps,
+                'cache_data': self.cache_data,
+                'asset_ids': np.array(self.asset_ids),
+                'asset_symbols': np.array([self.assets[aid] for aid in self.asset_ids]),
+                'min_time': self.min_time,
+                'max_time': self.max_time,
+            }
+
+            # Include FX data if available
+            if self.fx_matrix is not None:
+                save_dict['fx_matrix'] = self.fx_matrix
+                save_dict['fx_symbols'] = np.array(self.fx_symbols)
+
+            np.savez_compressed(cache_path, **save_dict)
+            file_size = os.path.getsize(cache_path) / (1024**2)
+            logging.info(f"Cache saved ({file_size:.1f} MB) in {time.time()-t0:.1f}s")
+        except Exception as e:
+            logging.warning(f"Failed to save cache: {e}")
 
     def _load_specific_assets(self, symbols: list) -> Dict[int, str]:
         """Load specific assets by symbol list"""
@@ -172,8 +272,26 @@ class HistoricalMarket:
     def _build_valid_timestamps_for_assets(self) -> np.ndarray:
         """
         Build valid timestamps for OUR SPECIFIC ASSETS.
+        If skip_validation=True, just get all unique timestamps in range (much faster).
         """
         asset_ids_str = ','.join(map(str, self.asset_ids))
+
+        if self.skip_validation:
+            # Fast path: trust pre-validated date range, just get distinct timestamps
+            print(f"      [HistoricalMarket] Fast-loading timestamps (skip_validation=True)...", flush=True)
+            query = f"""
+                SELECT DISTINCT timestamp
+                FROM ohlcv
+                WHERE asset_id IN ({asset_ids_str})
+                AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+            """
+            self.cursor.execute(query, (self.filter_start_ts, self.filter_end_ts))
+            rows = self.cursor.fetchall()
+            print(f"      [HistoricalMarket] Found {len(rows)} timestamps", flush=True)
+            return np.array([r[0] for r in rows], dtype=np.int64)
+
+        # Standard path: expensive GROUP BY with HAVING COUNT validation
         query = f"""
             SELECT timestamp
             FROM ohlcv
@@ -247,6 +365,22 @@ class HistoricalMarket:
                 
         logging.info(f"✅ Loaded {count:,} candles into RAM ({self.cache_data.nbytes / 1024**2:.1f} MB) in {time.time()-t0:.1f}s")
 
+        # --- Forward-fill missing prices ---
+        # Assets may have gaps where no trade occurred. Forward-fill with last known price.
+        # This prevents positions from "disappearing" when price data is missing.
+        logging.info("📈 Forward-filling price gaps...")
+        gaps_filled = 0
+        for c_idx in range(n_cols):
+            last_valid = None
+            for r_idx in range(n_rows):
+                if self.cache_data[r_idx, c_idx, 3] > 0:  # Has close price
+                    last_valid = self.cache_data[r_idx, c_idx].copy()
+                elif last_valid is not None:
+                    # Fill gap with last known values
+                    self.cache_data[r_idx, c_idx] = last_valid
+                    gaps_filled += 1
+        logging.info(f"✅ Filled {gaps_filled:,} price gaps via forward-fill")
+
         # --- Load FX Data ---
         if self.fx_symbols:
             t_fx = time.time()
@@ -272,6 +406,18 @@ class HistoricalMarket:
                     fx_count += 1
             
             logging.info(f"✅ Loaded {fx_count:,} FX rates into RAM in {time.time()-t_fx:.1f}s")
+
+            # Forward-fill FX gaps (FX trades less frequently than crypto)
+            fx_gaps_filled = 0
+            for c_idx in range(n_fx_cols):
+                last_valid = 1.0  # Default to 1.0 (USD/USD)
+                for r_idx in range(n_rows):
+                    if self.fx_matrix[r_idx, c_idx] != 1.0:  # Has actual rate (not default)
+                        last_valid = self.fx_matrix[r_idx, c_idx]
+                    elif self.fx_matrix[r_idx, c_idx] == 1.0 and last_valid != 1.0:
+                        self.fx_matrix[r_idx, c_idx] = last_valid
+                        fx_gaps_filled += 1
+            logging.info(f"✅ Filled {fx_gaps_filled:,} FX rate gaps via forward-fill")
 
     def reset(self, start_time: Optional[int] = None, lookahead_steps: int = 300) -> Dict[str, Dict]:
         """
