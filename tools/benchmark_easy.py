@@ -121,6 +121,38 @@ class PeriodResult:
 # Price Loading
 # =============================================================================
 
+def _get_schedule_assets(start_date: str, end_date: str) -> Optional[List[str]]:
+    """Load pre-computed asset list from training_schedule.json.
+
+    Finds training periods adjacent to the benchmark date range
+    and returns their available assets, avoiding the expensive
+    _load_top_assets GROUP BY query on the full database.
+    """
+    schedule_path = Path(__file__).parent.parent / "training_schedule.json"
+    if not schedule_path.exists():
+        return None
+
+    from datetime import datetime, timezone
+
+    bm_start = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
+    bm_end = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
+
+    with open(schedule_path) as f:
+        schedule = json.load(f)
+
+    # Collect assets from periods adjacent to benchmark dates (within 30 days)
+    assets = set()
+    margin = 30 * 86400
+    for period in schedule.get('periods', []):
+        if period['end'] >= bm_start - margin and period['start'] <= bm_end + margin:
+            assets.update(period.get('available_assets', []))
+
+    if assets:
+        logging.info(f"Loaded {len(assets)} assets from training_schedule.json (skipping DB scan)")
+        return list(assets)
+    return None
+
+
 def load_benchmark_prices(
     period: dict,
     db_path: str = "trading_data.db",
@@ -129,12 +161,17 @@ def load_benchmark_prices(
     """Load real close prices for a benchmark period from DB.
 
     Uses HistoricalMarket with date filtering + RAM cache.
+    Loads asset list from training_schedule.json to avoid expensive
+    full-database GROUP BY query.
 
     Returns:
         prices: (T, n_assets) close prices, forward-filled
         symbols: list of symbol names
     """
     print(f"  Loading prices: {period['start_date']} to {period['end_date']}...")
+
+    # Load pre-computed assets from schedule (avoids expensive _load_top_assets)
+    schedule_assets = _get_schedule_assets(period['start_date'], period['end_date'])
 
     market = HistoricalMarket(
         db_path=db_path,
@@ -143,6 +180,7 @@ def load_benchmark_prices(
         end_date=period['end_date'],
         use_ram_cache=True,
         skip_validation=True,
+        specific_symbols=schedule_assets,
     )
 
     # Extract close prices: cache_data shape is (T, n_assets_actual, 5), channel 3 = close
