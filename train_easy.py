@@ -553,7 +553,10 @@ class OnTheFlyGenerator:
         T, n_assets = log_returns.shape
         use_state_channels = self.config.n_channels > 27
         autoregressive_state = getattr(self.config, 'autoregressive_state', False)
-        use_model_rollout = (use_state_channels and autoregressive_state
+        # TASK_696: AR warmup — oracle state for first N epochs, then AR with DAgger targets
+        ar_warmup = getattr(self.config, 'ar_warmup_epochs', 0)
+        ar_active = autoregressive_state and self._current_epoch >= ar_warmup
+        use_model_rollout = (use_state_channels and ar_active
                              and self._model_params is not None)
 
         n_valid = len(log_returns) - self.config.window_size
@@ -651,10 +654,26 @@ class OnTheFlyGenerator:
             # Full obs: (n_windows, 34, ws, n_assets)
             observations = jnp.concatenate([market_obs, state_tiled, conf_tiled], axis=1)
 
+        # TASK_696: DAgger fix — when using model-state rollout, re-compute
+        # policy targets from student's actual position, not oracle's.
+        # "Given where YOU are, what action reaches the oracle's target?"
+        if use_model_rollout:
+            n_windows = end_idx - start_idx
+            student_prev_pos = state_channels[:n_windows, 0, :]  # (n_windows, n_assets)
+            actions_aligned = optimal_path_to_policy(
+                oracle_selections[start_idx:end_idx],
+                log_returns[start_idx:end_idx],
+                prev_selections=student_prev_pos,
+                n_actions_per_asset=5,
+                temperature=1.0,
+            )
+        else:
+            actions_aligned = policy_targets[start_idx:end_idx]
+
         ep_data = {
             'observations': observations[:end_idx - start_idx],
-            'actions': policy_targets[start_idx:end_idx],  # Soft targets (320-dim), not argmax
-            'returns': remaining_pnl[start_idx:end_idx],   # Remaining PnL, not cumulative
+            'actions': actions_aligned,
+            'returns': remaining_pnl[start_idx:end_idx],
             'level': level,
             'n_samples': end_idx - start_idx,
         }
@@ -775,6 +794,9 @@ class OnTheFlyGenerator:
         # TASK_689: Build state channels per episode
         use_state_channels = self.config.n_channels > 27
         autoregressive_state = getattr(self.config, 'autoregressive_state', False)
+        # TASK_696: AR warmup — oracle state for first N epochs
+        ar_warmup = getattr(self.config, 'ar_warmup_epochs', 0)
+        ar_active = autoregressive_state and self._current_epoch >= ar_warmup
         # TASK_691: Oracle entropy schedule (computed once per batch)
         p_drop, q_phantom = self._get_entropy_schedule() if use_state_channels else (0.0, 0.0)
 
@@ -790,7 +812,7 @@ class OnTheFlyGenerator:
             obs_i = all_observations[i, :n_windows]
 
             # TASK_689/692/693: Append state channels
-            if use_state_channels and autoregressive_state and self._model_params is not None:
+            if use_state_channels and ar_active and self._model_params is not None:
                 # TASK_692/693: Model-state rollout with incremental position stepping
                 market_obs_i = all_observations[i]  # (n_valid, 27, ws, n_assets)
                 # BUG-1 fix: Align returns to window decision points.
@@ -845,10 +867,23 @@ class OnTheFlyGenerator:
                 conf_tiled = jnp.tile(conf_at_w[:, None, None, :], (1, 1, ws, 1))
                 obs_i = jnp.concatenate([obs_i, state_tiled, conf_tiled], axis=1)
 
+            # TASK_696: DAgger fix — re-compute targets from student position
+            if use_state_channels and ar_active and self._model_params is not None:
+                student_prev_pos = state_ch_i[:n_windows, 0, :]  # (n_windows, n_assets)
+                actions_i = optimal_path_to_policy(
+                    oracle_selections_batch[i, start_idx:end_idx],
+                    log_returns[i, start_idx:end_idx],
+                    prev_selections=student_prev_pos,
+                    n_actions_per_asset=5,
+                    temperature=1.0,
+                )
+            else:
+                actions_i = policy_targets[i, start_idx:end_idx]
+
             ep_data = {
                 'observations': obs_i,
-                'actions': policy_targets[i, start_idx:end_idx],    # Soft targets (320-dim)
-                'returns': remaining_pnl[i, start_idx:end_idx],     # Remaining PnL
+                'actions': actions_i,
+                'returns': remaining_pnl[i, start_idx:end_idx],
                 'level': levels[i],
                 'n_samples': n_windows,
             }
@@ -1136,26 +1171,30 @@ class OnTheFlyGenerator:
                 self.buffer_sample_counts[ep_idx] = self.SAMPLES_PER_EPISODE  # Mark exhausted
                 continue
 
-            # TASK_680: Trade-biased offset selection (coin-flip, O(1))
-            max_offset = max(0, n_available - take_count)
-            trade_indices = ep_data.get('trade_indices', np.array([]))
-            # BUG-7 fix: Filter to valid offsets before sampling (prevents pile-up at boundary)
-            valid_trades = trade_indices[trade_indices <= max_offset]
-            if (len(valid_trades) > 0
-                    and max_offset > 0
-                    and self.rng.random() < self.config.trade_sample_prob):
-                offset = int(self.rng.choice(valid_trades))
+            # TASK_696: Per-sample trade-biased selection
+            # Old TASK_680 did single coin flip per episode visit — effective bias ~1.5-3%.
+            # Now each sample independently decides trade vs random offset.
+            trade_indices = ep_data.get('trade_indices', np.array([], dtype=np.intp))
+            valid_trades = trade_indices[trade_indices < n_available]
+            if len(valid_trades) > 0 and self.config.trade_sample_prob > 0:
+                trade_mask = self.rng.random(take_count) < self.config.trade_sample_prob
+                n_trade = int(trade_mask.sum())
+                indices = np.empty(take_count, dtype=np.intp)
+                if n_trade > 0:
+                    indices[trade_mask] = self.rng.choice(valid_trades, size=n_trade)
+                if n_trade < take_count:
+                    indices[~trade_mask] = self.rng.integers(0, n_available, size=take_count - n_trade)
             else:
-                offset = self.rng.integers(0, max_offset + 1) if max_offset > 0 else 0
+                indices = self.rng.integers(0, max(n_available, 1), size=take_count)
 
-            all_obs.append(ep_data['observations'][offset:offset + take_count])
+            all_obs.append(ep_data['observations'][indices])
             if self._use_latent_cache and 'latent_states' in ep_data:
-                all_latents.append(ep_data['latent_states'][offset:offset + take_count])
-            all_actions.append(ep_data['actions'][offset:offset + take_count])
-            all_returns.append(ep_data['returns'][offset:offset + take_count])
+                all_latents.append(ep_data['latent_states'][indices])
+            all_actions.append(ep_data['actions'][indices])
+            all_returns.append(ep_data['returns'][indices])
             # TASK_695: Oracle mask
             if 'oracle_mask' in ep_data:
-                all_oracle_masks.append(ep_data['oracle_mask'][offset:offset + take_count])
+                all_oracle_masks.append(ep_data['oracle_mask'][indices])
 
             self.buffer_sample_counts[ep_idx] += take_count
             samples_needed -= take_count
@@ -1297,8 +1336,11 @@ def train_epoch(
     # TASK_692: Update generator's model params for autoregressive state rollout
     # Call at start of each epoch to refresh partial buffer with new params
     autoregressive_state = getattr(config, 'autoregressive_state', False)
-    if autoregressive_state:
+    ar_warmup = getattr(config, 'ar_warmup_epochs', 0)
+    if autoregressive_state and epoch >= ar_warmup:
         generator.set_model_params(trainer.model, trainer.params)
+        if epoch == ar_warmup:
+            logger.info(f"  ► AR warmup complete — switching to model-state rollout with DAgger targets")
 
     epoch_metrics = {}  # Dynamic initialization - immune to trainer metric changes
 
@@ -1531,9 +1573,12 @@ def main():
 
     # TASK_674: Separate validation generator (different seed, no train data leakage)
     # TASK_675: Smaller buffer — val only runs 20 batches/epoch, no need for full buffer
+    # TASK_696: Val uses unbiased sampling (trade_sample_prob=0) to measure natural distribution
+    from dataclasses import replace as _dc_replace
+    val_config = _dc_replace(config, trade_sample_prob=0.0)
     val_buffer_size = max(args.buffer_size // 4, 4)
     val_generator = OnTheFlyGenerator(
-        config,
+        val_config,
         seed=config.seed + 7919,  # Different seed for val data
         bella_generator=bella_generator,
         n_envs=args.n_envs,
@@ -1555,12 +1600,16 @@ def main():
         generator.set_encoder(trainer.model, trainer.params)
         val_generator.set_encoder(trainer.model, trainer.params)
 
-    # TASK_692: Enable model-state rollout for autoregressive state channels
+    # TASK_692/696: Model-state rollout with AR warmup schedule
     autoregressive_state = getattr(config, 'autoregressive_state', False)
+    ar_warmup = getattr(config, 'ar_warmup_epochs', 0)
     if autoregressive_state:
-        logger.info("Enabling autoregressive state channels (model-state rollout)...")
-        generator.set_model_params(trainer.model, trainer.params)
-        val_generator.set_model_params(trainer.model, trainer.params)
+        if ar_warmup > 0:
+            logger.info(f"Autoregressive state: warmup {ar_warmup} epochs (oracle state), then AR with DAgger targets")
+        else:
+            logger.info("Enabling autoregressive state channels (model-state rollout)...")
+            generator.set_model_params(trainer.model, trainer.params)
+            val_generator.set_model_params(trainer.model, trainer.params)
 
     # Load checkpoint if provided
     start_epoch = 0
@@ -1617,7 +1666,7 @@ def main():
                 # TASK_691: Val generator needs same epoch for entropy schedule
                 val_generator._current_epoch = epoch
                 # BUG-5 fix: Update val_generator with current model params
-                if autoregressive_state:
+                if autoregressive_state and epoch >= ar_warmup:
                     val_generator.set_model_params(trainer.model, trainer.params)
                 val_metrics = validate(trainer, val_generator, config, n_batches=20)
             else:

@@ -88,7 +88,10 @@ class EasyConfig:
     oracle_mask_weight: float = 0.1
 
     # TASK_692: Model-state rollout — state channels from model's own actions
-    autoregressive_state: bool = True       # Use model-state rollout instead of oracle state
+    # TASK_696: DAgger fix applied — AR now uses student-position-aware targets
+    # Warmup: oracle state for first N epochs, then AR with correct DAgger targets
+    autoregressive_state: bool = True
+    ar_warmup_epochs: int = 100            # Oracle state channels for E0..N-1, AR from E_N onward
     state_refresh_fraction: float = 0.2     # Fraction of buffer to refresh per epoch (20%)
 
     # === Data ===
@@ -172,7 +175,7 @@ def get_large_config() -> EasyConfig:
         H_cycles=6,
         L_cycles=8,
         hidden_dim=512,
-        trm_hidden_dim=1024,  # TASK_684: Constrain reasoning (was state_dim*16=2048 uncapped)
+        trm_hidden_dim=2048,  # TASK_696: Restored from 1024 — halved FFN killed trade learning
         num_heads=16,
         embed_dim=64,         # TASK_683: Was 32 — richer per-asset features
         encoder_num_heads=8,  # TASK_683: Was 4 — more attention heads for 64-dim

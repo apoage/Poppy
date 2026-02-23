@@ -4,6 +4,7 @@ import flax.linen as nn
 from typing import Tuple, Any, Optional, Dict, Union
 from . import VALUE_SUPPORT_SIZE
 from .trm_encoder_v2 import AssetTransformerEncoder
+from .trm_encoder_v3 import StreamingAssetEncoder
 
 
 class TRMEncoder(nn.Module):
@@ -63,13 +64,15 @@ class TRMReasoning(nn.Module):
     n_actions: int = 192
     value_support_size: int = VALUE_SUPPORT_SIZE  # Central config: 401 bins over [-10, 10] (PopArt normalized)
     share_weights: bool = False  # TASK_006: Paper-compliant weight sharing option
+    # TASK_684: Decouple hidden_dim from state_dim. None = backward compat (state_dim * 16)
+    hidden_dim: Optional[int] = None
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 
     def setup(self):
         """Initialize shared layers if weight sharing enabled."""
         if self.share_weights:
-            hidden_dim = self.state_dim * 16
+            hidden_dim = self.hidden_dim if self.hidden_dim is not None else self.state_dim * 16
             # Shared latent refiner (used for ALL L_cycles)
             self.shared_latent_1 = nn.Dense(features=hidden_dim, dtype=self.dtype, param_dtype=self.param_dtype)
             self.shared_latent_ln = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype, param_dtype=self.param_dtype)
@@ -105,14 +108,15 @@ class TRMReasoning(nn.Module):
         state = state.astype(self.dtype)
 
         batch_size = state.shape[0]
-        # Aggressive scaling to reach 15M/25M params
-        hidden_dim = self.state_dim * 16
+        # TASK_684: Configurable hidden_dim, decoupled from state_dim
+        hidden_dim = self.hidden_dim if self.hidden_dim is not None else self.state_dim * 16
 
         # Track intermediates if requested (for DS24 dashboard)
         intermediates = {
             'latent_deltas': {},
             'output_deltas': {},
-            'latent_norms': []
+            'latent_norms': [],
+            'latent_per_h': {},  # Latent state at end of each H-cycle (for cycle ATC)
         } if return_intermediates else None
 
         # Initialize latent and output with learned parameters (small normal, not zeros!)
@@ -157,6 +161,10 @@ class TRMReasoning(nn.Module):
                     intermediates['latent_deltas'][f'h{h}_l{l}'] = latent_delta
 
                 latent = latent + latent_delta  # Residual connection
+
+            # Capture latent state at end of this H-cycle (for cycle ATC)
+            if return_intermediates:
+                intermediates['latent_per_h'][f'h{h}'] = latent
 
             # Refine output
             output_input = jnp.concatenate([latent, output], axis=-1)
@@ -218,15 +226,37 @@ class TinyRecursiveTradingModel(nn.Module):
     state_dim: int = 64
     n_actions: int = 192
     value_support_size: int = VALUE_SUPPORT_SIZE  # Central config: 401 bins over [-10, 10] (PopArt normalized)
+    encoder_version: int = 2  # 2=V2 (flatten), 3=V3 (minGRU temporal)
+    # TASK_684: Decouple hidden_dim from state_dim. None = backward compat (state_dim * 16)
+    hidden_dim: Optional[int] = None
+    # TASK_683: Encoder width params (defaults match V3 encoder defaults)
+    embed_dim: int = 32
+    encoder_num_heads: int = 4
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 
     def setup(self):
-        self.encoder = AssetTransformerEncoder(state_dim=self.state_dim, dtype=self.dtype, param_dtype=self.param_dtype)
+        if self.encoder_version == 3:
+            self.encoder = StreamingAssetEncoder(
+                state_dim=self.state_dim,
+                embed_dim=self.embed_dim,
+                num_heads=self.encoder_num_heads,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+        else:
+            self.encoder = AssetTransformerEncoder(
+                state_dim=self.state_dim,
+                embed_dim=self.embed_dim,           # TASK_696: Was hardcoded 32 (config ignored)
+                num_heads=self.encoder_num_heads,    # TASK_696: Was hardcoded 4 (config ignored)
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
         self.reasoning = TRMReasoning(
             state_dim=self.state_dim,
             n_actions=self.n_actions,
             value_support_size=self.value_support_size,
+            hidden_dim=self.hidden_dim,
             dtype=self.dtype,
             param_dtype=self.param_dtype
         )
