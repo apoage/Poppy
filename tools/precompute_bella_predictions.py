@@ -145,7 +145,7 @@ def _period_tag(period: dict) -> str:
 
 def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, ...],
                     k_samples: int, n_assets_target: int, out_dir: Path,
-                    bella_sha: str, db_path: str) -> dict | None:
+                    bella_sha: str, db_path: str, stride: int = 1) -> dict | None:
     from mcts_trader.data.history import HistoricalMarket
 
     tag = _period_tag(period)
@@ -155,6 +155,7 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
         return {'path': str(out_path.relative_to(REPO_ROOT)) if out_path.is_relative_to(REPO_ROOT) else str(out_path),
                 'k_samples': k_samples,
                 'horizons': list(horizons),
+                'stride': int(stride),
                 'bella_checkpoint_sha': bella_sha}
 
     try:
@@ -180,13 +181,25 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
         logger.warning(f"[{tag}] period too short ({T_ret} returns ≤ {ws}) — skip")
         return None
 
-    logger.info(f"[{tag}] T_ret={T_ret:,} n_windows={n_windows:,} K={k_samples}")
-    preds = np.zeros((n_windows, len(horizons), n_assets_target), dtype=np.float32)
+    stride = max(1, int(stride))
+    n_compute = (n_windows + stride - 1) // stride  # ceil
+    logger.info(f"[{tag}] T_ret={T_ret:,} n_windows={n_windows:,} K={k_samples} "
+                f"stride={stride} (computing {n_compute:,} windows, "
+                f"{n_windows - n_compute:,} NaN-masked)")
+    # Option B: full-shape array; positions not on stride grid are NaN so the
+    # trainer's existing NaN mask filters them out without consumer changes.
+    if stride > 1:
+        preds = np.full((n_windows, len(horizons), n_assets_target), np.nan,
+                        dtype=np.float32)
+    else:
+        preds = np.zeros((n_windows, len(horizons), n_assets_target),
+                         dtype=np.float32)
     # Seed salt derived from the tag so reruns are reproducible per-period.
     salt = int.from_bytes(hashlib.sha256(tag.encode()).digest()[:4], 'big')
 
     t0 = time.time()
-    for w in range(n_windows):
+    computed = 0
+    for w in range(0, n_windows, stride):
         window_ret = returns[w:w + ws]
         regime_idx = _regime_index_from_returns(window_ret)
         preds[w] = _window_forward_log_returns(
@@ -194,9 +207,11 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
             n_assets_target=n_assets_target, k_samples=k_samples,
             regime_idx=regime_idx, seed=(salt + w) & 0x7FFFFFFF,
         )
-        if (w + 1) % 200 == 0:
-            rate = (w + 1) / (time.time() - t0)
-            logger.info(f"[{tag}] {w + 1}/{n_windows} windows ({rate:.1f} w/s)")
+        computed += 1
+        if computed % 200 == 0:
+            rate = computed / (time.time() - t0)
+            logger.info(f"[{tag}] {computed}/{n_compute} computed windows "
+                        f"({rate:.1f} w/s)")
 
     np.savez_compressed(
         out_path,
@@ -210,8 +225,10 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
     return {'path': str(out_path.relative_to(REPO_ROOT)) if out_path.is_relative_to(REPO_ROOT) else str(out_path),
             'k_samples': k_samples,
             'horizons': list(horizons),
+            'stride': int(stride),
             'bella_checkpoint_sha': bella_sha,
-            'n_windows': int(n_windows)}
+            'n_windows': int(n_windows),
+            'n_computed': int(computed)}
 
 
 def main():
@@ -235,6 +252,12 @@ def main():
     ap.add_argument('--db-path', type=str, default='trading_data.db')
     ap.add_argument('--limit-periods', type=int, default=0,
                     help='Process only the first N periods (0=all). Debug use.')
+    ap.add_argument('--stride', type=int, default=1,
+                    help='Compute Bella prediction every Nth window; intermediate '
+                         'positions in the shard are filled with NaN. Default 1 '
+                         '(dense, byte-identical to legacy). The consumer masks '
+                         'NaN samples (train_phase2.py NaN filter), so shards '
+                         'remain full-shape and indexing is unchanged.')
     ap.add_argument('--dry-run', action='store_true',
                     help='Load Bella, compute one window, print shape + preview, exit.')
     args = ap.parse_args()
@@ -300,12 +323,14 @@ def main():
     if free_gb < 8.0:
         logger.warning(f"Only {free_gb:.1f} GB free under {out_dir} — target ≥ 8 GB.")
 
+    stride = max(1, int(args.stride))
     manifest = {
         'bella_checkpoint': str(ckpt_path.relative_to(REPO_ROOT)) if ckpt_path.is_relative_to(REPO_ROOT) else str(ckpt_path),
         'bella_checkpoint_sha': bella_sha,
         'window_size': args.window_size,
         'horizons': list(horizons),
         'k_samples': args.k_samples,
+        'stride': stride,
         'generated_at': _dt.datetime.utcnow().isoformat(),
         'shards': {},
     }
@@ -321,7 +346,7 @@ def main():
         logger.info(f"[{i + 1}/{len(periods)}] {tag}")
         entry = _process_period(period, generator, cfg, args.window_size, horizons,
                                  args.k_samples, args.n_assets, out_dir, bella_sha,
-                                 args.db_path)
+                                 args.db_path, stride=stride)
         if entry is not None:
             manifest['shards'][tag] = entry
             with open(args.manifest, 'w') as f:
