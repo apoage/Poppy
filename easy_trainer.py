@@ -59,6 +59,9 @@ class EasyTrainer:
             param_dtype=jnp.float32,        # TASK_686: store params in float32
             use_oracle_mask_head=getattr(config, 'use_oracle_mask_head', False),  # TASK_695
             oracle_mask_hidden_dim=getattr(config, 'oracle_mask_hidden_dim', 256),  # TASK_695
+            use_per_asset_injection=getattr(config, 'use_per_asset_injection', False),
+            per_asset_inject_xs=getattr(config, 'per_asset_inject_xs', False),
+            per_asset_inject_cheat=getattr(config, 'per_asset_inject_cheat', False),
         )
 
         # Initialize parameters using 'initialize_parameters' mode
@@ -189,6 +192,16 @@ class EasyTrainer:
 
             # Continuous weighting: blend between 1.0 (hold) and adaptive (trade)
             loss_weights = 1.0 + trade_strength * (adaptive_trade_weight - 1.0)  # (batch, 64)
+
+            # TASK_713: Return-weighted trades — high-value trades get more gradient
+            # Teaches model WHICH assets matter, not just that a trade happened
+            if 'per_asset_returns' in batch:
+                abs_ret = jnp.abs(batch['per_asset_returns'])  # (batch, 64)
+                mean_ret = jnp.maximum(jnp.mean(abs_ret), 1e-6)
+                # return_boost: 1.0 for holds, 1.0 + scaled_return for trades (capped at 10x)
+                return_boost = 1.0 + trade_strength * jnp.minimum(abs_ret / mean_ret, 10.0)
+                loss_weights = loss_weights * return_boost
+
             policy_loss = jnp.sum(per_asset_ce * loss_weights) / jnp.sum(loss_weights)
 
             # Value loss: cross-entropy with categorical targets

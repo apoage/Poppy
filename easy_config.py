@@ -24,7 +24,7 @@ class EasyConfig:
     state_dim: int = 64
     n_assets: int = 64
     action_space_size: int = 320  # 5 × 64
-    n_channels: int = 34  # TASK_689: Was 27. +7 agent state channels (position, pnl, hold_dur, heat×2, capacity, confidence)
+    n_channels: int = 39  # TASK_689+TASK_732: 32 encoder (27 per-asset + 5 cross-sectional) + 7 agent state channels
     H_cycles: int = 4  # TRM horizontal cycles
     L_cycles: int = 6  # TRM vertical cycles
     hidden_dim: int = 256
@@ -91,8 +91,11 @@ class EasyConfig:
     # TASK_696: DAgger fix applied — AR now uses student-position-aware targets
     # Warmup: oracle state for first N epochs, then AR with correct DAgger targets
     autoregressive_state: bool = True
-    ar_warmup_epochs: int = 100            # Oracle state channels for E0..N-1, AR from E_N onward
+    ar_warmup_epochs: int = 0              # Skip warmup — full AR from epoch 0
+    ar_blend_epochs: int = 0              # Skip blend — immediate full AR
+    ar_max_blend: float = 1.0             # 100% AR (orchestrator can override via --ar-max-blend)
     state_refresh_fraction: float = 0.2     # Fraction of buffer to refresh per epoch (20%)
+    ar_direct_fraction: float = 0.05        # TASK_715: Fraction of batches using full AR rollout in direct pipeline
 
     # === Data ===
     # TASK_152: Changed from 60 to 64 for temporal encoder (rows=time, cols=assets)
@@ -114,11 +117,25 @@ class EasyConfig:
     # === Success Criteria ===
     # TASK_147: With balanced accuracy, turtle gets 50%. Target 75% is meaningful.
     # (Was 0.995 with broken metric, 0.85 before that)
-    target_oracle_agreement: float = 0.75
+    target_oracle_agreement: float = 0.95
     target_value_mse: float = 0.1
 
     # === Hardware ===
     n_workers: int = 8  # For parallel data generation
+
+    # === TASK_733: Cheat-channel diagnostic (opt-in, never for production) ===
+    # Phase-1-only oracle-knowing upper-bound probe. Adds channel 32 with
+    # sign(r_fwd) in {−1, 0, +1}. Enable via train_easy.py --cheat-channel.
+    # Benchmark pipeline refuses checkpoints with this True.
+    use_cheat_channel: bool = False
+
+    # === TASK_741 (Mint): Per-asset post-pool scalar injection via FiLM ===
+    # Moves per-asset scalar features (xs_5, optional cheat) from pre-temporal
+    # input channels to post-temporal-pool feature surface so minGRU averaging
+    # cannot wash them out. Zero-init FiLM → byte-identical when scalar dims=0.
+    use_per_asset_injection: bool = False
+    per_asset_inject_xs: bool = False       # cross-sectional scalars (production-safe)
+    per_asset_inject_cheat: bool = False    # cheat scalar (diagnostic only)
 
     def save(self, path: str):
         """Save config to JSON."""

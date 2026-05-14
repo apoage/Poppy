@@ -125,35 +125,17 @@ class PeriodResult:
 # Price Loading
 # =============================================================================
 
-def _get_schedule_assets(start_date: str, end_date: str) -> Optional[List[str]]:
-    """Load pre-computed asset list from training_schedule.json.
+def _get_benchmark_assets(period: dict) -> Optional[List[str]]:
+    """Get pre-computed 64-asset list for this benchmark period.
 
-    Finds training periods adjacent to the benchmark date range
-    and returns their available assets, avoiding the expensive
-    _load_top_assets GROUP BY query on the full database.
+    TASK_705: Uses explicit benchmark_assets from benchmark_periods.json
+    instead of the union of all adjacent training period assets (which
+    returned 500+ assets, most of which were discarded).
     """
-    schedule_path = Path(__file__).parent.parent / "training_schedule.json"
-    if not schedule_path.exists():
-        return None
-
-    from datetime import datetime, timezone
-
-    bm_start = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
-    bm_end = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
-
-    with open(schedule_path) as f:
-        schedule = json.load(f)
-
-    # Collect assets from periods adjacent to benchmark dates (within 30 days)
-    assets = set()
-    margin = 30 * 86400
-    for period in schedule.get('periods', []):
-        if period['end'] >= bm_start - margin and period['start'] <= bm_end + margin:
-            assets.update(period.get('available_assets', []))
-
+    assets = period.get('benchmark_assets')
     if assets:
-        logging.info(f"Loaded {len(assets)} assets from training_schedule.json (skipping DB scan)")
-        return list(assets)
+        logging.info(f"Using {len(assets)} pre-computed benchmark assets")
+        return assets
     return None
 
 
@@ -174,8 +156,8 @@ def load_benchmark_prices(
     """
     print(f"  Loading prices: {period['start_date']} to {period['end_date']}...")
 
-    # Load pre-computed assets from schedule (avoids expensive _load_top_assets)
-    schedule_assets = _get_schedule_assets(period['start_date'], period['end_date'])
+    # TASK_705: Load exact 64 benchmark assets (not 500+ union from adjacent periods)
+    schedule_assets = _get_benchmark_assets(period)
 
     market = HistoricalMarket(
         db_path=db_path,
@@ -187,44 +169,47 @@ def load_benchmark_prices(
         specific_symbols=schedule_assets,
     )
 
-    # Extract close prices: cache_data shape is (T, n_assets_actual, 5), channel 3 = close
-    prices = market.cache_data[:, :, 3]  # (T, n_assets_actual)
-    actual_assets = prices.shape[1]
+    # TASK_703: Pass full OHLCV to encoder instead of close-only
+    ohlcv = market.cache_data  # (T, n_assets_actual, 5)
+    actual_assets = ohlcv.shape[1]
     symbols = [market.id_to_symbol[aid] for aid in market.asset_ids]
 
-    print(f"  Loaded: {prices.shape[0]} timesteps, {actual_assets} assets")
+    print(f"  Loaded: {ohlcv.shape[0]} timesteps, {actual_assets} assets")
 
     # Handle asset underflow: duplicate existing assets (NOT zero-pad)
     if actual_assets < n_assets:
         print(f"  WARNING: Only {actual_assets} assets, duplicating to fill {n_assets}")
         repeats = (n_assets // actual_assets) + 1
-        prices = np.tile(prices, (1, repeats))[:, :n_assets]
+        ohlcv = np.tile(ohlcv, (1, repeats, 1))[:, :n_assets, :]
         symbols = (symbols * repeats)[:n_assets]
     elif actual_assets > n_assets:
-        prices = prices[:, :n_assets]
+        ohlcv = ohlcv[:, :n_assets, :]
         symbols = symbols[:n_assets]
-
-    # Verify no zero prices (would cause inf/NaN in log returns)
-    zero_mask = prices <= 0
+    # Close prices for oracle and P&L computation
+    # TASK_703: Forward-fill all OHLCV channels (not just close)
+    # Check close channel for gaps — if close is zero, all channels are zero
+    close = ohlcv[:, :, 3]
+    zero_mask = close <= 0
     if np.any(zero_mask):
         n_zeros = np.sum(zero_mask)
         print(f"  WARNING: {n_zeros} zero/negative prices, filling gaps...")
-        for col in range(prices.shape[1]):
-            # Forward-fill
-            for row in range(1, prices.shape[0]):
-                if prices[row, col] <= 0 and prices[row - 1, col] > 0:
-                    prices[row, col] = prices[row - 1, col]
-            # Backward-fill (for initial gaps where row 0 is zero)
-            for row in range(prices.shape[0] - 2, -1, -1):
-                if prices[row, col] <= 0 and prices[row + 1, col] > 0:
-                    prices[row, col] = prices[row + 1, col]
-        # Final check
-        still_zero = np.sum(prices <= 0)
+        for col in range(ohlcv.shape[1]):
+            # Forward-fill all 5 channels together
+            for row in range(1, ohlcv.shape[0]):
+                if ohlcv[row, col, 3] <= 0 and ohlcv[row - 1, col, 3] > 0:
+                    ohlcv[row, col] = ohlcv[row - 1, col]
+            # Backward-fill
+            for row in range(ohlcv.shape[0] - 2, -1, -1):
+                if ohlcv[row, col, 3] <= 0 and ohlcv[row + 1, col, 3] > 0:
+                    ohlcv[row, col] = ohlcv[row + 1, col]
+        still_zero = np.sum(ohlcv[:, :, 3] <= 0)
         if still_zero > 0:
             print(f"  WARNING: {still_zero} prices still zero after fill — entire-column gaps")
 
+    prices = ohlcv[:, :, 3].copy()  # Close prices for oracle/PnL
+
     market.close()
-    return prices, symbols
+    return ohlcv, prices, symbols
 
 
 # =============================================================================
@@ -275,6 +260,9 @@ def simulate_model_pnl_detailed(
     total_pnl = 0.0
     trade_count = 0
 
+    # TASK_705: Equal-weight portfolio — each position is 1/n_assets of portfolio
+    txn_cost_norm = transaction_cost / n_assets
+
     for t in range(T):
         step_pnl = 0.0
 
@@ -283,22 +271,23 @@ def simulate_model_pnl_detailed(
                 if position[i] == -1:
                     position[i] = 0.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 elif position[i] == 0:
                     position[i] = 1.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
             elif actions[t, i] == 0 or actions[t, i] == 3:  # SELL or LIMITSELL
                 if position[i] == 1:
                     position[i] = 0.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 elif position[i] == 0:
                     position[i] = -1.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
 
-        step_pnl += np.sum(position * returns[t])
+        # TASK_705: Normalize by n_assets for equal-weight portfolio return
+        step_pnl += np.sum(position * returns[t]) / n_assets
         step_returns[t] = step_pnl
         total_pnl += step_pnl
 
@@ -343,8 +332,8 @@ def _simulate_pnl_vectorized(
         position[sell_from_long] = 0.0
         position[sell_from_flat] = -1.0
 
-        # P&L
-        total_pnl += np.sum(position * returns[t]) - n_trades * transaction_cost
+        # TASK_705: Normalize by n_assets for equal-weight portfolio return
+        total_pnl += np.sum(position * returns[t]) / n_assets - n_trades * transaction_cost / n_assets
 
     return total_pnl
 
@@ -401,9 +390,9 @@ def generate_bella_prices(
 
     for i in range(n_episodes):
         key, subkey = jax.random.split(key)
-        prices = generate_bella_prices_on_device(bella_gen, subkey, n_envs=1)
-        # prices: (seq_len, n_assets)
-        episodes.append(np.array(prices))
+        ohlcv = generate_bella_prices_on_device(bella_gen, subkey, n_envs=1)
+        # TASK_703: ohlcv is (seq_len, n_assets, 5)
+        episodes.append(np.array(ohlcv))
 
     print(f"  Generated {n_episodes} Bella episodes ({seq_len} steps × {episodes[0].shape[1]} assets)")
     return episodes
@@ -415,6 +404,7 @@ def generate_bella_prices(
 
 def run_period_eval(
     period: dict,
+    ohlcv: np.ndarray,
     prices: np.ndarray,
     symbols: List[str],
     model: MuZeroNetworks,
@@ -423,6 +413,8 @@ def run_period_eval(
     encoder_config: EncoderConfig,
 ) -> PeriodResult:
     """Evaluate model on a single benchmark period.
+
+    TASK_703: Now accepts ohlcv (T, n_assets, 5) for encoder and prices (T, n_assets) close for oracle/PnL.
 
     Temporal alignment:
     - obs[i] covers prices[i:i+window_size]
@@ -481,7 +473,7 @@ def run_period_eval(
     # Model trained with 34ch (27 market + 7 state). State channels come from
     # the model's own actions, not the oracle — honest inference.
     t0 = time.time()
-    prices_jax = jnp.array(prices)
+    prices_jax = jnp.array(ohlcv)  # TASK_703: full OHLCV for encoder
     use_state_channels = config.n_channels > 27
     BATCH = 128
     window_starts = jnp.arange(n_windows)
@@ -694,7 +686,8 @@ def run_period_eval(
     # 12. Value head MSE
     # BUG-3 fix: Value head is trained on REMAINING PnL, not cumulative
     oracle_remaining = oracle_cum_pnl[-1] - oracle_cum_pnl[action_return_indices]
-    value_mse = float(np.mean((model_values - oracle_remaining * config.value_scale) ** 2))
+    # Descale model values to match training metric (model outputs in [-10,10] logit space)
+    value_mse = float(np.mean((model_values / config.value_scale - oracle_remaining) ** 2))
 
     # TASK_695: Oracle mask accuracy (compare predictions against oracle selections)
     oracle_mask_accuracy = 0.0
@@ -704,11 +697,33 @@ def run_period_eval(
         )[:n_windows]  # (n_windows, n_assets)
         oracle_mask_accuracy = float(np.mean(mask_preds == oracle_sel_aligned))
 
+    # Action distribution diagnostic (TASK_725: bull market analysis)
+    action_names = ['SELL', 'HOLD', 'BUY', 'LSELL', 'LBUY']
+    oracle_flat = oracle_actions.flatten()
+    model_flat = model_actions.flatten()
+    total_decisions = n_windows * n_assets
+    print(f"  Action distribution (% of {total_decisions} decisions):")
+    print(f"    {'':8s}  {'SELL':>6s}  {'HOLD':>6s}  {'BUY':>6s}  {'LSELL':>6s}  {'LBUY':>6s}")
+    oracle_pcts = [float(np.mean(oracle_flat == a)) * 100 for a in range(5)]
+    model_pcts = [float(np.mean(model_flat == a)) * 100 for a in range(5)]
+    print(f"    {'Oracle':8s}  {oracle_pcts[0]:5.1f}%  {oracle_pcts[1]:5.1f}%  {oracle_pcts[2]:5.1f}%  {oracle_pcts[3]:5.1f}%  {oracle_pcts[4]:5.1f}%")
+    print(f"    {'Model':8s}  {model_pcts[0]:5.1f}%  {model_pcts[1]:5.1f}%  {model_pcts[2]:5.1f}%  {model_pcts[3]:5.1f}%  {model_pcts[4]:5.1f}%")
+    # Confusion: what does model do when oracle says BUY?
+    oracle_buy = (oracle_actions == 2) | (oracle_actions == 4)
+    oracle_sell = (oracle_actions == 0) | (oracle_actions == 3)
+    if np.any(oracle_buy):
+        model_on_buy = model_actions[oracle_buy]
+        buy_response = {a: float(np.mean(model_on_buy == a)) * 100 for a in range(5)}
+        print(f"    When oracle BUYs → model: SELL {buy_response[0]:.1f}% HOLD {buy_response[1]:.1f}% BUY {buy_response[2]:.1f}% LSELL {buy_response[3]:.1f}% LBUY {buy_response[4]:.1f}%")
+    if np.any(oracle_sell):
+        model_on_sell = model_actions[oracle_sell]
+        sell_response = {a: float(np.mean(model_on_sell == a)) * 100 for a in range(5)}
+        print(f"    When oracle SELLs → model: SELL {sell_response[0]:.1f}% HOLD {sell_response[1]:.1f}% BUY {sell_response[2]:.1f}% LSELL {sell_response[3]:.1f}% LBUY {sell_response[4]:.1f}%")
+
     # P&L capture ratio
     pnl_capture = model_pnl / oracle_pnl if oracle_pnl > 1e-10 else 0.0
 
     # Trade rates
-    total_decisions = n_windows * n_assets
     oracle_trade_rate = float(np.sum(oracle_actions != 1)) / total_decisions
     model_trade_rate = float(np.sum(model_actions != 1)) / total_decisions
 
@@ -821,16 +836,46 @@ def run_full_benchmark(
             config = get_medium_config()
         print(f"Config: {config_preset} preset (no config.json found)")
 
+    # TASK_733 safety rail: a cheat-channel checkpoint has trained on leaked
+    # future prices. Benchmarking it as a production candidate is meaningless
+    # and actively harmful (cheat input isn't available at inference time).
+    if getattr(config, 'use_cheat_channel', False):
+        raise RuntimeError(
+            "FATAL: checkpoint was trained with TASK_733 --cheat-channel "
+            "(use_cheat_channel=True). A cheat model sees future prices "
+            "during training; it cannot be benchmarked as a production "
+            "candidate. Train a clean model (no --cheat-channel) before "
+            "benchmarking. If you need the Phase-1 cheat-agreement diagnostic, "
+            "read Val Agree from the training log instead."
+        )
+    # TASK_741 (Mint) safety rail: cheat-injection variant is the diagnostic
+    # twin of the cheat channel — also requires future prices not available
+    # at inference time. xs-injection is production-legal (xs scalars are
+    # computed from window-internal data).
+    if (getattr(config, 'use_per_asset_injection', False)
+            and getattr(config, 'per_asset_inject_cheat', False)):
+        raise RuntimeError(
+            "FATAL: checkpoint was trained with TASK_741 cheat injection "
+            "(per_asset_inject_cheat=True). Same future-information leak as "
+            "TASK_733; cannot be benchmarked. Use --per-asset-injection xs "
+            "for production candidates."
+        )
+
     # Create model
     model = create_model(config)
     print(f"Model: {config.H_cycles}H×{config.L_cycles}L, state_dim={config.state_dim}")
     print(f"Oracle: k={config.oracle_k}, lookahead={config.oracle_lookahead}, "
           f"txn_cost={config.transaction_cost}, min_alpha={config.min_alpha_threshold}")
 
-    # Encoder config
+    # Encoder channels = total - state-channel block. State is 7 (6 positional +
+    # 1 confidence per build_state_channels). Legacy 27-ch checkpoints (TASK_738)
+    # store n_channels=34 (27+7); standard 32-ch checkpoints store 39 (32+7).
+    # Non-state variants pass their full n_channels straight through.
+    encoder_n_channels = config.n_channels - 7 if config.n_channels > 27 else config.n_channels
     encoder_config = EncoderConfig(
         n_assets=config.n_assets,
         window_size=config.window_size,
+        n_channels=encoder_n_channels,
     )
 
     # Evaluate each period
@@ -843,10 +888,10 @@ def run_full_benchmark(
         print(f"  {period['start_date']} to {period['end_date']}, BTC: {period['btc_change_pct']:+.1f}%")
 
         t0 = time.time()
-        prices, symbols = load_benchmark_prices(period, db_path, config.n_assets)
+        ohlcv, prices, symbols = load_benchmark_prices(period, db_path, config.n_assets)
 
         result = run_period_eval(
-            period, prices, symbols,
+            period, ohlcv, prices, symbols,
             model, params, config, encoder_config,
         )
         results.append(result)
@@ -864,15 +909,17 @@ def run_full_benchmark(
 
             # Evaluate each Bella episode, then average results
             bella_results = []
-            for ep_idx, bella_prices in enumerate(bella_prices_list):
+            for ep_idx, bella_ohlcv in enumerate(bella_prices_list):
                 bella_period = {
                     'name': f'bella_ep{ep_idx}',
                     'description': f'Bella synthetic episode {ep_idx}',
                 }
-                symbols_bella = [f'BELLA_{i:02d}' for i in range(bella_prices.shape[1])]
+                # TASK_703: bella_ohlcv is (T, n_assets, 5)
+                bella_close = bella_ohlcv[:, :, 3].copy()
+                symbols_bella = [f'BELLA_{i:02d}' for i in range(bella_ohlcv.shape[1])]
 
                 r = run_period_eval(
-                    bella_period, bella_prices, symbols_bella,
+                    bella_period, bella_ohlcv, bella_close, symbols_bella,
                     model, params, config, encoder_config,
                 )
                 bella_results.append(r)
@@ -1065,14 +1112,27 @@ def main():
             output['periods'].append(d)
 
         # Summary
+        n = len(results)
+        positive_alpha = sum(1 for r in results if r.model_alpha > 0)
+        beats_random = sum(1 for r in results if r.model_pnl > r.random_pnl)
+        trade_density_ok = sum(1 for r in results if r.model_trade_rate > 0.01)
+        avg_ba = float(np.mean([r.balanced_accuracy for r in results]))
+        avg_vmse = float(np.mean([r.value_mse for r in results]))
+
+        # TASK_706: Pass/fail based on TASK_666 criteria
+        passed = (positive_alpha >= 4 and beats_random == n and
+                  trade_density_ok == n and avg_ba >= 0.75 and avg_vmse < 0.1)
+
         output['summary'] = {
-            'avg_balanced_accuracy': float(np.mean([r.balanced_accuracy for r in results])),
+            'avg_balanced_accuracy': avg_ba,
             'avg_model_pnl': float(np.mean([r.model_pnl for r in results])),
             'avg_alpha': float(np.mean([r.model_alpha for r in results])),
             'avg_sharpe': float(np.mean([r.model_sharpe for r in results])),
-            'avg_value_mse': float(np.mean([r.value_mse for r in results])),
-            'positive_alpha_count': sum(1 for r in results if r.model_alpha > 0),
-            'beats_random_count': sum(1 for r in results if r.model_pnl > r.random_pnl),
+            'avg_value_mse': avg_vmse,
+            'positive_alpha_count': positive_alpha,
+            'beats_random_count': beats_random,
+            'trade_density_ok_count': trade_density_ok,
+            'passed': passed,
         }
 
         with open(args.json, 'w') as f:

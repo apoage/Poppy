@@ -232,6 +232,8 @@ class TinyRecursiveTradingModel(nn.Module):
     # TASK_683: Encoder width params (defaults match V3 encoder defaults)
     embed_dim: int = 32
     encoder_num_heads: int = 4
+    # TASK_741 (Mint): post-pool per-asset scalar injection
+    per_asset_scalar_dims: int = 0
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 
@@ -241,6 +243,7 @@ class TinyRecursiveTradingModel(nn.Module):
                 state_dim=self.state_dim,
                 embed_dim=self.embed_dim,
                 num_heads=self.encoder_num_heads,
+                per_asset_scalar_dims=self.per_asset_scalar_dims,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
             )
@@ -265,8 +268,29 @@ class TinyRecursiveTradingModel(nn.Module):
         state = self.encoder(x)
         return self.reasoning(state, H_cycles, L_cycles)
 
-    def encode(self, x):
+    def encode(self, x, per_asset_scalars=None):
+        if self.encoder_version == 3 and per_asset_scalars is not None:
+            return self.encoder(x, per_asset_scalars=per_asset_scalars)
         return self.encoder(x)
+
+    def encode_with_features(self, x, per_asset_scalars=None):
+        """TASK_729a: return (global_state, per_asset_feats).
+
+        per_asset_feats is (batch, n_assets, embed_dim) — post-LN, pre-pool.
+        Used by DirectionHead + PerAssetPolicyHead to bypass the 64→state_dim
+        global bottleneck.
+
+        TASK_729c: V3 (StreamingAssetEncoder) now also exposes per-asset feats
+        at the same structural point (post cross-attn LayerNorm, pre global_proj).
+        TASK_741 (Mint): per_asset_scalars optionally FiLM-injected at that point.
+        """
+        if self.encoder_version == 3:
+            return self.encoder(x, return_per_asset=True,
+                                per_asset_scalars=per_asset_scalars)
+        if self.encoder_version == 2:
+            return self.encoder(x, return_per_asset=True)
+        state = self.encoder(x)
+        return state, None
 
     def compute_policy_value(self, state, H_cycles=3, L_cycles=4):
         return self.reasoning(state, H_cycles, L_cycles)

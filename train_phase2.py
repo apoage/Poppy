@@ -1,0 +1,2242 @@
+#!/usr/bin/env python3
+"""
+Phase 2 Training — Dynamics Warmup + MCTS ExIt.
+
+TASK_716: Separate entry point for Phase 2. Does NOT modify train_easy.py.
+
+Usage:
+    # Dry run (validate checkpoint + pool loading)
+    python train_phase2.py --checkpoint jax_ckpt_easy_A/branch_A_historical/phase1_best.pkl --dry-run
+
+    # Stage A: Dynamics warmup
+    python train_phase2.py --checkpoint ... --stage A --epochs 500
+
+    # Stage B: MCTS ExIt
+    python train_phase2.py --checkpoint phase2_stageA_best.pkl --stage B --epochs 1000
+"""
+
+import os
+import sys
+import json
+import logging
+import warnings
+import argparse
+import pickle
+from pathlib import Path
+
+# GPU optimization (before JAX import)
+_trader_dir = os.path.dirname(os.path.abspath(__file__))
+_xla_cache = os.path.join(_trader_dir, '.xla_cache')
+_jax_cache = os.path.join(_trader_dir, '.jax_cache')
+os.makedirs(_xla_cache, exist_ok=True)
+os.makedirs(_jax_cache, exist_ok=True)
+os.environ['XLA_FLAGS'] = f'--xla_gpu_autotune_level=4 --xla_gpu_per_fusion_autotune_cache_dir={_xla_cache}'
+# NOTE: Do NOT use cuda_malloc_async — causes ILLEGAL_ADDRESS crashes under heavy
+# allocation churn (thousands of small GPU ops per epoch from per-slot encoding + MCTS).
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['JAX_COMPILATION_CACHE_DIR'] = _jax_cache
+# Preallocate GPU memory to avoid fragmentation from repeated alloc/free cycles
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.85'
+warnings.filterwarnings('ignore', category=FutureWarning, module='jax')
+logging.getLogger('jax._src.xla_bridge').setLevel(logging.ERROR)
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+import time
+import threading
+import queue
+import csv
+from collections import defaultdict
+
+from phase2_config import Phase2Config, get_phase2_config
+from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
+from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE
+from mcts_trader.jax_agent import get_value_support
+from mcts_trader.jax_agent.popart import (
+    PopArtState, init_popart_state, update_statistics,
+    normalize_targets, denormalize_values,
+)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Dynamics parameter key prefixes (all 9 leaf tensors)
+DYNAMICS_KEYS = frozenset([
+    'action_embedding', 'dynamics_dense1', 'dynamics_dense2',
+    'dynamics_ln', 'dynamics_state_norm',
+])
+
+# Per-step rewards ~0.001, need 100x to spread across 401 bins
+REWARD_SCALE = 100.0
+
+
+def scalar_to_categorical(values: jnp.ndarray) -> jnp.ndarray:
+    """Convert scalar values to categorical one-hot targets over 401 bins in [-10, 10].
+
+    Same pattern as EasyTrainer._scalar_to_target but as a standalone function for JIT.
+    """
+    values = jnp.clip(values, -10.0, 10.0)
+    bin_width = 20.0 / (VALUE_SUPPORT_SIZE - 1)
+    bin_idx = ((values + 10.0) / bin_width).astype(jnp.int32)
+    bin_idx = jnp.clip(bin_idx, 0, VALUE_SUPPORT_SIZE - 1)
+    return jax.nn.one_hot(bin_idx, VALUE_SUPPORT_SIZE)
+
+
+def _is_dynamics_key(path) -> bool:
+    """Check if a param path belongs to dynamics layers."""
+    key = str(path[0]) if path else ''
+    return any(dk in key for dk in DYNAMICS_KEYS)
+
+
+def load_phase1_checkpoint(ckpt_path: str):
+    """Load Phase 1 checkpoint and return (params, config_dict, epoch, metrics)."""
+    with open(ckpt_path, 'rb') as f:
+        ckpt = pickle.load(f)
+    return ckpt['params'], ckpt.get('config', {}), ckpt['epoch'], ckpt.get('metrics', {})
+
+
+def analyze_params(params):
+    """Analyze parameter sparsity. Returns (dynamics_info, encoder_info, total_params)."""
+    flat = jax.tree_util.tree_leaves_with_path(params)
+    total = sum(leaf.size for _, leaf in flat)
+
+    dynamics_zero = 0
+    dynamics_total = 0
+    encoder_zero = 0
+    encoder_total = 0
+
+    for path, leaf in flat:
+        key = str(path[0])
+        is_dynamics = any(dk in key for dk in DYNAMICS_KEYS)
+        sparsity = float((leaf == 0).mean())
+        if is_dynamics:
+            dynamics_total += 1
+            if sparsity > 0.99:
+                dynamics_zero += 1
+        else:
+            encoder_total += 1
+            if sparsity > 0.99:
+                encoder_zero += 1
+
+    return {
+        'dynamics_zero': dynamics_zero,
+        'dynamics_total': dynamics_total,
+        'encoder_zero': encoder_zero,
+        'encoder_total': encoder_total,
+        'total_params': total,
+    }
+
+
+def warm_policy_direction_refiner(params, alpha: float = 0.5, n_assets: int = 64):
+    """TASK_728b: Break zero-init cold-start by seeding PolicyDirectionRefiner
+    with per-action priors. For each asset j, the SELL/LSELL slots get
+    coefficient −α on its own direction logit, BUY/LBUY get +α, HOLD gets 0.
+    Other (cross-asset) entries stay zero so direction flows asset-locally.
+
+    Action order: 0=Sell, 1=Hold, 2=Buy, 3=LimitSell, 4=LimitBuy.
+    """
+    if 'policy_direction_refiner' not in params:
+        logger.warning("policy_direction_refiner not in params — skipping warm-start")
+        return params
+    inner = params['policy_direction_refiner']['dir_to_policy']
+    kernel = inner['kernel']  # (n_assets, n_assets * 5)
+    n_actions = kernel.shape[1] // n_assets
+    assert n_actions == 5, f"Expected 5 actions, got {n_actions}"
+    action_priors = jnp.array([-alpha, 0.0, alpha, -alpha, alpha], dtype=kernel.dtype)
+    eye = jnp.eye(n_assets, dtype=kernel.dtype)
+    new_kernel = (eye[:, :, None] * action_priors[None, None, :]).reshape(
+        n_assets, n_assets * n_actions
+    )
+    new_params = dict(params)
+    new_params['policy_direction_refiner'] = {
+        'dir_to_policy': {
+            'kernel': new_kernel,
+            'bias': jnp.zeros_like(inner['bias']),
+        }
+    }
+    logger.info(f"Warmed PolicyDirectionRefiner kernel with α={alpha} "
+                f"(BUY/LBUY=+{alpha}, SELL/LSELL=−{alpha}, HOLD=0)")
+    return new_params
+
+
+def initialize_missing_aux_heads(model, params, config, rng_key):
+    """TASK_727: If checkpoint predates an aux head (direction_head, oracle_mask),
+    initialize that subtree fresh while keeping all existing params.
+    TASK_741 (Mint): also fills the nested trm/encoder/film_projector subtree
+    when the loaded checkpoint predates per-asset injection.
+
+    Returns new params with any missing top-level keys filled in.
+    """
+    dummy_obs = jnp.zeros((1, config.n_channels, config.window_size, config.n_assets),
+                          dtype=jnp.float32)
+    dummy_action = jnp.zeros((1,), dtype=jnp.int32)
+    fresh = model.init(rng_key, dummy_obs, action=dummy_action,
+                       mode='initialize_parameters')['params']
+
+    existing_keys = set(params.keys())
+    added = []
+    new_params = dict(params)
+    for k, v in fresh.items():
+        if k not in existing_keys:
+            new_params[k] = v
+            added.append(k)
+    if added:
+        logger.info(f"Initialized fresh aux head params: {added}")
+
+    # TASK_741: deep-merge film_projector if nested under trm/encoder
+    if 'trm' in new_params and 'encoder' in new_params['trm']:
+        fresh_enc = fresh.get('trm', {}).get('encoder', {})
+        if 'film_projector' in fresh_enc and 'film_projector' not in new_params['trm']['encoder']:
+            new_enc = dict(new_params['trm']['encoder'])
+            new_enc['film_projector'] = fresh_enc['film_projector']
+            new_trm = dict(new_params['trm'])
+            new_trm['encoder'] = new_enc
+            new_params['trm'] = new_trm
+            logger.info("Initialized fresh trm/encoder/film_projector (TASK_741)")
+
+    return new_params
+
+
+def initialize_dynamics(params, rng_key):
+    """Replace zero dynamics weights with proper random initialization.
+
+    - Dense kernels: He normal (variance scaling, fan_in)
+    - Embed: normal(0, 0.02)
+    - LayerNorm scale: ones, bias: zeros
+    - Dense bias: zeros (already correct)
+
+    Returns new params dict with dynamics initialized, encoder untouched.
+    """
+    flat = jax.tree_util.tree_leaves_with_path(params)
+    replacements = {}
+
+    for path, leaf in flat:
+        top_key = str(path[0])
+        if not any(dk in top_key for dk in DYNAMICS_KEYS):
+            continue
+
+        sub_key = str(path[-1]) if len(path) > 1 else ''
+
+        if 'embedding' in sub_key:
+            # Embed: normal(0, 0.02)
+            rng_key, sub_key_rng = jax.random.split(rng_key)
+            new_val = jax.random.normal(sub_key_rng, leaf.shape, dtype=leaf.dtype) * 0.02
+        elif 'kernel' in sub_key:
+            # Dense kernel: He normal (sqrt(2/fan_in))
+            rng_key, sub_key_rng = jax.random.split(rng_key)
+            fan_in = leaf.shape[0]
+            std = np.sqrt(2.0 / fan_in)
+            new_val = jax.random.normal(sub_key_rng, leaf.shape, dtype=leaf.dtype) * std
+        elif 'scale' in sub_key:
+            # LayerNorm scale: ones
+            new_val = jnp.ones_like(leaf)
+        elif 'bias' in sub_key:
+            # Bias: zeros (already zero, but explicit)
+            new_val = jnp.zeros_like(leaf)
+        else:
+            continue
+
+        replacements[path] = new_val
+
+    # Rebuild params tree with replacements
+    def replace_leaf(path, leaf):
+        return replacements.get(path, leaf)
+
+    new_params = jax.tree_util.tree_map_with_path(replace_leaf, params)
+
+    n_replaced = len(replacements)
+    logger.info(f"Initialized {n_replaced} dynamics tensors (He normal + embed normal(0,0.02))")
+    return new_params
+
+
+def make_dynamics_mask(params):
+    """Create boolean mask: True for dynamics params, False for frozen params.
+
+    Used with optax.masked to zero out gradients for non-dynamics params.
+    """
+    return jax.tree_util.tree_map_with_path(
+        lambda path, _: _is_dynamics_key(path), params
+    )
+
+
+def create_dynamics_optimizer(config: Phase2Config, params):
+    """Create optimizer that only updates dynamics params (Stage A).
+
+    Uses multi_transform: adamw for dynamics, set_to_zero for everything else.
+
+    Returns (optimizer, opt_state).
+    """
+    total_steps = config.epochs * config.steps_per_epoch
+    warmup_steps = min(200, max(total_steps - 1, 0))
+
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=config.dynamics_lr,
+        warmup_steps=warmup_steps,
+        decay_steps=max(total_steps, warmup_steps + 1),
+        end_value=config.dynamics_lr * 0.1,
+    )
+
+    train_opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(schedule, weight_decay=1e-4),
+    )
+    freeze_opt = optax.set_to_zero()
+
+    mask = make_dynamics_mask(params)  # True=dynamics, False=frozen
+    labels = jax.tree_util.tree_map(lambda x: 'train' if x else 'freeze', mask)
+
+    optimizer = optax.multi_transform(
+        {'train': train_opt, 'freeze': freeze_opt},
+        labels,
+    )
+    opt_state = optimizer.init(params)
+    return optimizer, opt_state
+
+
+def make_dynamics_train_step(model, config: Phase2Config, optimizer):
+    """Build JIT-compiled dynamics training step for Stage A.
+
+    Captures model and optimizer in closure so they don't need to be JAX args.
+    Returns a function: (params, opt_state, obs_t, obs_t1, actions, rewards)
+        → (new_params, new_opt_state, metrics_dict)
+    """
+    consistency_weight = config.consistency_weight
+    reward_weight = config.reward_weight
+
+    @jax.jit
+    def dynamics_train_step(params, opt_state, obs_t, obs_t1, actions, rewards):
+        """Single dynamics training step.
+
+        Args:
+            params: Full model params (dynamics trainable, rest frozen by optimizer mask)
+            opt_state: Optimizer state
+            obs_t: (B, C, W, N) observations at time t
+            obs_t1: (B, C, W, N) observations at time t+1
+            actions: (B,) oracle actions at decision point t
+            rewards: (B,) per-step scalar rewards (pre-scaled by REWARD_SCALE)
+        """
+        def loss_fn(params):
+            # Encode both observations through frozen encoder (stop_gradient)
+            out_t = model.apply({'params': params}, observation=obs_t, mode='initial_inference')
+            out_t1 = model.apply({'params': params}, observation=obs_t1, mode='initial_inference')
+            latent_t = jax.lax.stop_gradient(out_t['latent_state'])
+            latent_t1 = jax.lax.stop_gradient(out_t1['latent_state'])
+
+            # Predict next state via dynamics (trainable)
+            dyn_out = model.apply({'params': params}, latent_t, actions, mode='recurrent_inference')
+            pred_latent = dyn_out['latent_state']
+            pred_reward = dyn_out['reward']  # (B, 401) logits
+
+            # Loss 1: Consistency — dynamics predicts next latent
+            consistency_loss = jnp.mean((pred_latent - latent_t1) ** 2)
+
+            # Loss 2: Reward prediction — categorical CE
+            reward_target = scalar_to_categorical(rewards)  # (B, 401)
+            reward_loss = optax.softmax_cross_entropy(pred_reward, reward_target).mean()
+
+            total_loss = consistency_weight * consistency_loss + reward_weight * reward_loss
+
+            return total_loss, {
+                'total_loss': total_loss,
+                'consistency_loss': consistency_loss,
+                'reward_loss': reward_loss,
+                'pred_latent_std': jnp.std(pred_latent),
+                'pred_latent_mean': jnp.mean(jnp.abs(pred_latent)),
+                'target_latent_std': jnp.std(latent_t1),
+            }
+
+        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+
+        metrics['grad_norm'] = optax.global_norm(grads)
+        return new_params, new_opt_state, metrics
+
+    return dynamics_train_step
+
+
+def create_model(config: Phase2Config):
+    """Create MuZeroNetworks model from config (same pattern as EasyTrainer)."""
+    dtype_str = getattr(config, 'compute_dtype', 'float32')
+    compute_dtype = jnp.bfloat16 if dtype_str == 'bfloat16' else jnp.float32
+
+    model = MuZeroNetworks(
+        state_dim=config.state_dim,
+        action_space_size=config.action_space_size,
+        support_size=VALUE_SUPPORT_SIZE,
+        H_cycles=config.H_cycles,
+        L_cycles=config.L_cycles,
+        use_prediction_head=False,
+        n_assets=config.n_assets,
+        encoder_version=getattr(config, 'encoder_version', 2),
+        hidden_dim=getattr(config, 'trm_hidden_dim', None),
+        embed_dim=getattr(config, 'embed_dim', 32),
+        encoder_num_heads=getattr(config, 'encoder_num_heads', 4),
+        dtype=compute_dtype,
+        param_dtype=jnp.float32,
+        use_oracle_mask_head=getattr(config, 'use_oracle_mask_head', False),
+        oracle_mask_hidden_dim=getattr(config, 'oracle_mask_hidden_dim', 256),
+        use_direction_head=getattr(config, 'use_direction_head', False),
+        direction_hidden_dim=getattr(config, 'direction_hidden_dim', 128),
+        use_direction_policy_bias=getattr(config, 'use_direction_policy_bias', False),
+        use_per_asset_policy_head=getattr(config, 'use_per_asset_policy_head', False),
+        per_asset_policy_hidden_dim=getattr(config, 'per_asset_policy_hidden_dim', 128),
+        use_rank_head=getattr(config, 'use_rank_head', False),
+        rank_hidden_dim=getattr(config, 'rank_hidden_dim', 128),
+        use_aux_price_head=getattr(config, 'use_aux_price_head', False),
+        aux_price_hidden_dim=getattr(config, 'aux_price_hidden_dim', 256),
+        aux_price_horizons=tuple(getattr(config, 'aux_price_horizons', (1, 5, 10, 20))),
+        use_bella_distill_head=getattr(config, 'use_bella_distill_head', False),
+        bella_distill_hidden_dim=getattr(config, 'bella_distill_hidden_dim', 256),
+        bella_pred_horizons=tuple(getattr(config, 'bella_pred_horizons', (1, 5, 10, 20))),
+        use_per_asset_injection=getattr(config, 'use_per_asset_injection', False),
+        per_asset_inject_xs=getattr(config, 'per_asset_inject_xs', False),
+        per_asset_inject_cheat=getattr(config, 'per_asset_inject_cheat', False),
+    )
+    return model
+
+
+def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
+                      n_slots: int = 17, max_runs_per_group: int = 1):
+    """Create SegmentPool from periods file (reuses train_easy.py's SegmentPool).
+
+    Args:
+        n_slots: Number of concurrent segments in RAM. 17 = one per regime (default).
+        max_runs_per_group: Cap runs per date range (1 = one asset set per regime).
+    """
+    from train_easy import SegmentPool
+
+    with open(periods_file) as f:
+        periods_data = json.load(f)
+    periods_list = periods_data.get('periods', periods_data if isinstance(periods_data, list) else [])
+
+    period_specs = []
+    for period in periods_list:
+        period_specs.append({
+            'start_date': period['start_date'],
+            'end_date': period['end_date'],
+            'assets': period.get('assets', None),
+        })
+    if not period_specs:
+        raise ValueError("No valid periods in periods-file!")
+
+    window_len = config.episode_length + config.window_size + config.oracle_lookahead + 5
+    oracle_cfg = {
+        'oracle_k': config.oracle_k,
+        'oracle_lookahead': config.oracle_lookahead,
+        'transaction_cost': config.transaction_cost,
+        'min_alpha_threshold': getattr(config, 'min_alpha_threshold', 0.0005),
+        # TASK_739: route BC-target oracle choice through to SegmentPool
+        'oracle_mode': getattr(config, 'oracle_mode', 'topk_path'),
+        'sign_epsilon': getattr(config, 'sign_epsilon', 1e-4),
+        # TASK_740: route Bella-distill config through to SegmentPool so that
+        # _make_slot can load the matching precomputed shard into the slot.
+        'use_bella_distill_head': getattr(config, 'use_bella_distill_head', False),
+        'bella_preds_manifest': getattr(config, 'bella_preds_manifest',
+                                         'config/bella_preds_manifest.json'),
+        'bella_pred_horizons': tuple(getattr(config, 'bella_pred_horizons',
+                                             (1, 5, 10, 20))),
+    }
+
+    pool = SegmentPool(
+        period_specs, db_path,
+        n_assets=config.n_assets, n_slots=n_slots,
+        window_length=window_len, min_assets=32,
+        max_runs_per_group=max_runs_per_group,
+        oracle_config=oracle_cfg,
+    )
+    return pool
+
+
+class AsyncBatchPipeline:
+    """TASK_721: Async two-phase pipeline — numpy on background thread, JAX on main thread.
+
+    Replaces ConsecutivePairGenerator + PrefetchGenerator with proper thread safety:
+    - Phase 1 (_prepare_numpy): CPU/numpy only, runs on background thread
+    - Phase 2 (_encode_jax): JAX/GPU encoding, runs on main thread
+
+    Uses random sampling within slots (not sequential cursor) for better diversity.
+    Vectorized n-step reward computation (no Python loop).
+    """
+
+    def __init__(self, pool, config: Phase2Config, prefetch: int = 2, batch_size: int = None):
+        from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_temporal
+        self.pool = pool
+        self.config = config
+        self.ws = config.window_size
+        self.n_assets = config.n_assets
+        # TASK_738: honor legacy 27-ch mode if config says so
+        _enc_n_channels = 32 if getattr(config, 'use_cross_sectional', True) else 27
+        self.encoder_config = EncoderConfig(
+            n_assets=config.n_assets,
+            window_size=config.window_size,
+            n_channels=_enc_n_channels,
+        )
+        self._encode_fn = jit_batch_encode_temporal
+        # TASK_738: threshold adapts to cross-sectional toggle
+        self.use_state_channels = config.n_channels > _enc_n_channels
+        self._rng = np.random.default_rng(config.seed + 3000)
+        self._rr_idx = 0
+        self._batch_size = batch_size or getattr(config, 'stage_b_batch_size', config.batch_size)
+        self._queue = queue.Queue(maxsize=prefetch)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _prepare_numpy(self, batch_size: int) -> dict:
+        """Phase 1: CPU/numpy only. Thread-safe. NO JAX operations."""
+        pool = self.pool
+        ws = self.ws
+        n_assets = self.n_assets
+        nstep = self.config.nstep_horizon
+
+        # 1. RANDOM SAMPLING — uniform within each slot's valid range
+        n_slots = len(pool.slots)
+        if n_slots == 0:
+            raise RuntimeError("SegmentPool exhausted — no slots available")
+
+        per_slot = batch_size // n_slots + 1
+        positions = []
+        for i in range(n_slots):
+            if len(positions) >= batch_size:
+                break
+            slot_idx = (self._rr_idx + i) % n_slots
+            slot = pool.slots[slot_idx]
+            T_ret = len(slot['returns'])
+            T_prices = len(slot['hm'].cache_data)
+            max_cursor = min(T_ret - ws - nstep, T_prices - ws - nstep)
+            if max_cursor <= 0:
+                continue
+            n_needed = min(per_slot, batch_size - len(positions))
+            cursors = self._rng.integers(0, max_cursor, size=n_needed)
+            for c in cursors:
+                positions.append((slot_idx, int(c)))
+        self._rr_idx += n_slots
+
+        if not positions:
+            raise RuntimeError("No valid positions — all slots too short")
+
+        # 2. Group by slot for efficient array slicing
+        by_slot = defaultdict(list)
+        for slot_idx, cursor in positions[:batch_size]:
+            by_slot[slot_idx].append(cursor)
+
+        # 3. Per-slot: extract numpy data (NO JAX)
+        #    Key optimization: extract per-sample windows (ws+nstep each) instead of
+        #    one huge slice per slot. With random sampling c_min~0, c_max~T causes
+        #    the entire slot to be transferred to GPU. Per-sample windows are compact.
+        win_len = ws + nstep  # length of each extracted window
+        all_windows = []      # list of (n, win_len, n_assets, 5) numpy per slot
+        all_actions = []
+        all_rewards = []
+        all_oracle_targets = []
+        all_oracle_values = []
+        all_nstep_rewards = []
+        all_future_cum = []   # TASK_727: per-asset cum future return → direction target
+        all_future_log_rets = []  # TASK_735: per-asset log-return at horizons → aux price head target
+        all_bella_preds = []      # TASK_740: per-asset Bella-predicted log-return at horizons
+        # State channels
+        all_state_t = []
+        all_conf_t = []
+        all_state_t1 = []
+        all_conf_t1 = []
+        all_state_tN = []
+        all_conf_tN = []
+        dir_horizon = getattr(self.config, 'direction_horizon', 20)
+        aux_price_horizons = tuple(getattr(self.config, 'aux_price_horizons', (1, 5, 10, 20)))
+        max_aux_horizon = max(aux_price_horizons) if aux_price_horizons else 0
+        use_bella_distill = getattr(self.config, 'use_bella_distill_head', False)
+        bella_pred_horizons = tuple(getattr(self.config, 'bella_pred_horizons', (1, 5, 10, 20)))
+
+        for slot_idx, cursors in by_slot.items():
+            slot = pool.slots[slot_idx]
+            cursors_arr = np.array(cursors)
+            n = len(cursors_arr)
+            cache = slot['hm'].cache_data  # (T, n_assets, 5)
+
+            # Extract per-sample windows: each (win_len, n_assets, 5)
+            # Vectorized via fancy indexing: build (n, win_len) index array
+            offsets = np.arange(win_len)  # (win_len,)
+            idx = cursors_arr[:, None] + offsets[None, :]  # (n, win_len)
+            windows = cache[idx]  # (n, win_len, n_assets, 5)
+            all_windows.append(windows)
+
+            decision_indices = cursors_arr + ws - 1
+
+            # Oracle action (numpy)
+            policy_targets = slot['policy_targets'][decision_indices].astype(np.float32)
+            actions = np.argmax(policy_targets, axis=-1)  # (n,) in [0, 320)
+            all_actions.append(actions)
+            all_oracle_targets.append(policy_targets)
+
+            # Per-step reward (numpy)
+            oracle_sel = slot['oracle_selections'][decision_indices]
+            step_returns = slot['returns'][decision_indices]
+            k_count = np.maximum(np.sum(oracle_sel, axis=-1), 1.0)
+            step_pnl = np.sum(np.abs(step_returns) * oracle_sel, axis=-1) / k_count
+            prev_indices = np.maximum(decision_indices - 1, 0)
+            prev_sel = slot['oracle_selections'][prev_indices]
+            changes = np.sum(np.abs(oracle_sel - prev_sel), axis=-1)
+            step_pnl = step_pnl - changes * self.config.transaction_cost
+            rewards = np.clip(step_pnl * REWARD_SCALE, -10.0, 10.0).astype(np.float32)
+            all_rewards.append(rewards)
+
+            # Oracle remaining PnL (numpy)
+            oracle_cum_pnl = slot['oracle_cum_pnl']
+            horizon = self.config.oracle_value_horizon
+            end_idx = np.minimum(decision_indices + horizon, len(oracle_cum_pnl) - 1)
+            remaining = (oracle_cum_pnl[end_idx] - oracle_cum_pnl[decision_indices]).astype(np.float32)
+            all_oracle_values.append(remaining)
+
+            # VECTORIZED n-step rewards (numpy, no Python loop)
+            steps = decision_indices[:, None] + np.arange(nstep)  # (n, N)
+            steps = np.minimum(steps, len(oracle_cum_pnl) - 2)
+            per_step_r = (oracle_cum_pnl[steps + 1] - oracle_cum_pnl[steps]) * REWARD_SCALE
+            per_step_r = np.clip(per_step_r, -10.0, 10.0)
+            discounts = self.config.td_discount ** np.arange(nstep)
+            nstep_sum = (per_step_r * discounts).sum(axis=1).astype(np.float32)
+            all_nstep_rewards.append(nstep_sum)
+
+            # TASK_727: Per-asset cumulative future return over [d+1, d+K]
+            # Target for DirectionHead: sign(cum_return) per asset.
+            T_ret = len(slot['returns'])
+            future_idx = decision_indices[:, None] + np.arange(1, dir_horizon + 1)  # (n, K)
+            future_idx = np.minimum(future_idx, T_ret - 1)
+            future_rets = slot['returns'][future_idx]   # (n, K, n_assets)
+            future_cum = future_rets.sum(axis=1).astype(np.float32)  # (n, n_assets)
+            all_future_cum.append(future_cum)
+
+            # TASK_735: Per-asset log-return at each aux horizon h: Σ returns[d+1 : d+h+1]
+            # Returns are already (log) per-step returns; cum_return over h steps
+            # is the log of total return over that horizon.
+            if aux_price_horizons:
+                H = max(max_aux_horizon, dir_horizon)
+                h_idx = decision_indices[:, None] + np.arange(1, H + 1)   # (n, H)
+                h_idx = np.minimum(h_idx, T_ret - 1)
+                step_rets = slot['returns'][h_idx]                         # (n, H, n_assets)
+                cumret = np.cumsum(step_rets, axis=1)                      # (n, H, n_assets)
+                # Pick at horizons [1, 5, 10, 20] → indices [0, 4, 9, 19]
+                picks = np.array([h - 1 for h in aux_price_horizons])
+                aux_logret = cumret[:, picks, :].astype(np.float32)        # (n, n_horizons, n_assets)
+                all_future_log_rets.append(aux_logret)
+
+            # TASK_740: Pull precomputed Bella predictions for this slot.
+            # bella_preds_full (loaded in SegmentPool._make_slot) is indexed by
+            # the same decision_indices used for the BC target. Sentinel NaN
+            # marks windows without a Bella shard; loss masks those samples.
+            if use_bella_distill:
+                bp = slot.get('bella_preds_full', None)
+                if bp is None:
+                    bella_batch = np.full(
+                        (n, len(bella_pred_horizons), self.n_assets),
+                        np.nan, dtype=np.float32)
+                else:
+                    bella_batch = bp[decision_indices].astype(np.float32)
+                all_bella_preds.append(bella_batch)
+
+            # State channels (numpy, if enabled)
+            if self.use_state_channels:
+                decision_t1 = cursors_arr + ws
+                decision_tN = cursors_arr + ws - 1 + nstep
+                state_idx_t = np.maximum(decision_indices - 1, 0)
+                state_idx_t1 = np.maximum(decision_t1 - 1, 0)
+                state_idx_tN = np.maximum(decision_tN - 1, 0)
+                all_state_t.append(slot['state_channels'][state_idx_t].astype(np.float32))
+                all_conf_t.append(slot['confidence'][decision_indices].astype(np.float32))
+                all_state_t1.append(slot['state_channels'][state_idx_t1].astype(np.float32))
+                all_conf_t1.append(slot['confidence'][decision_t1].astype(np.float32))
+                all_state_tN.append(slot['state_channels'][state_idx_tN].astype(np.float32))
+                all_conf_tN.append(slot['confidence'][decision_tN].astype(np.float32))
+
+        # Stack all windows into one flat array for efficient GPU transfer
+        # Each window is (win_len, n_assets, 5); concatenate along batch dim
+        # Then flatten to (B*win_len, n_assets, 5) for the encoder
+        windows_stacked = np.concatenate(all_windows, axis=0)[:batch_size]  # (B, win_len, n_assets, 5)
+
+        return {
+            'windows': windows_stacked,   # (B, win_len, n_assets, 5) — compact per-sample
+            'actions': np.concatenate(all_actions)[:batch_size],
+            'rewards': np.concatenate(all_rewards)[:batch_size],
+            'oracle_targets': np.concatenate(all_oracle_targets)[:batch_size],
+            'oracle_values': np.concatenate(all_oracle_values)[:batch_size],
+            'nstep_rewards': np.concatenate(all_nstep_rewards)[:batch_size],
+            'future_cum_returns': np.concatenate(all_future_cum)[:batch_size],  # TASK_727
+            'future_log_returns': (np.concatenate(all_future_log_rets)[:batch_size]
+                                   if all_future_log_rets else None),           # TASK_735
+            'bella_preds': (np.concatenate(all_bella_preds)[:batch_size]
+                            if all_bella_preds else None),                       # TASK_740
+            'state_t': all_state_t, 'conf_t': all_conf_t,
+            'state_t1': all_state_t1, 'conf_t1': all_conf_t1,
+            'state_tN': all_state_tN, 'conf_tN': all_conf_tN,
+            'batch_size': batch_size,
+        }
+
+    def _encode_jax(self, np_batch: dict) -> dict:
+        """Phase 2: JAX/GPU encoding. Main thread only.
+
+        Uses flattened windows approach: B windows of (win_len, n_assets, 5) are
+        concatenated into (B*win_len, n_assets, 5) with stride offsets. This gives
+        3 encoder calls total (obs_t, obs_t1, obs_tN) instead of 3*n_slots.
+        """
+        batch_size = np_batch['batch_size']
+        ws = self.ws
+        nstep = self.config.nstep_horizon
+        win_len = ws + nstep
+
+        windows = np_batch['windows']  # (B, win_len, n_assets, 5) numpy
+        B = len(windows)
+
+        # Flatten: (B, win_len, n_assets, 5) → (B*win_len, n_assets, 5)
+        prices_flat = jnp.array(windows.reshape(B * win_len, -1, 5))
+
+        # Window starts: each sample's window is at offset i*win_len
+        base_starts = jnp.arange(B) * win_len
+        starts_t = base_starts            # obs at cursor (window starts at 0 within each block)
+        starts_t1 = base_starts + 1       # obs at cursor+1
+        starts_tN = base_starts + nstep   # obs at cursor+N
+
+        # 3 encoder calls total (was 3*n_slots before)
+        obs_t = self._encode_fn(prices_flat, starts_t, self.encoder_config)
+        obs_t1 = self._encode_fn(prices_flat, starts_t1, self.encoder_config)
+        obs_tN = self._encode_fn(prices_flat, starts_tN, self.encoder_config)
+
+        # State channels (if enabled)
+        if self.use_state_channels:
+            state_t = jnp.array(np.concatenate(np_batch['state_t'])[:batch_size])
+            conf_t = jnp.array(np.concatenate(np_batch['conf_t'])[:batch_size])
+            obs_t = self._add_state_channels_jax(obs_t, state_t, conf_t)
+
+            state_t1 = jnp.array(np.concatenate(np_batch['state_t1'])[:batch_size])
+            conf_t1 = jnp.array(np.concatenate(np_batch['conf_t1'])[:batch_size])
+            obs_t1 = self._add_state_channels_jax(obs_t1, state_t1, conf_t1)
+
+            state_tN = jnp.array(np.concatenate(np_batch['state_tN'])[:batch_size])
+            conf_tN = jnp.array(np.concatenate(np_batch['conf_tN'])[:batch_size])
+            obs_tN = self._add_state_channels_jax(obs_tN, state_tN, conf_tN)
+
+        return {
+            'obs_t': obs_t[:batch_size],
+            'obs_t1': obs_t1[:batch_size],
+            'obs_tN': obs_tN[:batch_size],
+            'actions': jnp.array(np_batch['actions']),
+            'rewards': jnp.array(np_batch['rewards']),
+            'oracle_targets': jnp.array(np_batch['oracle_targets']),
+            'oracle_values': jnp.array(np_batch['oracle_values']),
+            'nstep_rewards': jnp.array(np_batch['nstep_rewards']),
+            'future_cum_returns': jnp.array(np_batch['future_cum_returns']),  # TASK_727
+            'future_log_returns': jnp.array(np_batch['future_log_returns']),  # TASK_735
+            'bella_preds': (jnp.array(np_batch['bella_preds'])
+                            if np_batch.get('bella_preds') is not None else None),  # TASK_740
+        }
+
+    def _add_state_channels_jax(self, obs, state_ch, conf):
+        """Add state channels + confidence (already JAX arrays) to obs tensor."""
+        ws = self.ws
+        # state_ch: (B, 6, n_assets) → (B, 6, ws, n_assets)
+        # conf: (B, n_assets) → (B, 1, ws, n_assets)
+        state_tiled = jnp.tile(state_ch[:, :, None, :], (1, 1, ws, 1))
+        conf_tiled = jnp.tile(conf[:, None, None, :], (1, 1, ws, 1))
+        return jnp.concatenate([obs, state_tiled, conf_tiled], axis=1)
+
+    def _worker(self):
+        """Background thread: prepare numpy batches, queue them."""
+        while not self._stop.is_set():
+            try:
+                np_batch = self._prepare_numpy(self._batch_size)
+                self._queue.put(np_batch, timeout=2.0)
+            except queue.Full:
+                continue
+            except Exception as e:
+                self._queue.put(e)
+                break
+
+    def get_batch(self, batch_size=None) -> dict:
+        """Main thread: dequeue numpy batch, encode to JAX on GPU."""
+        item = self._queue.get()
+        if isinstance(item, Exception):
+            raise item
+        return self._encode_jax(item)
+
+    def stop(self):
+        """Stop background thread."""
+        self._stop.set()
+        self._thread.join(timeout=5.0)
+
+
+def _is_encoder_key(path) -> bool:
+    """Check if a param path belongs to the encoder (frozen in Stage B)."""
+    path_str = '/'.join(str(p) for p in path)
+    # trm/encoder/* is the encoder; everything else in trm is reasoning/policy/value
+    return 'encoder' in path_str and 'trm' in path_str
+
+
+def make_stage_b_labels(params, encoder_trainable: bool):
+    """TASK_728: Three-group labels for multi_transform.
+
+    - 'train'   : reasoning, dynamics, aux heads (policy_direction_refiner, direction_head)
+    - 'encoder' : encoder params (only when encoder_trainable=True; else 'freeze')
+    - 'freeze'  : oracle_mask (auxiliary, not used in this run path)
+    """
+    def label_fn(path, _leaf):
+        if _is_dynamics_key(path):
+            return 'train'
+        if _is_encoder_key(path):
+            return 'encoder' if encoder_trainable else 'freeze'
+        key = str(path[0])
+        if 'oracle_mask' in key:
+            return 'freeze'
+        return 'train'
+
+    return jax.tree_util.tree_map_with_path(label_fn, params)
+
+
+def create_stage_b_optimizer(config: Phase2Config, params):
+    """Create optimizer for Stage B — trains reasoning + dynamics + aux heads.
+
+    TASK_728: Supports encoder unfreeze at a separate slower LR via config.encoder_lr.
+    - encoder_lr == 0  → encoder frozen (historical default).
+    - encoder_lr > 0   → encoder joins training with its own warmup-cosine schedule.
+
+    Returns (optimizer, opt_state).
+    """
+    total_steps = config.epochs * config.steps_per_epoch
+    warmup_steps = min(500, max(total_steps - 1, 0))
+
+    main_schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=config.policy_lr,
+        warmup_steps=warmup_steps,
+        decay_steps=max(total_steps, warmup_steps + 1),
+        end_value=config.policy_lr * 0.1,
+    )
+    train_opt = optax.chain(
+        optax.clip_by_global_norm(0.5),
+        optax.adamw(main_schedule, weight_decay=1e-4),
+    )
+
+    encoder_trainable = getattr(config, 'encoder_lr', 0.0) > 0.0
+    if encoder_trainable:
+        enc_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=config.encoder_lr,
+            warmup_steps=warmup_steps,
+            decay_steps=max(total_steps, warmup_steps + 1),
+            end_value=config.encoder_lr * 0.1,
+        )
+        encoder_opt = optax.chain(
+            optax.clip_by_global_norm(0.5),
+            optax.adamw(enc_schedule, weight_decay=1e-4),
+        )
+        logger.info(f"  Encoder UNFROZEN at lr={config.encoder_lr} (TASK_728)")
+    else:
+        encoder_opt = optax.set_to_zero()
+
+    freeze_opt = optax.set_to_zero()
+
+    labels = make_stage_b_labels(params, encoder_trainable)
+
+    optimizer = optax.multi_transform(
+        {'train': train_opt, 'encoder': encoder_opt, 'freeze': freeze_opt},
+        labels,
+    )
+    opt_state = optimizer.init(params)
+    return optimizer, opt_state
+
+
+def make_stage_b_train_step(model, config: Phase2Config, optimizer):
+    """Build JIT-compiled training step for Stage B (ExIt).
+
+    Takes MCTS outputs (visit_counts, root_value) as inputs — MCTS runs outside JIT.
+    PopArt mean/std passed as scalar args (cheap, no recompilation). Raw TD targets
+    returned in metrics for PopArt update outside JIT.
+
+    Returns a function:
+        (params, opt_state, obs, obs_t1, actions_dynamics, rewards_dynamics,
+         mcts_visits, mcts_value, oracle_targets, bc_weight, popart_mean, popart_std,
+         oracle_values)
+        → (new_params, new_opt_state, metrics_dict)
+    """
+    policy_w = config.exit_policy_weight
+    value_w = config.exit_value_weight
+    consistency_w = config.exit_consistency_weight
+    config_discount = config.td_discount  # Lower than mcts_discount to keep V in support range
+    n_assets = config.n_assets
+    n_actions_per_asset = 5
+    use_popart = config.use_popart
+    use_factored = config.use_factored_search  # TASK_724: per-asset CE vs global CE
+    value_target_mode = config.value_target_mode
+    value_scale = config.value_scale  # 2.0 — same scaling as Phase 1
+    nstep_gamma_N = config.td_discount ** config.nstep_horizon  # γ^N for bootstrap
+    use_bc_balance = config.bc_class_balanced  # TASK_726: adaptive trade/hold weighting
+    bc_max_tw = config.bc_max_trade_weight     # TASK_726: cap on trade weight boost
+    use_direction = config.use_direction_head  # TASK_727: aux direction head
+    direction_w = config.direction_loss_weight # TASK_727: direction loss weight
+    use_rank = getattr(config, 'use_rank_head', False)             # TASK_730: rank head
+    rank_w = getattr(config, 'rank_loss_weight', 1.0)              # TASK_730: rank loss weight
+    rank_loss_type = getattr(config, 'rank_loss_type', 'mse')      # TASK_730: rank loss form
+    use_flow = getattr(config, 'use_flow_matching', False)         # TASK_734: flow-matching on dynamics
+    flow_v_w = getattr(config, 'flow_matching_velocity_weight', 0.8)
+    use_aux_price = getattr(config, 'use_aux_price_head', False)   # TASK_735: aux log-return head
+    aux_price_w = getattr(config, 'aux_price_loss_weight', 0.1)
+    aux_price_horizons_t = tuple(getattr(config, 'aux_price_horizons', (1, 5, 10, 20)))
+    use_bella_distill = getattr(config, 'use_bella_distill_head', False)   # TASK_740
+    bella_distill_w = getattr(config, 'bella_distill_loss_weight', 0.1)
+    bella_pred_horizons_t = tuple(getattr(config, 'bella_pred_horizons', (1, 5, 10, 20)))
+
+    @jax.jit
+    def stage_b_train_step(params, opt_state, obs, obs_t1, obs_tN, actions_dynamics,
+                           rewards_dynamics, mcts_visits, mcts_value,
+                           oracle_targets, bc_weight, popart_mean, popart_std,
+                           oracle_values, nstep_rewards, future_cum_returns,
+                           future_log_returns, bella_preds):
+        """Single Stage B training step.
+
+        Args:
+            params: Full model params
+            opt_state: Optimizer state
+            obs: (B, C, W, N) observations for policy/value (same as obs_t)
+            obs_t1: (B, C, W, N) next observations for dynamics consistency
+            obs_tN: (B, C, W, N) observations at t+N for n-step value bootstrap
+            actions_dynamics: (B,) actions for dynamics transition
+            rewards_dynamics: (B,) scaled rewards for dynamics reward loss
+            mcts_visits: (B, 320) MCTS visit count distribution (policy target)
+            mcts_value: (B,) MCTS root value (value target, scalar)
+            oracle_targets: (B, 320) oracle policy targets (per-asset softmaxed, sums to 64)
+            bc_weight: scalar, decaying BC weight
+            popart_mean: scalar, PopArt running mean (0.0 if disabled)
+            popart_std: scalar, PopArt running std (1.0 if disabled)
+            oracle_values: (B,) oracle remaining PnL (TASK_719a, value_target_mode="oracle")
+            nstep_rewards: (B,) discounted N-step reward sum (TASK_719b, value_target_mode="nstep")
+            future_cum_returns: (B, n_assets) per-asset cum return over direction_horizon (TASK_727)
+            bella_preds: (B, K, n_assets) precomputed Bella log-returns (TASK_740); may be all-NaN
+        """
+        def loss_fn(params):
+            # === Root inference: policy + value from current obs ===
+            root_out = model.apply({'params': params}, observation=obs, mode='initial_inference')
+            policy_logits = root_out['policy_logits']  # (B, 320)
+            value_logits = root_out['value']            # (B, 401)
+            latent_t = root_out['latent_state']         # (B, 128)
+
+            # === Policy loss: distill search targets into single-step policy ===
+            if use_factored:
+                # TASK_724: Per-asset CE — each asset's 5 actions are independent
+                # Targets are per-asset softmax (each group of 5 sums to 1.0)
+                pol_r = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
+                tgt_r = mcts_visits.reshape(-1, n_assets, n_actions_per_asset)
+                per_asset_ce_policy = optax.softmax_cross_entropy(pol_r, tgt_r)  # (B, 64)
+                if use_bc_balance:
+                    # TASK_726 Change 2: factored policy targets also skew HOLD
+                    # (flat Q → ~20% per action with slight Hold edge). Weight by
+                    # per-asset trade strength so BUY/SELL targets drive gradient.
+                    hold_prob_pol = tgt_r[:, :, 1]            # (B, 64)
+                    trade_strength_pol = 1.0 - hold_prob_pol
+                    n_t = jnp.maximum(jnp.sum(trade_strength_pol), 1.0)
+                    n_h = jnp.maximum(jnp.sum(hold_prob_pol), 1.0)
+                    tw_pol = jnp.minimum(n_h / n_t, bc_max_tw)
+                    policy_weights = 1.0 + trade_strength_pol * (tw_pol - 1.0)
+                    policy_loss = (jnp.sum(per_asset_ce_policy * policy_weights) /
+                                   jnp.sum(policy_weights))
+                else:
+                    policy_loss = per_asset_ce_policy.mean()
+            else:
+                # Joint MCTS: visit_counts sum to 1.0 globally over 320 actions
+                policy_loss = optax.softmax_cross_entropy(policy_logits, mcts_visits).mean()
+
+            # === Shared: encode obs_t1 with stopped params (no gradients to encoder/reasoning) ===
+            stopped_params = jax.lax.stop_gradient(params)
+            out_t1 = model.apply({'params': stopped_params},
+                                 observation=obs_t1, mode='initial_inference')
+
+            # === Value loss ===
+            if value_target_mode == "oracle":
+                # TASK_719a: Oracle remaining PnL as value target (same as Phase 1)
+                oracle_scaled = oracle_values * value_scale
+                oracle_scaled = jnp.clip(oracle_scaled, -10.0, 10.0)
+                td_target_norm = (oracle_scaled - popart_mean) / jnp.maximum(popart_std, 1e-8)
+                td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
+                td_target_raw = oracle_scaled
+            elif value_target_mode == "nstep":
+                # TASK_719b: N-step TD — Σγ^k r_k + γ^N V(s_{t+N})
+                # nstep_rewards = pre-computed discounted reward sum (from generator)
+                # Bootstrap with V(s_{t+N}) from stopped params (reuse from dynamics)
+                out_tN = model.apply({'params': stopped_params},
+                                     observation=obs_tN, mode='initial_inference')
+                support = get_value_support()
+                v_tN = jnp.sum(jax.nn.softmax(out_tN['value'], axis=-1) * support, axis=-1)
+                # Denormalize V(s_{t+N}) if PopArt active (value head outputs normalized)
+                v_tN_raw = v_tN * popart_std + popart_mean
+                td_target_raw = nstep_rewards + nstep_gamma_N * v_tN_raw
+                td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
+                td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
+                td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
+            else:
+                # TD(0) bootstrap — r + γ * V(s_next)
+                r_step = rewards_dynamics
+                support = get_value_support()
+                v_next = jnp.sum(jax.nn.softmax(out_t1['value'], axis=-1) * support, axis=-1)
+                td_target_raw = r_step + config_discount * v_next
+                td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
+                td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
+                td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
+
+            value_target = scalar_to_categorical(td_target_norm)
+            value_loss = optax.softmax_cross_entropy(value_logits, value_target).mean()
+
+            # === Dynamics consistency loss (ongoing calibration) ===
+            latent_t_sg = jax.lax.stop_gradient(latent_t)
+            latent_t1 = jax.lax.stop_gradient(out_t1['latent_state'])
+            dyn_out = model.apply({'params': params}, latent_t_sg, actions_dynamics,
+                                  mode='recurrent_inference')
+            if use_flow:
+                # TASK_734: Velocity-matching — predict latent_{t+1} - latent_t
+                # instead of latent_{t+1}. Identity solution gets high loss when
+                # the latent actually moves (unlike MSE which collapses).
+                pred_velocity = dyn_out['latent_state'] - latent_t_sg
+                actual_velocity = latent_t1 - latent_t_sg
+                velocity_loss = jnp.mean((pred_velocity - actual_velocity) ** 2)
+                state_loss = jnp.mean((dyn_out['latent_state'] - latent_t1) ** 2)
+                consistency_loss = flow_v_w * velocity_loss + (1.0 - flow_v_w) * state_loss
+                velocity_pred_norm = jnp.mean(jnp.linalg.norm(pred_velocity, axis=-1))
+                velocity_actual_norm = jnp.mean(jnp.linalg.norm(actual_velocity, axis=-1))
+            else:
+                consistency_loss = jnp.mean((dyn_out['latent_state'] - latent_t1) ** 2)
+                velocity_loss = jnp.array(0.0)
+                state_loss = consistency_loss
+                velocity_pred_norm = jnp.array(0.0)
+                velocity_actual_norm = jnp.array(0.0)
+
+            # Reward prediction loss (dynamics)
+            reward_target = scalar_to_categorical(rewards_dynamics)
+            reward_loss = optax.softmax_cross_entropy(dyn_out['reward'], reward_target).mean()
+
+            # === Oracle BC regularizer (decaying, per-asset CE matching Phase 1) ===
+            # oracle_targets are per-asset softmaxed (each group of 5 sums to 1.0)
+            policy_reshaped = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
+            oracle_reshaped = oracle_targets.reshape(-1, n_assets, n_actions_per_asset)
+            per_asset_ce = optax.softmax_cross_entropy(policy_reshaped, oracle_reshaped)  # (B, 64)
+            if use_bc_balance:
+                # TASK_726 Change 1: oracle targets are 93.75% HOLD (k=4/64). Without
+                # per-asset trade/hold weighting, the BC gradient fits the HOLD marginal
+                # and never learns the per-asset BUY/SELL conditional. Mirrors Phase 1
+                # (easy_trainer.py:170-202) minus the return-magnitude boost (deferred).
+                hold_prob = oracle_reshaped[:, :, 1]          # (B, 64)
+                trade_strength = 1.0 - hold_prob              # (B, 64)
+                n_trades = jnp.maximum(jnp.sum(trade_strength), 1.0)
+                n_holds = jnp.maximum(jnp.sum(hold_prob), 1.0)
+                trade_weight = jnp.minimum(n_holds / n_trades, bc_max_tw)
+                bc_weights = 1.0 + trade_strength * (trade_weight - 1.0)  # (B, 64)
+                bc_loss = jnp.sum(per_asset_ce * bc_weights) / jnp.sum(bc_weights)
+            else:
+                bc_loss = per_asset_ce.mean()
+
+            # === Direction head: per-asset sign-of-future-return (TASK_727) ===
+            if use_direction and 'direction_logits' in root_out:
+                dir_logits = root_out['direction_logits']              # (B, n_assets)
+                dir_target = (future_cum_returns > 0).astype(jnp.float32)
+                # Dead-zone: don't supervise near-zero returns (label noise)
+                dead_zone = (jnp.abs(future_cum_returns) > 1e-4).astype(jnp.float32)
+                dir_ce = optax.sigmoid_binary_cross_entropy(dir_logits, dir_target)
+                dir_loss = jnp.sum(dir_ce * dead_zone) / jnp.maximum(jnp.sum(dead_zone), 1.0)
+                dir_pred = (jax.nn.sigmoid(dir_logits) > 0.5).astype(jnp.float32)
+                dir_correct = ((dir_pred > 0.5) == (dir_target > 0.5)).astype(jnp.float32)
+                dir_acc = (jnp.sum(dir_correct * dead_zone) /
+                           jnp.maximum(jnp.sum(dead_zone), 1.0))
+            else:
+                dir_loss = jnp.array(0.0)
+                dir_acc = jnp.array(0.5)
+
+            # === Rank head: per-asset cross-sectional rank score (TASK_730) ===
+            # Target is argsort-of-argsort(future_cum_returns) / (n-1) per sample,
+            # values in [0, 1]. MSE regression is the simplest unambiguous
+            # objective — listwise/pairwise held as stretch goals.
+            if use_rank and 'rank_scores' in root_out:
+                rank_scores = root_out['rank_scores']                     # (B, n_assets)
+                target_ranks = (jnp.argsort(
+                    jnp.argsort(future_cum_returns, axis=-1), axis=-1
+                ).astype(jnp.float32) / jnp.maximum(float(n_assets - 1), 1.0))
+                rank_loss = jnp.mean((rank_scores - target_ranks) ** 2)
+
+                # Spearman = Pearson between rank(scores) and rank(targets).
+                # target_ranks is already a rank in [0,1]; build the same for scores.
+                score_ranks = (jnp.argsort(
+                    jnp.argsort(rank_scores, axis=-1), axis=-1
+                ).astype(jnp.float32) / jnp.maximum(float(n_assets - 1), 1.0))
+                sx = score_ranks - jnp.mean(score_ranks, axis=-1, keepdims=True)
+                sy = target_ranks - jnp.mean(target_ranks, axis=-1, keepdims=True)
+                num = jnp.sum(sx * sy, axis=-1)
+                den = jnp.sqrt(jnp.sum(sx ** 2, axis=-1) *
+                               jnp.sum(sy ** 2, axis=-1) + 1e-8)
+                rank_spearman = jnp.mean(num / den)
+            else:
+                rank_loss = jnp.array(0.0)
+                rank_spearman = jnp.array(0.0)
+
+            # === Aux log-return prediction head (TASK_735) ===
+            # Per-horizon MSE between predicted and actual cumulative log-returns
+            # at horizons [1, 5, 10, 20]. Short horizons weighted more since they
+            # are more predictable; long horizons are noisier.
+            if use_aux_price and 'aux_log_returns' in root_out:
+                pred_logret = root_out['aux_log_returns']       # (B, K, n_assets)
+                tgt_logret = future_log_returns                 # (B, K, n_assets)
+                per_h_mse = jnp.mean((pred_logret - tgt_logret) ** 2, axis=(0, 2))  # (K,)
+                h_weights = jnp.array([1.0 / h for h in aux_price_horizons_t])
+                h_weights = h_weights / jnp.sum(h_weights)
+                aux_price_loss = jnp.sum(h_weights * per_h_mse)
+            else:
+                aux_price_loss = jnp.array(0.0)
+                per_h_mse = jnp.zeros(len(aux_price_horizons_t))
+
+            # === Bella-distillation head (TASK_740) ===
+            # bella_preds is (B, K, n_assets) of Bella-generated log-returns.
+            # Per-sample NaN marks windows without a Bella shard — mask those
+            # out sample-wise so periods missing from the manifest do not
+            # perturb the gradient.
+            if use_bella_distill and 'aux_bella_returns' in root_out:
+                pred_bella = root_out['aux_bella_returns']      # (B, K, n_assets)
+                tgt_bella = bella_preds                          # (B, K, n_assets)
+                valid = jnp.isfinite(tgt_bella)
+                tgt_safe = jnp.where(valid, tgt_bella, 0.0)
+                sq = (pred_bella - tgt_safe) ** 2
+                valid_f = valid.astype(jnp.float32)
+                per_h_bella = (jnp.sum(sq * valid_f, axis=(0, 2)) /
+                               jnp.maximum(jnp.sum(valid_f, axis=(0, 2)), 1.0))  # (K,)
+                h_weights_b = jnp.array([1.0 / h for h in bella_pred_horizons_t])
+                h_weights_b = h_weights_b / jnp.sum(h_weights_b)
+                bella_distill_loss = jnp.sum(h_weights_b * per_h_bella)
+                bella_valid_frac = jnp.mean(valid_f)
+            else:
+                bella_distill_loss = jnp.array(0.0)
+                per_h_bella = jnp.zeros(len(bella_pred_horizons_t))
+                bella_valid_frac = jnp.array(0.0)
+
+            # === Total ===
+            total_loss = (policy_w * policy_loss +
+                          value_w * value_loss +
+                          consistency_w * (consistency_loss + reward_loss) +
+                          bc_weight * bc_loss +
+                          direction_w * dir_loss +
+                          rank_w * rank_loss +
+                          aux_price_w * aux_price_loss +
+                          bella_distill_w * bella_distill_loss)
+
+            return total_loss, {
+                'total_loss': total_loss,
+                'policy_loss': policy_loss,
+                'value_loss': value_loss,
+                'consistency_loss': consistency_loss,
+                'reward_loss': reward_loss,
+                'bc_loss': bc_loss,
+                'bc_weight': bc_weight,
+                'dir_loss': dir_loss,
+                'dir_acc': dir_acc,
+                'rank_loss': rank_loss,
+                'rank_spearman': rank_spearman,
+                'flow_velocity_loss': velocity_loss,
+                'flow_state_loss': state_loss,
+                'flow_v_pred_norm': velocity_pred_norm,
+                'flow_v_actual_norm': velocity_actual_norm,
+                'aux_price_loss': aux_price_loss,
+                'aux_price_mse_h1': per_h_mse[0] if len(per_h_mse) > 0 else jnp.array(0.0),
+                'aux_price_mse_hmax': per_h_mse[-1] if len(per_h_mse) > 0 else jnp.array(0.0),
+                'bella_distill_loss': bella_distill_loss,
+                'bella_distill_h1': per_h_bella[0] if len(per_h_bella) > 0 else jnp.array(0.0),
+                'bella_distill_hmax': per_h_bella[-1] if len(per_h_bella) > 0 else jnp.array(0.0),
+                'bella_valid_frac': bella_valid_frac,
+                'pred_latent_std': jnp.std(dyn_out['latent_state']),
+                'target_latent_std': jnp.std(latent_t1),
+                'td_target_mean': jnp.mean(td_target_raw),
+                'td_target_std': jnp.std(td_target_raw),
+                'td_targets_raw': td_target_raw,  # (B,) for PopArt update outside JIT
+            }
+
+        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+
+        metrics['grad_norm'] = optax.global_norm(grads)
+        return new_params, new_opt_state, metrics
+
+    return stage_b_train_step
+
+
+def save_checkpoint(params, config, epoch, metrics, output_dir, name,
+                    popart_state=None):
+    """Save Phase 2 checkpoint."""
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt = {
+        'params': params,
+        'config': {k: v for k, v in config.__dict__.items()
+                   if not k.startswith('_') and isinstance(v, (int, float, str, bool, type(None)))},
+        'epoch': epoch,
+        'metrics': metrics,
+        'phase': 2,
+        'stage': config.stage,
+    }
+    if popart_state is not None:
+        ckpt['popart_state'] = {
+            'mean': float(popart_state.mean),
+            'var': float(popart_state.var),
+            'count': int(popart_state.count),
+        }
+    path = os.path.join(output_dir, f'{name}.pkl')
+    with open(path, 'wb') as f:
+        pickle.dump(ckpt, f)
+    return path
+
+
+def train_stage_a(model, params, config: Phase2Config, pool, args):
+    """Stage A: Dynamics warmup training loop.
+
+    Freezes encoder/policy/value, trains dynamics only on consistency + reward loss.
+    """
+    logger.info(f"=== Stage A: Dynamics Warmup ===")
+    logger.info(f"  Epochs: {config.epochs}, Steps/epoch: {config.steps_per_epoch}, "
+                f"Batch: {config.batch_size}")
+    logger.info(f"  LR: {config.dynamics_lr}, consistency_w: {config.consistency_weight}, "
+                f"reward_w: {config.reward_weight}")
+
+    # Initialize dynamics (replace zeros with He normal)
+    rng_key = jax.random.PRNGKey(config.seed)
+    params = initialize_dynamics(params, rng_key)
+
+    # Create masked optimizer (only dynamics params get updates)
+    optimizer, opt_state = create_dynamics_optimizer(config, params)
+
+    # Build JIT-compiled train step (captures optimizer in closure)
+    train_step_fn = make_dynamics_train_step(model, config, optimizer)
+
+    # Create async batch pipeline (TASK_721: numpy on background thread, JAX on main)
+    pipeline = AsyncBatchPipeline(pool, config, prefetch=2)
+
+    # Output dir
+    output_dir = args.output_dir or config.phase2_checkpoint_dir
+    best_consistency = float('inf')
+    best_epoch = -1
+
+    logger.info("Starting dynamics training...")
+    for epoch in range(config.epochs):
+        epoch_metrics = defaultdict(float)
+        epoch_start = time.time()
+
+        for step in range(config.steps_per_epoch):
+            batch = pipeline.get_batch()
+
+            params, opt_state, metrics = train_step_fn(
+                params, opt_state,
+                batch['obs_t'], batch['obs_t1'],
+                batch['actions'], batch['rewards'],
+            )
+
+            for k, v in metrics.items():
+                epoch_metrics[k] += float(v)
+
+        # Average metrics
+        n_steps = config.steps_per_epoch
+        avg = {k: v / n_steps for k, v in epoch_metrics.items()}
+        elapsed = time.time() - epoch_start
+
+        # Log
+        logger.info(
+            f"E{epoch:4d}: consistency={avg['consistency_loss']:.4f} "
+            f"reward={avg['reward_loss']:.4f} total={avg['total_loss']:.4f} "
+            f"grad={avg['grad_norm']:.3f} "
+            f"latent_std={avg['pred_latent_std']:.3f}/{avg['target_latent_std']:.3f} "
+            f"({elapsed:.1f}s)"
+        )
+
+        # Check for NaN
+        if np.isnan(avg['total_loss']):
+            logger.error("NaN loss detected — aborting!")
+            break
+
+        # Track best + checkpoint
+        if avg['consistency_loss'] < best_consistency:
+            best_consistency = avg['consistency_loss']
+            best_epoch = epoch
+            path = save_checkpoint(params, config, epoch, avg, output_dir, 'phase2_stageA_best')
+            logger.info(f"  New best consistency={best_consistency:.4f} → {path}")
+
+        # Periodic checkpoint every 50 epochs
+        if epoch > 0 and epoch % 50 == 0:
+            save_checkpoint(params, config, epoch, avg, output_dir, f'phase2_stageA_e{epoch}')
+
+    # Cleanup
+    pipeline.stop()
+
+    # Final save
+    save_checkpoint(params, config, epoch, avg, output_dir, 'phase2_stageA_final')
+    logger.info(f"Stage A complete. Best consistency={best_consistency:.4f} at epoch {best_epoch}")
+    return params
+
+
+def train_stage_b(model, params, config: Phase2Config, pool, args):
+    """Stage B: MCTS ExIt training loop.
+
+    For each step:
+      1. Generate batch (obs + oracle targets + consecutive pairs for dynamics)
+      2. Run MCTS on observations → visit_counts, root_value
+      3. JIT'd train step: policy(visits) + value(root_val) + dynamics(consistency) + BC(oracle)
+    """
+    from mcts_trader.jax_agent.mctx_search import MuZeroMCTXSearch
+
+    # Use stage_b_batch_size unless CLI overrode batch_size
+    batch_size = args.batch_size if args.batch_size is not None else config.stage_b_batch_size
+    logger.info(f"=== Stage B: {'Factored' if config.use_factored_search else 'MCTS'} ExIt ===")
+    logger.info(f"  Epochs: {config.epochs}, Steps/epoch: {config.steps_per_epoch}, "
+                f"Batch: {batch_size}")
+    if config.use_factored_search:
+        logger.info(f"  Factored search: T={config.factored_temperature}, "
+                    f"ε={config.epsilon_greedy}, sub_batch={config.factored_sub_batch}")
+    else:
+        logger.info(f"  MCTS: {config.mcts_sims} sims, gumbel={config.use_gumbel}, "
+                    f"max_actions={config.max_considered_actions}")
+    logger.info(f"  Loss weights: policy={config.exit_policy_weight}, "
+                f"value={config.exit_value_weight}, consistency={config.exit_consistency_weight}")
+    logger.info(f"  BC: {config.bc_weight} → {config.bc_weight_min} over {config.bc_decay_steps} steps")
+    logger.info(f"  Value targets: {config.value_target_mode} (TD discount: {config.td_discount}, MCTS: {config.mcts_discount})")
+
+    # Reset value head to break Phase 1 saturation (V ≈ 10 for all states)
+    if config.reset_value_head:
+        rng_reset = jax.random.PRNGKey(config.seed + 2000)
+        trm_params = params['trm']['reasoning']
+        for vkey in ['value_head_1', 'value_head_2', 'value_head_3']:
+            if vkey in trm_params:
+                layer = trm_params[vkey]
+                fan_in = layer['kernel'].shape[0]
+                rng_reset, k1 = jax.random.split(rng_reset)
+                new_kernel = jax.random.normal(k1, layer['kernel'].shape) * jnp.sqrt(2.0 / fan_in)
+                new_bias = jnp.zeros_like(layer['bias'])
+                params['trm']['reasoning'][vkey] = {
+                    'kernel': new_kernel, 'bias': new_bias,
+                }
+        logger.info("Value head reset (He init) — breaks Phase 1 saturation")
+
+    # Create optimizer (trains reasoning + dynamics, freezes encoder)
+    optimizer, opt_state = create_stage_b_optimizer(config, params)
+
+    # Build JIT-compiled train step
+    train_step_fn = make_stage_b_train_step(model, config, optimizer)
+
+    # Create search — factored per-asset (TASK_724) or joint MCTS
+    if config.use_factored_search:
+        from mcts_trader.jax_agent.factored_search import FactoredPerAssetSearch
+        search = FactoredPerAssetSearch(
+            model_apply_fn=model.apply,
+            n_assets=config.n_assets,
+            discount=config.td_discount,
+            temperature=config.factored_temperature,
+            epsilon_greedy=config.epsilon_greedy,
+            sub_batch_size=config.factored_sub_batch,
+        )
+        logger.info(f"  Factored per-asset search (T={config.factored_temperature}, "
+                    f"ε={config.epsilon_greedy}, sub_batch={config.factored_sub_batch})")
+    else:
+        search = MuZeroMCTXSearch(
+            model_apply_fn=model.apply,
+            num_simulations=config.mcts_sims,
+            max_num_considered_actions=config.max_considered_actions,
+            discount=config.mcts_discount,
+            use_gumbel=config.use_gumbel,
+            epsilon_greedy=config.epsilon_greedy,
+        )
+
+    # PopArt value normalization (TASK_718b)
+    popart_state = None
+    if config.use_popart:
+        # Try to restore from checkpoint
+        try:
+            with open(args.checkpoint, 'rb') as f:
+                _ckpt = pickle.load(f)
+            if 'popart_state' in _ckpt:
+                ps = _ckpt['popart_state']
+                popart_state = PopArtState(
+                    mean=jnp.array(ps['mean']),
+                    var=jnp.array(ps['var']),
+                    count=int(ps['count']),
+                    mean_old=jnp.array(ps['mean']),
+                    std_old=jnp.sqrt(jnp.array(ps['var']) + 1e-8),
+                )
+                logger.info("PopArt restored (mean=%.4f, var=%.4f, count=%d)",
+                           float(popart_state.mean), float(popart_state.var), popart_state.count)
+            else:
+                popart_state = init_popart_state()
+            del _ckpt
+        except Exception:
+            popart_state = init_popart_state()
+        logger.info("PopArt normalization enabled (beta=%.4f)", config.popart_beta)
+
+    # TASK_721: Async pipeline — numpy prep on background thread, JAX encode on main
+    pipeline = AsyncBatchPipeline(pool, config, prefetch=2, batch_size=batch_size)
+
+    # Output dir
+    output_dir = args.output_dir or config.phase2_checkpoint_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    # File logging (survives reboots, unlike /tmp)
+    log_path = os.path.join(output_dir, 'stage_b_training.log')
+    file_handler = logging.FileHandler(log_path, mode='a')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    logger.info("Log file: %s", log_path)
+
+    # Dump config to JSON for reproducibility
+    config_dump = {k: v for k, v in config.__dict__.items()
+                   if not k.startswith('_') and isinstance(v, (int, float, str, bool, type(None)))}
+    config_path = os.path.join(output_dir, 'stage_b_config.json')
+    with open(config_path, 'w') as f:
+        json.dump(config_dump, f, indent=2)
+    logger.info("Config saved: %s (%d fields)", config_path, len(config_dump))
+
+    # CSV metrics logging
+    csv_path = os.path.join(output_dir, 'stage_b_metrics.csv')
+    csv_fields = [
+        'epoch', 'policy_loss', 'value_loss', 'consistency_loss', 'reward_loss',
+        'bc_loss', 'bc_weight', 'dir_loss', 'dir_acc',
+        'rank_loss', 'rank_spearman',
+        'flow_velocity_loss', 'flow_state_loss',
+        'aux_price_loss', 'aux_price_mse_h1', 'aux_price_mse_hmax',
+        'bella_distill_loss', 'bella_distill_h1', 'bella_distill_hmax', 'bella_valid_frac',
+        'total_loss', 'grad_norm',
+        'td_target_mean', 'td_target_std', 'pa_mean', 'pa_std',
+        'elapsed_s', 'gen_s', 'mcts_s', 'train_s',
+    ]
+    csv_exists = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
+    csv_file = open(csv_path, 'a', newline='')
+    csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fields)
+    if not csv_exists:
+        csv_writer.writeheader()
+        csv_file.flush()
+    logger.info("CSV metrics: %s", csv_path)
+
+    best_total = float('inf')
+    best_epoch = -1
+    rng_key = jax.random.PRNGKey(config.seed + 1000)  # Different seed from Stage A
+
+    # BC weight decay schedule
+    bc_start = config.bc_weight
+    bc_end = config.bc_weight_min
+    bc_decay_steps = config.bc_decay_steps
+    global_step = 0
+
+    logger.info("Starting ExIt training...")
+    for epoch in range(config.epochs):
+        epoch_metrics = defaultdict(float)
+        epoch_start = time.time()
+        t_gen = 0.0
+        t_mcts = 0.0
+        t_train = 0.0
+
+        # TASK_723 Fix 6: Periodic slot rotation — stop pipeline, rotate safely, restart.
+        # Random sampling never exhausts cursors, so _rotate_slot is never triggered.
+        # Rotate one slot every 20 epochs to cycle through all available segments.
+        if epoch > 0 and epoch % 20 == 0:
+            slot_to_rotate = (epoch // 20) % len(pool.slots)
+            pipeline.stop()
+            pool._rotate_slot(slot_to_rotate)
+            label = pool.slots[slot_to_rotate].get('label', '?')
+            logger.info(f"  Rotated slot {slot_to_rotate} → {label}")
+            pipeline = AsyncBatchPipeline(pool, config, prefetch=2, batch_size=batch_size)
+
+        # TASK_718d: Denormalize value for MCTS — value head now outputs normalized
+        # predictions, so MCTS needs to rescale for tree search Q-values.
+        # Update per-epoch (beta is small, intra-epoch drift is negligible).
+        if popart_state is not None:
+            search.value_scale = float(jnp.sqrt(popart_state.var + 1e-8))
+            search.value_shift = float(popart_state.mean)
+
+        for step in range(config.steps_per_epoch):
+            # 1. Generate batch
+            _tg0 = time.time()
+            batch = pipeline.get_batch()
+            obs = batch['obs_t']
+            obs_t1 = batch['obs_t1']
+            obs_tN = batch['obs_tN']
+            actions_dyn = batch['actions']
+            rewards_dyn = batch['rewards']
+            oracle_targets = batch['oracle_targets']
+            oracle_values = batch['oracle_values']
+            nstep_rewards = batch['nstep_rewards']
+            future_cum_returns = batch['future_cum_returns']  # TASK_727
+            future_log_returns = batch['future_log_returns']  # TASK_735
+            bella_preds = batch.get('bella_preds')              # TASK_740
+            if bella_preds is None:
+                # Placeholder zeros with NaN-mask semantics (always masked out).
+                bella_preds = jnp.full(
+                    (future_log_returns.shape[0],
+                     len(getattr(config, 'bella_pred_horizons', (1, 5, 10, 20))),
+                     config.n_assets),
+                    jnp.nan, dtype=jnp.float32,
+                )
+            _tg1 = time.time()
+            t_gen += _tg1 - _tg0
+
+            # 2. Run MCTS search (JIT'd internally)
+            rng_key, search_key = jax.random.split(rng_key)
+            _actions, visit_counts, stats = search(params, search_key, obs)
+            mcts_value = stats['root_value']  # (B,) scalar
+            _tm1 = time.time()
+            t_mcts += _tm1 - _tg1
+
+            # 3. BC weight decay (linear)
+            bc_weight = bc_start - (bc_start - bc_end) * min(global_step / max(bc_decay_steps, 1), 1.0)
+            bc_weight_jax = jnp.float32(bc_weight)
+
+            # 4. PopArt stats for JIT (scalars — no recompilation)
+            if popart_state is not None:
+                pa_mean = jnp.float32(popart_state.mean)
+                pa_std = jnp.float32(jnp.sqrt(popart_state.var + 1e-8))
+            else:
+                pa_mean = jnp.float32(0.0)
+                pa_std = jnp.float32(1.0)
+
+            # 5. Train step
+            params, opt_state, metrics = train_step_fn(
+                params, opt_state,
+                obs, obs_t1, obs_tN, actions_dyn, rewards_dyn,
+                visit_counts, mcts_value,
+                oracle_targets, bc_weight_jax,
+                pa_mean, pa_std,
+                oracle_values, nstep_rewards,
+                future_cum_returns,
+                future_log_returns,
+                bella_preds,
+            )
+            # Fence: ensure GPU compute finishes before next batch's CPU→GPU transfers.
+            # Without this, jnp.array() in _encode_jax can collide with the async
+            # compute stream, causing "copy_stream->WaitFor(compute_stream)" crashes.
+            jax.block_until_ready(metrics)
+
+            # 6. Update PopArt statistics (outside JIT — mutable state)
+            raw_targets = metrics.pop('td_targets_raw')  # Always pop (B,) array before accumulation
+            if popart_state is not None:
+                popart_state = update_statistics(popart_state, raw_targets, config.popart_beta)
+            _tt1 = time.time()
+            t_train += _tt1 - _tm1
+
+            for k, v in metrics.items():
+                epoch_metrics[k] += float(v)
+
+            global_step += 1
+
+        # Average metrics
+        n_steps = config.steps_per_epoch
+        avg = {k: v / n_steps for k, v in epoch_metrics.items()}
+        elapsed = time.time() - epoch_start
+
+        # Log
+        pa_info = ""
+        if popart_state is not None:
+            pa_info = (f" td_mean={avg['td_target_mean']:.2f}"
+                       f" td_std={avg['td_target_std']:.2f}"
+                       f" pa_mu={float(popart_state.mean):.2f}"
+                       f" pa_sig={float(jnp.sqrt(popart_state.var + 1e-8)):.2f}")
+        dir_info = ""
+        if config.use_direction_head:
+            dir_info = f" dir={avg.get('dir_loss', 0):.4f}(acc={avg.get('dir_acc', 0.5):.3f})"
+        rank_info = ""
+        if getattr(config, 'use_rank_head', False):
+            rank_info = (f" rank={avg.get('rank_loss', 0):.4f}"
+                         f"(sp={avg.get('rank_spearman', 0):.3f})")
+        flow_info = ""
+        if getattr(config, 'use_flow_matching', False):
+            flow_info = (f" flow=v{avg.get('flow_velocity_loss', 0):.4f}"
+                         f"/s{avg.get('flow_state_loss', 0):.4f}")
+        aux_price_info = ""
+        if getattr(config, 'use_aux_price_head', False):
+            aux_price_info = (f" aux={avg.get('aux_price_loss', 0):.5f}"
+                              f"(h1={avg.get('aux_price_mse_h1', 0):.5f}"
+                              f",hmax={avg.get('aux_price_mse_hmax', 0):.5f})")
+        bella_info = ""
+        if getattr(config, 'use_bella_distill_head', False):
+            bella_info = (f" bella={avg.get('bella_distill_loss', 0):.5f}"
+                          f"(vf={avg.get('bella_valid_frac', 0):.2f}"
+                          f",h1={avg.get('bella_distill_h1', 0):.5f}"
+                          f",hmax={avg.get('bella_distill_hmax', 0):.5f})")
+        logger.info(
+            f"E{epoch:4d}: policy={avg['policy_loss']:.4f} "
+            f"value={avg['value_loss']:.4f} "
+            f"consistency={avg['consistency_loss']:.4f} "
+            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info} "
+            f"total={avg['total_loss']:.4f} "
+            f"grad={avg['grad_norm']:.3f}"
+            f"{pa_info} "
+            f"({elapsed:.1f}s | gen={t_gen:.1f} mcts={t_mcts:.1f} train={t_train:.1f})"
+        )
+
+        # CSV row
+        csv_writer.writerow({
+            'epoch': epoch,
+            'policy_loss': f"{avg['policy_loss']:.6f}",
+            'value_loss': f"{avg['value_loss']:.6f}",
+            'consistency_loss': f"{avg['consistency_loss']:.6f}",
+            'reward_loss': f"{avg['reward_loss']:.6f}",
+            'bc_loss': f"{avg['bc_loss']:.6f}",
+            'bc_weight': f"{avg['bc_weight']:.6f}",
+            'dir_loss': f"{avg.get('dir_loss', 0):.6f}",
+            'dir_acc': f"{avg.get('dir_acc', 0.5):.6f}",
+            'rank_loss': f"{avg.get('rank_loss', 0):.6f}",
+            'rank_spearman': f"{avg.get('rank_spearman', 0):.6f}",
+            'flow_velocity_loss': f"{avg.get('flow_velocity_loss', 0):.6f}",
+            'flow_state_loss': f"{avg.get('flow_state_loss', 0):.6f}",
+            'aux_price_loss': f"{avg.get('aux_price_loss', 0):.6f}",
+            'aux_price_mse_h1': f"{avg.get('aux_price_mse_h1', 0):.6f}",
+            'aux_price_mse_hmax': f"{avg.get('aux_price_mse_hmax', 0):.6f}",
+            'bella_distill_loss': f"{avg.get('bella_distill_loss', 0):.6f}",
+            'bella_distill_h1': f"{avg.get('bella_distill_h1', 0):.6f}",
+            'bella_distill_hmax': f"{avg.get('bella_distill_hmax', 0):.6f}",
+            'bella_valid_frac': f"{avg.get('bella_valid_frac', 0):.6f}",
+            'total_loss': f"{avg['total_loss']:.6f}",
+            'grad_norm': f"{avg['grad_norm']:.6f}",
+            'td_target_mean': f"{avg.get('td_target_mean', 0):.6f}",
+            'td_target_std': f"{avg.get('td_target_std', 0):.6f}",
+            'pa_mean': f"{float(popart_state.mean):.6f}" if popart_state else "0",
+            'pa_std': f"{float(jnp.sqrt(popart_state.var + 1e-8)):.6f}" if popart_state else "1",
+            'elapsed_s': f"{elapsed:.1f}",
+            'gen_s': f"{t_gen:.1f}",
+            'mcts_s': f"{t_mcts:.1f}",
+            'train_s': f"{t_train:.1f}",
+        })
+        csv_file.flush()
+
+        # Check for NaN
+        if np.isnan(avg['total_loss']):
+            logger.error("NaN loss detected — aborting!")
+            break
+
+        # Track best + checkpoint
+        if avg['total_loss'] < best_total:
+            best_total = avg['total_loss']
+            best_epoch = epoch
+            path = save_checkpoint(params, config, epoch, avg, output_dir, 'phase2_stageB_best',
+                                   popart_state=popart_state)
+            logger.info(f"  New best total={best_total:.4f} → {path}")
+
+        # Periodic checkpoint every 50 epochs
+        if epoch > 0 and epoch % 50 == 0:
+            save_checkpoint(params, config, epoch, avg, output_dir, f'phase2_stageB_e{epoch}',
+                           popart_state=popart_state)
+
+        # Encoder unfreeze check
+        if (config.encoder_unfreeze_epoch is not None and
+                epoch == config.encoder_unfreeze_epoch):
+            logger.info(f"  Unfreezing encoder at epoch {epoch} (lr={config.encoder_lr})")
+            # Rebuild optimizer with encoder included
+            # For simplicity, recreate with full mask (no encoder exclusion)
+            # This is safe because encoder_lr is very low (3e-5)
+            optimizer, opt_state = create_stage_b_optimizer_with_encoder(config, params)
+            train_step_fn = make_stage_b_train_step(model, config, optimizer)
+
+    # Cleanup
+    pipeline.stop()
+
+    # Final save
+    save_checkpoint(params, config, config.epochs - 1, avg, output_dir, 'phase2_stageB_final',
+                    popart_state=popart_state)
+    csv_file.close()
+    logger.removeHandler(file_handler)
+    file_handler.close()
+    logger.info(f"Stage B complete. Best total={best_total:.4f} at epoch {best_epoch}")
+    return params
+
+
+def create_stage_b_optimizer_with_encoder(config: Phase2Config, params):
+    """Optimizer that trains everything including encoder (at lower LR).
+
+    Used when encoder is unfrozen mid-training.
+    """
+    total_steps = config.epochs * config.steps_per_epoch
+    warmup_steps = min(200, max(total_steps - 1, 0))
+
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=config.policy_lr,
+        warmup_steps=warmup_steps,
+        decay_steps=max(total_steps, warmup_steps + 1),
+        end_value=config.policy_lr * 0.1,
+    )
+
+    train_opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(schedule, weight_decay=1e-4),
+    )
+    freeze_opt = optax.set_to_zero()
+
+    # Train everything except oracle_mask
+    def should_train(path, _leaf):
+        key = str(path[0])
+        return 'oracle_mask' not in key
+
+    mask = jax.tree_util.tree_map_with_path(should_train, params)
+    labels = jax.tree_util.tree_map(lambda x: 'train' if x else 'freeze', mask)
+
+    optimizer = optax.multi_transform(
+        {'train': train_opt, 'freeze': freeze_opt},
+        labels,
+    )
+    opt_state = optimizer.init(params)
+    return optimizer, opt_state
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Phase 2: Dynamics Training + MCTS ExIt")
+
+    # Required
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help='Phase 1 checkpoint path (.pkl)')
+
+    # Stage
+    parser.add_argument('--stage', type=str, default='A', choices=['A', 'B'],
+                        help='Training stage: A=dynamics warmup, B=MCTS ExIt')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Number of epochs')
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='Batch size override')
+    parser.add_argument('--steps-per-epoch', type=int, default=None,
+                        help='Steps per epoch override')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='RNG seed override (config.seed). Used for multi-seed validation runs.')
+
+    # Data
+    parser.add_argument('--periods-file', type=str, default='/tmp/foxglove_periods.json',
+                        help='Periods JSON for SegmentPool')
+    parser.add_argument('--db-path', type=str, default='trading_data.db',
+                        help='SQLite database path')
+
+    # Learning rates
+    parser.add_argument('--dynamics-lr', type=float, default=None)
+    parser.add_argument('--policy-lr', type=float, default=None)
+    parser.add_argument('--value-lr', type=float, default=None)
+
+    # MCTS (Stage B)
+    parser.add_argument('--mcts-sims', type=int, default=None,
+                        help='MCTS simulations per step (Stage B)')
+    parser.add_argument('--mcts-discount', type=float, default=None,
+                        help='MCTS tree search discount (should match td_discount)')
+
+    # Factored per-asset search (TASK_724)
+    parser.add_argument('--factored', action='store_true',
+                        help='Use factored per-asset search instead of joint MCTS')
+    parser.add_argument('--factored-temperature', type=float, default=None,
+                        help='Q-value softmax temperature (default: 1.0)')
+    parser.add_argument('--factored-sub-batch', type=int, default=None,
+                        help='Sub-batch size for factored search (default: 4096)')
+    parser.add_argument('--no-reset-value-head', action='store_true',
+                        help='Keep existing value head (don\'t re-init with He normal)')
+    parser.add_argument('--bc-weight-min', type=float, default=None,
+                        help='BC weight floor (default: 0.03)')
+    parser.add_argument('--bc-decay-steps', type=int, default=None,
+                        help='BC decay steps (default: 20000)')
+    # TASK_726: Class-Balanced BC
+    parser.add_argument('--no-bc-balance', action='store_true',
+                        help='Disable class-balanced BC (use plain per-asset CE mean)')
+    parser.add_argument('--bc-max-trade-weight', type=float, default=None,
+                        help='Max trade weight boost for class-balanced BC (default: 64.0)')
+    # TASK_727: Auxiliary direction head
+    parser.add_argument('--no-direction-head', action='store_true',
+                        help='Disable per-asset direction head (default: on)')
+    parser.add_argument('--direction-weight', type=float, default=None,
+                        help='Direction loss weight (default: 0.2)')
+    parser.add_argument('--direction-horizon', type=int, default=None,
+                        help='Horizon for per-asset future cum return (default: 20)')
+    # TASK_728: Direction → policy structural bias + encoder unfreeze
+    parser.add_argument('--no-direction-policy-bias', action='store_true',
+                        help='Disable structural direction→policy bias refiner')
+    parser.add_argument('--encoder-lr', type=float, default=None,
+                        help='Encoder learning rate (0=frozen, default: config)')
+    # TASK_728b: Warm-start refiner kernel to break zero-init dead-gradient basin
+    parser.add_argument('--warm-direction-refiner', action='store_true',
+                        help='Overwrite refiner kernel with action priors (BUY=+α, SELL=−α)')
+    parser.add_argument('--direction-prior-alpha', type=float, default=0.5,
+                        help='Prior magnitude α for refiner warm-start (default: 0.5)')
+    # TASK_729a: Reset direction head (+ refiner) on load — new head arch
+    parser.add_argument('--reset-direction-head', action='store_true',
+                        help='Drop direction_head + policy_direction_refiner from checkpoint; fresh-init both')
+    # TASK_730: Cross-sectional rank oracle head
+    parser.add_argument('--no-rank-head', action='store_true',
+                        help='Disable per-asset rank-score head (default: on)')
+    parser.add_argument('--rank-weight', type=float, default=None,
+                        help='Rank loss weight (default: 1.0)')
+    parser.add_argument('--rank-loss', type=str, default=None, choices=['mse'],
+                        help='Rank loss form (default: mse; listwise/pairwise held as stretch)')
+    parser.add_argument('--reset-rank-head', action='store_true',
+                        help='Drop rank_head from checkpoint; fresh-init')
+    # TASK_734: Flow-matching dynamics loss
+    parser.add_argument('--flow-matching', action='store_true',
+                        help='Replace MSE consistency loss with velocity-matching (avoids identity collapse)')
+    parser.add_argument('--flow-matching-velocity-weight', type=float, default=None,
+                        help='Flow matching: weight on velocity loss vs state loss (default: 0.8)')
+    # TASK_735: Aux log-return prediction head
+    parser.add_argument('--no-aux-price-head', action='store_true',
+                        help='Disable aux log-return prediction head (default: on)')
+    parser.add_argument('--aux-price-weight', type=float, default=None,
+                        help='Aux log-return loss weight (default: 0.1)')
+    parser.add_argument('--reset-aux-price-head', action='store_true',
+                        help='Drop aux_price_head from checkpoint; fresh-init')
+    # TASK_740: Bella distillation prediction head (Path β-v2)
+    parser.add_argument('--no-bella-distill-head', action='store_true',
+                        help='Disable Bella distillation head (default: follows config '
+                             'use_bella_distill_head, typically False)')
+    parser.add_argument('--bella-distill-head', action='store_true',
+                        help='Enable Bella distillation head (TASK_740)')
+    parser.add_argument('--bella-distill-weight', type=float, default=None,
+                        help='Bella distillation loss weight (default: 0.1)')
+    parser.add_argument('--bella-preds-manifest', type=str, default=None,
+                        help='Path to Bella predictions manifest JSON '
+                             '(default: config/bella_preds_manifest.json)')
+    parser.add_argument('--reset-bella-distill-head', action='store_true',
+                        help='Drop aux_bella_head from checkpoint; fresh-init')
+    # TASK_738: Legacy 27-ch encoder mode (ablate TASK_732)
+    parser.add_argument('--legacy-27ch', action='store_true',
+                        help='Use 27-channel encoder (skip cross-sectional channels). '
+                             'Required when loading pre-TASK_732 checkpoints.')
+    parser.add_argument('--value-weight', type=float, default=None,
+                        help='Value loss weight (default: 1.0)')
+    # TASK_739: Dense sign-of-forward-return oracle (Tier A1)
+    parser.add_argument('--oracle-mode', type=str, default=None,
+                        choices=['topk_path', 'dense_sign', 'hybrid'],
+                        help='BC target oracle: topk_path (default, pre-739), '
+                             'dense_sign (TASK_739 per-asset sign(r_fwd)), '
+                             'hybrid (reserved). Value/path still use top-k.')
+    parser.add_argument('--sign-epsilon', type=float, default=None,
+                        help='Dead-zone threshold on |r_fwd| for dense_sign oracle '
+                             '(default: 1e-4). Tune to match 5-15%% per-asset trade density.')
+
+    # Value target mode (TASK_719)
+    parser.add_argument('--value-target-mode', type=str, default=None,
+                        choices=['oracle', 'nstep', 'td0'],
+                        help='Value target: oracle (719a), nstep (719b), td0 (bootstrap)')
+    parser.add_argument('--nstep-horizon', type=int, default=None,
+                        help='N for n-step TD returns (default: 20)')
+    parser.add_argument('--td-discount', type=float, default=None,
+                        help='Discount for TD value targets (default: 0.95)')
+
+    # Data diversity (TASK_716 follow-up)
+    parser.add_argument('--n-slots', type=int, default=17,
+                        help='Concurrent segments in RAM pool (default: 17)')
+    parser.add_argument('--max-runs-per-group', type=int, default=1,
+                        help='Runs per date range — increase for more asset diversity (default: 1)')
+
+    # Output
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory for checkpoints')
+    parser.add_argument('--name', type=str, default=None,
+                        help='Experiment name')
+
+    # Modes
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Validate checkpoint + pool loading, then exit')
+    parser.add_argument('--test-init', action='store_true',
+                        help='Test dynamics initialization + recurrent_inference')
+    parser.add_argument('--test-mcts', action='store_true',
+                        help='Test MCTS search with Stage A checkpoint')
+
+    # Benchmark
+    parser.add_argument('--benchmark-every', type=int, default=0,
+                        help='Run benchmark every N epochs (0=disabled)')
+    parser.add_argument('--benchmark-gpu', type=int, default=1,
+                        help='GPU index for benchmark')
+
+    # TASK_729b: Per-asset encoder width overrides (V2 encoder)
+    parser.add_argument('--embed-dim', type=int, default=None,
+                        help='Per-asset embedding width. Must match Phase 1 checkpoint.')
+    parser.add_argument('--encoder-heads', type=int, default=None,
+                        help='Cross-asset attention head count. Must match Phase 1 checkpoint.')
+    # TASK_729c: Encoder family selector (must match Phase 1 checkpoint)
+    parser.add_argument('--encoder-version', type=int, default=None, choices=[2, 3],
+                        help='Encoder family: 2=V2 flatten+Dense, 3=V3 minGRU temporal.')
+    # TASK_741 (Mint): Post-pool per-asset scalar injection via FiLM.
+    parser.add_argument('--per-asset-injection',
+                        choices=['none', 'cheat', 'xs', 'both'],
+                        default=None,
+                        help='TASK_741 (Mint): FiLM-inject per-asset scalars '
+                             'on the post-pool feature surface. xs is '
+                             'production-safe; cheat is diagnostic only.')
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # --- Load Phase 1 checkpoint ---
+    ckpt_path = str(Path(args.checkpoint).resolve())
+    logger.info(f"Loading Phase 1 checkpoint: {ckpt_path}")
+    params, p1_config, p1_epoch, p1_metrics = load_phase1_checkpoint(ckpt_path)
+
+    # --- Build Phase 2 config from Phase 1 config ---
+    # Look for config.json next to checkpoint
+    ckpt_dir = Path(ckpt_path).parent
+    p1_config_path = ckpt_dir / 'config.json'
+    if p1_config_path.exists():
+        config = get_phase2_config(str(p1_config_path))
+        logger.info(f"Loaded Phase 1 config from {p1_config_path}")
+    else:
+        config = Phase2Config(**{k: v for k, v in p1_config.items()
+                                 if k in Phase2Config.__dataclass_fields__})
+        logger.info("Built config from checkpoint metadata")
+
+    # Apply stage + CLI overrides
+    config.stage = args.stage
+    config.get_stage_defaults()
+    if args.epochs is not None:
+        config.epochs = args.epochs
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.steps_per_epoch is not None:
+        config.steps_per_epoch = args.steps_per_epoch
+    if args.seed is not None:
+        config.seed = args.seed
+    if args.dynamics_lr is not None:
+        config.dynamics_lr = args.dynamics_lr
+    if args.policy_lr is not None:
+        config.policy_lr = args.policy_lr
+    if args.value_lr is not None:
+        config.value_lr = args.value_lr
+    if args.mcts_sims is not None:
+        config.mcts_sims = args.mcts_sims
+    if args.mcts_discount is not None:
+        config.mcts_discount = args.mcts_discount
+    if args.factored:
+        config.use_factored_search = True
+    if args.no_reset_value_head:
+        config.reset_value_head = False
+    if args.factored_temperature is not None:
+        config.factored_temperature = args.factored_temperature
+    if args.factored_sub_batch is not None:
+        config.factored_sub_batch = args.factored_sub_batch
+    if args.bc_weight_min is not None:
+        config.bc_weight_min = args.bc_weight_min
+    if args.bc_decay_steps is not None:
+        config.bc_decay_steps = args.bc_decay_steps
+    if args.no_bc_balance:
+        config.bc_class_balanced = False
+    if args.bc_max_trade_weight is not None:
+        config.bc_max_trade_weight = args.bc_max_trade_weight
+    if args.no_direction_head:
+        config.use_direction_head = False
+    if args.direction_weight is not None:
+        config.direction_loss_weight = args.direction_weight
+    if args.direction_horizon is not None:
+        config.direction_horizon = args.direction_horizon
+    if args.no_direction_policy_bias:
+        config.use_direction_policy_bias = False
+    # TASK_730: rank head overrides
+    if args.no_rank_head:
+        config.use_rank_head = False
+    if args.rank_weight is not None:
+        config.rank_loss_weight = args.rank_weight
+    if args.rank_loss is not None:
+        config.rank_loss_type = args.rank_loss
+    # TASK_734: flow-matching overrides
+    if args.flow_matching:
+        config.use_flow_matching = True
+    if args.flow_matching_velocity_weight is not None:
+        config.flow_matching_velocity_weight = args.flow_matching_velocity_weight
+    # TASK_735: aux price head overrides
+    if args.no_aux_price_head:
+        config.use_aux_price_head = False
+    if args.aux_price_weight is not None:
+        config.aux_price_loss_weight = args.aux_price_weight
+    # TASK_740: Bella distillation head overrides
+    if args.bella_distill_head:
+        config.use_bella_distill_head = True
+    if args.no_bella_distill_head:
+        config.use_bella_distill_head = False
+    if args.bella_distill_weight is not None:
+        config.bella_distill_loss_weight = args.bella_distill_weight
+    if args.bella_preds_manifest is not None:
+        config.bella_preds_manifest = args.bella_preds_manifest
+    if getattr(config, 'use_bella_distill_head', False):
+        logger.info(f"Bella distillation head ON "
+                    f"(weight={config.bella_distill_loss_weight}, "
+                    f"manifest={config.bella_preds_manifest})")
+    # TASK_738: legacy 27-ch encoder mode
+    if args.legacy_27ch:
+        config.use_cross_sectional = False
+        # Total obs channels = 27 base + state channels. Default state = 7
+        # (per TASK_689). So set n_channels = 34 for the state-channels heuristic.
+        if config.n_channels >= 39:
+            config.n_channels = 34
+        logger.info("Legacy 27-ch encoder mode enabled (ablate TASK_732)")
+    # TASK_739: dense-sign oracle overrides
+    if args.oracle_mode is not None:
+        if args.oracle_mode == 'hybrid':
+            raise NotImplementedError(
+                "--oracle-mode=hybrid is reserved (TASK_739 follow-up). "
+                "Use topk_path or dense_sign."
+            )
+        config.oracle_mode = args.oracle_mode
+        logger.info(f"Oracle mode: {config.oracle_mode}")
+    if args.sign_epsilon is not None:
+        config.sign_epsilon = args.sign_epsilon
+        logger.info(f"Sign epsilon: {config.sign_epsilon}")
+    # TASK_729b: encoder width overrides (must match Phase 1 checkpoint)
+    if args.embed_dim is not None:
+        config.embed_dim = args.embed_dim
+    if args.encoder_heads is not None:
+        config.encoder_num_heads = args.encoder_heads
+    # TASK_729c: encoder family override
+    if args.encoder_version is not None:
+        config.encoder_version = args.encoder_version
+    if args.encoder_lr is not None:
+        config.encoder_lr = args.encoder_lr
+    # TASK_741 (Mint): per-asset injection override
+    if args.per_asset_injection is not None:
+        if args.per_asset_injection == 'none':
+            config.use_per_asset_injection = False
+            config.per_asset_inject_xs = False
+            config.per_asset_inject_cheat = False
+        else:
+            config.use_per_asset_injection = True
+            config.per_asset_inject_xs = args.per_asset_injection in ('xs', 'both')
+            config.per_asset_inject_cheat = args.per_asset_injection in ('cheat', 'both')
+        logger.info(f"[MINT] Per-asset injection: {args.per_asset_injection} "
+                    f"(xs={config.per_asset_inject_xs}, cheat={config.per_asset_inject_cheat})")
+    if args.value_weight is not None:
+        config.exit_value_weight = args.value_weight
+    if args.value_target_mode is not None:
+        config.value_target_mode = args.value_target_mode
+    if args.nstep_horizon is not None:
+        config.nstep_horizon = args.nstep_horizon
+    if args.td_discount is not None:
+        config.td_discount = args.td_discount
+    if args.name:
+        config.name = args.name
+    else:
+        config.name = f"phase2_stage{args.stage}"
+
+    # --- Analyze checkpoint ---
+    info = analyze_params(params)
+    n_params = info['total_params']
+    logger.info(f"Loaded Phase 1 checkpoint (epoch {p1_epoch}, {n_params / 1e6:.2f}M params)")
+    logger.info(f"Dynamics layers: {info['dynamics_zero']}/{info['dynamics_total']} zero (ready for init)"
+                if info['dynamics_zero'] == info['dynamics_total']
+                else f"Dynamics layers: {info['dynamics_total'] - info['dynamics_zero']}/{info['dynamics_total']} trained")
+    logger.info(f"Encoder layers: {info['encoder_zero']} zero (trained)"
+                if info['encoder_zero'] == 0
+                else f"Encoder layers: {info['encoder_zero']}/{info['encoder_total']} zero (WARNING: partially untrained)")
+
+    # --- Create model (verify architecture matches checkpoint) ---
+    model = create_model(config)
+    logger.info(f"Model created: state_dim={config.state_dim}, actions={config.action_space_size}, "
+                f"H={config.H_cycles}, L={config.L_cycles}")
+
+    # TASK_729a: Optionally drop direction_head + refiner so they fresh-init.
+    # Required when head architecture changed (old dir_head read global latent,
+    # new one reads per-asset features — completely different param shapes).
+    if getattr(args, 'reset_direction_head', False):
+        dropped = []
+        for k in ('direction_head', 'policy_direction_refiner'):
+            if k in params:
+                del params[k]
+                dropped.append(k)
+        if dropped:
+            logger.info(f"Reset aux heads (will fresh-init): {dropped}")
+
+    # TASK_730: Optionally drop rank_head so it fresh-inits (e.g. restart from a
+    # checkpoint whose rank head diverged or used a different hidden_dim).
+    if getattr(args, 'reset_rank_head', False):
+        if 'rank_head' in params:
+            del params['rank_head']
+            logger.info("Reset rank_head (will fresh-init)")
+
+    # TASK_735: Optionally drop aux_price_head on load.
+    if getattr(args, 'reset_aux_price_head', False):
+        if 'aux_price_head' in params:
+            del params['aux_price_head']
+            logger.info("Reset aux_price_head (will fresh-init)")
+
+    # TASK_740: Optionally drop aux_bella_head on load.
+    if getattr(args, 'reset_bella_distill_head', False):
+        if 'aux_bella_head' in params:
+            del params['aux_bella_head']
+            logger.info("Reset aux_bella_head (will fresh-init)")
+
+    # TASK_727/728/729a/730/735/740: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
+    if (config.use_direction_head or
+            getattr(config, 'use_direction_policy_bias', False) or
+            getattr(config, 'use_per_asset_policy_head', False) or
+            getattr(config, 'use_oracle_mask_head', False) or
+            getattr(config, 'use_rank_head', False) or
+            getattr(config, 'use_aux_price_head', False) or
+            getattr(config, 'use_bella_distill_head', False)):
+        aux_rng = jax.random.PRNGKey(config.seed + 9999)
+        params = initialize_missing_aux_heads(model, params, config, aux_rng)
+
+    # TASK_728b: Optionally warm the refiner kernel with action priors.
+    if getattr(args, 'warm_direction_refiner', False) and config.use_direction_policy_bias:
+        params = warm_policy_direction_refiner(
+            params, alpha=args.direction_prior_alpha, n_assets=config.n_assets,
+        )
+
+    # --- Test init mode (no pool needed) ---
+    if args.test_init:
+        logger.info("Testing dynamics initialization...")
+        rng_key = jax.random.PRNGKey(config.seed)
+        params = initialize_dynamics(params, rng_key)
+
+        # Verify kernels/embeddings are no longer zero (biases and LN biases stay zero)
+        info_post = analyze_params(params)
+        logger.info(f"After init: dynamics {info_post['dynamics_zero']}/{info_post['dynamics_total']} zero "
+                    f"(4 expected: bias tensors)")
+        # 9 total: 1 embedding + 2 kernels + 2 biases + 2 LN scales + 2 LN biases
+        # After init: biases (4) stay zero, scales/kernels/embedding (5) should be non-zero
+        expected_zero = 4  # dynamics_dense1/bias, dynamics_dense2/bias, dynamics_ln/bias, dynamics_state_norm/bias
+        assert info_post['dynamics_zero'] == expected_zero, \
+            f"Expected {expected_zero} zero tensors (biases), got {info_post['dynamics_zero']}"
+
+        # Smoke test: recurrent_inference
+        latent = jnp.ones((1, config.state_dim))
+        action = jnp.array([42])
+        out = model.apply({'params': params}, latent, action, mode='recurrent_inference')
+
+        assert out['latent_state'].shape == (1, config.state_dim), \
+            f"Expected latent (1, {config.state_dim}), got {out['latent_state'].shape}"
+        assert out['reward'].shape == (1, VALUE_SUPPORT_SIZE), \
+            f"Expected reward (1, {VALUE_SUPPORT_SIZE}), got {out['reward'].shape}"
+        assert not jnp.any(jnp.isnan(out['latent_state'])), "NaN in latent_state!"
+        assert not jnp.any(jnp.isnan(out['reward'])), "NaN in reward!"
+
+        latent_std = float(out['latent_state'].std())
+        reward_std = float(out['reward'].std())
+        logger.info(f"recurrent_inference OK: latent shape={out['latent_state'].shape}, "
+                    f"std={latent_std:.4f}")
+        logger.info(f"  reward shape={out['reward'].shape}, std={reward_std:.4f}")
+
+        # Batch test: verify it works with larger batch
+        latent_batch = jax.random.normal(jax.random.PRNGKey(0), (16, config.state_dim))
+        action_batch = jax.random.randint(jax.random.PRNGKey(1), (16,), 0, config.action_space_size)
+        out_batch = model.apply({'params': params}, latent_batch, action_batch, mode='recurrent_inference')
+        assert out_batch['latent_state'].shape == (16, config.state_dim)
+        assert not jnp.any(jnp.isnan(out_batch['latent_state']))
+        logger.info(f"Batch test OK: (16, {config.state_dim}) latent, no NaN")
+
+        logger.info("TASK_716b gate PASSED — dynamics initialized, recurrent_inference works")
+        return
+
+    # --- Test MCTS mode (no pool needed) ---
+    if args.test_mcts:
+        logger.info("Testing MCTS search (TASK_716e)...")
+        from mcts_trader.jax_agent.mctx_search import MuZeroMCTXSearch
+
+        # If checkpoint has trained dynamics (Stage A output), use as-is.
+        # If dynamics are still zero (raw Phase 1), initialize them first.
+        info_dyn = analyze_params(params)
+        if info_dyn['dynamics_zero'] == info_dyn['dynamics_total']:
+            logger.info("Dynamics all zero — initializing with He normal for smoke test")
+            rng_key = jax.random.PRNGKey(config.seed)
+            params = initialize_dynamics(params, rng_key)
+
+        # Create MCTS search
+        search = MuZeroMCTXSearch(
+            model_apply_fn=model.apply,
+            num_simulations=config.mcts_sims,
+            max_num_considered_actions=config.max_considered_actions,
+            discount=config.mcts_discount,
+            use_gumbel=config.use_gumbel,
+            epsilon_greedy=config.epsilon_greedy,
+        )
+
+        # Generate synthetic observation batch (random prices → encoded features)
+        # Shape: (batch, n_channels, window_size, n_assets)
+        batch_size = 16
+        rng_key = jax.random.PRNGKey(42)
+        obs_batch = jax.random.normal(rng_key, (batch_size, config.n_channels, config.window_size, config.n_assets))
+
+        # Run MCTS search
+        rng_key, search_key = jax.random.split(rng_key)
+        logger.info(f"Running MCTS: batch={batch_size}, sims={config.mcts_sims}, "
+                    f"gumbel={config.use_gumbel}, max_actions={config.max_considered_actions}")
+
+        actions, visit_counts, stats = search(params, search_key, obs_batch)
+
+        # Validate shapes
+        assert actions.shape == (batch_size,), f"Expected actions ({batch_size},), got {actions.shape}"
+        assert visit_counts.shape == (batch_size, config.action_space_size), \
+            f"Expected visits ({batch_size}, {config.action_space_size}), got {visit_counts.shape}"
+        assert not jnp.any(jnp.isnan(actions)), "NaN in actions!"
+        assert not jnp.any(jnp.isnan(visit_counts)), "NaN in visit_counts!"
+
+        # Validate visit counts are valid probability distributions
+        assert jnp.all(visit_counts >= 0), "Negative visit counts!"
+        visit_sums = visit_counts.sum(axis=-1)
+        assert jnp.allclose(visit_sums, 1.0, atol=0.01), \
+            f"Visit counts don't sum to 1: {visit_sums}"
+
+        # Validate root values
+        root_value = stats['root_value']
+        assert root_value.shape == (batch_size,), f"Expected root_value ({batch_size},), got {root_value.shape}"
+        assert not jnp.any(jnp.isnan(root_value)), "NaN in root_value!"
+
+        # Compute visit entropy
+        log_visits = jnp.log(visit_counts + 1e-8)
+        visit_entropy = -(visit_counts * log_visits).sum(axis=-1)
+        mean_entropy = float(visit_entropy.mean())
+
+        # Check actions are in valid range
+        assert jnp.all(actions >= 0) and jnp.all(actions < config.action_space_size), \
+            f"Actions out of range: min={int(actions.min())}, max={int(actions.max())}"
+
+        # Count how many unique actions selected across batch
+        n_unique = len(set(actions.tolist()))
+
+        # Non-zero visit count analysis
+        nonzero_per_sample = (visit_counts > 0.001).sum(axis=-1)
+        mean_nonzero = float(nonzero_per_sample.mean())
+
+        logger.info(f"MCTS results:")
+        logger.info(f"  actions: shape={actions.shape}, range=[{int(actions.min())}, {int(actions.max())}], "
+                    f"{n_unique} unique")
+        logger.info(f"  visit_counts: shape={visit_counts.shape}, sum={float(visit_sums.mean()):.4f}")
+        logger.info(f"  visit_entropy: mean={mean_entropy:.2f} (0=collapsed, ~5.8=uniform over 320)")
+        logger.info(f"  nonzero visits: mean={mean_nonzero:.1f} actions/sample")
+        logger.info(f"  root_value: mean={float(root_value.mean()):.4f}, "
+                    f"std={float(root_value.std()):.4f}, "
+                    f"range=[{float(root_value.min()):.4f}, {float(root_value.max()):.4f}]")
+
+        # Gate checks from spec
+        assert mean_entropy > 0, "Visit entropy is 0 — search collapsed!"
+        assert mean_nonzero > 1, "Only 1 action visited — search not exploring!"
+
+        logger.info("TASK_716e gate PASSED — MCTS produces valid actions + visit counts")
+        return
+
+    # --- Load SegmentPool ---
+    pool = None
+    if Path(args.periods_file).exists() and Path(args.db_path).exists():
+        pool = load_segment_pool(config, args.periods_file, args.db_path,
+                                 n_slots=args.n_slots,
+                                 max_runs_per_group=args.max_runs_per_group)
+        n_regimes = len(pool.group_keys)
+        logger.info(f"SegmentPool: {n_regimes} regimes loaded")
+    else:
+        if not args.dry_run:
+            logger.warning(f"Periods file ({args.periods_file}) or DB ({args.db_path}) not found!")
+        else:
+            logger.info(f"SegmentPool: skipped (periods-file or db not found)")
+
+    # --- Dry run: report and exit ---
+    if args.dry_run:
+        logger.info("Dry run complete — ready for Stage A")
+        return
+
+    # --- Training ---
+    if args.stage == 'A':
+        if pool is None:
+            logger.error("SegmentPool required for training — check --periods-file and --db-path")
+            return
+        train_stage_a(model, params, config, pool, args)
+
+    elif args.stage == 'B':
+        if pool is None:
+            logger.error("SegmentPool required for training — check --periods-file and --db-path")
+            return
+        train_stage_b(model, params, config, pool, args)
+
+
+if __name__ == '__main__':
+    main()

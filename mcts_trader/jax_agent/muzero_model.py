@@ -6,6 +6,205 @@ from .trm_flax import TinyRecursiveTradingModel
 from . import VALUE_SUPPORT_SIZE
 
 
+class DirectionHead(nn.Module):
+    """TASK_729a: Per-asset direction head.
+
+    Takes per-asset features (B, n_assets, D) — produced by the encoder before
+    the global 64→state_dim bottleneck — and emits one direction logit per asset
+    via a shared-weight MLP (applied independently per asset, no cross-asset mix).
+
+    Pre-729a this head read from the global latent; performance ceiling at
+    dir_acc ≈ 0.59 proved the global bottleneck was the limiting factor.
+    """
+    n_assets: int = 64
+    hidden_dim: int = 128
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, per_asset_feats: jnp.ndarray) -> jnp.ndarray:
+        # per_asset_feats: (B, n_assets, D). Shared weights applied per-asset.
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='dir_1')(
+            per_asset_feats.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='dir_ln')(x)
+        logits = nn.Dense(features=1, dtype=self.dtype,
+                          param_dtype=self.param_dtype, name='dir_out')(x)
+        return logits.squeeze(-1).astype(jnp.float32)  # (B, n_assets)
+
+
+class RankHead(nn.Module):
+    """TASK_730: Per-asset rank-score head.
+
+    Takes per-asset features (B, n_assets, D) and emits one scalar score per
+    asset via a shared-weight MLP (applied independently per asset, no cross-
+    asset mix). Scores are regressed against normalized cross-sectional ranks
+    of future cum-return — dense, per-asset label every step, breaking the
+    93.75%-HOLD collapse of the top-k oracle.
+
+    Zero-init final Dense: at init the head emits near-zero scores, so random
+    argsort-rank is the expected untrained signal (Spearman ≈ 0). Loss gradient
+    pulls scores toward target ranks as training proceeds.
+    """
+    n_assets: int = 64
+    hidden_dim: int = 128
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, per_asset_feats: jnp.ndarray) -> jnp.ndarray:
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='rank_1')(
+            per_asset_feats.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='rank_ln')(x)
+        scores = nn.Dense(features=1,
+                          kernel_init=nn.initializers.zeros,
+                          bias_init=nn.initializers.zeros,
+                          dtype=self.dtype,
+                          param_dtype=self.param_dtype, name='rank_out')(x)
+        return scores.squeeze(-1).astype(jnp.float32)  # (B, n_assets)
+
+
+class AuxPriceHead(nn.Module):
+    """TASK_735: Multi-horizon log-return prediction head.
+
+    Takes the global latent (B, state_dim) and predicts per-asset log-returns
+    at K future horizons. Supervised with per-horizon MSE against actual
+    log-returns from the training window. Log-returns (not log-prices) —
+    centered near zero, consistent scale across assets.
+
+    direction_head (TASK_727) predicts sign only. rank_head (TASK_730) predicts
+    cross-sectional ordering. Neither captures magnitude. This head fills the
+    magnitude-prediction gap.
+    """
+    n_assets: int = 64
+    horizons: Tuple[int, ...] = (1, 5, 10, 20)
+    hidden_dim: int = 256
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, latent: jnp.ndarray) -> jnp.ndarray:
+        n_horizons = len(self.horizons)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='aux_price_1')(
+            latent.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='aux_price_ln')(x)
+        # Zero-init final: model starts at "predict zero return at every horizon",
+        # gradient pulls it toward actual log-returns.
+        out = nn.Dense(features=n_horizons * self.n_assets,
+                       kernel_init=nn.initializers.zeros,
+                       bias_init=nn.initializers.zeros,
+                       dtype=self.dtype,
+                       param_dtype=self.param_dtype, name='aux_price_out')(x)
+        batch = out.shape[0]
+        return out.reshape(batch, n_horizons, self.n_assets).astype(jnp.float32)
+
+
+class AuxBellaHead(nn.Module):
+    """TASK_740: Bella-distillation prediction head (β-v2).
+
+    Mirrors AuxPriceHead but supervised with log-returns produced offline by
+    Bella (market generator) instead of the training-window's own actuals.
+    Bella carries market-wide priors learned at Foxglove scale — distilling
+    them into a fast inference head injects information the 60-step OHLCV
+    cannot carry on its own, without needing Bella at inference time.
+
+    Output space: log-returns (not log-prices). Scale-stable across assets,
+    centered near zero — matches aux_price_head convention so a single MSE
+    criterion is meaningful.
+    """
+    n_assets: int = 64
+    horizons: Tuple[int, ...] = (1, 5, 10, 20)
+    hidden_dim: int = 256
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, latent: jnp.ndarray) -> jnp.ndarray:
+        n_horizons = len(self.horizons)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='aux_bella_1')(
+            latent.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='aux_bella_ln')(x)
+        out = nn.Dense(features=n_horizons * self.n_assets,
+                       kernel_init=nn.initializers.zeros,
+                       bias_init=nn.initializers.zeros,
+                       dtype=self.dtype,
+                       param_dtype=self.param_dtype, name='aux_bella_out')(x)
+        batch = out.shape[0]
+        return out.reshape(batch, n_horizons, self.n_assets).astype(jnp.float32)
+
+
+class PerAssetPolicyHead(nn.Module):
+    """TASK_729a: Per-asset policy residual head.
+
+    Takes per-asset features (B, n_assets, D) and emits a per-asset action
+    correction (B, n_assets, 5), reshaped to (B, 320) and added as a residual
+    to the global TRM policy logits. Shared weights across assets, no cross-asset
+    mixing — each asset's action logits depend only on its own feature vector.
+
+    Zero-init on final Dense so initial behavior matches pre-729a exactly;
+    gradient pulls the residual as it becomes useful.
+    """
+    n_assets: int = 64
+    n_actions_per_asset: int = 5
+    hidden_dim: int = 128
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, per_asset_feats: jnp.ndarray) -> jnp.ndarray:
+        # per_asset_feats: (B, n_assets, D) → (B, n_assets, n_actions_per_asset)
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='pa_pol_1')(
+            per_asset_feats.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='pa_pol_ln')(x)
+        # Zero-init so residual starts at 0; policy behavior unchanged at step 0.
+        logits = nn.Dense(features=self.n_actions_per_asset,
+                          kernel_init=nn.initializers.zeros,
+                          bias_init=nn.initializers.zeros,
+                          dtype=self.dtype,
+                          param_dtype=self.param_dtype,
+                          name='pa_pol_out')(x)
+        # Flatten to (B, n_assets * n_actions_per_asset)
+        batch = logits.shape[0]
+        return logits.reshape(batch, -1).astype(jnp.float32)
+
+
+class PolicyDirectionRefiner(nn.Module):
+    """TASK_728: Project per-asset direction logits into policy-logit space as a
+    residual bias. Zero-init ensures checkpoint compatibility — initial behavior
+    unchanged. Trainable: policy gradient pulls as direction signal grows useful.
+    """
+    n_assets: int = 64
+    n_actions_per_asset: int = 5
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, direction_logits: jnp.ndarray) -> jnp.ndarray:
+        bias = nn.Dense(
+            features=self.n_assets * self.n_actions_per_asset,
+            kernel_init=nn.initializers.zeros,
+            bias_init=nn.initializers.zeros,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            name='dir_to_policy',
+        )(direction_logits.astype(self.dtype))
+        return bias.astype(jnp.float32)
+
+
 class MuZeroNetworks(nn.Module):
     """
     Complete MuZero model with representation, dynamics, and prediction.
@@ -52,8 +251,49 @@ class MuZeroNetworks(nn.Module):
     use_oracle_mask_head: bool = False
     oracle_mask_hidden_dim: int = 256
 
+    # TASK_727/729a: Per-asset direction prediction auxiliary head
+    use_direction_head: bool = False
+    direction_hidden_dim: int = 128  # TASK_729a: smaller — now per-asset shared MLP
+
+    # TASK_728: Direction-logits structural bias into policy head
+    use_direction_policy_bias: bool = False
+
+    # TASK_729a: Per-asset policy residual head (bypasses global latent bottleneck)
+    use_per_asset_policy_head: bool = False
+    per_asset_policy_hidden_dim: int = 128
+
+    # TASK_730: Per-asset rank-score head (cross-sectional rank oracle)
+    use_rank_head: bool = False
+    rank_hidden_dim: int = 128
+
+    # TASK_735: Auxiliary multi-horizon log-return prediction head
+    use_aux_price_head: bool = False
+    aux_price_hidden_dim: int = 256
+    aux_price_horizons: Tuple[int, ...] = (1, 5, 10, 20)
+
+    # TASK_740: Bella distillation prediction head (β-v2)
+    use_bella_distill_head: bool = False
+    bella_distill_hidden_dim: int = 256
+    bella_pred_horizons: Tuple[int, ...] = (1, 5, 10, 20)
+
+    # TASK_741 (Mint): Per-asset post-pool scalar injection via FiLM
+    use_per_asset_injection: bool = False
+    per_asset_inject_xs: bool = False       # xs_5 channels (27-31)
+    per_asset_inject_cheat: bool = False    # cheat channel (32)
+    xs_channel_start: int = 27              # first xs channel index
+    xs_channel_count: int = 5               # 5 xs scalars
+    cheat_channel_index: int = 32           # cheat scalar channel
+
     def setup(self):
         """Initialize all three networks"""
+        # TASK_741 (Mint): total scalar dims fed to FiLM
+        scalar_dims = 0
+        if self.use_per_asset_injection:
+            if self.per_asset_inject_xs:
+                scalar_dims += self.xs_channel_count
+            if self.per_asset_inject_cheat:
+                scalar_dims += 1
+
         # Shared TRM backbone (with dtype support)
         self.trm = TinyRecursiveTradingModel(
             state_dim=self.state_dim,
@@ -63,6 +303,7 @@ class MuZeroNetworks(nn.Module):
             hidden_dim=self.hidden_dim,
             embed_dim=self.embed_dim,
             encoder_num_heads=self.encoder_num_heads,
+            per_asset_scalar_dims=scalar_dims,
             dtype=self.dtype,
             param_dtype=self.param_dtype
         )
@@ -119,6 +360,88 @@ class MuZeroNetworks(nn.Module):
             self.oracle_mask_dense2 = nn.Dense(
                 self.n_assets, dtype=self.dtype, param_dtype=self.param_dtype)
 
+        # TASK_727: Per-asset direction prediction auxiliary head
+        if self.use_direction_head:
+            self.direction_head = DirectionHead(
+                n_assets=self.n_assets,
+                hidden_dim=self.direction_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_728: Structural direction → policy bias refiner
+        if self.use_direction_policy_bias:
+            self.policy_direction_refiner = PolicyDirectionRefiner(
+                n_assets=self.n_assets,
+                n_actions_per_asset=5,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_729a: Per-asset policy residual head
+        if self.use_per_asset_policy_head:
+            self.per_asset_policy_head = PerAssetPolicyHead(
+                n_assets=self.n_assets,
+                n_actions_per_asset=5,
+                hidden_dim=self.per_asset_policy_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_730: Per-asset rank-score head
+        if self.use_rank_head:
+            self.rank_head = RankHead(
+                n_assets=self.n_assets,
+                hidden_dim=self.rank_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_735: Auxiliary log-return prediction head
+        if self.use_aux_price_head:
+            self.aux_price_head = AuxPriceHead(
+                n_assets=self.n_assets,
+                horizons=self.aux_price_horizons,
+                hidden_dim=self.aux_price_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_740: Bella distillation prediction head
+        if self.use_bella_distill_head:
+            self.aux_bella_head = AuxBellaHead(
+                n_assets=self.n_assets,
+                horizons=self.bella_pred_horizons,
+                hidden_dim=self.bella_distill_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+    def _extract_per_asset_scalars(self, observation: jnp.ndarray) -> Optional[jnp.ndarray]:
+        """TASK_741 (Mint): slice per-asset scalars from time-broadcast channels.
+
+        Channels xs_5 (27-31) and cheat (32) are constant across the time axis
+        (broadcast in the encoder). Reading slot t=0 returns the scalar value
+        per (batch, asset).
+
+        Returns (batch, n_assets, scalar_dims) or None when injection disabled.
+        """
+        if not self.use_per_asset_injection:
+            return None
+        if not (self.per_asset_inject_xs or self.per_asset_inject_cheat):
+            return None
+
+        parts = []
+        if self.per_asset_inject_xs:
+            xs = observation[:, self.xs_channel_start:
+                                self.xs_channel_start + self.xs_channel_count,
+                             0, :]              # (B, 5, A)
+            parts.append(jnp.transpose(xs, (0, 2, 1)))  # (B, A, 5)
+        if self.per_asset_inject_cheat:
+            cheat = observation[:, self.cheat_channel_index, 0, :]  # (B, A)
+            parts.append(cheat[..., None])                          # (B, A, 1)
+        return jnp.concatenate(parts, axis=-1) if len(parts) > 1 else parts[0]
+
     def representation(self, observation: jnp.ndarray) -> jnp.ndarray:
         """
         Encode observation to latent state.
@@ -128,7 +451,16 @@ class MuZeroNetworks(nn.Module):
         Returns:
             latent_state: (batch, state_dim)
         """
-        return self.trm.encode(observation)
+        scalars = self._extract_per_asset_scalars(observation)
+        return self.trm.encode(observation, per_asset_scalars=scalars)
+
+    def representation_with_features(self, observation: jnp.ndarray):
+        """TASK_729a: return (global_latent, per_asset_feats) or (global, None)
+        if encoder version doesn't expose per-asset features.
+        TASK_741 (Mint): FiLM-inject per-asset scalars when enabled.
+        """
+        scalars = self._extract_per_asset_scalars(observation)
+        return self.trm.encode_with_features(observation, per_asset_scalars=scalars)
 
     def prediction(
         self,
@@ -223,7 +555,17 @@ class MuZeroNetworks(nn.Module):
             dict with keys: latent_state, policy_logits, value, reward
             If return_intermediates, also includes 'trm_intermediates'
         """
-        latent_state = self.representation(observation)
+        # TASK_729a/730: Get both global latent and per-asset features when enabled.
+        needs_per_asset = (
+            self.use_direction_head
+            or self.use_per_asset_policy_head
+            or self.use_rank_head
+        )
+        if needs_per_asset:
+            latent_state, per_asset_feats = self.representation_with_features(observation)
+        else:
+            latent_state = self.representation(observation)
+            per_asset_feats = None
 
         if return_intermediates:
             policy_logits, value, intermediates = self.prediction(
@@ -250,6 +592,36 @@ class MuZeroNetworks(nn.Module):
         # TASK_695: Oracle mask prediction
         if self.use_oracle_mask_head:
             result['oracle_mask'] = self.oracle_mask_prediction(latent_state)
+
+        # TASK_727/729a: Per-asset direction prediction (from per-asset feats)
+        if self.use_direction_head:
+            direction_logits = self.direction_head(per_asset_feats)
+            result['direction_logits'] = direction_logits
+
+            # TASK_728: Structural bias into policy logits (zero-init residual)
+            if self.use_direction_policy_bias:
+                policy_bias = self.policy_direction_refiner(direction_logits)
+                result['policy_logits'] = result['policy_logits'] + policy_bias
+                result['direction_bias_norm'] = jnp.linalg.norm(policy_bias, axis=-1)
+
+        # TASK_729a: Per-asset policy residual (bypasses global bottleneck)
+        if self.use_per_asset_policy_head and per_asset_feats is not None:
+            pa_policy_bias = self.per_asset_policy_head(per_asset_feats)
+            result['policy_logits'] = result['policy_logits'] + pa_policy_bias
+            result['per_asset_policy_bias_norm'] = jnp.linalg.norm(
+                pa_policy_bias, axis=-1)
+
+        # TASK_730: Per-asset rank scores (cross-sectional rank oracle target)
+        if self.use_rank_head and per_asset_feats is not None:
+            result['rank_scores'] = self.rank_head(per_asset_feats)
+
+        # TASK_735: Multi-horizon log-return predictions from global latent
+        if self.use_aux_price_head:
+            result['aux_log_returns'] = self.aux_price_head(latent_state)
+
+        # TASK_740: Bella-distillation prediction from global latent
+        if self.use_bella_distill_head:
+            result['aux_bella_returns'] = self.aux_bella_head(latent_state)
 
         return result
 
@@ -558,6 +930,27 @@ class MuZeroNetworks(nn.Module):
             if self.use_oracle_mask_head:
                 self.oracle_mask_prediction(out_init['latent_state'])
 
+            # TASK_727/729a/730: Initialize aux heads. Need per-asset feats for new heads.
+            if (self.use_direction_head
+                    or self.use_per_asset_policy_head
+                    or self.use_rank_head):
+                _, per_asset_feats = self.representation_with_features(observation)
+                if self.use_direction_head and per_asset_feats is not None:
+                    dir_logits = self.direction_head(per_asset_feats)
+                    # TASK_728: Initialize policy direction refiner
+                    if self.use_direction_policy_bias:
+                        self.policy_direction_refiner(dir_logits)
+                if self.use_per_asset_policy_head and per_asset_feats is not None:
+                    self.per_asset_policy_head(per_asset_feats)
+                if self.use_rank_head and per_asset_feats is not None:
+                    self.rank_head(per_asset_feats)
+            # TASK_735: Aux price head reads the global latent, not per-asset feats.
+            if self.use_aux_price_head:
+                self.aux_price_head(out_init['latent_state'])
+            # TASK_740: Bella-distill head reads the global latent too.
+            if self.use_bella_distill_head:
+                self.aux_bella_head(out_init['latent_state'])
+
             return out_init
 
         if mode == 'initial_inference':
@@ -585,6 +978,15 @@ class MuZeroNetworks(nn.Module):
             # TASK_695: Oracle mask prediction
             if self.use_oracle_mask_head:
                 result['oracle_mask'] = self.oracle_mask_prediction(latent_state)
+            # TASK_727: Per-asset direction prediction
+            if self.use_direction_head:
+                direction_logits = self.direction_head(latent_state)
+                result['direction_logits'] = direction_logits
+                # TASK_728: Structural policy bias
+                if self.use_direction_policy_bias:
+                    policy_bias = self.policy_direction_refiner(direction_logits)
+                    result['policy_logits'] = result['policy_logits'] + policy_bias
+                    result['direction_bias_norm'] = jnp.linalg.norm(policy_bias, axis=-1)
             return result
         else:
             raise ValueError(f"Unknown mode: {mode}")
