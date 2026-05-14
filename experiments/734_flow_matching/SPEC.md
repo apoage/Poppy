@@ -1,4 +1,4 @@
-# 734_flow_matching — TASK_734 Flow-Matching Dynamics Loss
+# 734_flow_matching — TASK_734 Flow-Matching Dynamics Loss (paired 3-seed)
 
 ## Goal
 
@@ -12,26 +12,51 @@ way (identity ⇒ v=0, wrong whenever the market moves).
 
 `tasks/TASK_734_PREDICTION_HEAD_ALPHA.md` (status ACTIVE, α-v1 wired).
 
+## Background — multi-seed protocol
+
+Post-TASK_743 (2026-05-14) we know single-seed Alpha gaps ≤ ~5pp are
+within noise. Canonical baseline is **a1b1** (rank+aux). Every mechanism
+claim needs ≥3-seed paired validation.
+
+The a1b1 baseline runs at seeds 7/13/23 are produced by **741_mint**
+Wave 1-3 (running ~08:00→15:30 today). This SPEC adds 3 variant runs and
+**reuses the 741_mint baseline** for the paired comparison.
+
 ## Prerequisites
 
 - [x] Phase 1 ckpt: `jax_ckpt_easy_phase1_xs32/easy_medium/phase1_best.pkl`
 - [x] `--flow-matching` flag wired in `train_phase2.py`
-- [x] `flow_matching_velocity_weight` default 0.8 (from
-      `train_phase2.py:865`)
+- [x] `flow_matching_velocity_weight` default 0.8
+- [ ] a1b1 baseline runs at seeds {7,13,23} — produced by
+      `runs/741_mint/baseline_seed_{7,13,23}/`. Verify these exist
+      before launching.
 
 ## Resources
 
-- 1× RTX 3090 (~21 GB, ~2h20m)
-- TASK_742 rule: count toward ≤2 concurrent train_phase2 budget
+- 1× RTX 3090 per training process, ~21 GB, ~2h20m
+- TASK_742 rule: ≤2 concurrent train_phase2 per host
+- Total: 3 variant runs × 2.5h with 2-wide batching = **~3.75h wall**
+  (baseline reused)
 
 ## Plan
 
-Two variants — flow_matching on top of the two head configs:
+| Variant | rank | aux | flow | seeds | source |
+|---|---|---|---|---|---|
+| **a1b1 baseline** | ON | ON | OFF | 7, 13, 23 | reuse from 741_mint |
+| **flow_a1b1** | ON | ON | ON (α-v1) | 7, 13, 23 | new runs in this SPEC |
 
-| Variant | rank | aux | flow | tag |
-|---|---|---|---|---|
-| `flow_a1b1` | ON | ON | ON | matches the original task's design |
-| `flow_no_aux` | ON | OFF | ON | flow on top of new best |
+## Wave plan
+
+```
+Wave 1 (T=0:00, ~2.5h):
+  GPU A:  flow_a1b1 seed 7
+  GPU B:  flow_a1b1 seed 13
+
+Wave 2 (T=2:30, ~1.25h):
+  GPU A:  flow_a1b1 seed 23
+
+T=3:45 — launch 3 evals in parallel
+```
 
 ## Commands
 
@@ -49,53 +74,58 @@ COMMON="--stage B --epochs 200 \
   --encoder-version 3 --embed-dim 64 --encoder-heads 8 \
   --checkpoint jax_ckpt_easy_phase1_xs32/easy_medium/phase1_best.pkl \
   --rank-loss mse --rank-weight 1.0 \
+  --aux-price-weight 0.1 \
   --flow-matching"
 
-# Variant 1
-mkdir -p runs/734_flow_matching/a1b1
-screen -d -m -S fm_a1b1 bash -c "cd ~/Trader && source trader_env/bin/activate && \
-  CUDA_VISIBLE_DEVICES=<GPU_A> python train_phase2.py $COMMON --aux-price-weight 0.1 \
-  --output-dir runs/734_flow_matching/a1b1 \
-  2>&1 | tee runs/734_flow_matching/a1b1/train.log; \
-  echo FM_A1B1_DONE > /tmp/fm_a1b1_done.flag"
-
-# Variant 2 (recommended)
-mkdir -p runs/734_flow_matching/no_aux
-screen -d -m -S fm_no_aux bash -c "cd ~/Trader && source trader_env/bin/activate && \
-  CUDA_VISIBLE_DEVICES=<GPU_B> python train_phase2.py $COMMON --no-aux-price-head \
-  --output-dir runs/734_flow_matching/no_aux \
-  2>&1 | tee runs/734_flow_matching/no_aux/train.log; \
-  echo FM_NO_AUX_DONE > /tmp/fm_no_aux_done.flag"
+# For SEED in {7, 13, 23}, launch on free GPU under TASK_742 rule:
+mkdir -p runs/734_flow_matching/flow_seed_${SEED}
+screen -d -m -S fm_s${SEED} bash -c "cd ~/Trader && source trader_env/bin/activate && \
+  CUDA_VISIBLE_DEVICES=<GPU> python train_phase2.py $COMMON \
+  --seed ${SEED} \
+  --output-dir runs/734_flow_matching/flow_seed_${SEED} \
+  --name 734_fm_s${SEED} 2>&1 \
+  | tee runs/734_flow_matching/flow_seed_${SEED}/train.log; \
+  echo FM_S${SEED}_DONE > /tmp/fm_s${SEED}_done.flag"
 ```
 
-Eval pattern same as other SPECs.
+Eval pattern same as 741_mint final block — point at new checkpoints +
+shared baselines from `runs/741_mint/baseline_seed_*/`.
 
 ## Success criteria
 
-- [ ] Both variants complete 200 epochs cleanly
-- [ ] In train.log E-lines: `flow=v<…>/s<…>` field populated
-- [ ] `consistency_loss` higher than MSE-only (expected: velocity loss is
-      naturally larger; total loss should still decrease)
-- [ ] `dir_acc` at E199 > 0.574 for at least one variant
-- [ ] Benchmark eval AVG Alpha higher than no_aux_solo baseline for the
-      flow_no_aux variant
+- [ ] All 3 training runs complete 200 epochs cleanly
+- [ ] `flow=v<…>/s<…>` field populated in E-line metrics
+- [ ] `consistency_loss` higher than MSE-only baseline (expected:
+      velocity loss is naturally larger; total loss should still decrease)
+- [ ] **Paired Alpha delta** vs baseline (per seed): mean(Δα) over 3 seeds:
+      - mean(Δα) > +3pp AND all 3 positive → **CLEAR WIN**; promote
+        flow-matching as default dynamics loss
+      - mean(Δα) ∈ (−2, +3)pp → **inconclusive**; add seeds 31, 42
+      - mean(Δα) < −2pp → **regression**; check if velocity weight 0.8
+        is over-weighted vs state-matching
+- [ ] Dynamics-MLP identity-collapse symptom (state_loss → ~0 by E50)
+      DOES NOT appear in flow runs
 
 ## Output expectations
 
 ```
 runs/734_flow_matching/
-├── a1b1/                 train.log, best.pkl, metrics.csv
-├── no_aux/               train.log, best.pkl, metrics.csv
-├── eval_a1b1/            benchmark.json, benchmark.log
-├── eval_no_aux/          benchmark.json, benchmark.log
-└── result.md             dynamics health metrics + benchmark comparison
+├── flow_seed_7/         train.log, best.pkl, metrics.csv
+├── flow_seed_13/
+├── flow_seed_23/
+├── eval_flow_seed_7/    benchmark.json, benchmark.log
+├── eval_flow_seed_13/
+├── eval_flow_seed_23/
+└── result.md            paired delta table + dynamics-health metrics
 ```
 
 ## Notes
 
-- α-v1 is a minimum-viable test. If it moves `dir_acc` above 0.60,
-  escalate to α-v2 (enable `use_prediction_head=True` + wire
+- α-v1 is the minimum-viable test. If 2/3 seeds move `dir_acc` above
+  0.60, escalate to α-v2 (enable `use_prediction_head=True` + wire
   NeuralMarketODE on log-price trajectory). α-v2 is a separate task.
 - Flow velocity weight 0.8 means total dynamics loss is
-  `0.8 * velocity_loss + 0.2 * state_loss` (both MSEs in latent space).
-  Tunable via `--flow-matching-velocity-weight` if needed.
+  `0.8 * velocity_loss + 0.2 * state_loss`. Tunable via
+  `--flow-matching-velocity-weight` if needed.
+- If baseline reuse not viable, prepend 3 baseline runs without
+  `--flow-matching` — adds 3.75h.

@@ -34,19 +34,26 @@ These stack new mechanisms ON TOP of the **a1b1** baseline (rank+aux).
 Each is independent — no interdependencies. Each variant should be
 multi-seed (≥3 seeds) to filter the ~5pp single-seed noise.
 
+All Tier-2 SPECs **share the a1b1 baseline runs at seeds {7,13,23}**
+produced by 741_mint Wave 1-3 (2026-05-14 08:00→15:30). Each mechanism
+SPEC adds 3 variant runs (~3.75h wall with 2-wide) and pairs against
+the shared baseline for delta analysis.
+
 | ID | SPEC | Status | Wall time | Notes |
 |---|---|---|---|---|
-| 741 | `experiments/741_mint/SPEC.md` (TBD) | 🟡 | TBD (3-seed: ~7.5h, 2-wide) | Mint = per-asset post-pool injection. Implementation **staged in working tree 2026-05-13** ([project_task741_staged.md]); needs smoke-test + commit + SPEC write. **First experiment after Mint deploy.** |
-| 739 | `experiments/739_dense_sign/SPEC.md` | 🟡 | 3-seed × 2.5h = 7.5h | Dense per-asset sign oracle. Most likely candidate to break dir_acc ceiling. SPEC needs update to use a1b1 baseline + 3 seeds. |
-| 734 | `experiments/734_flow_matching/SPEC.md` | 🟡 | 3-seed × 2.5h = 7.5h | Flow-matching dynamics loss. SPEC needs update to use a1b1 + 3 seeds. |
-| 740 | `experiments/740_bella_distill/SPEC.md` | 🔴 BLOCKED | TBD | **BLOCKED by TASK_744.** Bella precompute crashed at 8.3h on first period; scale impractical at current config (270 periods × 8.3h ≈ 93 days). See `tasks/TASK_744_BELLA_PRECOMPUTE_FIX.md`. |
+| 741 | `experiments/741_mint/SPEC.md` | 🟢 RUNNING | 6 runs × 2.5h = ~7.5h (2-wide) | Mint = per-asset post-pool injection. Code deployed `1957a6c`. Wave 1 cooking on server GPU 0+1, expected complete ~15:30 today. Produces baseline shared across all Tier-2 SPECs. |
+| 739 | `experiments/739_dense_sign/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Dense per-asset sign oracle. Most likely candidate to break dir_acc ceiling. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
+| 734 | `experiments/734_flow_matching/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Flow-matching dynamics loss. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
+| 738 | `experiments/738_legacy_27ch/SPEC.md` | 🟡 NEEDS CKPT | 3 runs × 2.5h = ~3.75h (2-wide) | TASK_732 cross-sectional ablation. Written 2026-05-14: paired 3-seed vs 741_mint baseline. **Gated on user recovering 27-ch V3 P1 ckpt from `/mnt/storage/` evening of 2026-05-14, then rsync to server.** |
+| 740 | `experiments/740_bella_distill/SPEC.md` | 🟡 PRECOMPUTE | precompute ~35h + 3 runs × 2.5h | Bella forward-rollout distillation. Bella precompute running on server GPU 3 (K=1 stride=64, ETA 2026-05-15 evening). SPEC still references old 2-variant design — needs refresh to paired 3-seed AFTER precompute lands. |
 
-### Priority 3 — known gaps
+### Priority 3 — followups
 
 | ID | Description | Status | Action |
 |---|---|---|---|
-| 738 | Legacy 27-ch encoder ablation | ⛔ | Needs 27-ch P1 ckpt. See "Tasks needing implementation" below. |
-| 744 | Bella precompute fix + design | 🟡 IN PROGRESS | Agent investigating consumption pattern + applying path-fix patch. Unblocks 740. |
+| 740 SPEC refresh | Update 740 to paired 3-seed using 741_mint baseline | 🟡 | Do AFTER Bella precompute finishes (~2026-05-15 evening). |
+| 27-ch ckpt rsync | Recover ckpt + push to server | 🟡 | User recovers from storage disk evening 2026-05-14, then rsync. |
+| Multi-mechanism stacks | Combine winners (e.g. Mint + dense_sign) | ⏸ | Open after individual Tier-2 results land. |
 
 ---
 

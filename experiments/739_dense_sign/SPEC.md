@@ -1,4 +1,4 @@
-# 739_dense_sign — TASK_739 Dense Sign-of-Forward-Return Oracle
+# 739_dense_sign — TASK_739 Dense Sign-of-Forward-Return Oracle (paired 3-seed)
 
 ## Goal
 
@@ -11,30 +11,59 @@ TASK_733.
 
 `tasks/TASK_739_DENSE_SIGN_ORACLE.md` (status IMPLEMENTED, ready to run).
 
+## Background — multi-seed protocol
+
+Post-TASK_743 (2026-05-14) we know single-seed Alpha gaps ≤ ~5pp are
+within noise on this setup. Canonical baseline is **a1b1** (rank+aux).
+Every mechanism claim needs ≥3-seed paired validation.
+
+The a1b1 baseline runs at seeds 7/13/23 are produced by **741_mint**
+Wave 1-3 (running ~08:00→15:30 today). This SPEC adds 3 variant runs and
+**reuses the 741_mint baseline** for the paired comparison.
+
 ## Prerequisites
 
 - [x] Phase 1 ckpt: `jax_ckpt_easy_phase1_xs32/easy_medium/phase1_best.pkl`
-- [x] `--oracle-mode dense_sign --sign-epsilon 7.5e-3` flags wired in
-      `train_phase2.py:1780-1785`
+- [x] `--oracle-mode dense_sign --sign-epsilon 7.5e-3` flags wired
 - [x] Sign epsilon calibrated 2026-04-24 (~13% trade density across 3
       Foxglove periods, vs the unstable 68% from ε=1e-4)
+- [ ] a1b1 baseline runs at seeds {7,13,23} available — produced by
+      `runs/741_mint/baseline_seed_{7,13,23}/`. **Verify these exist
+      before launching** (or re-create with the launch block below).
 
 ## Resources
 
-- 1× RTX 3090 (~21 GB VRAM, ~2h20m total).
-- TASK_742 rule: count toward ≤2 concurrent train_phase2 budget.
+- 1× RTX 3090 per training process, ~21 GB, ~2h20m
+- TASK_742 rule: ≤2 concurrent train_phase2.py per host
+- Total: 3 variant runs × 2.5h with 2-wide batching = **~3.75h wall**
+  (if baseline reused from 741_mint), or **~7.5h** if baseline reruns
 
 ## Plan
 
-Two variants, both stack dense_sign onto the head configs:
+| Variant | rank | aux | oracle | seeds | source |
+|---|---|---|---|---|---|
+| **a1b1 baseline** | ON | ON | sparse top-k | 7, 13, 23 | reuse from 741_mint |
+| **dense_sign_a1b1** | ON | ON | dense_sign (ε=7.5e-3) | 7, 13, 23 | new runs in this SPEC |
 
-| Variant | rank | aux | oracle | tag |
-|---|---|---|---|---|
-| `dense_sign_a1b1` | ON | ON | dense_sign | matches `tools/run_739_dense_sign.sh` exactly |
-| `dense_sign_no_aux` | ON | OFF | dense_sign | dense_sign on top of today's new best |
+Single variant only — dense_sign on top of a1b1, multi-seeded. Paired
+comparison against shared baseline.
 
-The second variant is the more informative one given TASK_737's result —
-it stacks the new oracle onto the new best head config.
+## Wave plan
+
+Run all 3 variant seeds with **2-wide** batching, fitting under the
+TASK_742 rule. The 741_mint training must be finished (or have free
+slots) before launching.
+
+```
+Wave 1 (T=0:00, ~2.5h):
+  GPU A:  dense_sign_a1b1 seed 7
+  GPU B:  dense_sign_a1b1 seed 13
+
+Wave 2 (T=2:30, ~1.25h with 1 train_phase2):
+  GPU A:  dense_sign_a1b1 seed 23
+
+T=3:45 — launch 3 evals in parallel (GPU-light)
+```
 
 ## Commands
 
@@ -52,69 +81,59 @@ COMMON="--stage B --epochs 200 \
   --encoder-version 3 --embed-dim 64 --encoder-heads 8 \
   --checkpoint jax_ckpt_easy_phase1_xs32/easy_medium/phase1_best.pkl \
   --rank-loss mse --rank-weight 1.0 \
+  --aux-price-weight 0.1 \
   --oracle-mode dense_sign --sign-epsilon 7.5e-3"
 
-# dense_sign + a1b1 (matches the original run_739 script)
-mkdir -p runs/739_dense_sign/a1b1
-screen -d -m -S ds_a1b1 bash -c "cd ~/Trader && source trader_env/bin/activate && \
-  CUDA_VISIBLE_DEVICES=<GPU_A> python train_phase2.py $COMMON --aux-price-weight 0.1 \
-  --output-dir runs/739_dense_sign/a1b1 \
-  2>&1 | tee runs/739_dense_sign/a1b1/train.log; \
-  echo DS_A1B1_DONE > /tmp/ds_a1b1_done.flag"
-
-# dense_sign + no_aux (recommended: stacks on today's new best)
-mkdir -p runs/739_dense_sign/no_aux
-screen -d -m -S ds_no_aux bash -c "cd ~/Trader && source trader_env/bin/activate && \
-  CUDA_VISIBLE_DEVICES=<GPU_B> python train_phase2.py $COMMON --no-aux-price-head \
-  --output-dir runs/739_dense_sign/no_aux \
-  2>&1 | tee runs/739_dense_sign/no_aux/train.log; \
-  echo DS_NO_AUX_DONE > /tmp/ds_no_aux_done.flag"
+# For SEED in {7, 13, 23}, launch on free GPU under TASK_742 rule:
+mkdir -p runs/739_dense_sign/dense_sign_seed_${SEED}
+screen -d -m -S ds_s${SEED} bash -c "cd ~/Trader && source trader_env/bin/activate && \
+  CUDA_VISIBLE_DEVICES=<GPU> python train_phase2.py $COMMON \
+  --seed ${SEED} \
+  --output-dir runs/739_dense_sign/dense_sign_seed_${SEED} \
+  --name 739_ds_s${SEED} 2>&1 \
+  | tee runs/739_dense_sign/dense_sign_seed_${SEED}/train.log; \
+  echo DS_S${SEED}_DONE > /tmp/ds_s${SEED}_done.flag"
 ```
 
-Pick `<GPU_A>` and `<GPU_B>` based on queue scheduling (see
-`experiments/QUEUE.md` for batching).
-
-After training:
-
-```bash
-for variant in a1b1 no_aux; do
-  mkdir -p runs/739_dense_sign/eval_${variant}
-  CUDA_VISIBLE_DEVICES=0 python tools/benchmark_easy.py \
-    --checkpoint runs/739_dense_sign/${variant}/phase2_stageB_best.pkl \
-    --db trading_data.db \
-    --json runs/739_dense_sign/eval_${variant}/benchmark.json \
-    2>&1 | tee runs/739_dense_sign/eval_${variant}/benchmark.log
-done
-```
+Eval pattern same as `741_mint/SPEC.md` final block — point at the new
+checkpoints + the shared baselines from `runs/741_mint/baseline_seed_*/`.
 
 ## Success criteria
 
-- [ ] Both variants complete 200 epochs cleanly
-- [ ] `dir_acc` at E199 > 0.60 for at least one variant (the 0.574 ceiling break is the goal)
-- [ ] Benchmark eval produces 6 periods × 2 variants
-- [ ] result.md compares both variants vs:
-      - TASK_736 reference (rank+aux, sparse oracle: 0.265 / +3.87%)
-      - no_aux_solo baseline (rank only, sparse oracle: 0.266 / +6.21%)
+- [ ] All 3 variant training runs complete 200 epochs cleanly
+- [ ] `dir_acc` at E199 > 0.60 for ≥2/3 seeds (break the 0.574 ceiling
+      reliably, not just by single-seed luck)
+- [ ] **Paired Alpha delta** vs baseline (per seed): mean(Δα) over 3
+      seeds:
+      - mean(Δα) > +3pp AND all 3 deltas positive → **CLEAR WIN**;
+        promote dense_sign to default oracle
+      - mean(Δα) ∈ (−2, +3)pp → **inconclusive**; add seeds 31, 42
+      - mean(Δα) < −2pp → **clear regression**; abandon and investigate
+        epsilon calibration drift
+- [ ] **Paired dir_acc delta** vs baseline ≥ +5pp on 2/3 seeds (the
+      hypothesis is about dir_acc primarily, not Alpha)
 
 ## Output expectations
 
 ```
 runs/739_dense_sign/
-├── a1b1/             train.log, best.pkl, metrics.csv
-├── no_aux/           train.log, best.pkl, metrics.csv
-├── eval_a1b1/        benchmark.json, benchmark.log
-├── eval_no_aux/      benchmark.json, benchmark.log
-└── result.md         dir_acc comparison + benchmark metrics
+├── dense_sign_seed_7/        train.log, best.pkl, metrics.csv
+├── dense_sign_seed_13/
+├── dense_sign_seed_23/
+├── eval_dense_sign_seed_7/   benchmark.json, benchmark.log
+├── eval_dense_sign_seed_13/
+├── eval_dense_sign_seed_23/
+└── result.md                 paired delta table (dir_acc + Alpha) vs
+                              runs/741_mint/baseline_seed_*/
 ```
 
 ## Notes
 
 - dense_sign reframes the oracle: every asset, every step, gets a
   directional label derived from `sign(future_log_return)` with ε
-  dead-zone. HOLD becomes a learned class (was a marginal artifact).
+  dead-zone. HOLD becomes a learned class.
 - Effective label count: ~4 per step (top-k) → 64 per step (per-asset).
-- `tools/run_739_dense_sign.sh` is the reference single-variant
-  workstation runner — uses a1b1 baseline. This SPEC adds the no_aux
-  companion variant.
 - ε=7.5e-3 was calibrated (`tools/calibrate_739_epsilon.py`). Don't
   change without re-calibrating.
+- If 741_mint baseline seeds aren't available, prepend 3 baseline runs
+  (omit `--oracle-mode` and `--sign-epsilon` flags) — adds 3.75h wall.
