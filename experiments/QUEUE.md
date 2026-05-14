@@ -44,8 +44,8 @@ the shared baseline for delta analysis.
 | 741 | `experiments/741_mint/SPEC.md` | 🟢 RUNNING | 6 runs × 2.5h = ~7.5h (2-wide) | Mint = per-asset post-pool injection. Code deployed `1957a6c`. Wave 1 cooking on server GPU 0+1, expected complete ~15:30 today. Produces baseline shared across all Tier-2 SPECs. |
 | 739 | `experiments/739_dense_sign/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Dense per-asset sign oracle. Most likely candidate to break dir_acc ceiling. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
 | 734 | `experiments/734_flow_matching/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Flow-matching dynamics loss. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
-| 738 | `experiments/738_legacy_27ch/SPEC.md` | 🟡 NEEDS CKPT | 3 runs × 2.5h = ~3.75h (2-wide) | TASK_732 cross-sectional ablation. Written 2026-05-14: paired 3-seed vs 741_mint baseline. **Gated on user recovering 27-ch V3 P1 ckpt from `/mnt/storage/` evening of 2026-05-14, then rsync to server.** |
-| 740 | `experiments/740_bella_distill/SPEC.md` | 🔴 BROKEN | TBD | **Hypothesis broken at column-semantics layer (TASK_745, 2026-05-14).** Bella column k = DB-ID k; trainer column i = rotation-specific i; no remap. Per-asset MSE gradient is noise. 18 shards on server are semantically wrong. **DO NOT RUN** until fix option A/B/C decided. See `tasks/TASK_745_BELLA_SEMANTICS.md`. |
+| 738 | `experiments/738_legacy_27ch/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | TASK_732 cross-sectional ablation. Paired 3-seed vs 741_mint baseline. **27-ch V3 P1 ckpt recovered + rsynced to server 2026-05-14 19:30.** Ready for server agent. |
+| 740 | `experiments/740_bella_distill/SPEC.md` | 🟡 PRECOMPUTING | precompute K=4 ~70h + 3 runs × 2.5h = ~78h total | TASK_745 Option A landed (commit `06938ef`, server `9e0c30c`): per-rotation column remap in precompute, matching consumer tag. Operator directs server agent to wipe old 18 shards + relaunch precompute with `--k-samples 4 --stride 64`. ETA Bella ready ~2026-05-17 evening. SPEC still references old design — refresh after precompute lands. |
 
 ### Priority 3 — followups
 
