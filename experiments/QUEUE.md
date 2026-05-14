@@ -41,7 +41,7 @@ the shared baseline for delta analysis.
 
 | ID | SPEC | Status | Wall time | Notes |
 |---|---|---|---|---|
-| 741 | `experiments/741_mint/SPEC.md` | 🟢 RUNNING | 6 runs × 2.5h = ~7.5h (2-wide) | Mint = per-asset post-pool injection. Code deployed `1957a6c`. Wave 1 cooking on server GPU 0+1, expected complete ~15:30 today. Produces baseline shared across all Tier-2 SPECs. |
+| 741 | `experiments/741_mint/SPEC.md` | 🔴 DONE — REGRESSION | 6 runs × 2.5h = ~7.5h (2-wide) | Mint xs paired 3-seed: **mean ΔAlpha −6.98pp, all 3 negative**. Better classifier (+3.29pp Bal.Acc) but worse trader. **Mint xs abandoned.** See `runs/741_mint/result.md` + `lore/notes_2026-05-13.md` §106. Baseline at seeds {7,13,23} still shared by Tier-2 SPECs. |
 | 739 | `experiments/739_dense_sign/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Dense per-asset sign oracle. Most likely candidate to break dir_acc ceiling. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
 | 734 | `experiments/734_flow_matching/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Flow-matching dynamics loss. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
 | 738 | `experiments/738_legacy_27ch/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | TASK_732 cross-sectional ablation. Paired 3-seed vs 741_mint baseline. **27-ch V3 P1 ckpt recovered + rsynced to server 2026-05-14 19:30.** Ready for server agent. |
