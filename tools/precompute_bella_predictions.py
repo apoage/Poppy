@@ -57,6 +57,51 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger('precompute_bella')
 
 
+def _rotation_hash(period_assets: List[str]) -> str:
+    """TASK_745: Stable 8-char hash of a rotation's asset universe (order-
+    independent, since the trainer's per-rotation column order is determined by
+    DB-ID-asc SQL row order — not the JSON list order — so hashing the SORTED
+    symbol list is the right invariant).
+    """
+    payload = ",".join(sorted(period_assets or []))
+    return hashlib.sha256(payload.encode()).hexdigest()[:8]
+
+
+def _load_bella_canonical_assets(db_path: str, n_assets: int = 64) -> List[str]:
+    """TASK_745: Reconstruct Bella's training-time asset list, IN BELLA'S
+    OUTPUT-COLUMN ORDER (count-desc, delisted dropped, top-N kept). This must
+    match diff_teacher/data_loader.py::MarketDataLoader._load_assets exactly.
+    """
+    import sqlite3
+    DELISTED = {"EOS/USD", "LUNA/USD", "FTT/USD", "SRM/USD"}
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT a.id, a.symbol, COUNT(o.timestamp) as cnt
+            FROM assets a
+            JOIN ohlcv o ON a.id = o.asset_id
+            WHERE a.is_active = 1
+            GROUP BY a.id
+            ORDER BY cnt DESC
+            LIMIT ?
+            """,
+            (n_assets + 20,),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    symbols: List[str] = []
+    for _aid, sym, _cnt in rows:
+        if sym in DELISTED:
+            continue
+        symbols.append(sym)
+        if len(symbols) >= n_assets:
+            break
+    return symbols
+
+
 def _regime_index_from_returns(returns_window: np.ndarray) -> int:
     """Classify a (ws, n_assets) log-return window into one of Bella's 5 regimes.
     Convention: 0=crash, 1=rally, 2=sideways, 3=volatile, 4=calm.
@@ -93,11 +138,12 @@ def _load_bella(checkpoint_path: str):
 
 
 def _window_forward_log_returns(generator, cfg, ws: int, horizons: Tuple[int, ...],
-                                n_assets_target: int, k_samples: int,
+                                k_samples: int,
                                 regime_idx: int, seed: int) -> np.ndarray:
     """Generate k_samples Bella rollouts under the given regime and return
     the per-asset *cumulative* log-return at each horizon, averaged across K.
-    Shape: (n_horizons, n_assets_target).
+    Shape: (n_horizons, n_assets_bella). TASK_745: returns Bella-canonical
+    asset order; caller is responsible for remapping to the trainer's axis.
     """
     import jax
     import jax.numpy as jnp
@@ -128,24 +174,24 @@ def _window_forward_log_returns(generator, cfg, ws: int, horizons: Tuple[int, ..
     picks = np.array([h - 1 for h in horizons], dtype=np.int32)
     cum_picked = cum[:, picks, :]                          # (K, n_horizons, n_assets_bella)
     mean_across_k = np.mean(cum_picked, axis=0)            # (n_horizons, n_assets_bella)
-
-    # Cyclic-pad / truncate to target asset count (mirrors HistoricalMarket
-    # behavior so aux_bella_head target aligns with batch layout).
-    if n_assets_bella < n_assets_target:
-        reps = (n_assets_target + n_assets_bella - 1) // n_assets_bella
-        mean_across_k = np.tile(mean_across_k, (1, reps))[:, :n_assets_target]
-    elif n_assets_bella > n_assets_target:
-        mean_across_k = mean_across_k[:, :n_assets_target]
+    # TASK_745: no cyclic pad/truncate here — return Bella-canonical order;
+    # the per-period remap in _process_period aligns columns to the trainer.
     return mean_across_k.astype(np.float32)
 
 
 def _period_tag(period: dict) -> str:
-    return f"{period['start_date']}__{period['end_date']}"
+    """TASK_745: include rotation hash so 270 unique rotations get unique
+    shards. Legacy '<start>__<end>' tags are intentionally NOT recognized by
+    the consumer — they were column-mismatched and must be re-precomputed.
+    """
+    return (f"{period['start_date']}__{period['end_date']}"
+            f"__{_rotation_hash(period.get('assets', []))}")
 
 
 def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, ...],
                     k_samples: int, n_assets_target: int, out_dir: Path,
-                    bella_sha: str, db_path: str, stride: int = 1) -> dict | None:
+                    bella_sha: str, db_path: str, stride: int = 1,
+                    bella_canonical: List[str] | None = None) -> dict | None:
     from mcts_trader.data.history import HistoricalMarket
 
     tag = _period_tag(period)
@@ -156,6 +202,7 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
                 'k_samples': k_samples,
                 'horizons': list(horizons),
                 'stride': int(stride),
+                'rotation_hash': _rotation_hash(period.get('assets', [])),
                 'bella_checkpoint_sha': bella_sha}
 
     try:
@@ -172,6 +219,31 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
     except Exception as e:
         logger.warning(f"[{tag}] failed to load: {e}")
         return None
+
+    # TASK_745: derive the trainer's column→symbol mapping for THIS rotation,
+    # then build a remap from trainer column i → Bella canonical index j.
+    # `hm.assets` is the dict from _load_specific_assets (SQL-row order, which
+    # is what the trainer also gets). After cyclic-pad to n_assets_target,
+    # trainer column i = hm_loaded_symbols[i % n_loaded].
+    hm_loaded = [hm.assets[aid] for aid in hm.asset_ids]
+    if not hm_loaded:
+        logger.warning(f"[{tag}] HistoricalMarket loaded 0 assets — skip")
+        return None
+    if bella_canonical is None:
+        bella_canonical = _load_bella_canonical_assets(db_path, n_assets=cfg.n_assets)
+    sym_to_bella_col = {s: i for i, s in enumerate(bella_canonical)}
+    remap = np.full((n_assets_target,), -1, dtype=np.int32)
+    n_loaded = len(hm_loaded)
+    n_unknown = 0
+    for i in range(n_assets_target):
+        sym = hm_loaded[i % n_loaded]
+        j = sym_to_bella_col.get(sym, -1)
+        if j < 0:
+            n_unknown += 1
+        remap[i] = j
+    if n_unknown:
+        logger.info(f"[{tag}] {n_unknown}/{n_assets_target} trainer columns not in "
+                    f"Bella canonical universe — will be NaN-masked")
 
     close = hm.cache_data[:, :, 3]                                    # (T, n_assets_real)
     returns = np.log(np.maximum(close[1:], 1e-8) / np.maximum(close[:-1], 1e-8))
@@ -199,14 +271,21 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
 
     t0 = time.time()
     computed = 0
+    # Precompute boolean mask + safe gather index for the remap, so each
+    # window's gather is a single fancy-index op.
+    valid_mask = remap >= 0                              # (n_assets_target,)
+    safe_idx = np.where(valid_mask, remap, 0).astype(np.int64)
     for w in range(0, n_windows, stride):
         window_ret = returns[w:w + ws]
         regime_idx = _regime_index_from_returns(window_ret)
-        preds[w] = _window_forward_log_returns(
+        bella_out = _window_forward_log_returns(
             generator, cfg, ws=ws, horizons=horizons,
-            n_assets_target=n_assets_target, k_samples=k_samples,
+            k_samples=k_samples,
             regime_idx=regime_idx, seed=(salt + w) & 0x7FFFFFFF,
-        )
+        )                                                # (n_horizons, n_assets_bella)
+        # TASK_745: remap Bella columns → trainer columns; NaN where unknown.
+        gathered = bella_out[:, safe_idx]                # (n_horizons, n_assets_target)
+        preds[w] = np.where(valid_mask[None, :], gathered, np.nan)
         computed += 1
         if computed % 200 == 0:
             rate = computed / (time.time() - t0)
@@ -219,6 +298,12 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
         horizons=np.array(horizons, dtype=np.int32),
         generated_at=np.array(_dt.datetime.utcnow().isoformat()),
         bella_checkpoint_sha=np.array(bella_sha),
+        # TASK_745: persist the remap + canonical universe so consumers can
+        # audit column semantics without re-deriving from the DB.
+        rotation_hash=np.array(_rotation_hash(period.get('assets', []))),
+        trainer_asset_order=np.array(hm_loaded),
+        bella_canonical_assets=np.array(bella_canonical),
+        remap=remap,
     )
     logger.info(f"[{tag}] wrote {out_path} ({out_path.stat().st_size / 1e6:.1f} MB) "
                 f"in {time.time() - t0:.1f}s")
@@ -226,6 +311,8 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
             'k_samples': k_samples,
             'horizons': list(horizons),
             'stride': int(stride),
+            'rotation_hash': _rotation_hash(period.get('assets', [])),
+            'n_remap_unknown': int(n_unknown),
             'bella_checkpoint_sha': bella_sha,
             'n_windows': int(n_windows),
             'n_computed': int(computed)}
@@ -283,6 +370,12 @@ def main():
 
     generator, cfg = _load_bella(str(ckpt_path))
 
+    # TASK_745: derive Bella's canonical asset list once (same SQL/filter as
+    # diff_teacher/data_loader.py::_load_assets) so every period reuses it.
+    bella_canonical = _load_bella_canonical_assets(args.db_path, n_assets=cfg.n_assets)
+    logger.info(f"Bella canonical universe: {len(bella_canonical)} symbols "
+                f"(top by row count from {args.db_path})")
+
     with open(args.periods_file) as f:
         periods = json.load(f).get('periods', [])
     if args.limit_periods > 0:
@@ -310,12 +403,12 @@ def main():
         t0 = time.time()
         preds = _window_forward_log_returns(
             generator, cfg, ws=args.window_size, horizons=horizons,
-            n_assets_target=args.n_assets, k_samples=args.k_samples,
+            k_samples=args.k_samples,
             regime_idx=regime_idx, seed=12345,
         )
-        logger.info(f"[dry-run] preds shape = {preds.shape}")
+        logger.info(f"[dry-run] preds shape = {preds.shape} (Bella-canonical order)")
         logger.info(f"[dry-run] horizons     = {horizons}")
-        logger.info(f"[dry-run] preds[:, 0, :3] = {preds[:, :3].tolist()}")
+        logger.info(f"[dry-run] preds[:, :3] = {preds[:, :3].tolist()}")
         logger.info(f"[dry-run] wall = {time.time() - t0:.1f}s — NOT writing files")
         return
 
@@ -346,7 +439,8 @@ def main():
         logger.info(f"[{i + 1}/{len(periods)}] {tag}")
         entry = _process_period(period, generator, cfg, args.window_size, horizons,
                                  args.k_samples, args.n_assets, out_dir, bella_sha,
-                                 args.db_path, stride=stride)
+                                 args.db_path, stride=stride,
+                                 bella_canonical=bella_canonical)
         if entry is not None:
             manifest['shards'][tag] = entry
             with open(args.manifest, 'w') as f:

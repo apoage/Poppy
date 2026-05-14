@@ -690,10 +690,14 @@ class SegmentPool:
             # shards fall back to None and the trainer masks those samples.
             bella_preds_full = None
             if oc.get('use_bella_distill_head', False):
+                # TASK_745: tag must include the rotation hash so the consumer
+                # only picks up shards whose column semantics actually match
+                # this rotation's trainer-axis.
                 bella_preds_full = self._load_bella_shard(group_key, T_ret,
                                                          oc.get('bella_pred_horizons', (1, 5, 10, 20)),
                                                          manifest_path=oc.get('bella_preds_manifest',
-                                                                               'config/bella_preds_manifest.json'))
+                                                                               'config/bella_preds_manifest.json'),
+                                                         period_assets=spec.get('assets'))
 
             return {
                 'hm': hm,
@@ -745,7 +749,8 @@ class SegmentPool:
 
         return oracle_sel, oracle_cum_pnl, returns.astype(np.float32)
 
-    def _load_bella_shard(self, group_key, T_ret, horizons, manifest_path):
+    def _load_bella_shard(self, group_key, T_ret, horizons, manifest_path,
+                          period_assets=None):
         """TASK_740: Load a Bella predictions shard for this group.
 
         Shard format (NPZ):
@@ -771,7 +776,14 @@ class SegmentPool:
             logger.warning(f"[POOL] Failed to read Bella manifest: {e}")
             return None
 
-        period_tag = f"{group_key[0]}__{group_key[1]}"
+        # TASK_745: rotation-aware tag. Legacy '<start>__<end>' shards are
+        # ignored intentionally — they were column-mismatched and must be
+        # re-precomputed under the new (Option A) remap.
+        import hashlib as _hashlib
+        rot_hash = _hashlib.sha256(
+            ",".join(sorted(period_assets or [])).encode()
+        ).hexdigest()[:8]
+        period_tag = f"{group_key[0]}__{group_key[1]}__{rot_hash}"
         entry = manifest.get('shards', {}).get(period_tag)
         if entry is None:
             return None
