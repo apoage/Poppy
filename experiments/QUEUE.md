@@ -45,7 +45,7 @@ the shared baseline for delta analysis.
 | 739 | `experiments/739_dense_sign/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Dense per-asset sign oracle. Most likely candidate to break dir_acc ceiling. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
 | 734 | `experiments/734_flow_matching/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h (2-wide) | Flow-matching dynamics loss. Refreshed 2026-05-14: paired 3-seed vs 741_mint baseline. |
 | 738 | `experiments/738_legacy_27ch/SPEC.md` | 🟡 NEEDS CKPT | 3 runs × 2.5h = ~3.75h (2-wide) | TASK_732 cross-sectional ablation. Written 2026-05-14: paired 3-seed vs 741_mint baseline. **Gated on user recovering 27-ch V3 P1 ckpt from `/mnt/storage/` evening of 2026-05-14, then rsync to server.** |
-| 740 | `experiments/740_bella_distill/SPEC.md` | 🟡 PRECOMPUTE | precompute ~35h + 3 runs × 2.5h | Bella forward-rollout distillation. Bella precompute running on server GPU 3 (K=1 stride=64, ETA 2026-05-15 evening). SPEC still references old 2-variant design — needs refresh to paired 3-seed AFTER precompute lands. |
+| 740 | `experiments/740_bella_distill/SPEC.md` | 🔴 BROKEN | TBD | **Hypothesis broken at column-semantics layer (TASK_745, 2026-05-14).** Bella column k = DB-ID k; trainer column i = rotation-specific i; no remap. Per-asset MSE gradient is noise. 18 shards on server are semantically wrong. **DO NOT RUN** until fix option A/B/C decided. See `tasks/TASK_745_BELLA_SEMANTICS.md`. |
 
 ### Priority 3 — followups
 
