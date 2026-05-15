@@ -1418,6 +1418,12 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
         'flow_velocity_loss', 'flow_state_loss',
         'aux_price_loss', 'aux_price_mse_h1', 'aux_price_mse_hmax',
         'bella_distill_loss', 'bella_distill_h1', 'bella_distill_hmax', 'bella_valid_frac',
+        # TASK_749 (Titans-MAG): per-epoch diagnostics from a fresh apply
+        # on the most recent obs batch with the latest params (off-band, ~1 forward
+        # pass per epoch — cheap).
+        'titans_mem_norm', 'titans_surprise_mean',
+        'titans_alpha_mean', 'titans_eta_mean', 'titans_theta_mean',
+        'titans_gate_mean',
         'total_loss', 'grad_norm',
         'td_target_mean', 'td_target_std', 'pa_mean', 'pa_std',
         'elapsed_s', 'gen_s', 'mcts_s', 'train_s',
@@ -1574,11 +1580,55 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                           f"(vf={avg.get('bella_valid_frac', 0):.2f}"
                           f",h1={avg.get('bella_distill_h1', 0):.5f}"
                           f",hmax={avg.get('bella_distill_hmax', 0):.5f})")
+
+        # TASK_749 (Titans-MAG): off-band per-epoch Titans diagnostics.
+        # Run one extra apply call on the most recent obs batch with the latest
+        # params, capturing the sown 'intermediates' from the encoder. Cheap
+        # (one forward pass per epoch). All-zero defaults if Titans is off.
+        titans_metrics = {
+            'titans_mem_norm': 0.0,
+            'titans_surprise_mean': 0.0,
+            'titans_alpha_mean': 0.0,
+            'titans_eta_mean': 0.0,
+            'titans_theta_mean': 0.0,
+            'titans_gate_mean': 0.0,
+        }
+        if getattr(config, 'use_titans_memory', False):
+            try:
+                _, mutated = model.apply(
+                    {'params': params}, observation=obs, mode='initial_inference',
+                    mutable=['intermediates'],
+                )
+                inter = mutated.get('intermediates', {})
+                # Navigate to the encoder subtree's titans_diag sow.
+                # nn.sow yields a tuple-per-sow at the module path. Flax stores
+                # sown values under their full module path: trm/encoder/titans_diag.
+                td_path = inter.get('trm', {}).get('encoder', {}).get('titans_diag')
+                if td_path is not None and len(td_path) > 0:
+                    # td_path is a tuple of dicts (one per sow call within
+                    # this apply); take the first call's dict.
+                    td = td_path[0]
+                    titans_metrics['titans_mem_norm'] = float(td.get('mem_norm', 0.0))
+                    titans_metrics['titans_surprise_mean'] = float(td.get('surprise_norm', 0.0))
+                    titans_metrics['titans_alpha_mean'] = float(td.get('alpha_mean', 0.0))
+                    titans_metrics['titans_eta_mean'] = float(td.get('eta_mean', 0.0))
+                    titans_metrics['titans_theta_mean'] = float(td.get('theta_mean', 0.0))
+                    titans_metrics['titans_gate_mean'] = float(td.get('gate_mean', 0.0))
+            except Exception as exc:  # pragma: no cover — diagnostic-only
+                logger.warning(f"Titans diagnostic capture failed: {exc}")
+
+        titans_info = ""
+        if getattr(config, 'use_titans_memory', False):
+            titans_info = (f" titans=mem{titans_metrics['titans_mem_norm']:.3f}"
+                           f"/g{titans_metrics['titans_gate_mean']:.4f}"
+                           f"/sup{titans_metrics['titans_surprise_mean']:.3e}"
+                           f"/a{titans_metrics['titans_alpha_mean']:.3f}")
+
         logger.info(
             f"E{epoch:4d}: policy={avg['policy_loss']:.4f} "
             f"value={avg['value_loss']:.4f} "
             f"consistency={avg['consistency_loss']:.4f} "
-            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info} "
+            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{titans_info} "
             f"total={avg['total_loss']:.4f} "
             f"grad={avg['grad_norm']:.3f}"
             f"{pa_info} "
@@ -1607,6 +1657,13 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             'bella_distill_h1': f"{avg.get('bella_distill_h1', 0):.6f}",
             'bella_distill_hmax': f"{avg.get('bella_distill_hmax', 0):.6f}",
             'bella_valid_frac': f"{avg.get('bella_valid_frac', 0):.6f}",
+            # TASK_749 (Titans-MAG) diagnostics — zero when titans is off
+            'titans_mem_norm': f"{titans_metrics['titans_mem_norm']:.6f}",
+            'titans_surprise_mean': f"{titans_metrics['titans_surprise_mean']:.6e}",
+            'titans_alpha_mean': f"{titans_metrics['titans_alpha_mean']:.6f}",
+            'titans_eta_mean': f"{titans_metrics['titans_eta_mean']:.6f}",
+            'titans_theta_mean': f"{titans_metrics['titans_theta_mean']:.6f}",
+            'titans_gate_mean': f"{titans_metrics['titans_gate_mean']:.6f}",
             'total_loss': f"{avg['total_loss']:.6f}",
             'grad_norm': f"{avg['grad_norm']:.6f}",
             'td_target_mean': f"{avg.get('td_target_mean', 0):.6f}",
