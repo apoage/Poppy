@@ -831,16 +831,17 @@ def create_stage_b_optimizer(config: Phase2Config, params):
         decay_steps=max(total_steps, warmup_steps + 1),
         end_value=config.policy_lr * 0.1,
     )
-    # TASK_749: Titans-MAG second-order autodiff occasionally produces inf
-    # gradients on early steps (before the gate moves the memory contribution
-    # toward useful values). Prepend optax.zero_nans() so a single bad step
-    # doesn't corrupt the Adam state with inf for the rest of training.
-    use_titans = getattr(config, 'use_titans_memory', False)
-    train_chain = [optax.clip_by_global_norm(0.5),
-                   optax.adamw(main_schedule, weight_decay=1e-4)]
-    if use_titans:
-        train_chain = [optax.zero_nans()] + train_chain
-    train_opt = optax.chain(*train_chain)
+    # TASK_749 fix 2 (post-step-7 cleanup): removed `optax.zero_nans()` that
+    # was prepended to the Titans-enabled chain in commit 5b65ae5. That was
+    # a Band-Aid masking the inf-grad symptom of nested `jax.grad` inside
+    # the scan body; the root cause is now fixed in titans_memory.py by
+    # replacing the inner `jax.grad` with an analytical closed-form gradient.
+    # With the analytical path, `grad_norm` is finite at every step and Adam
+    # state stays clean without needing the zero_nans shim.
+    train_opt = optax.chain(
+        optax.clip_by_global_norm(0.5),
+        optax.adamw(main_schedule, weight_decay=1e-4),
+    )
 
     encoder_trainable = getattr(config, 'encoder_lr', 0.0) > 0.0
     if encoder_trainable:
@@ -851,11 +852,10 @@ def create_stage_b_optimizer(config: Phase2Config, params):
             decay_steps=max(total_steps, warmup_steps + 1),
             end_value=config.encoder_lr * 0.1,
         )
-        enc_chain = [optax.clip_by_global_norm(0.5),
-                     optax.adamw(enc_schedule, weight_decay=1e-4)]
-        if use_titans:
-            enc_chain = [optax.zero_nans()] + enc_chain
-        encoder_opt = optax.chain(*enc_chain)
+        encoder_opt = optax.chain(
+            optax.clip_by_global_norm(0.5),
+            optax.adamw(enc_schedule, weight_decay=1e-4),
+        )
         logger.info(f"  Encoder UNFROZEN at lr={config.encoder_lr} (TASK_728)")
     else:
         encoder_opt = optax.set_to_zero()
