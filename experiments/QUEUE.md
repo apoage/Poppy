@@ -45,8 +45,18 @@ the shared baseline for delta analysis.
 | 739 | `experiments/739_dense_sign/SPEC.md` | 🔴 DONE — INCONCLUSIVE | 3 runs × 2.5h = ~3.75h | **mean Δα −2.63pp**, 2/3 positive but s7 outlier (−11.46pp). dir_acc 0.569 — **TASK_733 ceiling hypothesis closed regardless**. See `runs/739_dense_sign/result.md` + `lore/notes_2026-05-15.md` §108. Optional 5-seed extension low priority. |
 | 734 | `experiments/734_flow_matching/SPEC.md` | 🟡 DONE — PROMISING | 3 runs × 2.5h = ~3.75h | **mean Δα +3.38pp, all 6 periods positive**, STD 3.95pp. s7 = −0.54pp (flat). **First credible Tier-2 candidate.** Queue 5-seed extension (seeds 31, 42) to settle. See `runs/734_flow_matching/result.md` + `lore/notes_2026-05-15.md` §109. |
 | 738 | `experiments/738_legacy_27ch/SPEC.md` | 🔴 DONE — REGRESSION | 3 runs × 2.5h = ~3.75h | **mean Δα −18.44pp**, all 3 seeds, all 6 periods negative. Same over-trading collapse signature as 741_mint. **TASK_732 cross-sectional channels confirmed load-bearing.** See `runs/738_legacy_27ch/result.md` + `lore/notes_2026-05-15.md` §107. |
-| 734-x5 | (extension) | 🟢 READY | 2 runs × 2.5h + eval = ~3h (2-wide) | Seeds 31+42 on top of existing 3. Promote --flow-matching to canonical if mean(Δα) ≥ +3pp holds with no seed < −3pp. GPUs 1+2 (NOT 0); GPU 3 still Bella. |
+| 734-x5 | (extension) | 🟡 RUNNING (server agent, 2026-05-15 19:32) | 2 runs × 2.5h + eval = ~3h (2-wide) | Seeds 31+42 on GPUs 1+2. Promote --flow-matching to canonical if mean(Δα) ≥ +3pp holds with no seed < −3pp. |
 | 740 | `experiments/740_bella_distill/SPEC.md` | 🟡 PRECOMPUTING (205/270) | precompute remaining ~8h + 3 runs × 2.5h | At 2026-05-15 19:08 server time, 205/270 shards complete at 8.8 w/s. ETA Bella ready 2026-05-16 early morning. SPEC refresh + queue 740 after that. |
+
+### Priority 2b — Tier-3 planning-side wave (queued, 2026-05-15)
+
+Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~22:00 UTC). Same paired-3-seed protocol against 741_mint baseline, same TASK_742 ≤2-concurrent rule. All three target the **planning side** (value or dynamics), the only mechanism class that has shown positive Alpha on this stack so far (per 734 result + `project_classifier_alpha_anti_correlation.md`).
+
+| ID | SPEC | Status | Wall time | Notes |
+|---|---|---|---|---|
+| 746 | `experiments/746_value_oracle/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h | `--value-target-mode oracle` — re-test of TASK_719a under paired-Δα. April rejection was on value_loss only (now known unreliable). Pure value-side, no encoder/classifier/dynamics change. |
+| 747 | `experiments/747_value_td0/SPEC.md` | 🟢 READY | 3 runs × 2.5h = ~3.75h | `--value-target-mode td0` — completes the value-target ablation matrix (oracle / nstep / td0). April characterization was "weak signal"; re-test on Δα protocol. |
+| 748 | `experiments/748_flow_velsweep/SPEC.md` | 🟢 READY | 2 runs × 2.5h = ~2.5h (2-wide) | Velocity-weight sweep around 734's default 0.8. Two single-seed probes at 0.5 and 1.0 paired vs `flow_seed_7`. If |Δα| < 3pp, 0.8 is robust. |
 
 ### Priority 3 — followups
 
@@ -54,7 +64,7 @@ the shared baseline for delta analysis.
 |---|---|---|---|
 | 740 SPEC refresh | Update 740 to paired 3-seed using 741_mint baseline | 🟡 | Do AFTER Bella precompute finishes (~2026-05-16 morning). |
 | 27-ch ckpt rsync | Recover ckpt + push to server | ✅ | Done 2026-05-14 19:30. |
-| Multi-mechanism stacks | Combine winners (e.g. flow_matching + ...) | ⏸ | Open after 734 5-seed confirms flow_matching as new baseline. |
+| Multi-mechanism stacks | Combine winners (e.g. flow_matching + oracle, flow_matching + bella_distill) | ⏸ | Open after Tier-2 + Tier-3 winners land independently. |
 | 739 dense_sign 5-seed | Settle whether s7 outlier is unlucky or representative | ⏸ | Low priority — dir_acc hypothesis already closed. Run if idle slots. |
 
 ---
