@@ -70,7 +70,7 @@ class StreamingAssetEncoder(nn.Module):
     titans_surprise_momentum_init: float = 0.9
     titans_decay_init: float = 0.01
     titans_lr_init: float = 0.01
-    titans_gate_init: float = -10.0
+    titans_gate_init: float = -5.0  # sigmoid(-5) ≈ 6.7e-3: memory dormant + grad flows
 
     def setup(self):
         d = dict(dtype=self.dtype, param_dtype=self.param_dtype)

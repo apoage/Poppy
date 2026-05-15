@@ -242,7 +242,7 @@ class TinyRecursiveTradingModel(nn.Module):
     titans_surprise_momentum_init: float = 0.9
     titans_decay_init: float = 0.01
     titans_lr_init: float = 0.01
-    titans_gate_init: float = -10.0
+    titans_gate_init: float = -5.0
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 

@@ -190,7 +190,12 @@ class Phase2Config(EasyConfig):
     titans_surprise_momentum_init: float = 0.9   # initial bias for η_t sigmoid (retain past surprise)
     titans_decay_init: float = 0.01        # initial bias for α_t sigmoid (near-zero forgetting)
     titans_lr_init: float = 0.01           # initial bias for θ_t sigmoid (small inner-loop step)
-    titans_gate_init: float = -10.0        # gate scalar init → sigmoid(g) ≈ 0 → memory dormant
+    # Gate init = -5 → sigmoid(g) ≈ 6.7e-3 (memory contributes <1% of output at
+    # step 0, well within numerical tolerance of "byte-identical" baseline) AND
+    # sigmoid'(g) ≈ 6.6e-3 (large enough for gradient to actually move the gate
+    # within reasonable epoch counts). Stricter -10 saturates the sigmoid so
+    # hard that the gate doesn't move in <500 epochs at encoder_lr=3e-5.
+    titans_gate_init: float = -5.0
 
     # === Checkpointing ===
     phase2_checkpoint_dir: str = "jax_ckpt_easy_phase2"

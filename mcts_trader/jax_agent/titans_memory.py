@@ -380,7 +380,7 @@ class GatedTemporalMemory(nn.Module):
     surprise_momentum_init: float = 0.9
     decay_init: float = 0.01
     lr_init: float = 0.01
-    gate_init: float = -10.0
+    gate_init: float = -5.0
     use_remat: bool = True
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32

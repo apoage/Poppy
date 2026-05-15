@@ -292,7 +292,7 @@ class MuZeroNetworks(nn.Module):
     titans_surprise_momentum_init: float = 0.9
     titans_decay_init: float = 0.01
     titans_lr_init: float = 0.01
-    titans_gate_init: float = -10.0
+    titans_gate_init: float = -5.0
 
     def setup(self):
         """Initialize all three networks"""
