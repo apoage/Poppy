@@ -197,6 +197,15 @@ def initialize_missing_aux_heads(model, params, config, rng_key):
             new_params['trm'] = new_trm
             logger.info("Initialized fresh trm/encoder/film_projector (TASK_741)")
 
+        # TASK_749: deep-merge titans memory subtree
+        if 'titans' in fresh_enc and 'titans' not in new_params['trm']['encoder']:
+            new_enc = dict(new_params['trm']['encoder'])
+            new_enc['titans'] = fresh_enc['titans']
+            new_trm = dict(new_params['trm'])
+            new_trm['encoder'] = new_enc
+            new_params['trm'] = new_trm
+            logger.info("Initialized fresh trm/encoder/titans (TASK_749)")
+
     return new_params
 
 
@@ -1865,6 +1874,38 @@ def parse_args():
                              'on the post-pool feature surface. xs is '
                              'production-safe; cheat is diagnostic only.')
 
+    # TASK_749 (Titans-MAG): neural long-term memory module on the encoder
+    # temporal axis (paper: Behrouz et al. 2025). 9 flags below.
+    parser.add_argument('--titans-memory', action='store_true',
+                        help='TASK_749: enable Titans-style neural memory '
+                             'inside V3 encoder, gated against minGRU. Default OFF; '
+                             'gate init large-negative so step-0 is byte-identical.')
+    parser.add_argument('--titans-variant', type=str, default=None,
+                        choices=['mag'],
+                        help='TASK_749: Titans variant. Only "mag" implemented '
+                             '("mac", "mal" reserved for follow-up tasks).')
+    parser.add_argument('--titans-memory-depth', type=int, default=None,
+                        help='TASK_749: depth L_M of memory MLP (default 2).')
+    parser.add_argument('--titans-memory-hidden', type=int, default=None,
+                        help='TASK_749: hidden width of memory MLP '
+                             '(default: same as embed_dim).')
+    parser.add_argument('--titans-persistent-tokens', type=int, default=None,
+                        help='TASK_749: N_p persistent memory tokens '
+                             'prepended pre-scan (default 4, paper §2.3).')
+    parser.add_argument('--titans-surprise-momentum-init', type=float, default=None,
+                        help='TASK_749: init bias for η_t sigmoid (default 0.9 → '
+                             'retain past surprise).')
+    parser.add_argument('--titans-decay-init', type=float, default=None,
+                        help='TASK_749: init bias for α_t sigmoid (default 0.01 → '
+                             'near-zero forgetting at step 0).')
+    parser.add_argument('--titans-lr-init', type=float, default=None,
+                        help='TASK_749: init bias for θ_t sigmoid (default 0.01 → '
+                             'small inner-loop step).')
+    parser.add_argument('--reset-titans-memory', action='store_true',
+                        help='TASK_749: drop titans subtree from checkpoint at '
+                             'load (forces fresh init). Use on first run with a '
+                             'pre-TASK_749 ckpt.')
+
     return parser.parse_args()
 
 
@@ -2005,6 +2046,35 @@ def main():
             config.per_asset_inject_cheat = args.per_asset_injection in ('cheat', 'both')
         logger.info(f"[MINT] Per-asset injection: {args.per_asset_injection} "
                     f"(xs={config.per_asset_inject_xs}, cheat={config.per_asset_inject_cheat})")
+    # TASK_749 (Titans-MAG): neural memory module overrides.
+    if args.titans_memory:
+        config.use_titans_memory = True
+    if args.titans_variant is not None:
+        if args.titans_variant != 'mag':
+            raise NotImplementedError(
+                f"--titans-variant={args.titans_variant!r} not implemented "
+                "(only 'mag' available in TASK_749 v1)."
+            )
+        config.titans_variant = args.titans_variant
+    if args.titans_memory_depth is not None:
+        config.titans_memory_depth = args.titans_memory_depth
+    if args.titans_memory_hidden is not None:
+        config.titans_memory_hidden = args.titans_memory_hidden
+    if args.titans_persistent_tokens is not None:
+        config.titans_persistent_tokens = args.titans_persistent_tokens
+    if args.titans_surprise_momentum_init is not None:
+        config.titans_surprise_momentum_init = args.titans_surprise_momentum_init
+    if args.titans_decay_init is not None:
+        config.titans_decay_init = args.titans_decay_init
+    if args.titans_lr_init is not None:
+        config.titans_lr_init = args.titans_lr_init
+    if getattr(config, 'use_titans_memory', False):
+        logger.info(f"[TITANS-MAG] ON: depth={config.titans_memory_depth} "
+                    f"N_p={config.titans_persistent_tokens} "
+                    f"η_init={config.titans_surprise_momentum_init} "
+                    f"α_init={config.titans_decay_init} "
+                    f"θ_init={config.titans_lr_init} "
+                    f"gate_init={config.titans_gate_init}")
     if args.value_weight is not None:
         config.exit_value_weight = args.value_weight
     if args.value_target_mode is not None:
@@ -2065,14 +2135,35 @@ def main():
             del params['aux_bella_head']
             logger.info("Reset aux_bella_head (will fresh-init)")
 
-    # TASK_727/728/729a/730/735/740: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
+    # TASK_749 (Titans-MAG): drop the nested trm/encoder/titans subtree
+    # so it fresh-inits (the only case the subtree exists in the ckpt is
+    # a previous Titans run; from a vanilla Phase-1 ckpt the subtree
+    # simply doesn't exist yet and gets created by initialize_missing_aux_heads
+    # below). Drop is per-encoder, since this lives nested under trm/encoder.
+    if getattr(args, 'reset_titans_memory', False):
+        dropped = False
+        if 'trm' in params and 'encoder' in params['trm']:
+            enc = dict(params['trm']['encoder'])
+            if 'titans' in enc:
+                del enc['titans']
+                trm = dict(params['trm'])
+                trm['encoder'] = enc
+                params['trm'] = trm
+                dropped = True
+        if dropped:
+            logger.info("Reset titans subtree (will fresh-init)")
+        else:
+            logger.info("Reset titans requested but no existing subtree (fresh init via aux-head init)")
+
+    # TASK_727/728/729a/730/735/740/749: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
     if (config.use_direction_head or
             getattr(config, 'use_direction_policy_bias', False) or
             getattr(config, 'use_per_asset_policy_head', False) or
             getattr(config, 'use_oracle_mask_head', False) or
             getattr(config, 'use_rank_head', False) or
             getattr(config, 'use_aux_price_head', False) or
-            getattr(config, 'use_bella_distill_head', False)):
+            getattr(config, 'use_bella_distill_head', False) or
+            getattr(config, 'use_titans_memory', False)):
         aux_rng = jax.random.PRNGKey(config.seed + 9999)
         params = initialize_missing_aux_heads(model, params, config, aux_rng)
 
