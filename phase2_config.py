@@ -175,6 +175,23 @@ class Phase2Config(EasyConfig):
     per_asset_inject_xs: bool = False
     per_asset_inject_cheat: bool = False
 
+    # === TASK_749 (Titans-MAG) ===
+    # Plug a Titans-style neural long-term memory module (MAG variant) into
+    # the V3 encoder's temporal compression stage. Memory updates inside the
+    # forward pass via surprise-momentum gradient descent with weight decay
+    # (paper eq. 13). Gated against the existing minGRU branch with a
+    # large-negative-init sigmoid gate so step-0 output is byte-identical to
+    # the V3-minGRU baseline (Phase-1 ckpts load unchanged).
+    use_titans_memory: bool = False
+    titans_variant: str = "mag"            # only "mag" implemented; "mac"/"mal" reserved
+    titans_memory_depth: int = 2           # MLP depth L_M (paper §2.2: 2 ≫ 1 on long seqs)
+    titans_memory_hidden: Optional[int] = None  # None → embed_dim
+    titans_persistent_tokens: int = 4      # N_p prepended persistent memory tokens (paper §2.3)
+    titans_surprise_momentum_init: float = 0.9   # initial bias for η_t sigmoid (retain past surprise)
+    titans_decay_init: float = 0.01        # initial bias for α_t sigmoid (near-zero forgetting)
+    titans_lr_init: float = 0.01           # initial bias for θ_t sigmoid (small inner-loop step)
+    titans_gate_init: float = -10.0        # gate scalar init → sigmoid(g) ≈ 0 → memory dormant
+
     # === Checkpointing ===
     phase2_checkpoint_dir: str = "jax_ckpt_easy_phase2"
 
