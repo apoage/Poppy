@@ -107,6 +107,10 @@ class StreamingAssetEncoder(nn.Module):
                 decay_init=self.titans_decay_init,
                 lr_init=self.titans_lr_init,
                 gate_init=self.titans_gate_init,
+                # TASK_749 §5.3: remat (jax.checkpoint) inside scan body bounds
+                # peak VRAM during backward. Without it, the per-step carry held
+                # across all T scan steps blows the 24 GB budget (~44 GB observed
+                # at B=64,A=64,T=64).
                 use_remat=True,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,

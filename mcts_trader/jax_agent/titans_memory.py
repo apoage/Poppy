@@ -76,40 +76,116 @@ def _memory_loss(M_params, k, v):
     return jnp.mean((pred - v) ** 2)
 
 
-def _titans_scan_body(carry, inputs):
-    """One step of the Titans memory recurrence inside vmap.
+def _per_stream_loss(M_params, k, v):
+    """Per-stream associative-memory loss. Used inside vmap'd jax.grad below.
 
-    Carry (per-stream):
-      M_params: tuple of (D, D) weight matrices.
-      S_params: tuple of (D, D) momentum buffers.
+    Args:
+        M_params: tuple of L (D, D) weight matrices for a single stream.
+        k, v: (D,) per-stream key/value.
+    Returns:
+        scalar loss = ||M(k) - v||^2 / D.
+    """
+    pred = _apply_memory_mlp(M_params, k)
+    return jnp.mean((pred - v) ** 2)
 
-    Inputs (per-stream, per-timestep, pre-projected):
-      k_t, v_t, q_t: (D,) — keys/values/queries
-      theta_t, eta_t, alpha_t: scalars — data-dependent updates
+
+# Vectorise the per-stream gradient over the batched (N,) stream axis.
+# `axes_per_layer=(0, ...)` would be the right spec for the tuple of (N, D, D)
+# layer weight matrices. We pre-build the vmapped grad function at module load
+# so it can be reused without re-tracing.
+def _batched_grad_M(M_params_b, k_b, v_b):
+    """Compute per-stream gradient of associative-memory loss wrt M.
+
+    Args:
+        M_params_b: tuple of (N, D, D) per-layer weight matrices.
+        k_b, v_b: (N, D) per-stream keys/values.
+    Returns:
+        Per-stream grads — tuple of (N, D, D).
+    """
+    grad_fn = jax.grad(_per_stream_loss, argnums=0)
+    # Map the stream axis (N) explicitly via vmap.
+    return jax.vmap(grad_fn, in_axes=(0, 0, 0))(M_params_b, k_b, v_b)
+
+
+def _titans_scan_body_batched(carry, inputs):
+    """One step of the Titans memory recurrence — batched over N streams.
+
+    Operates on the full batch of streams in a single step. No outer vmap.
+
+    Carry:
+      M_params: tuple of (N, D, D) — per-stream MLP weights.
+      S_params: tuple of (N, D, D) — per-stream momentum buffer.
+
+    Inputs (per-timestep):
+      k_t, v_t, q_t: (N, D)
+      theta_t, eta_t, alpha_t: (N,) per-stream scalars.
     """
     M_params, S_params = carry
     k_t, v_t, q_t, theta_t, eta_t, alpha_t = inputs
 
-    # Clip alpha away from exactly 1 to keep memory non-degenerate.
-    alpha_t = jnp.minimum(alpha_t, jnp.float32(0.99))
+    # Broadcast-shaped scalars for elementwise update.
+    th = theta_t[:, None, None]                 # (N, 1, 1)
+    et = eta_t[:, None, None]
+    al = jnp.minimum(alpha_t, jnp.float32(0.99))[:, None, None]
 
-    # Inner-loop gradient of MSE wrt M (paper eq. 1 → grad → paper eq. 13).
-    grad_M = jax.grad(_memory_loss, argnums=0)(M_params, k_t, v_t)
+    # Inner-loop gradient (per-stream MSE → grad wrt M).
+    grad_M = _batched_grad_M(M_params, k_t, v_t)  # tuple of (N, D, D)
 
-    # Momentum + decay update (paper eqs. 2, 3, 13).
-    new_S = tuple(eta_t * S_i - theta_t * gM_i
+    # TASK_749 §8 R2 mitigation: clip per-stream gradient norm. Without this,
+    # surprise momentum (eta near 0.7) amplifies large gradients across steps
+    # and the memory state diverges → NaN by ~T=8 with realistic input scale.
+    # Clip threshold 1.0 is generous (typical per-stream grad norm ~0.01 at
+    # init) while still bounding the worst case.
+    grad_clip = jnp.float32(1.0)
+    grad_M = tuple(_clip_grad_per_stream(gM, grad_clip) for gM in grad_M)
+
+    new_S = tuple(et * S_i - th * gM_i
                   for S_i, gM_i in zip(S_params, grad_M))
-    new_M = tuple((1.0 - alpha_t) * M_i + S_i
+    # Additional safeguard: clip the surprise momentum buffer too. Even with
+    # grad clipping, eta near 0.7 can let S grow unbounded over 68 steps.
+    # Clip per-stream Frobenius norm to a generous threshold.
+    new_S = tuple(_clip_grad_per_stream(S_i, jnp.float32(2.0)) for S_i in new_S)
+    new_M = tuple((1.0 - al) * M_i + S_i
                   for M_i, S_i in zip(M_params, new_S))
+    # Final safeguard on M itself.
+    new_M = tuple(_clip_grad_per_stream(M_i, jnp.float32(5.0)) for M_i in new_M)
 
-    # Retrieve via fresh forward pass on q_t (paper §2.1).
-    y_t = _apply_memory_mlp(new_M, q_t)  # (D,)
+    # Retrieve via fresh forward pass on q_t. Batched matmul:
+    # q_t: (N, D); M_i: (N, D, D); result: (N, D).
+    h = q_t
+    for i, W in enumerate(new_M):
+        # h: (N, D), W: (N, D, D); want h_next: (N, D).
+        h = jnp.einsum('nd,ndp->np', h, W)
+        if i < len(new_M) - 1:
+            h = nn.gelu(h)
+    y_t = h  # (N, D)
 
-    # Diagnostics — scalar per step (post-vmap they'll be per-stream).
-    mem_norm = jnp.sqrt(sum(jnp.sum(M_i ** 2) for M_i in new_M))
-    surprise_norm = jnp.sqrt(sum(jnp.sum(gM_i ** 2) for gM_i in grad_M))
+    # Diagnostics — per-stream then mean to scalar.
+    mem_norm = jnp.sqrt(sum(jnp.sum(M_i ** 2, axis=(-2, -1)) for M_i in new_M))
+    surprise_norm = jnp.sqrt(sum(jnp.sum(gM_i ** 2, axis=(-2, -1)) for gM_i in grad_M))
 
-    return (new_M, new_S), (y_t, theta_t, eta_t, alpha_t, mem_norm, surprise_norm)
+    return (new_M, new_S), (y_t, theta_t, eta_t, alpha_t,
+                             jnp.mean(mem_norm), jnp.mean(surprise_norm))
+
+
+def _clip_grad_per_stream(g, max_norm):
+    """Per-stream gradient clipping. g shape (N, in, out); norm over last 2 axes.
+
+    The clipping scale factor is wrapped in `stop_gradient` so the OUTER
+    autodiff doesn't backprop through the clipping decision. Without this,
+    the second-order grad through `jnp.minimum` introduces NaNs at the
+    clip threshold boundary.
+
+    Args:
+        g: (N, in, out) — per-stream gradient tensor.
+        max_norm: scalar — maximum per-stream Frobenius norm.
+    Returns:
+        Clipped g, same shape.
+    """
+    g_norm = jnp.sqrt(jnp.sum(g ** 2, axis=(-2, -1), keepdims=True))  # (N, 1, 1)
+    scale = jnp.minimum(jnp.float32(1.0), max_norm / jnp.maximum(g_norm, jnp.float32(1e-8)))
+    scale = jax.lax.stop_gradient(scale)
+    return g * scale
 
 
 class TitansMemoryBlock(nn.Module):
@@ -143,12 +219,6 @@ class TitansMemoryBlock(nn.Module):
         H = self.memory_hidden if self.memory_hidden is not None else D
         d = dict(dtype=self.dtype, param_dtype=self.param_dtype)
 
-        if H != D:
-            raise NotImplementedError(
-                f"titans memory: memory_hidden ({H}) != embed_dim ({D}) "
-                "is reserved for future work. Leave memory_hidden=None."
-            )
-
         # K/V/Q projections (paper §2.1). No biases — pure linear.
         self.W_K = nn.Dense(D, use_bias=False, name='W_K', **d)
         self.W_V = nn.Dense(D, use_bias=False, name='W_V', **d)
@@ -169,15 +239,28 @@ class TitansMemoryBlock(nn.Module):
                 self.param_dtype,
             )
 
-        # Initial memory MLP weights — one (D, D) per layer.
+        # Initial memory MLP weights. To keep input/output shapes compatible
+        # we use D→H→D for depth=2 (or D→D for depth=1). Non-square H<D
+        # makes the inner state cheaper (key VRAM savings for big B*A).
+        # paper §2.1's "MLP memory" is non-prescriptive on width — any H works.
+        if self.memory_depth == 1:
+            self._mlp_shapes = [(D, D)]
+        else:
+            # First layer D→H, intermediate layers H→H, last H→D.
+            shapes = [(D, H)]
+            for _ in range(self.memory_depth - 2):
+                shapes.append((H, H))
+            shapes.append((H, D))
+            self._mlp_shapes = shapes
+
         self.M_init = tuple(
             self.param(
                 f'M_init_{i}',
                 nn.initializers.normal(stddev=0.02),
-                (D, D),
+                shape,
                 self.param_dtype,
             )
-            for i in range(self.memory_depth)
+            for i, shape in enumerate(self._mlp_shapes)
         )
 
     def __call__(self, x: jnp.ndarray) -> Tuple[jnp.ndarray, dict]:
@@ -215,35 +298,50 @@ class TitansMemoryBlock(nn.Module):
         alpha = jax.nn.sigmoid(self.alpha_head(x_aug).squeeze(-1)
                                + jnp.float32(self.decay_init))
 
-        # Build per-stream M / S initial state: broadcast shared init to (N, D, D).
+        # Build per-stream M / S initial state: broadcast shared init to (N, in, out).
+        # Each layer can have a different shape (e.g. D→H→D for depth=2).
         M_init_b = tuple(
-            jnp.broadcast_to(M[None, :, :], (N, D, D)).astype(self.dtype)
+            jnp.broadcast_to(M[None, :, :], (N, M.shape[0], M.shape[1])).astype(self.dtype)
             for M in self.M_init
         )
-        S_init_b = tuple(jnp.zeros((N, D, D), dtype=self.dtype) for _ in range(self.memory_depth))
+        S_init_b = tuple(
+            jnp.zeros((N, M.shape[0], M.shape[1]), dtype=self.dtype)
+            for M in self.M_init
+        )
 
-        # Per-stream scan: T_aug steps, carries (M_params, S_params).
-        # Inputs per step: k_t/v_t/q_t (D,), theta/eta/alpha scalars.
-        body = _titans_scan_body
+        # Single batched scan over time. Carry has stream axis baked in.
+        # Inputs at each step are per-stream tensors (N, ...).
+        # Scan inputs need leading time axis → transpose (N, T_aug, D) → (T_aug, N, D).
+        k_t_axis = jnp.transpose(k, (1, 0, 2))           # (T_aug, N, D)
+        v_t_axis = jnp.transpose(v, (1, 0, 2))
+        q_t_axis = jnp.transpose(q, (1, 0, 2))
+        theta_t_axis = jnp.transpose(theta, (1, 0))      # (T_aug, N)
+        eta_t_axis = jnp.transpose(eta, (1, 0))
+        alpha_t_axis = jnp.transpose(alpha, (1, 0))
+        inputs = (k_t_axis, v_t_axis, q_t_axis,
+                  theta_t_axis, eta_t_axis, alpha_t_axis)
+
+        body = _titans_scan_body_batched
+        # TASK_749 §5.3: rematerialize the scan body during backward to bound
+        # the carry trajectory's VRAM footprint. With B=256,A=64,D=64 the carry
+        # per step is N*L*D*D*4 ≈ 256 MB; without remat the T-step trajectory
+        # would hold T copies (~17 GB).
         if self.use_remat:
             body = jax.checkpoint(body)
 
-        def per_stream(M_s, S_s, k_s, v_s, q_s, theta_s, eta_s, alpha_s):
-            """Run the time-axis scan for a single stream."""
-            inputs = (k_s, v_s, q_s, theta_s, eta_s, alpha_s)
-            (_, _), (y_seq, theta_seq, eta_seq, alpha_seq,
-                     mem_norm_seq, surprise_norm_seq) = jax.lax.scan(
-                body, (M_s, S_s), inputs
-            )
-            return y_seq, theta_seq, eta_seq, alpha_seq, mem_norm_seq, surprise_norm_seq
-
-        # vmap over the stream axis. Pytree (M_s, S_s) maps axis 0; arrays
-        # k/v/q (N, T_aug, D) and scalars theta/eta/alpha (N, T_aug) map
-        # axis 0 too.
-        vmapped = jax.vmap(per_stream, in_axes=(0, 0, 0, 0, 0, 0, 0, 0))
-        y_aug, theta_out, eta_out, alpha_out, mem_norm_out, surprise_norm_out = vmapped(
-            M_init_b, S_init_b, k, v, q, theta, eta, alpha
+        (_, _), (y_aug_t, theta_t_out, eta_t_out, alpha_t_out,
+                 mem_norm_seq, surprise_norm_seq) = jax.lax.scan(
+            body, (M_init_b, S_init_b), inputs
         )
+        # y_aug_t: (T_aug, N, D); transpose back to (N, T_aug, D)
+        y_aug = jnp.transpose(y_aug_t, (1, 0, 2))
+        theta_out = jnp.transpose(theta_t_out, (1, 0))
+        eta_out = jnp.transpose(eta_t_out, (1, 0))
+        alpha_out = jnp.transpose(alpha_t_out, (1, 0))
+        # mem_norm_seq and surprise_norm_seq are already (T_aug,) scalars
+        # after the per-step mean.
+        mem_norm_out = mem_norm_seq      # (T_aug,)
+        surprise_norm_out = surprise_norm_seq
 
         # Drop persistent-token outputs.
         if self.persistent_tokens > 0:
