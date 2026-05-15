@@ -234,6 +234,15 @@ class TinyRecursiveTradingModel(nn.Module):
     encoder_num_heads: int = 4
     # TASK_741 (Mint): post-pool per-asset scalar injection
     per_asset_scalar_dims: int = 0
+    # TASK_749 (Titans-MAG): plumbed-through encoder Titans config.
+    use_titans_memory: bool = False
+    titans_memory_depth: int = 2
+    titans_memory_hidden: Optional[int] = None
+    titans_persistent_tokens: int = 4
+    titans_surprise_momentum_init: float = 0.9
+    titans_decay_init: float = 0.01
+    titans_lr_init: float = 0.01
+    titans_gate_init: float = -10.0
     dtype: Any = jnp.float32
     param_dtype: Any = jnp.float32
 
@@ -244,6 +253,14 @@ class TinyRecursiveTradingModel(nn.Module):
                 embed_dim=self.embed_dim,
                 num_heads=self.encoder_num_heads,
                 per_asset_scalar_dims=self.per_asset_scalar_dims,
+                use_titans_memory=self.use_titans_memory,
+                titans_memory_depth=self.titans_memory_depth,
+                titans_memory_hidden=self.titans_memory_hidden,
+                titans_persistent_tokens=self.titans_persistent_tokens,
+                titans_surprise_momentum_init=self.titans_surprise_momentum_init,
+                titans_decay_init=self.titans_decay_init,
+                titans_lr_init=self.titans_lr_init,
+                titans_gate_init=self.titans_gate_init,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
             )

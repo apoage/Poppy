@@ -396,6 +396,15 @@ def create_model(config: Phase2Config):
         use_per_asset_injection=getattr(config, 'use_per_asset_injection', False),
         per_asset_inject_xs=getattr(config, 'per_asset_inject_xs', False),
         per_asset_inject_cheat=getattr(config, 'per_asset_inject_cheat', False),
+        # TASK_749 (Titans-MAG)
+        use_titans_memory=getattr(config, 'use_titans_memory', False),
+        titans_memory_depth=getattr(config, 'titans_memory_depth', 2),
+        titans_memory_hidden=getattr(config, 'titans_memory_hidden', None),
+        titans_persistent_tokens=getattr(config, 'titans_persistent_tokens', 4),
+        titans_surprise_momentum_init=getattr(config, 'titans_surprise_momentum_init', 0.9),
+        titans_decay_init=getattr(config, 'titans_decay_init', 0.01),
+        titans_lr_init=getattr(config, 'titans_lr_init', 0.01),
+        titans_gate_init=getattr(config, 'titans_gate_init', -10.0),
     )
     return model
 

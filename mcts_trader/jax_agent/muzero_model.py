@@ -284,6 +284,16 @@ class MuZeroNetworks(nn.Module):
     xs_channel_count: int = 5               # 5 xs scalars
     cheat_channel_index: int = 32           # cheat scalar channel
 
+    # TASK_749 (Titans-MAG): Plumbed-through TRM/encoder Titans config.
+    use_titans_memory: bool = False
+    titans_memory_depth: int = 2
+    titans_memory_hidden: Optional[int] = None
+    titans_persistent_tokens: int = 4
+    titans_surprise_momentum_init: float = 0.9
+    titans_decay_init: float = 0.01
+    titans_lr_init: float = 0.01
+    titans_gate_init: float = -10.0
+
     def setup(self):
         """Initialize all three networks"""
         # TASK_741 (Mint): total scalar dims fed to FiLM
@@ -304,6 +314,15 @@ class MuZeroNetworks(nn.Module):
             embed_dim=self.embed_dim,
             encoder_num_heads=self.encoder_num_heads,
             per_asset_scalar_dims=scalar_dims,
+            # TASK_749 (Titans-MAG) passthrough
+            use_titans_memory=self.use_titans_memory,
+            titans_memory_depth=self.titans_memory_depth,
+            titans_memory_hidden=self.titans_memory_hidden,
+            titans_persistent_tokens=self.titans_persistent_tokens,
+            titans_surprise_momentum_init=self.titans_surprise_momentum_init,
+            titans_decay_init=self.titans_decay_init,
+            titans_lr_init=self.titans_lr_init,
+            titans_gate_init=self.titans_gate_init,
             dtype=self.dtype,
             param_dtype=self.param_dtype
         )
