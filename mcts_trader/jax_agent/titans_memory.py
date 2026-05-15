@@ -19,10 +19,15 @@ Key implementation pattern
 - The scan over the temporal axis (T=64) carries `(M_t, S_t)` where
   `M_t` is a tuple of per-stream MLP weight tensors and `S_t` the
   momentum buffer.
-- Inside the scan body, `jax.grad` computes the inner-loop gradient of
-  the associative-memory loss with respect to `M`. JAX handles the
-  second-order autodiff natively when the outer-loop training loss
-  backpropagates through the scan.
+- Inside the scan body, the inner-loop gradient ∂L/∂M of the
+  associative-memory loss `L = ||M(k) - v||^2 / D` is computed
+  *analytically* (explicit forward+backward through the MLP layers,
+  using a closed-form GELU' formula). This avoids a nested `jax.grad`
+  inside the scan body — TASK_749 step 8 root-cause fix. The OUTER
+  autodiff thus sees only single-level reverse-mode autodiff through
+  standard matmul/GELU/add ops, eliminating the inf-gradient propagation
+  caused by the previous `jax.grad(inner_loss)` pattern under
+  `jax.checkpoint(body)`.
 - The scan body is wrapped in `jax.checkpoint` (remat) to bound peak
   memory during backward — without this, the per-step carry (~1 GB
   for B=256/A=64) held across all 64 timesteps would blow the 24 GB
@@ -77,7 +82,7 @@ def _memory_loss(M_params, k, v):
 
 
 def _per_stream_loss(M_params, k, v):
-    """Per-stream associative-memory loss. Used inside vmap'd jax.grad below.
+    """Per-stream associative-memory loss. Retained for diagnostic/test use.
 
     Args:
         M_params: tuple of L (D, D) weight matrices for a single stream.
@@ -89,22 +94,92 @@ def _per_stream_loss(M_params, k, v):
     return jnp.mean((pred - v) ** 2)
 
 
-# Vectorise the per-stream gradient over the batched (N,) stream axis.
-# `axes_per_layer=(0, ...)` would be the right spec for the tuple of (N, D, D)
-# layer weight matrices. We pre-build the vmapped grad function at module load
-# so it can be reused without re-tracing.
+def _gelu_grad_tanh(x):
+    """Explicit derivative of the tanh-approximation GELU (Flax default).
+
+    GELU(x) = 0.5 * x * (1 + tanh(g(x)))  with  g(x) = sqrt(2/pi) * (x + 0.044715 * x^3)
+    GELU'(x) = 0.5 * (1 + tanh(g)) + 0.5 * x * (1 - tanh(g)^2) * g'(x)
+             = 0.5 * (1 + tanh(g)) + 0.5 * x * sech(g)^2 * sqrt(2/pi) * (1 + 0.134145 * x^2)
+
+    Written in closed form so OUTER autodiff differentiates through standard
+    pointwise ops (tanh, square, multiply) rather than through a nested
+    jax.grad call. This is the load-bearing piece that makes the analytical
+    inner-gradient path stable.
+    """
+    # Python float constants — JAX promotes to x.dtype automatically.
+    sqrt_2_over_pi = 0.7978845608028654   # sqrt(2/pi)
+    coef_cubic = 0.044715
+    coef_cubic_3 = 0.134145               # 3 * 0.044715
+    g = sqrt_2_over_pi * (x + coef_cubic * x ** 3)
+    tanh_g = jnp.tanh(g)
+    sech2_g = 1.0 - tanh_g ** 2
+    g_prime = sqrt_2_over_pi * (1.0 + coef_cubic_3 * x ** 2)
+    return 0.5 * (1.0 + tanh_g) + 0.5 * x * sech2_g * g_prime
+
+
 def _batched_grad_M(M_params_b, k_b, v_b):
-    """Compute per-stream gradient of associative-memory loss wrt M.
+    """Compute per-stream gradient of L = ||M(k) - v||^2 / D wrt each W_i in M.
+
+    ROOT-CAUSE FIX (TASK_749 step 8): the previous implementation called
+    `jax.grad(_per_stream_loss)` inside the scan body. Combined with the
+    surrounding `jax.checkpoint(body)` and an outer `value_and_grad`, this
+    produces a four-way nested autodiff (outer fwd / outer bwd / inner fwd /
+    inner bwd) whose backward path generates non-finite values once the
+    MAG gate is non-trivial (e.g. gate_init=-5 → sigmoid≈6.7e-3 vs the
+    earlier 4.5e-5 at -10). Symptom: `grad_norm = inf` every step.
+
+    The fix is to compute `∂L/∂W_i` analytically via an explicit forward
+    pass that caches `h_i = activations before W_i` and `pre_i = preact
+    after W_i`, then an explicit backward that propagates `delta` back
+    through each linear-GELU layer. All operations are standard JAX
+    pointwise + matmul, so OUTER autodiff sees a single-level reverse-mode
+    problem (no nested `jax.grad`), which is reliably handled.
 
     Args:
-        M_params_b: tuple of (N, D, D) per-layer weight matrices.
-        k_b, v_b: (N, D) per-stream keys/values.
+        M_params_b: tuple of (N, in_i, out_i) per-layer weight matrices.
+            Shapes may vary per layer (e.g. D→H→D for depth=2).
+        k_b, v_b: (N, D) per-stream keys/values (D = embed_dim).
     Returns:
-        Per-stream grads — tuple of (N, D, D).
+        Per-stream grads — tuple of (N, in_i, out_i), matching M_params_b
+        layer-by-layer.
     """
-    grad_fn = jax.grad(_per_stream_loss, argnums=0)
-    # Map the stream axis (N) explicitly via vmap.
-    return jax.vmap(grad_fn, in_axes=(0, 0, 0))(M_params_b, k_b, v_b)
+    n_layers = len(M_params_b)
+    # Output dim from the last layer's weight matrix — Python int, used as
+    # plain divisor below (JAX promotes to k_b.dtype automatically).
+    D_out = int(M_params_b[-1].shape[-1])
+
+    # === Forward pass — cache per-layer activations h_i (input to layer i)
+    # and pre_i (pre-activation = h_i @ W_i, BEFORE the GELU on intermediate
+    # layers). For the last layer pre_i IS the output (no GELU follows).
+    h_list = [k_b]                 # h_0 = k
+    pre_list = []
+    h = k_b
+    for i, W in enumerate(M_params_b):
+        pre = jnp.einsum('nd,ndp->np', h, W)  # (N, out_i)
+        pre_list.append(pre)
+        if i < n_layers - 1:
+            h = nn.gelu(pre)
+            h_list.append(h)
+        else:
+            h = pre  # final output (linear)
+    pred = h
+
+    # === Backward — explicit delta propagation.
+    # delta_i = ∂L/∂pre_i;  grad_W_i = h_i^T outer delta_i  (per-stream).
+    # Start: delta_{L-1} = (2/D) * (pred - v).
+    delta = (2.0 / D_out) * (pred - v_b)  # (N, D_out)
+
+    grads = [None] * n_layers
+    for i in range(n_layers - 1, -1, -1):
+        # grad_W_i = outer(h_i, delta_i)  per-stream → einsum gives (N, in_i, out_i).
+        grads[i] = jnp.einsum('na,nb->nab', h_list[i], delta)
+        if i > 0:
+            # Backprop delta through W_i: delta_{i-1}_raw = delta_i @ W_i^T.
+            # Then multiply by GELU'(pre_{i-1}) elementwise.
+            delta_raw = jnp.einsum('np,ndp->nd', delta, M_params_b[i])  # (N, in_i = out_{i-1})
+            delta = delta_raw * _gelu_grad_tanh(pre_list[i - 1])
+
+    return tuple(grads)
 
 
 def _titans_scan_body_batched(carry, inputs):
