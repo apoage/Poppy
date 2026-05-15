@@ -3,6 +3,8 @@ import jax.numpy as jnp
 import flax.linen as nn
 from typing import Any, Optional, Tuple
 
+from .titans_memory import GatedTemporalMemory
+
 
 class FiLMProjector(nn.Module):
     """TASK_741 (Mint): post-pool per-asset scalar injection via FiLM.
@@ -57,6 +59,18 @@ class StreamingAssetEncoder(nn.Module):
     # TASK_741 (Mint): post-pool per-asset scalar injection
     per_asset_scalar_dims: int = 0
     film_hidden_dim: int = 64
+    # TASK_749 (Titans-MAG): neural memory module on the temporal axis,
+    # gated against the existing minGRU branch. Toggleable so existing
+    # Phase-1 checkpoints load unchanged (use_titans_memory=False by default;
+    # when True the gate is init large-negative → memory dormant at step 0).
+    use_titans_memory: bool = False
+    titans_memory_depth: int = 2
+    titans_memory_hidden: Optional[int] = None
+    titans_persistent_tokens: int = 4
+    titans_surprise_momentum_init: float = 0.9
+    titans_decay_init: float = 0.01
+    titans_lr_init: float = 0.01
+    titans_gate_init: float = -10.0
 
     def setup(self):
         d = dict(dtype=self.dtype, param_dtype=self.param_dtype)
@@ -77,6 +91,23 @@ class StreamingAssetEncoder(nn.Module):
             self.film_projector = FiLMProjector(
                 embed_dim=self.embed_dim,
                 hidden_dim=self.film_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_749 (Titans-MAG): instantiate the gated memory only when enabled.
+        # Subtree key on the param dict is 'titans' (see __call__).
+        if self.use_titans_memory:
+            self.titans = GatedTemporalMemory(
+                embed_dim=self.embed_dim,
+                memory_depth=self.titans_memory_depth,
+                memory_hidden=self.titans_memory_hidden,
+                persistent_tokens=self.titans_persistent_tokens,
+                surprise_momentum_init=self.titans_surprise_momentum_init,
+                decay_init=self.titans_decay_init,
+                lr_init=self.titans_lr_init,
+                gate_init=self.titans_gate_init,
+                use_remat=True,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
             )
@@ -115,6 +146,17 @@ class StreamingAssetEncoder(nn.Module):
         # Parallel scan: h_t = (1-z_t) * h_{t-1} + z_t * h_tilde_t
         h_final = _mingru_scan(z, h_tilde)  # (B*A, D)
 
+        # TASK_749 (Titans-MAG): gate the minGRU output with Titans memory
+        # operating on the per-stream sequence x: (B*A, T, D). At step 0
+        # sigmoid(gate_init=-10) ≈ 4.5e-5, so h_final is essentially unchanged.
+        if self.use_titans_memory:
+            h_final, _titans_diag = self.titans(x, h_final)
+            # _titans_diag = {theta_mean, eta_mean, alpha_mean, mem_norm,
+            #   surprise_norm, gate_value, gate_mean}. We stash it in a Flax
+            # sow-able slot so train_phase2.py can pick it up; for now we
+            # rely on the loss-side to recompute these if logged.
+            self.sow('intermediates', 'titans_diag', _titans_diag)
+
         # Reshape to (B, A, D)
         h = h_final.reshape(batch, n_assets, self.embed_dim)
 
@@ -141,6 +183,14 @@ class StreamingAssetEncoder(nn.Module):
         Returns:
             state: (batch, state_dim) — current latent state
             h_new: (batch, n_assets, embed_dim) — updated hidden state
+
+        NOTE (TASK_749): when `use_titans_memory=True`, the streaming path
+        falls back to the minGRU branch only — Titans memory is not
+        applied here (it requires a temporal sequence, not a single
+        timestep). The MAG gate is dormant at init so this is a no-op
+        regression at step 0. Persistent cross-call memory is deferred
+        (Candidate C in TASK_749 §2). For MCTS use of representation()
+        the __call__ path (with full T-window) is used.
         """
         batch, channels, n_assets = x_t.shape
 
