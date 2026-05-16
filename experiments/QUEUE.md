@@ -59,13 +59,23 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 | 746-x5 | (extension) | 🟢 READY | 2 runs × 3h = ~3h (2-wide) | Variant-only at seeds 31, 42 (same pattern as 734-x5). Settles 746 inconclusive verdict. |
 | 749 | `experiments/749_titans_mag/SPEC.md` | 🟢 READY | 3 runs × 3h = ~4.5h (2-wide) | Titans-MAG implementation COMPLETE. Smoke PASSED 2026-05-16 with `--titans-lr 3e-3 --titans-gate-init -3`: gate Δ +3.4e-3 (3.4× threshold), mem_norm 0.05→0.92, grad finite, loss monotonic. 5 fix commits ended `04b8632`. Required flags: `--titans-memory --titans-variant mag --titans-memory-depth 2 --titans-memory-hidden 32 --titans-persistent-tokens 4 --titans-gate-init -3 --titans-lr 3e-3 --reset-titans-memory` (first run only). |
 
+### Priority 2c — Overnight followup wave (auto-fire after Priority 2/2b complete, ~22:00 UTC 2026-05-16)
+
+Three new SPECs to fill the ~10h overnight window + tomorrow daylight. Designed for GPU 1 (hero, long) + GPU 2 (short queue, sequential). GPU 3 reserved for eval workloads and result.md generation. TASK_742 ≤2-concurrent train_phase2 held strict.
+
+| ID | SPEC | Status | Wall | Notes |
+|---|---|---|---|---|
+| 750 | `experiments/750_titans_hero/SPEC.md` | 🟢 READY | ~15h (1000 epochs, single seed, GPU 1) | **Hero calibration.** Does Titans-MAG have learnable headroom past E200? Single seed s7 @ 1000 epochs, intermediate checkpoints at E100/200/.../1000. Eval at E200/E500/E1000 vs `baseline_seed_7`. NOT a promotion experiment. |
+| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | 🟢 READY | 2 runs × 3h = ~6h sequential (GPU 2) | Bracket probes at `--titans-lr 1e-3` and `1e-2`. Confirms 3e-3 is near-optimal or finds better LR. Pairs vs `runs/749_titans_mag/titans_seed_7/`. Same pattern as 748 was for 734. |
+| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 READY | 2 runs × 3h = ~6h sequential (GPU 2, after 751) | a1b1 baselines at s31, s42. Completes properly-paired 5-seed for 746 (combined with 746-x5 variant runs). Baselines reusable for any future 5-seed at those seeds. |
+
 ### Priority 3 — followups
 
 | ID | Description | Status | Action |
 |---|---|---|---|
 | 740 SPEC refresh | Update 740 to paired 3-seed using 741_mint baseline | ✅ | Done 2026-05-16. |
 | 27-ch ckpt rsync | Recover ckpt + push to server | ✅ | Done 2026-05-14 19:30. |
-| 734 baseline pair (s31, s42) | Run a1b1 baseline at the 5-seed extension's missing seeds to validate the variant-only reversal claim | ⏸ | LOW priority — 734-x5 verdict is "no promotion regardless of pairing" since s42's −9.91% absolute Alpha is bad in any interpretation. Confirmation only. |
+| 734 baseline pair (s31, s42) | Run a1b1 baseline at the 5-seed extension's missing seeds to validate the variant-only reversal claim | ⏸ | LOW priority — 734-x5 verdict is "no promotion regardless of pairing" since s42's −9.91% absolute Alpha is bad in any interpretation. **Side effect: SPEC 752 produces these baselines as a byproduct (they're indistinguishable a1b1 runs). After 752 completes, 734 5-seed becomes properly paired post-hoc — no separate work needed.** |
 | Multi-mechanism stacks | Combine winners | ⏸ | Moot — no individual mechanism has promoted 5-seed as of 2026-05-16. |
 | 739 dense_sign 5-seed | Settle whether s7 outlier is unlucky or representative | ⏸ | Low priority — dir_acc hypothesis already closed. |
 
