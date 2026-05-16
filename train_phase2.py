@@ -1965,6 +1965,10 @@ def parse_args():
     parser.add_argument('--titans-lr-init', type=float, default=None,
                         help='TASK_749: init bias for θ_t sigmoid (default 0.01 → '
                              'small inner-loop step).')
+    parser.add_argument('--titans-gate-init', type=float, default=None,
+                        help='TASK_749: init bias for MAG gate sigmoid '
+                             '(default -5.0 → mix≈0.7%, byte-identical baseline). '
+                             '-3 → mix≈4.7% for faster gate engagement.')
     parser.add_argument('--reset-titans-memory', action='store_true',
                         help='TASK_749: drop titans subtree from checkpoint at '
                              'load (forces fresh init). Use on first run with a '
@@ -2132,6 +2136,8 @@ def main():
         config.titans_decay_init = args.titans_decay_init
     if args.titans_lr_init is not None:
         config.titans_lr_init = args.titans_lr_init
+    if args.titans_gate_init is not None:
+        config.titans_gate_init = args.titans_gate_init
     if getattr(config, 'use_titans_memory', False):
         logger.info(f"[TITANS-MAG] ON: depth={config.titans_memory_depth} "
                     f"N_p={config.titans_persistent_tokens} "
