@@ -196,6 +196,13 @@ class Phase2Config(EasyConfig):
     # within reasonable epoch counts). Stricter -10 saturates the sigmoid so
     # hard that the gate doesn't move in <500 epochs at encoder_lr=3e-5.
     titans_gate_init: float = -5.0
+    # TASK_749 fix 5: dedicated outer-LR for Titans params (gate + memory MLP +
+    # persistent tokens + α/η/θ projections). Encoder LR (3e-5) is too low to
+    # move the MAG gate in reasonable epoch counts (~1e-7 per step at -3 init,
+    # ~1000× below the 1e-3 movement threshold). When None, Titans inherits
+    # encoder_lr (legacy behavior, keeps prior smokes reproducible). When set,
+    # an `optax.multi_transform` 'titans' group is created with this LR.
+    titans_lr: Optional[float] = None
 
     # === Checkpointing ===
     phase2_checkpoint_dir: str = "jax_ckpt_easy_phase2"

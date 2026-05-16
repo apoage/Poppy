@@ -792,16 +792,38 @@ def _is_encoder_key(path) -> bool:
     return 'encoder' in path_str and 'trm' in path_str
 
 
-def make_stage_b_labels(params, encoder_trainable: bool):
+def _is_titans_key(path) -> bool:
+    """TASK_749 fix 5: check if a param path is inside the Titans memory subtree.
+
+    Titans params live at `trm/encoder/titans/*` — strict subset of the
+    encoder. Used to peel them off into a dedicated optimizer group when
+    `--titans-lr` is set (the encoder LR 3e-5 is too low to move the MAG
+    gate sigmoid in feasible epoch counts).
+    """
+    path_str = '/'.join(str(p) for p in path)
+    return 'titans' in path_str and 'trm' in path_str and 'encoder' in path_str
+
+
+def make_stage_b_labels(params, encoder_trainable: bool, titans_separate: bool = False):
     """TASK_728: Three-group labels for multi_transform.
 
     - 'train'   : reasoning, dynamics, aux heads (policy_direction_refiner, direction_head)
     - 'encoder' : encoder params (only when encoder_trainable=True; else 'freeze')
     - 'freeze'  : oracle_mask (auxiliary, not used in this run path)
+
+    TASK_749 fix 5: when titans_separate=True, params inside trm/encoder/titans
+    get the 'titans' label so they can route to a dedicated higher-LR optimizer.
+    The check is path-prefix specific so it does NOT alter labels of any other
+    leaves; the optimizer dict simply gains a fourth entry. Without this flag
+    (titans_separate=False), Titans leaves keep their historical 'encoder' /
+    'freeze' label and inherit encoder_lr — preserves byte-identical behavior
+    for prior smokes.
     """
     def label_fn(path, _leaf):
         if _is_dynamics_key(path):
             return 'train'
+        if titans_separate and _is_titans_key(path):
+            return 'titans'
         if _is_encoder_key(path):
             return 'encoder' if encoder_trainable else 'freeze'
         key = str(path[0])
@@ -862,12 +884,47 @@ def create_stage_b_optimizer(config: Phase2Config, params):
 
     freeze_opt = optax.set_to_zero()
 
-    labels = make_stage_b_labels(params, encoder_trainable)
-
-    optimizer = optax.multi_transform(
-        {'train': train_opt, 'encoder': encoder_opt, 'freeze': freeze_opt},
-        labels,
+    # TASK_749 fix 5: dedicated Titans LR group. Only kicks in when Titans is
+    # ENABLED and `--titans-lr` was explicitly set. This guarantees that runs
+    # without Titans (or Titans-on but no override) keep the historical 3-group
+    # optimizer structure — preserves byte-identical behavior and avoids
+    # spurious JAX recompiles for legacy configs.
+    titans_separate = (
+        getattr(config, 'use_titans_memory', False)
+        and getattr(config, 'titans_lr', None) is not None
     )
+
+    labels = make_stage_b_labels(params, encoder_trainable,
+                                 titans_separate=titans_separate)
+
+    transforms = {
+        'train': train_opt,
+        'encoder': encoder_opt,
+        'freeze': freeze_opt,
+    }
+    if titans_separate:
+        titans_lr = float(config.titans_lr)
+        # Warmup-cosine to match encoder/main; the gate sigmoid is sensitive
+        # to gradient magnitude, so we keep the same shape — just at a higher
+        # peak (paper-typical ~100× the encoder LR for newly-added heads).
+        titans_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=titans_lr,
+            warmup_steps=warmup_steps,
+            decay_steps=max(total_steps, warmup_steps + 1),
+            end_value=titans_lr * 0.1,
+        )
+        transforms['titans'] = optax.chain(
+            optax.clip_by_global_norm(0.5),
+            optax.adamw(titans_schedule, weight_decay=1e-4),
+        )
+        # Sanity log: count of leaves routed into the titans group.
+        n_titans = sum(1 for lbl in jax.tree_util.tree_leaves(labels)
+                       if lbl == 'titans')
+        logger.info(f"  [TITANS-LR] Titans params routed to dedicated group "
+                    f"at lr={titans_lr} (leaves={n_titans}, encoder_lr={config.encoder_lr})")
+
+    optimizer = optax.multi_transform(transforms, labels)
     opt_state = optimizer.init(params)
     return optimizer, opt_state
 
@@ -1969,6 +2026,14 @@ def parse_args():
                         help='TASK_749: init bias for MAG gate sigmoid '
                              '(default -5.0 → mix≈0.7%, byte-identical baseline). '
                              '-3 → mix≈4.7% for faster gate engagement.')
+    parser.add_argument('--titans-lr', type=float, default=None,
+                        help='TASK_749 fix 5: dedicated outer-LR for Titans '
+                             'params (gate + memory MLP + persistent tokens + '
+                             'α/η/θ projections). Distinct from --titans-lr-init '
+                             '(inner-loop θ_t bias). When None (default), Titans '
+                             'inherits encoder_lr. Set to ~100× encoder_lr '
+                             '(e.g. 3e-3) so the MAG gate sigmoid can move in '
+                             'feasible epoch counts.')
     parser.add_argument('--reset-titans-memory', action='store_true',
                         help='TASK_749: drop titans subtree from checkpoint at '
                              'load (forces fresh init). Use on first run with a '
@@ -2138,13 +2203,16 @@ def main():
         config.titans_lr_init = args.titans_lr_init
     if args.titans_gate_init is not None:
         config.titans_gate_init = args.titans_gate_init
+    if args.titans_lr is not None:
+        config.titans_lr = args.titans_lr
     if getattr(config, 'use_titans_memory', False):
         logger.info(f"[TITANS-MAG] ON: depth={config.titans_memory_depth} "
                     f"N_p={config.titans_persistent_tokens} "
                     f"η_init={config.titans_surprise_momentum_init} "
                     f"α_init={config.titans_decay_init} "
                     f"θ_init={config.titans_lr_init} "
-                    f"gate_init={config.titans_gate_init}")
+                    f"gate_init={config.titans_gate_init} "
+                    f"outer_lr={config.titans_lr if config.titans_lr is not None else 'inherit'}")
     if args.value_weight is not None:
         config.exit_value_weight = args.value_weight
     if args.value_target_mode is not None:
