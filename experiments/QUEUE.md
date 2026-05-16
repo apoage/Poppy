@@ -57,7 +57,7 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 | 747 | `experiments/747_value_td0/SPEC.md` | 🔴 DONE — FLAT | 3 runs × 3h | **mean Δα +0.16pp**, no signal. Value-target roadmap CLOSED (oracle inconclusive, td0 flat → nstep stays canonical). See `lore/notes_2026-05-16.md` §114. |
 | 748 | `experiments/748_flow_velsweep/SPEC.md` | 🔴 DONE — vw=0.8 ROBUST | 2 runs × 3h | vw=0.5 Δα −7.84pp, vw=1.0 Δα −2.47pp (both single-seed vs vw=0.8 reference). 0.8 default is robust to ±0.3 perturbation, both directions worse. Now academic since 734 didn't promote. See `lore/notes_2026-05-16.md` §114. |
 | 746-x5 | (extension) | 🟢 READY | 2 runs × 3h = ~3h (2-wide) | Variant-only at seeds 31, 42 (same pattern as 734-x5). Settles 746 inconclusive verdict. |
-| 749 | `experiments/749_titans_mag/SPEC.md` | 🟡 IMPL IN PROGRESS | TBD | Titans-MAG implementation. Architecture works (truncated BPTT fix), gate engagement parameterization in progress (5th smoke pass with `--titans-lr` flag). NOT READY for server until smoke passes ≥1e-3 gate movement. |
+| 749 | `experiments/749_titans_mag/SPEC.md` | 🟢 READY | 3 runs × 3h = ~4.5h (2-wide) | Titans-MAG implementation COMPLETE. Smoke PASSED 2026-05-16 with `--titans-lr 3e-3 --titans-gate-init -3`: gate Δ +3.4e-3 (3.4× threshold), mem_norm 0.05→0.92, grad finite, loss monotonic. 5 fix commits ended `04b8632`. Required flags: `--titans-memory --titans-variant mag --titans-memory-depth 2 --titans-memory-hidden 32 --titans-persistent-tokens 4 --titans-gate-init -3 --titans-lr 3e-3 --reset-titans-memory` (first run only). |
 
 ### Priority 3 — followups
 
