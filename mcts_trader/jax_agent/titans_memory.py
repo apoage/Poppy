@@ -28,6 +28,13 @@ Key implementation pattern
   standard matmul/GELU/add ops, eliminating the inf-gradient propagation
   caused by the previous `jax.grad(inner_loss)` pattern under
   `jax.checkpoint(body)`.
+- TRUNCATED BPTT (TASK_749 fix 3): the carry's prior state
+  `(M_prev, S_prev)` is wrapped in `jax.lax.stop_gradient` inside the
+  scan body. Forward pass is unchanged; the outer gradient does NOT
+  flow back through the T-step trajectory. Standard pattern in TTT /
+  Titans implementations (Sun et al. 2024) — required because the
+  unrolled trajectory backprop is numerically unstable in our stack
+  (1e9-1e10 magnitudes even when finite).
 - The scan body is wrapped in `jax.checkpoint` (remat) to bound peak
   memory during backward — without this, the per-step carry (~1 GB
   for B=256/A=64) held across all 64 timesteps would blow the 24 GB
@@ -194,8 +201,26 @@ def _titans_scan_body_batched(carry, inputs):
     Inputs (per-timestep):
       k_t, v_t, q_t: (N, D)
       theta_t, eta_t, alpha_t: (N,) per-stream scalars.
+
+    TRUNCATED BPTT (TASK_749 fix 3)
+    -------------------------------
+    The outer-loop gradient is prevented from flowing back through the carry's
+    prior state via `jax.lax.stop_gradient`. The forward pass is unchanged —
+    the inner-loop SSL update still uses M_prev / S_prev numerically — but
+    autodiff's reverse pass sees them as constants. This is the standard
+    pattern in TTT / Titans implementations (e.g. Sun et al. 2024 official
+    PyTorch code): without it, the outer gradient accumulates through every
+    one of the T=64 scan steps, producing catastrophic magnitudes (1e9-1e10
+    even when finite) in the OUTER autodiff of `jax.grad(loss)`.
+
+    With this fix, the outer gradient reaches Titans trainable params (K, V,
+    Q, gate, η/θ/α heads, persistent tokens, M_init) through ONE step only,
+    not the trajectory.
     """
     M_params, S_params = carry
+    # TRUNCATED BPTT — cut outer-gradient flow through the carry.
+    M_params = jax.tree_util.tree_map(jax.lax.stop_gradient, M_params)
+    S_params = jax.tree_util.tree_map(jax.lax.stop_gradient, S_params)
     k_t, v_t, q_t, theta_t, eta_t, alpha_t = inputs
 
     # Broadcast-shaped scalars for elementwise update.
