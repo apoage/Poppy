@@ -311,6 +311,12 @@ class MuZeroNetworks(nn.Module):
     bella_distill_hidden_dim: int = 256
     bella_pred_horizons: Tuple[int, ...] = (1, 5, 10, 20)
 
+    # TASK_754: Bella trajectory-shape distillation head (β-v3, successor
+    # to TASK_740 — permutation-invariant 14-float descriptor).
+    use_bella_shape_head: bool = False
+    bella_shape_descriptor_dim: int = 14
+    bella_shape_hidden_dim: int = 256
+
     # TASK_741 (Mint): Per-asset post-pool scalar injection via FiLM
     use_per_asset_injection: bool = False
     per_asset_inject_xs: bool = False       # xs_5 channels (27-31)
@@ -467,6 +473,15 @@ class MuZeroNetworks(nn.Module):
                 n_assets=self.n_assets,
                 horizons=self.bella_pred_horizons,
                 hidden_dim=self.bella_distill_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_754: Bella trajectory-shape distillation head (β-v3).
+        if self.use_bella_shape_head:
+            self.aux_bella_shape_head = AuxBellaShapeHead(
+                descriptor_dim=self.bella_shape_descriptor_dim,
+                hidden_dim=self.bella_shape_hidden_dim,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
             )
@@ -676,6 +691,10 @@ class MuZeroNetworks(nn.Module):
         # TASK_740: Bella-distillation prediction from global latent
         if self.use_bella_distill_head:
             result['aux_bella_returns'] = self.aux_bella_head(latent_state)
+
+        # TASK_754: Bella trajectory-shape descriptor prediction from global latent
+        if self.use_bella_shape_head:
+            result['aux_bella_shape'] = self.aux_bella_shape_head(latent_state)
 
         return result
 
