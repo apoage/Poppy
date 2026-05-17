@@ -462,6 +462,12 @@ def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
                                          'config/bella_preds_manifest.json'),
         'bella_pred_horizons': tuple(getattr(config, 'bella_pred_horizons',
                                              (1, 5, 10, 20))),
+        # TASK_754: route trajectory-shape config through to SegmentPool so
+        # _make_slot can load the matching precomputed shape shard.
+        'use_bella_shape_head': getattr(config, 'use_bella_shape_head', False),
+        'bella_shape_descriptor_dim': getattr(config, 'bella_shape_descriptor_dim', 14),
+        'bella_shape_manifest': getattr(config, 'bella_shape_manifest',
+                                        'config/bella_shape_manifest.json'),
     }
 
     pool = SegmentPool(
@@ -561,6 +567,7 @@ class AsyncBatchPipeline:
         all_future_cum = []   # TASK_727: per-asset cum future return → direction target
         all_future_log_rets = []  # TASK_735: per-asset log-return at horizons → aux price head target
         all_bella_preds = []      # TASK_740: per-asset Bella-predicted log-return at horizons
+        all_bella_shape = []      # TASK_754: per-window 14-float Bella trajectory-shape descriptor
         # State channels
         all_state_t = []
         all_conf_t = []
@@ -573,6 +580,8 @@ class AsyncBatchPipeline:
         max_aux_horizon = max(aux_price_horizons) if aux_price_horizons else 0
         use_bella_distill = getattr(self.config, 'use_bella_distill_head', False)
         bella_pred_horizons = tuple(getattr(self.config, 'bella_pred_horizons', (1, 5, 10, 20)))
+        use_bella_shape = getattr(self.config, 'use_bella_shape_head', False)
+        bella_shape_dim = int(getattr(self.config, 'bella_shape_descriptor_dim', 14))
 
         for slot_idx, cursors in by_slot.items():
             slot = pool.slots[slot_idx]
@@ -660,6 +669,19 @@ class AsyncBatchPipeline:
                     bella_batch = bp[decision_indices].astype(np.float32)
                 all_bella_preds.append(bella_batch)
 
+            # TASK_754: Pull precomputed Bella shape descriptors for this slot.
+            # bella_shape_full (loaded in SegmentPool._make_slot) is indexed by
+            # the same decision_indices. Sentinel NaN marks windows without a
+            # shape shard; loss masks those samples sample-wise.
+            if use_bella_shape:
+                bsh = slot.get('bella_shape_full', None)
+                if bsh is None:
+                    shape_batch = np.full(
+                        (n, bella_shape_dim), np.nan, dtype=np.float32)
+                else:
+                    shape_batch = bsh[decision_indices].astype(np.float32)
+                all_bella_shape.append(shape_batch)
+
             # State channels (numpy, if enabled)
             if self.use_state_channels:
                 decision_t1 = cursors_arr + ws
@@ -691,6 +713,8 @@ class AsyncBatchPipeline:
                                    if all_future_log_rets else None),           # TASK_735
             'bella_preds': (np.concatenate(all_bella_preds)[:batch_size]
                             if all_bella_preds else None),                       # TASK_740
+            'bella_shape': (np.concatenate(all_bella_shape)[:batch_size]
+                            if all_bella_shape else None),                       # TASK_754
             'state_t': all_state_t, 'conf_t': all_conf_t,
             'state_t1': all_state_t1, 'conf_t1': all_conf_t1,
             'state_tN': all_state_tN, 'conf_tN': all_conf_tN,
@@ -753,6 +777,8 @@ class AsyncBatchPipeline:
             'future_log_returns': jnp.array(np_batch['future_log_returns']),  # TASK_735
             'bella_preds': (jnp.array(np_batch['bella_preds'])
                             if np_batch.get('bella_preds') is not None else None),  # TASK_740
+            'bella_shape': (jnp.array(np_batch['bella_shape'])
+                            if np_batch.get('bella_shape') is not None else None),  # TASK_754
         }
 
     def _add_state_channels_jax(self, obs, state_ch, conf):

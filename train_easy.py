@@ -699,6 +699,20 @@ class SegmentPool:
                                                                                'config/bella_preds_manifest.json'),
                                                          period_assets=spec.get('assets'))
 
+            # TASK_754: Load precomputed Bella trajectory-shape descriptors for
+            # this period (additive to TASK_740). Shape: (T_ret, descriptor_dim)
+            # float32. Missing shards fall back to None and the trainer masks
+            # those samples sample-wise.
+            bella_shape_full = None
+            if oc.get('use_bella_shape_head', False):
+                bella_shape_full = self._load_bella_shape_shard(
+                    group_key, T_ret,
+                    descriptor_dim=oc.get('bella_shape_descriptor_dim', 14),
+                    manifest_path=oc.get('bella_shape_manifest',
+                                         'config/bella_shape_manifest.json'),
+                    period_assets=spec.get('assets'),
+                )
+
             return {
                 'hm': hm,
                 'cursor': 0,
@@ -716,6 +730,8 @@ class SegmentPool:
                 'confidence': conf_full,            # (T-1, n_assets) fp16
                 # TASK_740: Precomputed Bella distillation targets (fp32 or None)
                 'bella_preds_full': bella_preds_full,
+                # TASK_754: Precomputed Bella trajectory-shape descriptors (fp32 or None)
+                'bella_shape_full': bella_shape_full,
             }
 
         return None  # Group exhausted
@@ -815,6 +831,74 @@ class SegmentPool:
         out = np.full((T_ret, n_horizons, self.n_assets), np.nan, dtype=np.float32)
         take = min(n_windows, T_ret)
         out[:take] = preds[:take].astype(np.float32)
+        return out
+
+    def _load_bella_shape_shard(self, group_key, T_ret, descriptor_dim,
+                                manifest_path, period_assets=None):
+        """TASK_754: Load a Bella trajectory-shape descriptor shard for this group.
+
+        Shard format (NPZ):
+          descriptor      — (n_windows, descriptor_dim) float32
+          schema_version  — int (must equal 1)
+          generated_at, bella_checkpoint_sha, rotation_hash — metadata
+
+        Returns an array of shape (T_ret, descriptor_dim) aligned with
+        decision_indices, or None if no shard is registered / loadable. The
+        trainer masks samples whose rows contain NaN (mirrors TASK_740 path).
+        """
+        import json
+        manifest_p = Path(manifest_path)
+        if not manifest_p.exists():
+            logger.warning(f"[POOL] Bella shape manifest missing at {manifest_p} — "
+                           f"shape-distill loss will be fully masked out.")
+            return None
+        try:
+            with open(manifest_p) as f:
+                manifest = json.load(f)
+        except Exception as e:
+            logger.warning(f"[POOL] Failed to read Bella shape manifest: {e}")
+            return None
+
+        # TASK_745: rotation-aware tag — same hash construction as the legacy
+        # bella_preds loader, so a single rotation gets the same tag in both
+        # manifests.
+        import hashlib as _hashlib
+        rot_hash = _hashlib.sha256(
+            ",".join(sorted(period_assets or [])).encode()
+        ).hexdigest()[:8]
+        period_tag = f"{group_key[0]}__{group_key[1]}__{rot_hash}"
+        entry = manifest.get('shards', {}).get(period_tag)
+        if entry is None:
+            return None
+
+        shard_path = Path(entry['path'])
+        if not shard_path.is_absolute():
+            shard_path = Path.cwd() / shard_path
+        if not shard_path.exists():
+            logger.warning(f"[POOL] Bella shape shard missing: {shard_path}")
+            return None
+
+        try:
+            data = np.load(shard_path)
+            desc = data['descriptor']
+            shard_schema = int(data['schema_version']) if 'schema_version' in data.files else -1
+        except Exception as e:
+            logger.warning(f"[POOL] Bella shape shard {shard_path} load failed: {e}")
+            return None
+
+        if shard_schema != 1:
+            logger.warning(f"[POOL] Bella shape shard {shard_path} schema_version="
+                           f"{shard_schema}, expected 1 — refusing to use.")
+            return None
+        if desc.shape[-1] != int(descriptor_dim):
+            logger.warning(f"[POOL] Bella shape shard {shard_path} descriptor_dim="
+                           f"{desc.shape[-1]}, expected {descriptor_dim} — refusing to use.")
+            return None
+
+        n_windows = desc.shape[0]
+        out = np.full((T_ret, int(descriptor_dim)), np.nan, dtype=np.float32)
+        take = min(n_windows, T_ret)
+        out[:take] = desc[:take].astype(np.float32)
         return out
 
     def get_episode_range(self, episode_length, window_size):
