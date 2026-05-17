@@ -144,6 +144,41 @@ class AuxBellaHead(nn.Module):
         return out.reshape(batch, n_horizons, self.n_assets).astype(jnp.float32)
 
 
+class AuxBellaShapeHead(nn.Module):
+    """TASK_754: trajectory-shape distillation head — coarse permutation-invariant
+    Bella prior (successor to AuxBellaHead).
+
+    Output: a flat (B, descriptor_dim) vector matching the precomputed
+    14-float trajectory-shape descriptor (cross moments + horizon-1 moments +
+    last-horizon moments + SVD spectrum). Per-component-weighted MSE against
+    the precompute target.
+
+    Pattern: identical Dense → GELU → LayerNorm → Dense layout as
+    AuxBellaHead / AuxPriceHead. Zero-init final layer so a Phase-1
+    checkpoint without this head loads byte-identical.
+    """
+    descriptor_dim: int = 14
+    hidden_dim: int = 256
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, latent: jnp.ndarray) -> jnp.ndarray:
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='aux_bella_shape_1')(
+            latent.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='aux_bella_shape_ln')(x)
+        # Zero-init final layer so step-0 output is 0 → ckpt-load byte-identical.
+        out = nn.Dense(features=self.descriptor_dim,
+                       kernel_init=nn.initializers.zeros,
+                       bias_init=nn.initializers.zeros,
+                       dtype=self.dtype,
+                       param_dtype=self.param_dtype, name='aux_bella_shape_out')(x)
+        return out.astype(jnp.float32)
+
+
 class PerAssetPolicyHead(nn.Module):
     """TASK_729a: Per-asset policy residual head.
 
