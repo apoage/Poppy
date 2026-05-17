@@ -179,6 +179,118 @@ def _window_forward_log_returns(generator, cfg, ws: int, horizons: Tuple[int, ..
     return mean_across_k.astype(np.float32)
 
 
+# TASK_754: trajectory-shape descriptor schema.
+SHAPE_SCHEMA_VERSION = 1  # see compute_shape_descriptor() invariants below
+SHAPE_DESCRIPTOR_DIM = 14
+# Component layout (indices into the 14-vector):
+#   0-3 : (mean, std, skew, excess_kurt) over flatten(K, n_assets)  — cross moments
+#   4-7 : (mean, std, skew, excess_kurt) over preds[0, :]            — horizon-1 only
+#   8-11: (mean, std, skew, excess_kurt) over preds[-1, :]           — last horizon
+#   12  : s1               (top singular value of preds: (K, n_assets))
+#   13  : s1 / sum(s_i)    (top-mode relative weight)
+# Component-group labels (matches default loss weights in train_phase2.py and §4.1 of the spec):
+#   cross  → (mean=w0, std=w1, skew=w2, kurt=w3)
+#   h1     → (mean=w0, std=w1, skew=w2, kurt=w3)
+#   hlast  → (mean=w0, std=w1, skew=w2, kurt=w3)
+#   svd    → (s1=w4, s1_ratio=w5)
+SHAPE_COMPONENT_GROUPS = ('cross', 'h1', 'hlast', 'svd')
+
+
+def compute_shape_descriptor(preds_window: np.ndarray) -> np.ndarray:
+    """TASK_754: collapse a Bella prediction window into a 14-float
+    trajectory-shape descriptor.
+
+    Args:
+        preds_window: (K, n_assets) array of Bella-predicted log-returns at
+            horizons K and assets in any order. NaN cells are treated as
+            absent — see "finite-subset" rule below.
+
+    Returns:
+        (14,) float32 descriptor — permutation-invariant under asset
+        permutation (moments are symmetric sums; singular value spectrum is
+        invariant under column permutation).
+
+    Invariants (schema_version=1):
+        - Skew via scipy.stats.skew(bias=False) — sample-size-corrected.
+        - Kurtosis via scipy.stats.kurtosis(fisher=True, bias=False) — i.e.
+          *excess* kurt, normal → 0, sample-size-corrected.
+        - sigma clamp at 1e-6 (~10× smallest expected per-step log-return std).
+        - NaN cells dropped before moment/SVD computation (TASK_745 cyclic-pad
+          may leave ~half the n_assets=64 columns as NaN per rotation).
+        - SVD denominator (sum_i s_i) clamped at 1e-12 to avoid div-by-zero.
+        - When the finite subset is empty or degenerate (<2 elements), the
+          descriptor row is filled with zeros (loss masks out under
+          jnp.isfinite anyway, and zero is permutation-invariant).
+    """
+    from scipy import stats as _sps
+
+    arr = np.asarray(preds_window, dtype=np.float64)
+    assert arr.ndim == 2, f"expected (K, n_assets), got {arr.shape}"
+    K = arr.shape[0]
+
+    SIGMA_FLOOR = 1e-6
+    SVD_FLOOR = 1e-12
+
+    def _moments(x: np.ndarray) -> Tuple[float, float, float, float]:
+        finite = x[np.isfinite(x)]
+        if finite.size < 2:
+            return (0.0, 0.0, 0.0, 0.0)
+        m = float(np.mean(finite))
+        s = float(np.std(finite, ddof=0))
+        s_clamped = max(s, SIGMA_FLOOR)
+        # scipy expects size >= 8 for stable bias-corrected skew/kurt, but
+        # for log-returns at horizons 1/5/10/20 with ~33 finite assets per
+        # row we routinely sit at 33 ≥ 8 — fine.
+        try:
+            sk = float(_sps.skew(finite, bias=False))
+            ku = float(_sps.kurtosis(finite, fisher=True, bias=False))
+        except Exception:
+            sk = 0.0
+            ku = 0.0
+        # Replace any inf/nan that scipy may return on degenerate inputs.
+        if not np.isfinite(sk):
+            sk = 0.0
+        if not np.isfinite(ku):
+            ku = 0.0
+        return (m, s_clamped, sk, ku)
+
+    # 1) cross moments over (K, n_assets) flattened.
+    cross = _moments(arr.reshape(-1))
+    # 2) horizon-1 moments
+    h1 = _moments(arr[0, :])
+    # 3) last-horizon moments
+    hlast = _moments(arr[K - 1, :])
+    # 4) SVD spectrum: restrict to columns where ALL horizons are finite (so
+    #    the matrix is rectangular without NaN). For typical TASK_745 rotation
+    #    this drops ~31/64 cyclic-pad columns + EUR/CAD/GBP crosses.
+    finite_cols = np.all(np.isfinite(arr), axis=0)
+    if finite_cols.sum() >= 1 and K >= 1:
+        M = arr[:, finite_cols].astype(np.float64)
+        try:
+            # full_matrices=False keeps the spectrum even when K != n_finite.
+            s_vals = np.linalg.svd(M, compute_uv=False)
+        except np.linalg.LinAlgError:
+            s_vals = np.zeros(min(M.shape), dtype=np.float64)
+        s_sum = float(np.sum(s_vals))
+        s1 = float(s_vals[0]) if s_vals.size > 0 else 0.0
+        s1_ratio = s1 / max(s_sum, SVD_FLOOR)
+    else:
+        s1 = 0.0
+        s1_ratio = 0.0
+
+    desc = np.array((
+        cross[0], cross[1], cross[2], cross[3],
+        h1[0], h1[1], h1[2], h1[3],
+        hlast[0], hlast[1], hlast[2], hlast[3],
+        s1, s1_ratio,
+    ), dtype=np.float32)
+    assert desc.shape == (SHAPE_DESCRIPTOR_DIM,)
+    # Final guard: replace any non-finite with 0.0 (the head trains toward 0,
+    # which is a no-op for a zero-init head, and the trainer's NaN mask
+    # wouldn't fire because the row is all-finite by construction).
+    return np.where(np.isfinite(desc), desc, 0.0).astype(np.float32)
+
+
 def _period_tag(period: dict) -> str:
     """TASK_745: include rotation hash so 270 unique rotations get unique
     shards. Legacy '<start>__<end>' tags are intentionally NOT recognized by
