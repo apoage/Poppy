@@ -53,21 +53,33 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 
 | ID | SPEC | Status | Wall time | Notes |
 |---|---|---|---|---|
-| 746 | `experiments/746_value_oracle/SPEC.md` | 🟡 DONE — INCONCLUSIVE | 3 runs × 3h | **mean Δα +2.54pp**, range −3.99 to +8.69 (12.7pp spread). Only Tier-3 result with non-zero mean. s23 +8.69pp is strongest signal seen on this stack. **5-seed extension (s31, s42) is the highest-value next probe** to settle whether it promotes. See `lore/notes_2026-05-16.md` §114. |
+| 746 | `experiments/746_value_oracle/SPEC.md` | 🟡 DONE — 5-seed all positive, NOT promoted | 5 runs × 3h | **3-seed mean Δα +2.54pp** → **5-seed mean Δα +2.23pp, STD 2.28, ALL 5 seeds positive**. First all-positive 5-seed seen on this stack. Below +3pp promotion bar but qualitatively the strongest non-anti-correlated signal. See `runs/746_value_oracle/result.md`. |
 | 747 | `experiments/747_value_td0/SPEC.md` | 🔴 DONE — FLAT | 3 runs × 3h | **mean Δα +0.16pp**, no signal. Value-target roadmap CLOSED (oracle inconclusive, td0 flat → nstep stays canonical). See `lore/notes_2026-05-16.md` §114. |
 | 748 | `experiments/748_flow_velsweep/SPEC.md` | 🔴 DONE — vw=0.8 ROBUST | 2 runs × 3h | vw=0.5 Δα −7.84pp, vw=1.0 Δα −2.47pp (both single-seed vs vw=0.8 reference). 0.8 default is robust to ±0.3 perturbation, both directions worse. Now academic since 734 didn't promote. See `lore/notes_2026-05-16.md` §114. |
-| 746-x5 | (extension) | 🟢 READY | 2 runs × 3h = ~3h (2-wide) | Variant-only at seeds 31, 42 (same pattern as 734-x5). Settles 746 inconclusive verdict. |
-| 749 | `experiments/749_titans_mag/SPEC.md` | 🟢 READY | 3 runs × 3h = ~4.5h (2-wide) | Titans-MAG implementation COMPLETE. Smoke PASSED 2026-05-16 with `--titans-lr 3e-3 --titans-gate-init -3`: gate Δ +3.4e-3 (3.4× threshold), mem_norm 0.05→0.92, grad finite, loss monotonic. 5 fix commits ended `04b8632`. Required flags: `--titans-memory --titans-variant mag --titans-memory-depth 2 --titans-memory-hidden 32 --titans-persistent-tokens 4 --titans-gate-init -3 --titans-lr 3e-3 --reset-titans-memory` (first run only). |
+| 749 | `experiments/749_titans_mag/SPEC.md` | 🔴 FIRST-PASS OOM — b128 relaunch in flight | 6 runs × ~1.5h = ~9h (2-wide) | First-pass 3-seed at default batch OOM'd all 3 seeds. Evidence preserved at `runs/749_titans_mag/{titans,eval_titans}_seed_{7,13,23}_oom/`. Server agent relaunched 2026-05-17 17:10 UTC at `--batch-size 128` with paired baseline_b128 runs (3 baseline + 3 variant). Running on GPUs 1+2. ETA early 2026-05-18 UTC. Titans verdict deferred until b128 lands. |
 
-### Priority 2c — Overnight followup wave (auto-fire after Priority 2/2b complete, ~22:00 UTC 2026-05-16)
+### Priority 2c — Overnight followup wave (RE-PLANNED 2026-05-17 after 749 OOM)
 
-Three new SPECs to fill the ~10h overnight window + tomorrow daylight. Designed for GPU 1 (hero, long) + GPU 2 (short queue, sequential). GPU 3 reserved for eval workloads and result.md generation. TASK_742 ≤2-concurrent train_phase2 held strict.
+**Status: original auto-fire chain (2c after 2/2b) did NOT trigger overnight.** Server agent instead detected the 749 OOM and relaunched 749 at `--batch-size 128` paired (`/tmp/749_b128_orch.sh`, started 2026-05-17 17:10 UTC, ETA early 2026-05-18 UTC). This consumes GPUs 1+2 for ~8–10h.
 
-| ID | SPEC | Status | Wall | Notes |
-|---|---|---|---|---|
-| 750 | `experiments/750_titans_hero/SPEC.md` | 🟢 READY | ~15h (1000 epochs, single seed, GPU 1) | **Hero calibration.** Does Titans-MAG have learnable headroom past E200? Single seed s7 @ 1000 epochs, intermediate checkpoints at E100/200/.../1000. Eval at E200/E500/E1000 vs `baseline_seed_7`. NOT a promotion experiment. |
-| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | 🟢 READY | 2 runs × 3h = ~6h sequential (GPU 2) | Bracket probes at `--titans-lr 1e-3` and `1e-2`. Confirms 3e-3 is near-optimal or finds better LR. Pairs vs `runs/749_titans_mag/titans_seed_7/`. Same pattern as 748 was for 734. |
-| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 READY | 2 runs × 3h = ~6h sequential (GPU 2, after 751) | a1b1 baselines at s31, s42. Completes properly-paired 5-seed for 746 (combined with 746-x5 variant runs). Baselines reusable for any future 5-seed at those seeds. |
+| ID | SPEC | Status | Plan |
+|---|---|---|---|
+| 750 | `experiments/750_titans_hero/SPEC.md` | ⏸ DEFERRED | Conditional on 749-b128 verdict. Resume queue iff Titans-MAG @ b128 promotes (mean Δα ≥ +3pp, all 3 positive). Otherwise SKIP — hero run on a non-viable mechanism wastes ~15h. |
+| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | ⏸ DEFERRED + may need SPEC refresh | Same dependency as 750. Also: 749 ran b128, so LR bracket may need re-tuning at the new effective gradient scale. Re-author SPEC at b128 if 750 unlocks. |
+| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 RE-QUEUED — runs as soon as 749-b128 GPUs free up | a1b1 baselines at s31, s42 to convert 746 5-seed proxy Δα (+2.23pp) to true paired Δα. Sequential on one GPU, ~6h. **Highest-value next action** post-749 because 746 is the only candidate worth firming up regardless of 749 outcome. |
+
+### Priority 2d — Next-window plan (when 749-b128 lands, ~2026-05-18 03:00–05:00 UTC)
+
+Decision tree:
+
+1. **If 749-b128 paired 3-seed promotes** (mean Δα ≥ +3pp, all 3 positive):
+   - Queue **749-x5-b128**: variant @ s31/s42 + paired baseline_b128 @ s31/s42 = 4 runs × ~1.5h = ~3h (2-wide)
+   - In parallel: queue **752** (a1b1 baselines at s31/s42 for 746 pairing)
+   - Hold 750/751 pending 5-seed outcome
+2. **If 749-b128 paired 3-seed regresses or is mixed**:
+   - Append final verdict to `runs/749_titans_mag/result.md`, mark Titans-MAG deprioritized
+   - Queue **752** (highest-value follow-up regardless of 749 outcome)
+   - Move attention to 746 deeper-probe direction (value-target variants: longer oracle horizon, smoothed oracle, oracle+nstep mixture)
 
 ### Priority 3 — followups
 
