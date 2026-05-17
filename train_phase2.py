@@ -998,13 +998,39 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     use_bella_distill = getattr(config, 'use_bella_distill_head', False)   # TASK_740
     bella_distill_w = getattr(config, 'bella_distill_loss_weight', 0.1)
     bella_pred_horizons_t = tuple(getattr(config, 'bella_pred_horizons', (1, 5, 10, 20)))
+    # TASK_754: trajectory-shape distill closure config
+    use_bella_shape = getattr(config, 'use_bella_shape_head', False)
+    bella_shape_w = getattr(config, 'bella_shape_loss_weight', 0.1)
+    bella_shape_dim = int(getattr(config, 'bella_shape_descriptor_dim', 14))
+    # Expand the 6-tuple (mean, std, skew, kurt, s1, s1_ratio) into a 14-vector
+    # aligned with SHAPE_DESCRIPTOR_DIM layout:
+    #   0-3 cross moments, 4-7 h1 moments, 8-11 hlast moments, 12 s1, 13 s1_ratio.
+    _default_w6 = (2.0, 1.0, 0.5, 0.25, 1.0, 2.0)
+    _w6 = getattr(config, 'bella_shape_component_weights', None) or _default_w6
+    if len(_w6) != 6:
+        raise ValueError(
+            f"bella_shape_component_weights must be 6 floats (mean, std, skew, "
+            f"kurt, s1, s1_ratio); got {len(_w6)}: {_w6}"
+        )
+    w_mean, w_std, w_skew, w_kurt, w_s1, w_s1r = _w6
+    _shape_w_vec_np = np.array([
+        w_mean, w_std, w_skew, w_kurt,  # cross
+        w_mean, w_std, w_skew, w_kurt,  # h1
+        w_mean, w_std, w_skew, w_kurt,  # hlast
+        w_s1, w_s1r,                    # svd
+    ], dtype=np.float32)
+    assert _shape_w_vec_np.shape[0] == bella_shape_dim, (
+        f"bella_shape weight vector len {_shape_w_vec_np.shape[0]} != "
+        f"descriptor_dim {bella_shape_dim}"
+    )
+    shape_w_vec = jnp.asarray(_shape_w_vec_np)
 
     @jax.jit
     def stage_b_train_step(params, opt_state, obs, obs_t1, obs_tN, actions_dynamics,
                            rewards_dynamics, mcts_visits, mcts_value,
                            oracle_targets, bc_weight, popart_mean, popart_std,
                            oracle_values, nstep_rewards, future_cum_returns,
-                           future_log_returns, bella_preds):
+                           future_log_returns, bella_preds, bella_shape):
         """Single Stage B training step.
 
         Args:
@@ -1025,6 +1051,7 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             nstep_rewards: (B,) discounted N-step reward sum (TASK_719b, value_target_mode="nstep")
             future_cum_returns: (B, n_assets) per-asset cum return over direction_horizon (TASK_727)
             bella_preds: (B, K, n_assets) precomputed Bella log-returns (TASK_740); may be all-NaN
+            bella_shape: (B, descriptor_dim) precomputed trajectory-shape descriptor (TASK_754); may contain NaN rows
         """
         def loss_fn(params):
             # === Root inference: policy + value from current obs ===
@@ -1225,6 +1252,40 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 per_h_bella = jnp.zeros(len(bella_pred_horizons_t))
                 bella_valid_frac = jnp.array(0.0)
 
+            # === Trajectory-shape distillation head (TASK_754) ===
+            # bella_shape: (B, D) coarse Bella trajectory-shape descriptor.
+            # Sample-wise NaN row marks windows without a shape shard; mask out.
+            # Per-component-weighted MSE (shape_w_vec broadcasts over D).
+            if use_bella_shape and 'aux_bella_shape' in root_out:
+                pred_shape = root_out['aux_bella_shape']        # (B, D)
+                tgt_shape = bella_shape                          # (B, D)
+                # Sample is "valid" if all D components are finite — keeps the
+                # per-row mask trivially compatible with the head's MSE.
+                row_valid = jnp.all(jnp.isfinite(tgt_shape), axis=-1)    # (B,)
+                tgt_safe = jnp.where(jnp.isfinite(tgt_shape), tgt_shape, 0.0)
+                sq = (pred_shape - tgt_safe) ** 2                # (B, D)
+                weighted_sq = sq * shape_w_vec[None, :]          # (B, D)
+                # Per-sample weighted mean over D, then reduce by valid mask.
+                w_sum = jnp.sum(shape_w_vec)
+                per_sample_loss = jnp.sum(weighted_sq, axis=-1) / jnp.maximum(w_sum, 1e-8)  # (B,)
+                row_valid_f = row_valid.astype(jnp.float32)
+                bella_shape_loss = (jnp.sum(per_sample_loss * row_valid_f) /
+                                    jnp.maximum(jnp.sum(row_valid_f), 1.0))
+                bella_shape_valid_frac = jnp.mean(row_valid_f)
+                # Per-component residual diagnostics (first two only — mean +
+                # std of the cross-moment group, the two most regime-discriminative
+                # components per spec §4.1).
+                per_comp_resid = (jnp.sum(jnp.abs(pred_shape - tgt_safe) *
+                                           row_valid_f[:, None], axis=0) /
+                                  jnp.maximum(jnp.sum(row_valid_f), 1.0))   # (D,)
+                bella_shape_mean_resid = per_comp_resid[0]   # cross-mean residual
+                bella_shape_std_resid = per_comp_resid[1]    # cross-std residual
+            else:
+                bella_shape_loss = jnp.array(0.0)
+                bella_shape_valid_frac = jnp.array(0.0)
+                bella_shape_mean_resid = jnp.array(0.0)
+                bella_shape_std_resid = jnp.array(0.0)
+
             # === Total ===
             total_loss = (policy_w * policy_loss +
                           value_w * value_loss +
@@ -1233,7 +1294,8 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                           direction_w * dir_loss +
                           rank_w * rank_loss +
                           aux_price_w * aux_price_loss +
-                          bella_distill_w * bella_distill_loss)
+                          bella_distill_w * bella_distill_loss +
+                          bella_shape_w * bella_shape_loss)
 
             return total_loss, {
                 'total_loss': total_loss,
@@ -1258,6 +1320,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 'bella_distill_h1': per_h_bella[0] if len(per_h_bella) > 0 else jnp.array(0.0),
                 'bella_distill_hmax': per_h_bella[-1] if len(per_h_bella) > 0 else jnp.array(0.0),
                 'bella_valid_frac': bella_valid_frac,
+                # TASK_754: trajectory-shape distill diagnostics
+                'bella_shape_loss': bella_shape_loss,
+                'bella_shape_valid_frac': bella_shape_valid_frac,
+                'bella_shape_mean_resid': bella_shape_mean_resid,
+                'bella_shape_std_resid': bella_shape_std_resid,
                 'pred_latent_std': jnp.std(dyn_out['latent_state']),
                 'target_latent_std': jnp.std(latent_t1),
                 'td_target_mean': jnp.mean(td_target_raw),
@@ -1512,6 +1579,9 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
         'flow_velocity_loss', 'flow_state_loss',
         'aux_price_loss', 'aux_price_mse_h1', 'aux_price_mse_hmax',
         'bella_distill_loss', 'bella_distill_h1', 'bella_distill_hmax', 'bella_valid_frac',
+        # TASK_754: trajectory-shape distill (β-v3)
+        'bella_shape_loss', 'bella_shape_valid_frac',
+        'bella_shape_mean_resid', 'bella_shape_std_resid',
         # TASK_749 (Titans-MAG): per-epoch diagnostics from a fresh apply
         # on the most recent obs batch with the latest params (off-band, ~1 forward
         # pass per epoch — cheap).
@@ -1589,6 +1659,13 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                      config.n_assets),
                     jnp.nan, dtype=jnp.float32,
                 )
+            bella_shape = batch.get('bella_shape')              # TASK_754
+            if bella_shape is None:
+                bella_shape = jnp.full(
+                    (future_log_returns.shape[0],
+                     int(getattr(config, 'bella_shape_descriptor_dim', 14))),
+                    jnp.nan, dtype=jnp.float32,
+                )
             _tg1 = time.time()
             t_gen += _tg1 - _tg0
 
@@ -1622,6 +1699,7 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                 future_cum_returns,
                 future_log_returns,
                 bella_preds,
+                bella_shape,
             )
             # Fence: ensure GPU compute finishes before next batch's CPU→GPU transfers.
             # Without this, jnp.array() in _encode_jax can collide with the async
@@ -1674,6 +1752,14 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                           f"(vf={avg.get('bella_valid_frac', 0):.2f}"
                           f",h1={avg.get('bella_distill_h1', 0):.5f}"
                           f",hmax={avg.get('bella_distill_hmax', 0):.5f})")
+        bella_shape_info = ""
+        if getattr(config, 'use_bella_shape_head', False):
+            bella_shape_info = (
+                f" shape={avg.get('bella_shape_loss', 0):.5f}"
+                f"(vf={avg.get('bella_shape_valid_frac', 0):.2f}"
+                f",mR={avg.get('bella_shape_mean_resid', 0):.4f}"
+                f",sR={avg.get('bella_shape_std_resid', 0):.4f})"
+            )
 
         # TASK_749 (Titans-MAG): off-band per-epoch Titans diagnostics.
         # Run one extra apply call on the most recent obs batch with the latest
@@ -1722,7 +1808,7 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             f"E{epoch:4d}: policy={avg['policy_loss']:.4f} "
             f"value={avg['value_loss']:.4f} "
             f"consistency={avg['consistency_loss']:.4f} "
-            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{titans_info} "
+            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{bella_shape_info}{titans_info} "
             f"total={avg['total_loss']:.4f} "
             f"grad={avg['grad_norm']:.3f}"
             f"{pa_info} "
@@ -1751,6 +1837,11 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             'bella_distill_h1': f"{avg.get('bella_distill_h1', 0):.6f}",
             'bella_distill_hmax': f"{avg.get('bella_distill_hmax', 0):.6f}",
             'bella_valid_frac': f"{avg.get('bella_valid_frac', 0):.6f}",
+            # TASK_754: trajectory-shape distill (β-v3)
+            'bella_shape_loss': f"{avg.get('bella_shape_loss', 0):.6f}",
+            'bella_shape_valid_frac': f"{avg.get('bella_shape_valid_frac', 0):.6f}",
+            'bella_shape_mean_resid': f"{avg.get('bella_shape_mean_resid', 0):.6f}",
+            'bella_shape_std_resid': f"{avg.get('bella_shape_std_resid', 0):.6f}",
             # TASK_749 (Titans-MAG) diagnostics — zero when titans is off
             'titans_mem_norm': f"{titans_metrics['titans_mem_norm']:.6f}",
             'titans_surprise_mean': f"{titans_metrics['titans_surprise_mean']:.6e}",
@@ -1958,6 +2049,31 @@ def parse_args():
                              '(default: config/bella_preds_manifest.json)')
     parser.add_argument('--reset-bella-distill-head', action='store_true',
                         help='Drop aux_bella_head from checkpoint; fresh-init')
+    # TASK_754: Bella trajectory-shape distillation head (β-v3 successor to TASK_740)
+    parser.add_argument('--bella-shape-distill', action='store_true',
+                        help='TASK_754: enable trajectory-shape distillation head. '
+                             'Mutually exclusive with --bella-distill-head.')
+    parser.add_argument('--no-bella-shape-distill', action='store_true',
+                        help='TASK_754: disable trajectory-shape head '
+                             '(default: follows config use_bella_shape_head).')
+    parser.add_argument('--bella-shape-mode', type=str, default=None,
+                        choices=['moments', 'lowrank', 'contrastive'],
+                        help='TASK_754: descriptor mode. Only "moments" '
+                             'implemented; lowrank/contrastive raise NotImplementedError.')
+    parser.add_argument('--bella-shape-weight', type=float, default=None,
+                        help='TASK_754: loss weight on the shape MSE (default 0.1).')
+    parser.add_argument('--bella-shape-descriptor-dim', type=int, default=None,
+                        help='TASK_754: expected descriptor dimensionality '
+                             '(default 14; mismatch is a hard error at startup).')
+    parser.add_argument('--bella-shape-component-weights', type=str, default=None,
+                        help='TASK_754: comma-separated 6-tuple of per-component '
+                             'weights (mean, std, skew, kurt, s1, s1_ratio). '
+                             'Default (2.0, 1.0, 0.5, 0.25, 1.0, 2.0).')
+    parser.add_argument('--bella-shape-manifest', type=str, default=None,
+                        help='TASK_754: path to the trajectory-shape manifest '
+                             '(default config/bella_shape_manifest.json).')
+    parser.add_argument('--reset-bella-shape-head', action='store_true',
+                        help='TASK_754: drop aux_bella_shape_head from checkpoint; fresh-init')
     # TASK_738: Legacy 27-ch encoder mode (ablate TASK_732)
     parser.add_argument('--legacy-27ch', action='store_true',
                         help='Use 27-channel encoder (skip cross-sectional channels). '
@@ -2167,6 +2283,48 @@ def main():
         logger.info(f"Bella distillation head ON "
                     f"(weight={config.bella_distill_loss_weight}, "
                     f"manifest={config.bella_preds_manifest})")
+    # TASK_754: Bella trajectory-shape head overrides
+    if args.bella_shape_distill:
+        config.use_bella_shape_head = True
+    if args.no_bella_shape_distill:
+        config.use_bella_shape_head = False
+    if args.bella_shape_mode is not None:
+        config.bella_shape_mode = args.bella_shape_mode
+    if args.bella_shape_weight is not None:
+        config.bella_shape_loss_weight = args.bella_shape_weight
+    if args.bella_shape_descriptor_dim is not None:
+        config.bella_shape_descriptor_dim = int(args.bella_shape_descriptor_dim)
+    if args.bella_shape_component_weights is not None:
+        parsed = tuple(float(x) for x in args.bella_shape_component_weights.split(','))
+        if len(parsed) != 6:
+            raise ValueError(
+                f"--bella-shape-component-weights expects 6 comma-separated floats "
+                f"(mean, std, skew, kurt, s1, s1_ratio); got {len(parsed)}: {parsed}"
+            )
+        config.bella_shape_component_weights = parsed
+    if args.bella_shape_manifest is not None:
+        config.bella_shape_manifest = args.bella_shape_manifest
+    # TASK_754: mutual-exclusion with TASK_740 (per spec §5; reviewer C6).
+    if (getattr(config, 'use_bella_distill_head', False)
+            and getattr(config, 'use_bella_shape_head', False)):
+        raise ValueError(
+            "Cannot enable both --bella-distill-head (TASK_740) and "
+            "--bella-shape-distill (TASK_754) simultaneously. Choose one."
+        )
+    # TASK_754: validate shape mode early.
+    if getattr(config, 'use_bella_shape_head', False):
+        mode = getattr(config, 'bella_shape_mode', 'moments')
+        if mode != 'moments':
+            raise NotImplementedError(
+                f"TASK_754: --bella-shape-mode '{mode}' is reserved (lowrank/"
+                f"contrastive). Only 'moments' is implemented in TASK_754."
+            )
+        logger.info(
+            f"Bella trajectory-shape head ON "
+            f"(weight={config.bella_shape_loss_weight}, "
+            f"D={config.bella_shape_descriptor_dim}, "
+            f"mode={mode}, manifest={config.bella_shape_manifest})"
+        )
     # TASK_738: legacy 27-ch encoder mode
     if args.legacy_27ch:
         config.use_cross_sectional = False
