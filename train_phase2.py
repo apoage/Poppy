@@ -402,6 +402,10 @@ def create_model(config: Phase2Config):
         use_bella_distill_head=getattr(config, 'use_bella_distill_head', False),
         bella_distill_hidden_dim=getattr(config, 'bella_distill_hidden_dim', 256),
         bella_pred_horizons=tuple(getattr(config, 'bella_pred_horizons', (1, 5, 10, 20))),
+        # TASK_754: trajectory-shape head plumbing
+        use_bella_shape_head=getattr(config, 'use_bella_shape_head', False),
+        bella_shape_descriptor_dim=getattr(config, 'bella_shape_descriptor_dim', 14),
+        bella_shape_hidden_dim=getattr(config, 'bella_shape_hidden_dim', 256),
         use_per_asset_injection=getattr(config, 'use_per_asset_injection', False),
         per_asset_inject_xs=getattr(config, 'per_asset_inject_xs', False),
         per_asset_inject_cheat=getattr(config, 'per_asset_inject_cheat', False),
@@ -2273,6 +2277,14 @@ def main():
             del params['aux_bella_head']
             logger.info("Reset aux_bella_head (will fresh-init)")
 
+    # TASK_754: Optionally drop aux_bella_shape_head on load (required on
+    # first run from any pre-754 ckpt — otherwise initialize_missing_aux_heads
+    # adds the fresh subtree).
+    if getattr(args, 'reset_bella_shape_head', False):
+        if 'aux_bella_shape_head' in params:
+            del params['aux_bella_shape_head']
+            logger.info("Reset aux_bella_shape_head (will fresh-init)")
+
     # TASK_749 (Titans-MAG): drop the nested trm/encoder/titans subtree
     # so it fresh-inits (the only case the subtree exists in the ckpt is
     # a previous Titans run; from a vanilla Phase-1 ckpt the subtree
@@ -2293,7 +2305,7 @@ def main():
         else:
             logger.info("Reset titans requested but no existing subtree (fresh init via aux-head init)")
 
-    # TASK_727/728/729a/730/735/740/749: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
+    # TASK_727/728/729a/730/735/740/749/754: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
     if (config.use_direction_head or
             getattr(config, 'use_direction_policy_bias', False) or
             getattr(config, 'use_per_asset_policy_head', False) or
@@ -2301,6 +2313,7 @@ def main():
             getattr(config, 'use_rank_head', False) or
             getattr(config, 'use_aux_price_head', False) or
             getattr(config, 'use_bella_distill_head', False) or
+            getattr(config, 'use_bella_shape_head', False) or
             getattr(config, 'use_titans_memory', False)):
         aux_rng = jax.random.PRNGKey(config.seed + 9999)
         params = initialize_missing_aux_heads(model, params, config, aux_rng)

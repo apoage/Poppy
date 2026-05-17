@@ -115,6 +115,23 @@ class Phase2Config(EasyConfig):
     bella_distill_loss_weight: float = 0.1
     bella_preds_manifest: str = "config/bella_preds_manifest.json"
 
+    # === Bella Trajectory-Shape Distillation Head (TASK_754, β-v3) ===
+    # Successor to TASK_740 — permutation-invariant 14-float trajectory-shape
+    # descriptor (cross moments + horizon-1 moments + last-horizon moments
+    # + SVD spectrum), supervised by per-component-weighted MSE on the
+    # latent state. Mutually exclusive with use_bella_distill_head at
+    # config-resolve time (enforced in main()).
+    use_bella_shape_head: bool = False
+    bella_shape_descriptor_dim: int = 14
+    bella_shape_hidden_dim: int = 256
+    bella_shape_loss_weight: float = 0.1
+    bella_shape_manifest: str = "config/bella_shape_manifest.json"
+    # Per-component weights for (mean, std, skew, kurt, s1, s1_ratio). Default
+    # mirrors §4.1 of the TASK_754 spec; the cross/h1/hlast groups all share
+    # (mean=w0, std=w1, skew=w2, kurt=w3), the SVD pair gets (s1=w4, s1_ratio=w5).
+    bella_shape_component_weights: Optional[tuple] = None
+    bella_shape_mode: str = "moments"  # {moments, lowrank, contrastive}; only "moments" implemented
+
     # === Cross-Sectional Channel Toggle (TASK_738 ablation) ===
     # True (default) → encoder emits 32 channels (27 per-asset + 5 cross-sectional).
     # False → legacy 27-channel encoder. Needed to load pre-TASK_732 Phase 1
