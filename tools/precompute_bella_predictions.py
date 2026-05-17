@@ -303,19 +303,59 @@ def _period_tag(period: dict) -> str:
 def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, ...],
                     k_samples: int, n_assets_target: int, out_dir: Path,
                     bella_sha: str, db_path: str, stride: int = 1,
-                    bella_canonical: List[str] | None = None) -> dict | None:
+                    bella_canonical: List[str] | None = None,
+                    emit_shape: bool = True) -> dict | None:
     from mcts_trader.data.history import HistoricalMarket
 
     tag = _period_tag(period)
     out_path = out_dir / f"bella_preds_{tag}.npz"
-    if out_path.exists():
+    shape_path = out_dir / f"bella_shape_{tag}.npz"
+    legacy_present = out_path.exists()
+    shape_present = shape_path.exists()
+    # If the legacy 740 shard is present but the 754 shape shard is missing,
+    # *derive* the shape shard from the cached legacy shard without re-running
+    # Bella. The shape descriptor is computed from `preds` only.
+    if legacy_present and (not emit_shape or shape_present):
         logger.info(f"[{tag}] shard exists — skip")
         return {'path': str(out_path.relative_to(REPO_ROOT)) if out_path.is_relative_to(REPO_ROOT) else str(out_path),
                 'k_samples': k_samples,
                 'horizons': list(horizons),
                 'stride': int(stride),
                 'rotation_hash': _rotation_hash(period.get('assets', [])),
-                'bella_checkpoint_sha': bella_sha}
+                'bella_checkpoint_sha': bella_sha,
+                'shape_path': (str(shape_path.relative_to(REPO_ROOT))
+                               if shape_present and shape_path.is_relative_to(REPO_ROOT)
+                               else (str(shape_path) if shape_present else None))}
+    if legacy_present and emit_shape and not shape_present:
+        try:
+            cached = np.load(out_path, allow_pickle=True)
+            preds_cached = cached['preds']
+            n_windows_c = preds_cached.shape[0]
+            shape_arr = np.stack([compute_shape_descriptor(preds_cached[w])
+                                  for w in range(n_windows_c)]).astype(np.float32)
+            np.savez_compressed(
+                shape_path,
+                descriptor=shape_arr,
+                schema_version=np.int32(SHAPE_SCHEMA_VERSION),
+                generated_at=np.array(_dt.datetime.utcnow().isoformat()),
+                bella_checkpoint_sha=np.array(bella_sha),
+                rotation_hash=np.array(_rotation_hash(period.get('assets', []))),
+            )
+            logger.info(
+                f"[{tag}] derived bella_shape from cached preds shard "
+                f"({n_windows_c:,} windows, {shape_path.stat().st_size / 1e6:.2f} MB)"
+            )
+        except Exception as e:
+            logger.warning(f"[{tag}] failed to derive shape shard from cached preds: {e}")
+        return {'path': str(out_path.relative_to(REPO_ROOT)) if out_path.is_relative_to(REPO_ROOT) else str(out_path),
+                'k_samples': k_samples,
+                'horizons': list(horizons),
+                'stride': int(stride),
+                'rotation_hash': _rotation_hash(period.get('assets', [])),
+                'bella_checkpoint_sha': bella_sha,
+                'shape_path': (str(shape_path.relative_to(REPO_ROOT))
+                               if shape_path.exists() and shape_path.is_relative_to(REPO_ROOT)
+                               else (str(shape_path) if shape_path.exists() else None))}
 
     try:
         hm = HistoricalMarket(
@@ -378,6 +418,15 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
     else:
         preds = np.zeros((n_windows, len(horizons), n_assets_target),
                          dtype=np.float32)
+    # TASK_754: trajectory-shape descriptor accumulator (additive to TASK_740
+    # output). Stride pattern mirrors the legacy preds array — non-computed
+    # positions stay NaN and the trainer's per-sample NaN-finite mask drops
+    # them. Dim 14 per SHAPE_DESCRIPTOR_DIM.
+    if emit_shape:
+        shape_arr = np.full((n_windows, SHAPE_DESCRIPTOR_DIM), np.nan,
+                            dtype=np.float32)
+    else:
+        shape_arr = None
     # Seed salt derived from the tag so reruns are reproducible per-period.
     salt = int.from_bytes(hashlib.sha256(tag.encode()).digest()[:4], 'big')
 
@@ -398,6 +447,11 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
         # TASK_745: remap Bella columns → trainer columns; NaN where unknown.
         gathered = bella_out[:, safe_idx]                # (n_horizons, n_assets_target)
         preds[w] = np.where(valid_mask[None, :], gathered, np.nan)
+        # TASK_754: collapse the per-window (K, n_assets_target) tensor into a
+        # 14-float descriptor. NaN cells are dropped by compute_shape_descriptor
+        # (so cyclic-pad noise can't contaminate the moments).
+        if shape_arr is not None:
+            shape_arr[w] = compute_shape_descriptor(preds[w])
         computed += 1
         if computed % 200 == 0:
             rate = computed / (time.time() - t0)
@@ -419,6 +473,18 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
     )
     logger.info(f"[{tag}] wrote {out_path} ({out_path.stat().st_size / 1e6:.1f} MB) "
                 f"in {time.time() - t0:.1f}s")
+    # TASK_754: emit the parallel shape shard next to the legacy preds shard.
+    if shape_arr is not None:
+        np.savez_compressed(
+            shape_path,
+            descriptor=shape_arr,
+            schema_version=np.int32(SHAPE_SCHEMA_VERSION),
+            generated_at=np.array(_dt.datetime.utcnow().isoformat()),
+            bella_checkpoint_sha=np.array(bella_sha),
+            rotation_hash=np.array(_rotation_hash(period.get('assets', []))),
+        )
+        logger.info(f"[{tag}] wrote {shape_path} "
+                    f"({shape_path.stat().st_size / 1e6:.2f} MB)")
     return {'path': str(out_path.relative_to(REPO_ROOT)) if out_path.is_relative_to(REPO_ROOT) else str(out_path),
             'k_samples': k_samples,
             'horizons': list(horizons),
@@ -427,7 +493,12 @@ def _process_period(period: dict, generator, cfg, ws: int, horizons: Tuple[int, 
             'n_remap_unknown': int(n_unknown),
             'bella_checkpoint_sha': bella_sha,
             'n_windows': int(n_windows),
-            'n_computed': int(computed)}
+            'n_computed': int(computed),
+            'shape_path': (str(shape_path.relative_to(REPO_ROOT))
+                           if shape_arr is not None and shape_path.is_relative_to(REPO_ROOT)
+                           else (str(shape_path) if shape_arr is not None else None)),
+            'shape_schema_version': int(SHAPE_SCHEMA_VERSION),
+            'shape_descriptor_dim': int(SHAPE_DESCRIPTOR_DIM)}
 
 
 def main():
@@ -441,6 +512,15 @@ def main():
     ap.add_argument('--output-dir', type=str, default='data/bella_preds')
     ap.add_argument('--manifest', type=str,
                     default='config/bella_preds_manifest.json')
+    # TASK_754: parallel manifest for the new trajectory-shape descriptors.
+    ap.add_argument('--shape-manifest', type=str,
+                    default='config/bella_shape_manifest.json',
+                    help='TASK_754: separate manifest for the new bella_shape_* '
+                         'shards. Kept independent from --manifest so the '
+                         'legacy TASK_740 path is untouched (additive only).')
+    ap.add_argument('--no-emit-shape', action='store_true',
+                    help='TASK_754: disable emission of bella_shape_* shards '
+                         '(default ON — additive to the TASK_740 preds shards).')
     ap.add_argument('--horizons', type=str, default='1,5,10,20',
                     help='Comma-separated list of forward horizons in steps.')
     ap.add_argument('--k-samples', type=int, default=4,
@@ -546,20 +626,60 @@ def main():
         except Exception:
             pass
 
+    # TASK_754: separate manifest for trajectory-shape shards. Tracks the SAME
+    # tags as the legacy manifest; the shape_path field per entry points to
+    # the bella_shape_<tag>.npz next to bella_preds_<tag>.npz.
+    emit_shape = not args.no_emit_shape
+    shape_manifest = {
+        'bella_checkpoint': manifest['bella_checkpoint'],
+        'bella_checkpoint_sha': bella_sha,
+        'window_size': args.window_size,
+        'horizons': list(horizons),
+        'k_samples': args.k_samples,
+        'stride': stride,
+        'descriptor_dim': int(SHAPE_DESCRIPTOR_DIM),
+        'schema_version': int(SHAPE_SCHEMA_VERSION),
+        'generated_at': _dt.datetime.utcnow().isoformat(),
+        'shards': {},
+    }
+    if Path(args.shape_manifest).exists():
+        try:
+            old_s = json.load(open(args.shape_manifest))
+            shape_manifest['shards'].update(old_s.get('shards', {}))
+        except Exception:
+            pass
+
     for i, period in enumerate(periods):
         tag = _period_tag(period)
         logger.info(f"[{i + 1}/{len(periods)}] {tag}")
         entry = _process_period(period, generator, cfg, args.window_size, horizons,
                                  args.k_samples, args.n_assets, out_dir, bella_sha,
                                  args.db_path, stride=stride,
-                                 bella_canonical=bella_canonical)
+                                 bella_canonical=bella_canonical,
+                                 emit_shape=emit_shape)
         if entry is not None:
             manifest['shards'][tag] = entry
             with open(args.manifest, 'w') as f:
                 json.dump(manifest, f, indent=2)
+            # TASK_754: per-period shape entry, additive to the legacy manifest.
+            shape_path_val = entry.get('shape_path') if emit_shape else None
+            if shape_path_val is not None:
+                shape_manifest['shards'][tag] = {
+                    'path': shape_path_val,
+                    'rotation_hash': entry.get('rotation_hash'),
+                    'bella_checkpoint_sha': bella_sha,
+                    'descriptor_dim': int(SHAPE_DESCRIPTOR_DIM),
+                    'schema_version': int(SHAPE_SCHEMA_VERSION),
+                    'stride': int(stride),
+                }
+                with open(args.shape_manifest, 'w') as f:
+                    json.dump(shape_manifest, f, indent=2)
 
     logger.info(f"Manifest written to {args.manifest} with "
                 f"{len(manifest['shards'])}/{len(periods)} shards.")
+    if emit_shape:
+        logger.info(f"Shape manifest written to {args.shape_manifest} with "
+                    f"{len(shape_manifest['shards'])}/{len(periods)} shards.")
 
 
 if __name__ == '__main__':
