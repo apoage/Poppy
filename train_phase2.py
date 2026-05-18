@@ -468,6 +468,23 @@ def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
         'bella_shape_descriptor_dim': getattr(config, 'bella_shape_descriptor_dim', 14),
         'bella_shape_manifest': getattr(config, 'bella_shape_manifest',
                                         'config/bella_shape_manifest.json'),
+        # TASK_753: Bella-as-data augmentation. Pool reads these on init and
+        # injects Bella-sourced slots with probability bella_augment_ratio.
+        'bella_augment': getattr(config, 'bella_augment', False),
+        'bella_augment_ratio': getattr(config, 'bella_augment_ratio', 0.0),
+        'bella_augment_mode': getattr(config, 'bella_augment_mode', 'append'),
+        'bella_augment_regime_mode': getattr(config, 'bella_augment_regime_mode',
+                                              'uniform'),
+        'bella_augment_checkpoint': getattr(config, 'bella_augment_checkpoint',
+                                            'checkpoints/diff_teacher/generator_best/generator'),
+        'bella_augment_asset_policy': getattr(config, 'bella_augment_asset_policy',
+                                              'remap'),
+        'bella_augment_volatility_scale': getattr(config, 'bella_augment_volatility_scale',
+                                                  0.015),
+        'bella_augment_k_samples': getattr(config, 'bella_augment_k_samples', 1),
+        'bella_augment_seq_length': getattr(config, 'bella_augment_seq_length', 0),
+        'bella_augment_refresh_epochs': getattr(config, 'bella_augment_refresh_epochs', 0),
+        'bella_augment_log_every': getattr(config, 'bella_augment_log_every', 100),
     }
 
     pool = SegmentPool(
