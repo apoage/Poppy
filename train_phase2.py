@@ -2074,6 +2074,53 @@ def parse_args():
                              '(default config/bella_shape_manifest.json).')
     parser.add_argument('--reset-bella-shape-head', action='store_true',
                         help='TASK_754: drop aux_bella_shape_head from checkpoint; fresh-init')
+    # TASK_753: Bella as data augmentation (β-v4 successor to 740/754)
+    parser.add_argument('--bella-augment', action='store_true',
+                        help='TASK_753: enable Bella-as-data augmentation. With this flag, '
+                             'a fraction (--bella-augment-ratio) of SegmentPool slots are '
+                             'sourced from Bella-generated synthetic OHLCV instead of '
+                             'historical market data. No new heads / no new loss surfaces. '
+                             'Mutually exclusive with --bella-distill-head (740) and '
+                             '--bella-shape-distill (754).')
+    parser.add_argument('--no-bella-augment', action='store_true',
+                        help='TASK_753: explicit disable (default; same as not passing '
+                             '--bella-augment).')
+    parser.add_argument('--bella-augment-ratio', type=float, default=None,
+                        help='TASK_753: fraction of pool slots sourced from Bella '
+                             '(default 0.25). Range [0, 1].')
+    parser.add_argument('--bella-augment-mode', type=str, default=None,
+                        choices=['append', 'replace', 'interleave'],
+                        help='TASK_753: slot-injection mode (default append). '
+                             'Only "append" is implemented in v1; replace/interleave '
+                             'are reserved for TASK_753b.')
+    parser.add_argument('--bella-augment-regime-mode', type=str, default=None,
+                        choices=['uniform', 'match', 'unconditional'],
+                        help='TASK_753: regime sampling per Bella slot. uniform (default), '
+                             'match (uses period regime; falls back to uniform in v1), '
+                             'unconditional (no regime conditioning).')
+    parser.add_argument('--bella-augment-checkpoint', type=str, default=None,
+                        help='TASK_753: path to Bella generator checkpoint '
+                             '(default checkpoints/diff_teacher/generator_best/generator).')
+    parser.add_argument('--bella-augment-k-samples', type=int, default=None,
+                        help='TASK_753: Bella samples per generate_on_device call (default 1).')
+    parser.add_argument('--bella-augment-seq-length', type=int, default=None,
+                        help='TASK_753: target seq_length per Bella slot (default 800 = '
+                             '2 chained chunks of native 400). 0 = native. Bella ckpt '
+                             'has native seq_length=400; --generate(seq_length=N) does not '
+                             'work for the current conv ckpt — chained calls are used.')
+    parser.add_argument('--bella-augment-refresh-epochs', type=int, default=None,
+                        help='TASK_753: refresh all Bella slots every N epochs (default 0 = '
+                             'generate once at pool init, reuse for the whole run).')
+    parser.add_argument('--bella-augment-volatility-scale', type=float, default=None,
+                        help='TASK_753: z-score → log-return scale for Bella raw output '
+                             '(default 0.015, matches setup.py:660).')
+    parser.add_argument('--bella-augment-asset-policy', type=str, default=None,
+                        choices=['remap', 'canonical', 'random'],
+                        help='TASK_753: column-remap policy. remap (default, mandatory '
+                             'per TASK_745), canonical, random.')
+    parser.add_argument('--bella-augment-log-every', type=int, default=None,
+                        help='TASK_753: log Bella slot stats every N _make_bella_slot '
+                             'calls (default 100).')
     # TASK_738: Legacy 27-ch encoder mode (ablate TASK_732)
     parser.add_argument('--legacy-27ch', action='store_true',
                         help='Use 27-channel encoder (skip cross-sectional channels). '
@@ -2324,6 +2371,71 @@ def main():
             f"(weight={config.bella_shape_loss_weight}, "
             f"D={config.bella_shape_descriptor_dim}, "
             f"mode={mode}, manifest={config.bella_shape_manifest})"
+        )
+    # TASK_753: Bella-as-data augmentation overrides.
+    if args.bella_augment:
+        config.bella_augment = True
+    if args.no_bella_augment:
+        config.bella_augment = False
+    if args.bella_augment_ratio is not None:
+        if not (0.0 <= args.bella_augment_ratio <= 1.0):
+            raise ValueError(
+                f"--bella-augment-ratio must be in [0, 1]; got {args.bella_augment_ratio}"
+            )
+        config.bella_augment_ratio = args.bella_augment_ratio
+    if args.bella_augment_mode is not None:
+        config.bella_augment_mode = args.bella_augment_mode
+    if args.bella_augment_regime_mode is not None:
+        config.bella_augment_regime_mode = args.bella_augment_regime_mode
+    if args.bella_augment_checkpoint is not None:
+        config.bella_augment_checkpoint = args.bella_augment_checkpoint
+    if args.bella_augment_k_samples is not None:
+        config.bella_augment_k_samples = args.bella_augment_k_samples
+    if args.bella_augment_seq_length is not None:
+        config.bella_augment_seq_length = args.bella_augment_seq_length
+    if args.bella_augment_refresh_epochs is not None:
+        config.bella_augment_refresh_epochs = args.bella_augment_refresh_epochs
+    if args.bella_augment_volatility_scale is not None:
+        config.bella_augment_volatility_scale = args.bella_augment_volatility_scale
+    if args.bella_augment_asset_policy is not None:
+        config.bella_augment_asset_policy = args.bella_augment_asset_policy
+    if args.bella_augment_log_every is not None:
+        config.bella_augment_log_every = args.bella_augment_log_every
+    # TASK_753: mutual-exclusion with TASK_740 (bella_distill) and TASK_754
+    # (bella_shape). Mirror the 740↔754 exclusion enforced just above.
+    if getattr(config, 'bella_augment', False):
+        if getattr(config, 'use_bella_distill_head', False):
+            raise ValueError(
+                "Cannot enable both --bella-augment (TASK_753) and "
+                "--bella-distill-head (TASK_740) simultaneously. Choose one."
+            )
+        if getattr(config, 'use_bella_shape_head', False):
+            raise ValueError(
+                "Cannot enable both --bella-augment (TASK_753) and "
+                "--bella-shape-distill (TASK_754) simultaneously. Choose one."
+            )
+        # Mode validation — mirrors C9 in TASK_753_REVIEW. Pool-side will
+        # also raise; this is the explicit early-exit so the user sees a
+        # clean error before the (expensive) pool construction.
+        if config.bella_augment_mode != 'append':
+            raise NotImplementedError(
+                f"TASK_753 v1: --bella-augment-mode '{config.bella_augment_mode}' "
+                f"is reserved for v2 (TASK_753b). Use 'append'."
+            )
+        if config.bella_augment_asset_policy not in ('remap', 'canonical', 'random'):
+            raise ValueError(
+                f"--bella-augment-asset-policy must be one of "
+                f"{{remap, canonical, random}}; got "
+                f"{config.bella_augment_asset_policy!r}"
+            )
+        logger.info(
+            f"Bella augmentation ON "
+            f"(ratio={config.bella_augment_ratio}, "
+            f"mode={config.bella_augment_mode}, "
+            f"regime_mode={config.bella_augment_regime_mode}, "
+            f"asset_policy={config.bella_augment_asset_policy}, "
+            f"seq_length={config.bella_augment_seq_length}, "
+            f"vol_scale={config.bella_augment_volatility_scale})"
         )
     # TASK_738: legacy 27-ch encoder mode
     if args.legacy_27ch:
