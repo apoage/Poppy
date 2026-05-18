@@ -132,6 +132,29 @@ class Phase2Config(EasyConfig):
     bella_shape_component_weights: Optional[tuple] = None
     bella_shape_mode: str = "moments"  # {moments, lowrank, contrastive}; only "moments" implemented
 
+    # === Bella as Data Augmentation (TASK_753, β-v4) ===
+    # Successor framing to TASK_740/754: instead of distilling Bella's
+    # predictions into a head, use Bella to *generate* the raw OHLCV the
+    # encoder sees, side-by-side with the historical SegmentPool feed.
+    # No new heads, no new loss surfaces — only the source of `hm.cache_data`
+    # changes. Mutually exclusive with use_bella_distill_head and
+    # use_bella_shape_head at config-resolve time (enforced in main()).
+    bella_augment: bool = False
+    bella_augment_ratio: float = 0.25      # P(slot is Bella-sourced) at slot init in 'append' mode
+    bella_augment_mode: str = "append"     # {append, replace, interleave}; only "append" implemented
+    bella_augment_regime_mode: str = "uniform"  # {uniform, match, unconditional}
+    bella_augment_checkpoint: str = "checkpoints/diff_teacher/generator_best/generator"
+    bella_augment_k_samples: int = 1       # Bella samples per generate_on_device call (1 = independent)
+    # 0 = use generator's native seq_length (resolves spec §5 default of 1440 against
+    # actual ckpt's 400). For values > native, BellaMarket chains chunks. Default
+    # 800 (2 chained chunks) — enough headroom for episode_length=400 + window=64
+    # + lookahead=20 + buffer ≈ 489 step pool slots.
+    bella_augment_seq_length: int = 800
+    bella_augment_refresh_epochs: int = 0  # 0 = generate once at pool init; >0 = refresh every N epochs
+    bella_augment_volatility_scale: float = 0.015
+    bella_augment_asset_policy: str = "remap"  # {remap, canonical, random}
+    bella_augment_log_every: int = 100     # Log slot-build stats every N _make_bella_slot calls
+
     # === Cross-Sectional Channel Toggle (TASK_738 ablation) ===
     # True (default) → encoder emits 32 channels (27 per-asset + 5 cross-sectional).
     # False → legacy 27-channel encoder. Needed to load pre-TASK_732 Phase 1
