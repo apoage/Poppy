@@ -547,12 +547,34 @@ class SegmentPool:
         # historically because foxglove periods load cleanly, but exposed by
         # any path that introduces a new failure mode at slot construction.
         self._exhausted_groups = set()
+
+        # TASK_753: Bella-as-data augmentation knobs from oracle_config.
+        # When bella_augment is True, slot init coin-flips between
+        # _make_slot (historical) and _make_bella_slot (synthetic). The
+        # ratio of Bella slots in the pool is tracked via _slot_origins
+        # (True = Bella). _rotate_slot preserves the per-slot origin
+        # with a fresh coin flip so the ratio holds across the run.
+        self.bella_augment = bool(self._oracle_config.get('bella_augment', False))
+        self.bella_augment_ratio = float(self._oracle_config.get('bella_augment_ratio', 0.0))
+        self.bella_augment_mode = str(self._oracle_config.get('bella_augment_mode', 'append'))
+        if self.bella_augment and self.bella_augment_mode != 'append':
+            raise NotImplementedError(
+                f"TASK_753 v1: --bella-augment-mode '{self.bella_augment_mode}' "
+                f"is reserved for v2 (TASK_753b). Use 'append'."
+            )
+        self._slot_origins = []  # list[bool], True per Bella-sourced slot
+        self._bella_generator = None
+        self._bella_cfg = None
+        self._bella_canonical_assets = None
+        self._bella_slot_counter = 0
+
         n_init = min(n_slots, n_groups)
         for i in range(n_init):
             group_key = self._available_groups.pop(0)
-            slot = self._make_slot(group_key)
+            slot, is_bella = self._make_slot_with_origin(group_key)
             if slot is not None:
                 self.slots.append(slot)
+                self._slot_origins.append(is_bella)
             else:
                 self._exhausted_groups.add(group_key)
 
@@ -560,10 +582,40 @@ class SegmentPool:
             raise ValueError("No valid segments could be loaded!")
 
         logger.info(f"[POOL] Initialized {len(self.slots)} slots from {n_init} groups")
+        if self.bella_augment:
+            n_bella = sum(self._slot_origins)
+            logger.info(
+                f"[POOL:BELLA-AUG] Bella-augment ON "
+                f"(ratio={self.bella_augment_ratio}, mode={self.bella_augment_mode}, "
+                f"regime_mode={self._oracle_config.get('bella_augment_regime_mode', 'uniform')}, "
+                f"asset_policy={self._oracle_config.get('bella_augment_asset_policy', 'remap')}) — "
+                f"{n_bella}/{len(self.slots)} initial slots are Bella-sourced"
+            )
 
         # Stats
         self._segments_loaded = len(self.slots)
         self._groups_started = n_init
+
+    def _make_slot_with_origin(self, group_key):
+        """TASK_753: coin-flip wrapper around _make_slot / _make_bella_slot.
+
+        Returns (slot, is_bella) where is_bella is True iff the slot was
+        produced by _make_bella_slot. Mode is always 'append' in v1 — see
+        the NotImplementedError in __init__ for reserved modes.
+        """
+        if self.bella_augment and self.bella_augment_ratio > 0.0:
+            coin = float(self.rng.random())
+            if coin < self.bella_augment_ratio:
+                slot = self._make_bella_slot(group_key)
+                if slot is not None:
+                    return slot, True
+                # Bella construction failed — fall through to historical.
+                logger.warning(
+                    f"[POOL:BELLA-AUG] Bella slot for {group_key} failed; "
+                    f"falling back to historical."
+                )
+        slot = self._make_slot(group_key)
+        return slot, False
 
     def _make_slot(self, group_key):
         """Create a slot from the next available run in a group."""
@@ -1190,7 +1242,13 @@ class SegmentPool:
         return prices, slot['label']
 
     def _rotate_slot(self, slot_idx):
-        """Replace exhausted slot with next segment. Cycles indefinitely."""
+        """Replace exhausted slot with next segment. Cycles indefinitely.
+
+        TASK_753: under Bella-augment, the replacement slot's source is
+        chosen by a fresh coin flip via _make_slot_with_origin. This keeps
+        the rolling Bella ratio stable across the run; without the fresh
+        coin flip, once a Bella slot was made it would stay Bella forever.
+        """
         old_slot = self.slots[slot_idx]
         group_key = old_slot['group_key']
         runs = self.groups[group_key]
@@ -1200,9 +1258,11 @@ class SegmentPool:
             # Next run in group — different assets, must reload
             old_slot['hm'] = None
             self._group_run_idx[group_key] = next_run
-            new_slot = self._make_slot(group_key)
+            new_slot, is_bella = self._make_slot_with_origin(group_key)
             if new_slot is not None:
                 self.slots[slot_idx] = new_slot
+                if slot_idx < len(self._slot_origins):
+                    self._slot_origins[slot_idx] = is_bella
                 self._segments_loaded += 1
                 return
 
@@ -1213,6 +1273,23 @@ class SegmentPool:
 
         if len(runs) == 1:
             # Single-run group: just reset cursor, no disk I/O
+            # TASK_753: under Bella-augment, a single-run group's reset can
+            # still optionally re-coin-flip into a Bella slot. We preserve
+            # the historical "cursor reset" path when augment is OFF;
+            # otherwise, fresh coin flip.
+            if self.bella_augment and self.bella_augment_ratio > 0.0:
+                old_slot['hm'] = None
+                new_slot, is_bella = self._make_slot_with_origin(group_key)
+                if new_slot is not None:
+                    self.slots[slot_idx] = new_slot
+                    if slot_idx < len(self._slot_origins):
+                        self._slot_origins[slot_idx] = is_bella
+                    self._segments_loaded += 1
+                    if passes % 50 == 0:
+                        logger.info(f"[POOL] {new_slot['label']} pass {passes} — "
+                                    f"single-run group resampled (Bella={is_bella})")
+                    return
+                # Fallback: keep the old slot, reset cursor.
             old_slot['cursor'] = 0
             if passes % 50 == 0:  # Log sparingly for fast-cycling small segments
                 logger.info(f"[POOL] {old_slot['label']} pass {passes} — cursor reset")
@@ -1220,17 +1297,21 @@ class SegmentPool:
 
         # Multi-run group: load run 0 (different assets from current run)
         old_slot['hm'] = None
-        new_slot = self._make_slot(group_key)
+        new_slot, is_bella = self._make_slot_with_origin(group_key)
         if new_slot is not None:
             self.slots[slot_idx] = new_slot
+            if slot_idx < len(self._slot_origins):
+                self._slot_origins[slot_idx] = is_bella
             self._segments_loaded += 1
             logger.info(f"[POOL] Group {group_key[0][-10:]}→{group_key[1][-10:]} "
-                        f"pass {passes}, cycling to run 1/{len(runs)}")
+                        f"pass {passes}, cycling to run 1/{len(runs)} (Bella={is_bella})")
             return
 
         # Should never happen — group had at least 1 valid run on init
         logger.error(f"[POOL] Group {group_key} failed to reload on cycle — removing slot")
         self.slots.pop(slot_idx)
+        if slot_idx < len(self._slot_origins):
+            self._slot_origins.pop(slot_idx)
         if self._round_robin_idx > 0:
             self._round_robin_idx -= 1
 
