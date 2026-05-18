@@ -56,7 +56,7 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 | 746 | `experiments/746_value_oracle/SPEC.md` | 🟡 DONE — 5-seed all positive, NOT promoted | 5 runs × 3h | **3-seed mean Δα +2.54pp** → **5-seed mean Δα +2.23pp, STD 2.28, ALL 5 seeds positive**. First all-positive 5-seed seen on this stack. Below +3pp promotion bar but qualitatively the strongest non-anti-correlated signal. See `runs/746_value_oracle/result.md`. |
 | 747 | `experiments/747_value_td0/SPEC.md` | 🔴 DONE — FLAT | 3 runs × 3h | **mean Δα +0.16pp**, no signal. Value-target roadmap CLOSED (oracle inconclusive, td0 flat → nstep stays canonical). See `lore/notes_2026-05-16.md` §114. |
 | 748 | `experiments/748_flow_velsweep/SPEC.md` | 🔴 DONE — vw=0.8 ROBUST | 2 runs × 3h | vw=0.5 Δα −7.84pp, vw=1.0 Δα −2.47pp (both single-seed vs vw=0.8 reference). 0.8 default is robust to ±0.3 perturbation, both directions worse. Now academic since 734 didn't promote. See `lore/notes_2026-05-16.md` §114. |
-| 749 | `experiments/749_titans_mag/SPEC.md` | 🔴 FIRST-PASS OOM — b128 relaunch in flight | 6 runs × ~1.5h = ~9h (2-wide) | First-pass 3-seed at default batch OOM'd all 3 seeds. Evidence preserved at `runs/749_titans_mag/{titans,eval_titans}_seed_{7,13,23}_oom/`. Server agent relaunched 2026-05-17 17:10 UTC at `--batch-size 128` with paired baseline_b128 runs (3 baseline + 3 variant). Running on GPUs 1+2. ETA early 2026-05-18 UTC. Titans verdict deferred until b128 lands. |
+| 749 | `experiments/749_titans_mag/SPEC.md` | 🔴 DONE — SECOND OOM, DEPRIORITIZED | 6 runs × ~1.5h = ~9h (2-wide) | **Two OOMs.** First-pass default-batch: 42.66 GB request, all 3 seeds OOM. b128 relaunch (2026-05-17): 21.33 GB request, all 3 variant seeds OOM (baselines trained fine). Structural memory pressure from truncated-BPTT scan retaining inner-MLP activations. **Titans-MAG deprioritized at this stack's production batch.** See `runs/749_titans_mag/result.md` (b128 verdict section). 750/751/749-x5 CANCELLED. |
 
 ### Priority 2c — Overnight followup wave (RE-PLANNED 2026-05-17 after 749 OOM)
 
@@ -64,32 +64,35 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 
 | ID | SPEC | Status | Plan |
 |---|---|---|---|
-| 750 | `experiments/750_titans_hero/SPEC.md` | ⏸ DEFERRED | Conditional on 749-b128 verdict. Resume queue iff Titans-MAG @ b128 promotes (mean Δα ≥ +3pp, all 3 positive). Otherwise SKIP — hero run on a non-viable mechanism wastes ~15h. |
-| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | ⏸ DEFERRED + may need SPEC refresh | Same dependency as 750. Also: 749 ran b128, so LR bracket may need re-tuning at the new effective gradient scale. Re-author SPEC at b128 if 750 unlocks. |
-| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 RE-QUEUED — runs as soon as 749-b128 GPUs free up | a1b1 baselines at s31, s42 to convert 746 5-seed proxy Δα (+2.23pp) to true paired Δα. Sequential on one GPU, ~6h. **Highest-value next action** post-749 because 746 is the only candidate worth firming up regardless of 749 outcome. |
+| 750 | `experiments/750_titans_hero/SPEC.md` | ❌ CANCELLED 2026-05-18 | Titans-MAG deprioritized post-OOM. SPEC retained for reference if Titans ever revisited at smaller stack. |
+| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | ❌ CANCELLED 2026-05-18 | Same reason. |
+| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 READY — TOP PRIORITY 2026-05-18 | a1b1 baselines at s31, s42 to convert 746 5-seed proxy Δα (+2.23pp) to true paired Δα. Sequential on one GPU, ~6h. **Highest-value next action** — 746 is now the only campaign result with positive shape and 752 firms it up. |
 
-### Priority 2d — Next-window plan (when 749-b128 lands, ~2026-05-18 03:00–05:00 UTC)
+### Priority 2d — Resolved 2026-05-18: Titans OOM #2 → pivot to 746/Bella v2
 
-Decision tree:
+749-b128 resolved as **second OOM**. Decision-tree branch (2) taken: Titans-MAG deprioritized. 750/751/749-x5 cancelled.
 
-1. **If 749-b128 paired 3-seed promotes** (mean Δα ≥ +3pp, all 3 positive):
-   - Queue **749-x5-b128**: variant @ s31/s42 + paired baseline_b128 @ s31/s42 = 4 runs × ~1.5h = ~3h (2-wide)
-   - In parallel: queue **752** (a1b1 baselines at s31/s42 for 746 pairing)
-   - Hold 750/751 pending 5-seed outcome
-2. **If 749-b128 paired 3-seed regresses or is mixed**:
-   - Append final verdict to `runs/749_titans_mag/result.md`, mark Titans-MAG deprioritized
-   - Queue **752** (highest-value follow-up regardless of 749 outcome)
-   - Move attention to 746 deeper-probe direction (value-target variants: longer oracle horizon, smoothed oracle, oracle+nstep mixture)
+**New active queue (sequential, ≤2-wide per TASK_742):**
+
+| Order | ID | Action | Wall | Why |
+|---:|---|---|---:|---|
+| 1 | 752 | a1b1 baselines at s31, s42 | ~6h | Converts 746 proxy Δα → paired. 746 is currently the only positive Δα shape on Stage-B. |
+| 2 | 757 | Bella shape-distill 3-seed (TASK_754, b=128) | ~9h paired | Encoder-side mechanism with permutation-invariant target. Implementation landed 2026-05-17 (commit `9aa4885`). |
+| 3 | 758 | Bella augmentation 3-seed (TASK_753, b=128) | ~10h paired | Data-side mechanism. Implementation landed 2026-05-18 (commit `3b01cc0`). Carries C3 "too easy" risk — flag if oracle-PnL-ratio > 2× at training time. |
+| 4 | 756 | Value-target deeper probes spec→impl (TASK_756 stub at commit `be96cd4`) | ~3h impl + ~12h paired sweep | Doubles down on the only mechanism class that's worked. Highest priority if 757/758 close negative. |
 
 ### Priority 3 — followups
 
 | ID | Description | Status | Action |
 |---|---|---|---|
 | 740 SPEC refresh | Update 740 to paired 3-seed using 741_mint baseline | ✅ | Done 2026-05-16. |
+| 740 provisional retired | TASK_745 spot-check PASS → 740 verdict no longer provisional | ✅ | Done 2026-05-17 (commit `ceea0e8`). |
+| 741 Mint reconciliation | Audit COMPLETE/INCOMPLETE; remove stale QUEUE row | ✅ | Done 2026-05-18 (commit `cc0b864`, audit at `runs/741_audit/status.md`). |
 | 27-ch ckpt rsync | Recover ckpt + push to server | ✅ | Done 2026-05-14 19:30. |
-| 734 baseline pair (s31, s42) | Run a1b1 baseline at the 5-seed extension's missing seeds to validate the variant-only reversal claim | ⏸ | LOW priority — 734-x5 verdict is "no promotion regardless of pairing" since s42's −9.91% absolute Alpha is bad in any interpretation. **Side effect: SPEC 752 produces these baselines as a byproduct (they're indistinguishable a1b1 runs). After 752 completes, 734 5-seed becomes properly paired post-hoc — no separate work needed.** |
-| Multi-mechanism stacks | Combine winners | ⏸ | Moot — no individual mechanism has promoted 5-seed as of 2026-05-16. |
+| 734 baseline pair (s31, s42) | Run a1b1 baseline at the 5-seed extension's missing seeds | ⏸ | LOW priority. **Side effect: SPEC 752 produces these baselines as a byproduct. After 752 completes, 734 5-seed becomes properly paired post-hoc.** |
+| Multi-mechanism stacks | Combine winners | ⏸ | Moot — no individual mechanism has promoted 5-seed as of 2026-05-18. |
 | 739 dense_sign 5-seed | Settle whether s7 outlier is unlucky or representative | ⏸ | Low priority — dir_acc hypothesis already closed. |
+| b128 baseline drift investigation | Why does b128 baseline (+0.84% mean) underperform default-batch baseline (+2.80% mean)? | ⏳ | Low priority — n=3 may just be variance. Cross-check if relevant after 757/758 results land. |
 
 ---
 
@@ -146,9 +149,10 @@ These need code changes before they can become experiment SPECs:
 
 | Task | What's needed | Effort |
 |---|---|---|
-| `TASK_741_PER_ASSET_INJECTION_FIX.md` (Mint) | New module/branch in `mcts_trader/jax_agent/trm_encoder_v3.py` to inject per-asset scalars *after* temporal pool (not before). Spec is detailed; implementation is ~1-2 days. | Medium |
 | Regenerate 27-ch Phase 1 ckpt | Need a workstation Foxglove run with `n_channels=27` (TASK_732 disabled). Phase 1 is ~12h on workstation. Then can run TASK_738. | Long |
 | Multi-seed `a1b1` companion | Add 4 paired-seed runs of `a1b1` config (rank+aux) at the same seeds as `no_aux_solo` for paired t-test. Trivial — just 4 more SPEC entries; could be folded into TASK_743. | Trivial |
+
+**Removed 2026-05-18:** TASK_741 Mint row — Mint shipped in commit `1957a6c` and was tested at 3-seed (regressed, mean Δα −6.98pp). See `runs/741_audit/status.md` (commit `cc0b864`). Code remains in tree as default-OFF, zero-cost surface.
 
 After any of these are implemented and tested, promote to executable
 SPECs under `experiments/<id>/`.
