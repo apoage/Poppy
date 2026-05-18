@@ -1599,6 +1599,8 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
         # TASK_754: trajectory-shape distill (β-v3)
         'bella_shape_loss', 'bella_shape_valid_frac',
         'bella_shape_mean_resid', 'bella_shape_std_resid',
+        # TASK_753: Bella-as-data augmentation (β-v4)
+        'bella_slot_frac', 'bella_regime_mix',
         # TASK_749 (Titans-MAG): per-epoch diagnostics from a fresh apply
         # on the most recent obs batch with the latest params (off-band, ~1 forward
         # pass per epoch — cheap).
@@ -1777,6 +1779,30 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                 f",mR={avg.get('bella_shape_mean_resid', 0):.4f}"
                 f",sR={avg.get('bella_shape_std_resid', 0):.4f})"
             )
+        # TASK_753: Bella-as-data augmentation per-epoch slot stats.
+        bella_aug_info = ""
+        bella_slot_frac = 0.0
+        bella_regime_mix_str = ""
+        if getattr(config, 'bella_augment', False):
+            origins = getattr(pool, '_slot_origins', [])
+            if origins:
+                bella_slot_frac = float(sum(origins)) / float(len(origins))
+            regime_counts = getattr(pool, '_bella_regime_counts', None)
+            if regime_counts:
+                # Compact 5-tuple: c=crash, r=rally, s=sideways, v=volatile, k=calm, u=unconditional
+                labels = ['c', 'r', 's', 'v', 'k', 'u']
+                parts = []
+                for i, lab in enumerate(labels):
+                    n = regime_counts.get(i, 0)
+                    if n > 0:
+                        parts.append(f"{lab}={n}")
+                bella_regime_mix_str = ",".join(parts) if parts else "none"
+            else:
+                bella_regime_mix_str = "none"
+            bella_aug_info = (
+                f" bella_aug=slot{bella_slot_frac:.2f}"
+                f" mix={bella_regime_mix_str}"
+            )
 
         # TASK_749 (Titans-MAG): off-band per-epoch Titans diagnostics.
         # Run one extra apply call on the most recent obs batch with the latest
@@ -1825,7 +1851,7 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             f"E{epoch:4d}: policy={avg['policy_loss']:.4f} "
             f"value={avg['value_loss']:.4f} "
             f"consistency={avg['consistency_loss']:.4f} "
-            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{bella_shape_info}{titans_info} "
+            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{bella_shape_info}{bella_aug_info}{titans_info} "
             f"total={avg['total_loss']:.4f} "
             f"grad={avg['grad_norm']:.3f}"
             f"{pa_info} "
@@ -1859,6 +1885,9 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             'bella_shape_valid_frac': f"{avg.get('bella_shape_valid_frac', 0):.6f}",
             'bella_shape_mean_resid': f"{avg.get('bella_shape_mean_resid', 0):.6f}",
             'bella_shape_std_resid': f"{avg.get('bella_shape_std_resid', 0):.6f}",
+            # TASK_753: Bella-as-data augmentation (β-v4)
+            'bella_slot_frac': f"{bella_slot_frac:.4f}",
+            'bella_regime_mix': bella_regime_mix_str,
             # TASK_749 (Titans-MAG) diagnostics — zero when titans is off
             'titans_mem_norm': f"{titans_metrics['titans_mem_norm']:.6f}",
             'titans_surprise_mean': f"{titans_metrics['titans_surprise_mean']:.6e}",
