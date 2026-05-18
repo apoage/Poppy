@@ -39,6 +39,12 @@ Key implementation pattern
   memory during backward — without this, the per-step carry (~1 GB
   for B=256/A=64) held across all 64 timesteps would blow the 24 GB
   budget.
+- TASK_749 OOM fix (2026-05-18): the carry (`M_params, S_params`) is
+  stored in `bfloat16` to halve the `lax.scan` reverse-mode tape
+  footprint. At b=128/A=64/D=64/H=32/T_aug=68 the fp32 tape was
+  ~18.2 GB; the bf16 tape is ~9.1 GB. Compute remains in fp32 — the
+  body upcasts immediately after `stop_gradient` and downcasts on
+  return. This is the standard "compute fp32, store bf16" pattern.
 
 Checkpoint compatibility
 ------------------------
@@ -219,8 +225,15 @@ def _titans_scan_body_batched(carry, inputs):
     """
     M_params, S_params = carry
     # TRUNCATED BPTT — cut outer-gradient flow through the carry.
-    M_params = jax.tree_util.tree_map(jax.lax.stop_gradient, M_params)
-    S_params = jax.tree_util.tree_map(jax.lax.stop_gradient, S_params)
+    # TASK_749 OOM fix (2026-05-18): carry is stored in bfloat16 to halve the
+    # lax.scan reverse-mode tape footprint (the per-step carry-input is what
+    # blows the 24 GB budget at b=128; ~18 GB fp32 tape → ~9 GB bf16 tape).
+    # Compute stays in float32 — upcast immediately after stop_gradient so all
+    # downstream ops (grad_M, new_S, new_M arithmetic) run at full precision.
+    M_params = jax.tree_util.tree_map(
+        lambda x: jax.lax.stop_gradient(x).astype(jnp.float32), M_params)
+    S_params = jax.tree_util.tree_map(
+        lambda x: jax.lax.stop_gradient(x).astype(jnp.float32), S_params)
     k_t, v_t, q_t, theta_t, eta_t, alpha_t = inputs
 
     # Broadcast-shaped scalars for elementwise update.
@@ -261,8 +274,16 @@ def _titans_scan_body_batched(carry, inputs):
     y_t = h  # (N, D)
 
     # Diagnostics — per-stream then mean to scalar.
+    # Compute on fp32 new_M/new_S BEFORE downcasting so we don't double the
+    # precision loss on the displayed metrics.
     mem_norm = jnp.sqrt(sum(jnp.sum(M_i ** 2, axis=(-2, -1)) for M_i in new_M))
     surprise_norm = jnp.sqrt(sum(jnp.sum(gM_i ** 2, axis=(-2, -1)) for gM_i in grad_M))
+
+    # TASK_749 OOM fix (2026-05-18): downcast carry to bf16 before return so
+    # the lax.scan reverse-mode tape stores bf16 (halves the 18 GB carry tape
+    # at b=128). Forward arithmetic above was in fp32.
+    new_M = tuple(M_i.astype(jnp.bfloat16) for M_i in new_M)
+    new_S = tuple(S_i.astype(jnp.bfloat16) for S_i in new_S)
 
     return (new_M, new_S), (y_t, theta_t, eta_t, alpha_t,
                              jnp.mean(mem_norm), jnp.mean(surprise_norm))
@@ -400,12 +421,15 @@ class TitansMemoryBlock(nn.Module):
 
         # Build per-stream M / S initial state: broadcast shared init to (N, in, out).
         # Each layer can have a different shape (e.g. D→H→D for depth=2).
+        # TASK_749 OOM fix (2026-05-18): carry stored in bfloat16 to halve the
+        # lax.scan reverse-mode tape footprint. Body upcasts to fp32 on read for
+        # compute fidelity; downcasts back to bf16 on write. See _titans_scan_body_batched.
         M_init_b = tuple(
-            jnp.broadcast_to(M[None, :, :], (N, M.shape[0], M.shape[1])).astype(self.dtype)
+            jnp.broadcast_to(M[None, :, :], (N, M.shape[0], M.shape[1])).astype(jnp.bfloat16)
             for M in self.M_init
         )
         S_init_b = tuple(
-            jnp.zeros((N, M.shape[0], M.shape[1]), dtype=self.dtype)
+            jnp.zeros((N, M.shape[0], M.shape[1]), dtype=jnp.bfloat16)
             for M in self.M_init
         )
 
