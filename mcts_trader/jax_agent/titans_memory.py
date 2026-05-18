@@ -45,6 +45,11 @@ Key implementation pattern
   ~18.2 GB; the bf16 tape is ~9.1 GB. Compute remains in fp32 — the
   body upcasts immediately after `stop_gradient` and downcasts on
   return. This is the standard "compute fp32, store bf16" pattern.
+  Validated 2026-05-18 on workstation RTX 3090: full `stage_b_train_step`
+  at b=128 measures JAX peak working set 11.87 GB (vs 1.89 GB baseline;
+  Titans-add ~10 GB, down from pre-fix ~19.4 GB). 50-step smoke confirms
+  finite gradients, healthy Titans diagnostics, no NaN. See
+  `runs/749_titans_mag/result.md` §"749 OOM fix applied (2026-05-18)".
 
 Checkpoint compatibility
 ------------------------
