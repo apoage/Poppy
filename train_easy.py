@@ -590,157 +590,353 @@ class SegmentPool:
                 self._group_run_idx[group_key] = run_idx + 1
                 continue
 
-            n_timestamps = len(hm.valid_timestamps)
             # Cyclic-pad assets if fewer than n_assets
             if hm.cache_data.shape[1] < self.n_assets:
                 n_have = hm.cache_data.shape[1]
                 repeats = (self.n_assets + n_have - 1) // n_have
                 hm.cache_data = np.tile(hm.cache_data, (1, repeats, 1))[:, :self.n_assets, :]
 
-            # TASK_714: Precompute oracle on full period
-            oracle_sel, oracle_cum_pnl, returns = self._precompute_oracle(hm, label)
-
-            # TASK_715: Precompute state channels, policy targets, confidence
-            T_ret = len(returns)
-            oc = self._oracle_config
-            oracle_sel_jax = jnp.array(oracle_sel)
-            returns_jax = jnp.array(returns)
-
-            # State channels from oracle trajectory
-            target_pos = compute_target_position(oracle_sel_jax, returns_jax)
-            state_ch_full = build_state_channels(
-                target_pos, returns_jax,
-                n_assets=self.n_assets,
-                k=oc.get('oracle_k', 4),
-                window_size=self.window_length,  # approximate ws
+            slot = self._finalize_slot(
+                hm, label, group_key, run_idx,
+                period_assets=spec.get('assets'),
+                source='historical',
             )
-            jax.block_until_ready(state_ch_full)
-            state_ch_np = np.array(state_ch_full).astype(np.float16)  # (T_ret, 6, n_assets)
-
-            # Policy targets (state-aware)
-            prev_sel = jnp.zeros((T_ret, self.n_assets))
-            prev_sel = prev_sel.at[1:].set(
-                jnp.where(oracle_sel_jax[:-1] > 0.5,
-                          jnp.where(returns_jax[:-1] > 0, 1.0, -1.0), 0.0)
-            )
-            # TASK_739: select BC target oracle. "topk_path" (default) keeps the
-            # pre-739 state-aware top-k policy. "dense_sign" replaces the BC
-            # target with per-asset sign-of-forward-return labels (every asset,
-            # every step). oracle_sel / oracle_cum_pnl are unchanged — still
-            # top-k for value / per-step reward / n-step returns.
-            oracle_mode = oc.get('oracle_mode', 'topk_path')
-            if oracle_mode == 'dense_sign':
-                # Match the max_len formula used by greedy_lookahead_path in
-                # _precompute_oracle so JIT compiles once (pad to ≥ 262144,
-                # rounded up to a multiple of 1024).
-                ds_max_len = max(262144, ((T_ret + 1023) // 1024) * 1024)
-                dense_labels = dense_sign_oracle(
-                    returns_jax,
-                    lookahead=oc.get('oracle_lookahead', 20),
-                    epsilon=oc.get('sign_epsilon', 1e-4),
-                    max_len=ds_max_len,
-                )
-                policy_targets_full = dense_sign_labels_to_policy(
-                    dense_labels, n_actions_per_asset=5,
-                )
-            elif oracle_mode == 'hybrid':
-                raise NotImplementedError(
-                    "oracle_mode='hybrid' is reserved — TODO(TASK_739 follow-up). "
-                    "Expected semantics: top-k drives value signal, dense-sign drives BC."
-                )
-            else:
-                policy_targets_full = optimal_path_to_policy(
-                    oracle_sel_jax, returns_jax,
-                    prev_selections=prev_sel,
-                    n_actions_per_asset=5, temperature=1.0,
-                )
-            jax.block_until_ready(policy_targets_full)
-            policy_np = np.array(policy_targets_full).astype(np.float16)  # (T_ret, n_assets*5)
-
-            # Confidence (max softmax per asset)
-            conf_full = np.max(
-                policy_np.reshape(T_ret, self.n_assets, 5), axis=-1
-            ).astype(np.float16)  # (T_ret, n_assets)
-
-            mb_hm = hm.cache_data.nbytes / 1024**2
-            mb_precomp = (oracle_sel.nbytes + oracle_cum_pnl.nbytes + returns.nbytes +
-                          state_ch_np.nbytes + policy_np.nbytes + conf_full.nbytes) / 1024**2
-            logger.info(f"[POOL] Loaded {label}: {n_timestamps:,} ts, "
-                        f"{mb_hm:.0f}+{mb_precomp:.0f} MB (data+precomp)")
-
-            # TASK_733: cheat-channel visibility — fraction of channel-32 values
-            # in {−1, 0, +1} for this segment. Uses the same log-return stream
-            # the encoder ingests. Logs only when the diagnostic is enabled.
-            if oc.get('use_cheat_channel', False):
-                la = int(oc.get('cheat_lookahead', 20))
-                eps = float(oc.get('cheat_epsilon', 1e-4))
-                if T_ret > la:
-                    # Forward cum log-return: r_fwd[t] = sum(returns[t+1:t+1+la]).
-                    # np.cumsum then diff: cs[t+la] - cs[t] → (T_ret-la,) aligned to t.
-                    cs = np.cumsum(np.asarray(returns), axis=0)
-                    r_fwd = cs[la:] - cs[:-la]  # (T_ret-la, n_assets)
-                    frac_pos = float(np.mean(r_fwd > eps))
-                    frac_neg = float(np.mean(r_fwd < -eps))
-                    frac_hold = 1.0 - frac_pos - frac_neg
-                    logger.info(
-                        f"[POOL:CHEAT] {label}: la={la}, eps={eps:.1e} — "
-                        f"+1={frac_pos:.1%}  -1={frac_neg:.1%}  hold={frac_hold:.1%}  "
-                        f"(non-HOLD={frac_pos + frac_neg:.1%})"
-                    )
-
-            max_cursor = max(n_timestamps - self.window_length, 0)
-
-            # TASK_740: Load precomputed Bella predictions for this period if
-            # the distillation head is enabled and the manifest lists a shard.
-            # Shape: (T_ret, n_horizons, n_assets) of log-returns. Missing
-            # shards fall back to None and the trainer masks those samples.
-            bella_preds_full = None
-            if oc.get('use_bella_distill_head', False):
-                # TASK_745: tag must include the rotation hash so the consumer
-                # only picks up shards whose column semantics actually match
-                # this rotation's trainer-axis.
-                bella_preds_full = self._load_bella_shard(group_key, T_ret,
-                                                         oc.get('bella_pred_horizons', (1, 5, 10, 20)),
-                                                         manifest_path=oc.get('bella_preds_manifest',
-                                                                               'config/bella_preds_manifest.json'),
-                                                         period_assets=spec.get('assets'))
-
-            # TASK_754: Load precomputed Bella trajectory-shape descriptors for
-            # this period (additive to TASK_740). Shape: (T_ret, descriptor_dim)
-            # float32. Missing shards fall back to None and the trainer masks
-            # those samples sample-wise.
-            bella_shape_full = None
-            if oc.get('use_bella_shape_head', False):
-                bella_shape_full = self._load_bella_shape_shard(
-                    group_key, T_ret,
-                    descriptor_dim=oc.get('bella_shape_descriptor_dim', 14),
-                    manifest_path=oc.get('bella_shape_manifest',
-                                         'config/bella_shape_manifest.json'),
-                    period_assets=spec.get('assets'),
-                )
-
-            return {
-                'hm': hm,
-                'cursor': 0,
-                'max_cursor': max_cursor,
-                'group_key': group_key,
-                'run_idx': run_idx,
-                'label': label,
-                # TASK_714: Precomputed oracle
-                'oracle_selections': oracle_sel,   # (T-1, n_assets)
-                'oracle_cum_pnl': oracle_cum_pnl,  # (T-1,)
-                'returns': returns,                 # (T-1, n_assets)
-                # TASK_715: Precomputed state/targets/confidence (float16)
-                'state_channels': state_ch_np,     # (T-1, 6, n_assets) fp16
-                'policy_targets': policy_np,        # (T-1, n_assets*5) fp16
-                'confidence': conf_full,            # (T-1, n_assets) fp16
-                # TASK_740: Precomputed Bella distillation targets (fp32 or None)
-                'bella_preds_full': bella_preds_full,
-                # TASK_754: Precomputed Bella trajectory-shape descriptors (fp32 or None)
-                'bella_shape_full': bella_shape_full,
-            }
+            return slot
 
         return None  # Group exhausted
+
+    def _finalize_slot(self, hm, label, group_key, run_idx,
+                       period_assets=None, source='historical',
+                       bella_meta=None):
+        """TASK_753 step 3 refactor: precompute pipeline shared between
+        historical and Bella slots. Takes an `hm`-shaped object with a
+        populated `cache_data`, runs the oracle + state channels + policy
+        targets + confidence + optional Bella-distill/shape shard loads,
+        and returns the slot dict.
+
+        Args:
+            hm: HistoricalMarket or BellaMarket with `cache_data` populated.
+            label: human-readable slot label for logging.
+            group_key: SegmentPool group key.
+            run_idx: SegmentPool run index within the group.
+            period_assets: rotation's asset symbol list (used for Bella
+                shard tag construction in distill/shape paths). For Bella
+                slots, pass the rotation's assets — keeps the column
+                semantics aligned across real/Bella feeds.
+            source: 'historical' or 'bella' — annotation only; downstream
+                code does not branch on this.
+            bella_meta: optional dict with augmentation metadata
+                (regime_idx, n_unknown_columns, seed). Stashed on the slot
+                under 'bella_meta' for logging.
+        """
+        import time as _time
+        n_timestamps = len(hm.valid_timestamps)
+
+        # TASK_714: Precompute oracle on full period
+        t_oracle = _time.time()
+        oracle_sel, oracle_cum_pnl, returns = self._precompute_oracle(hm, label)
+        t_oracle = _time.time() - t_oracle
+
+        # TASK_715: Precompute state channels, policy targets, confidence
+        T_ret = len(returns)
+        oc = self._oracle_config
+        oracle_sel_jax = jnp.array(oracle_sel)
+        returns_jax = jnp.array(returns)
+
+        # State channels from oracle trajectory
+        target_pos = compute_target_position(oracle_sel_jax, returns_jax)
+        state_ch_full = build_state_channels(
+            target_pos, returns_jax,
+            n_assets=self.n_assets,
+            k=oc.get('oracle_k', 4),
+            window_size=self.window_length,  # approximate ws
+        )
+        jax.block_until_ready(state_ch_full)
+        state_ch_np = np.array(state_ch_full).astype(np.float16)  # (T_ret, 6, n_assets)
+
+        # Policy targets (state-aware)
+        prev_sel = jnp.zeros((T_ret, self.n_assets))
+        prev_sel = prev_sel.at[1:].set(
+            jnp.where(oracle_sel_jax[:-1] > 0.5,
+                      jnp.where(returns_jax[:-1] > 0, 1.0, -1.0), 0.0)
+        )
+        # TASK_739: select BC target oracle. "topk_path" (default) keeps the
+        # pre-739 state-aware top-k policy. "dense_sign" replaces the BC
+        # target with per-asset sign-of-forward-return labels (every asset,
+        # every step). oracle_sel / oracle_cum_pnl are unchanged — still
+        # top-k for value / per-step reward / n-step returns.
+        oracle_mode = oc.get('oracle_mode', 'topk_path')
+        if oracle_mode == 'dense_sign':
+            # Match the max_len formula used by greedy_lookahead_path in
+            # _precompute_oracle so JIT compiles once (pad to ≥ 262144,
+            # rounded up to a multiple of 1024).
+            ds_max_len = max(262144, ((T_ret + 1023) // 1024) * 1024)
+            dense_labels = dense_sign_oracle(
+                returns_jax,
+                lookahead=oc.get('oracle_lookahead', 20),
+                epsilon=oc.get('sign_epsilon', 1e-4),
+                max_len=ds_max_len,
+            )
+            policy_targets_full = dense_sign_labels_to_policy(
+                dense_labels, n_actions_per_asset=5,
+            )
+        elif oracle_mode == 'hybrid':
+            raise NotImplementedError(
+                "oracle_mode='hybrid' is reserved — TODO(TASK_739 follow-up). "
+                "Expected semantics: top-k drives value signal, dense-sign drives BC."
+            )
+        else:
+            policy_targets_full = optimal_path_to_policy(
+                oracle_sel_jax, returns_jax,
+                prev_selections=prev_sel,
+                n_actions_per_asset=5, temperature=1.0,
+            )
+        jax.block_until_ready(policy_targets_full)
+        policy_np = np.array(policy_targets_full).astype(np.float16)  # (T_ret, n_assets*5)
+
+        # Confidence (max softmax per asset)
+        conf_full = np.max(
+            policy_np.reshape(T_ret, self.n_assets, 5), axis=-1
+        ).astype(np.float16)  # (T_ret, n_assets)
+
+        mb_hm = hm.cache_data.nbytes / 1024**2
+        mb_precomp = (oracle_sel.nbytes + oracle_cum_pnl.nbytes + returns.nbytes +
+                      state_ch_np.nbytes + policy_np.nbytes + conf_full.nbytes) / 1024**2
+        # TASK_753 C3 signal: cumulative oracle PnL per slot. Used by the
+        # selector to compute Bella-vs-historical oracle PnL ratios when
+        # augmentation is enabled.
+        oracle_cum_pnl_final = float(oracle_cum_pnl[-1]) if len(oracle_cum_pnl) else 0.0
+        logger.info(f"[POOL] Loaded {label}: {n_timestamps:,} ts, "
+                    f"{mb_hm:.0f}+{mb_precomp:.0f} MB (data+precomp) "
+                    f"src={source} oracleCumPnL={oracle_cum_pnl_final:.4f}")
+
+        # TASK_733: cheat-channel visibility — fraction of channel-32 values
+        # in {−1, 0, +1} for this segment. Uses the same log-return stream
+        # the encoder ingests. Logs only when the diagnostic is enabled.
+        if oc.get('use_cheat_channel', False):
+            la = int(oc.get('cheat_lookahead', 20))
+            eps = float(oc.get('cheat_epsilon', 1e-4))
+            if T_ret > la:
+                # Forward cum log-return: r_fwd[t] = sum(returns[t+1:t+1+la]).
+                # np.cumsum then diff: cs[t+la] - cs[t] → (T_ret-la,) aligned to t.
+                cs = np.cumsum(np.asarray(returns), axis=0)
+                r_fwd = cs[la:] - cs[:-la]  # (T_ret-la, n_assets)
+                frac_pos = float(np.mean(r_fwd > eps))
+                frac_neg = float(np.mean(r_fwd < -eps))
+                frac_hold = 1.0 - frac_pos - frac_neg
+                logger.info(
+                    f"[POOL:CHEAT] {label}: la={la}, eps={eps:.1e} — "
+                    f"+1={frac_pos:.1%}  -1={frac_neg:.1%}  hold={frac_hold:.1%}  "
+                    f"(non-HOLD={frac_pos + frac_neg:.1%})"
+                )
+
+        max_cursor = max(n_timestamps - self.window_length, 0)
+
+        # TASK_740: Load precomputed Bella predictions for this period if
+        # the distillation head is enabled and the manifest lists a shard.
+        # Shape: (T_ret, n_horizons, n_assets) of log-returns. Missing
+        # shards fall back to None and the trainer masks those samples.
+        # TASK_753 note: Bella-sourced slots get bella_preds_full=None
+        # unconditionally (no shard would match their synthetic context).
+        bella_preds_full = None
+        if source == 'historical' and oc.get('use_bella_distill_head', False):
+            # TASK_745: tag must include the rotation hash so the consumer
+            # only picks up shards whose column semantics actually match
+            # this rotation's trainer-axis.
+            bella_preds_full = self._load_bella_shard(group_key, T_ret,
+                                                     oc.get('bella_pred_horizons', (1, 5, 10, 20)),
+                                                     manifest_path=oc.get('bella_preds_manifest',
+                                                                           'config/bella_preds_manifest.json'),
+                                                     period_assets=period_assets)
+
+        # TASK_754: Load precomputed Bella trajectory-shape descriptors for
+        # this period (additive to TASK_740). Shape: (T_ret, descriptor_dim)
+        # float32. Missing shards fall back to None and the trainer masks
+        # those samples sample-wise.
+        bella_shape_full = None
+        if source == 'historical' and oc.get('use_bella_shape_head', False):
+            bella_shape_full = self._load_bella_shape_shard(
+                group_key, T_ret,
+                descriptor_dim=oc.get('bella_shape_descriptor_dim', 14),
+                manifest_path=oc.get('bella_shape_manifest',
+                                     'config/bella_shape_manifest.json'),
+                period_assets=period_assets,
+            )
+
+        slot = {
+            'hm': hm,
+            'cursor': 0,
+            'max_cursor': max_cursor,
+            'group_key': group_key,
+            'run_idx': run_idx,
+            'label': label,
+            # TASK_714: Precomputed oracle
+            'oracle_selections': oracle_sel,   # (T-1, n_assets)
+            'oracle_cum_pnl': oracle_cum_pnl,  # (T-1,)
+            'returns': returns,                 # (T-1, n_assets)
+            # TASK_715: Precomputed state/targets/confidence (float16)
+            'state_channels': state_ch_np,     # (T-1, 6, n_assets) fp16
+            'policy_targets': policy_np,        # (T-1, n_assets*5) fp16
+            'confidence': conf_full,            # (T-1, n_assets) fp16
+            # TASK_740: Precomputed Bella distillation targets (fp32 or None)
+            'bella_preds_full': bella_preds_full,
+            # TASK_754: Precomputed Bella trajectory-shape descriptors (fp32 or None)
+            'bella_shape_full': bella_shape_full,
+            # TASK_753 augmentation metadata (annotation only).
+            'source': source,                   # 'historical' | 'bella'
+            'oracle_cum_pnl_final': oracle_cum_pnl_final,
+            'oracle_wall_s': float(t_oracle),
+        }
+        if bella_meta is not None:
+            slot['bella_meta'] = bella_meta
+        return slot
+
+    def _ensure_bella_generator(self):
+        """TASK_753: lazy-load the Bella generator on first Bella slot
+        construction so non-augment runs pay zero load cost.
+        """
+        if getattr(self, '_bella_generator', None) is not None:
+            return self._bella_generator, self._bella_cfg
+        oc = self._oracle_config
+        ckpt = oc.get('bella_augment_checkpoint',
+                      'checkpoints/diff_teacher/generator_best/generator')
+        from mcts_trader.training.setup import setup_bella_generator
+        import time as _time
+        t0 = _time.time()
+        gen, cfg = setup_bella_generator(ckpt)
+        load_wall = _time.time() - t0
+        logger.info(f"[POOL:BELLA] Generator loaded from {ckpt} "
+                    f"(arch={cfg.architecture}, hidden_dim={cfg.hidden_dim}, "
+                    f"num_layers={cfg.num_layers}, seq_length={cfg.seq_length}, "
+                    f"n_steps={cfg.n_steps}) in {load_wall:.1f}s")
+        # TASK_753 C2: log actual architecture facts on first load.
+        self._bella_generator = gen
+        self._bella_cfg = cfg
+        # Lazy-derive Bella's canonical asset list once for all subsequent
+        # Bella slots in this pool (matches the TASK_745 reuse pattern in
+        # precompute_bella_predictions.py).
+        from mcts_trader.data.bella_market import _load_bella_canonical_assets
+        self._bella_canonical_assets = _load_bella_canonical_assets(
+            self.db_path, n_assets=cfg.n_assets,
+        )
+        logger.info(f"[POOL:BELLA] Canonical universe: "
+                    f"{len(self._bella_canonical_assets)} symbols")
+        return gen, cfg
+
+    def _pick_bella_regime(self, group_key, run_idx):
+        """TASK_753: choose Bella regime per --bella-augment-regime-mode.
+
+        Returns int in 0..4 (Bella's five regimes) or 5 for unconditional.
+        """
+        oc = self._oracle_config
+        mode = oc.get('bella_augment_regime_mode', 'uniform')
+        if mode == 'unconditional':
+            return 5
+        if mode == 'uniform':
+            # Use the pool's rng (seeded with 42 in __init__) for reproducibility.
+            return int(self.rng.integers(0, 5))
+        if mode == 'match':
+            # 'match' would require the rotation's first-window stats —
+            # implement when we have a running pool with returns access.
+            # For v1 we treat 'match' identically to 'uniform' to keep the
+            # slot factory deterministic w.r.t. group_key (it would be
+            # confusing for two adjacent Bella slots from the same rotation
+            # to get different regimes via 'match').
+            return int(self.rng.integers(0, 5))
+        raise ValueError(f"Unknown bella_augment_regime_mode={mode!r}")
+
+    def _make_bella_slot(self, group_key, regime_idx=None, seed=None):
+        """TASK_753: construct a synthetic Bella-sourced slot.
+
+        Mirrors _make_slot but with a BellaMarket replacing HistoricalMarket.
+        Same precompute path (oracle / state channels / policy targets /
+        confidence) — AsyncBatchPipeline does not branch on slot source.
+        bella_preds_full and bella_shape_full are forced to None (the
+        TASK_740/754 distillation paths shouldn't see synthetic context).
+
+        Args:
+            group_key: SegmentPool group key (carried through to the slot
+                dict for _rotate_slot bookkeeping; the rotation's
+                period_assets list is used for the column remap).
+            regime_idx: optional Bella regime override (0..5). When None,
+                resolved via _pick_bella_regime.
+            seed: optional PRNG seed (default: deterministic per
+                group_key + Bella slot index for reproducibility).
+        """
+        import time as _time
+        from mcts_trader.data.bella_market import BellaMarket
+        oc = self._oracle_config
+
+        # Need rotation's asset list for the column remap (asset_policy='remap').
+        # Use the FIRST run's assets for the group as the canonical rotation —
+        # consistent with the trainer's view of "one rotation = one asset set".
+        runs = self.groups.get(group_key, [])
+        if not runs:
+            logger.warning(f"[POOL:BELLA] group {group_key} has no runs — cannot construct Bella slot")
+            return None
+        first_spec = runs[0]
+        period_assets = first_spec.get('assets', [])
+
+        # Resolve regime + seed.
+        if regime_idx is None:
+            regime_idx = self._pick_bella_regime(group_key, run_idx=0)
+        if seed is None:
+            self._bella_slot_counter = getattr(self, '_bella_slot_counter', 0) + 1
+            seed = (hash(group_key) ^ self._bella_slot_counter * 1_000_003) & 0x7FFFFFFF
+
+        # Lazy-load the generator (one-shot per pool lifetime).
+        gen, cfg = self._ensure_bella_generator()
+
+        # Determine target seq_length. 0 → native; >0 → chained chunks.
+        target_seq = int(oc.get('bella_augment_seq_length', 0) or cfg.seq_length)
+        # Must be at least window_length so the pool can actually use the slot.
+        if target_seq < self.window_length:
+            logger.warning(f"[POOL:BELLA] bella_augment_seq_length={target_seq} < "
+                           f"window_length={self.window_length}; bumping to window_length.")
+            target_seq = int(self.window_length)
+
+        t_build = _time.time()
+        bm = BellaMarket(
+            generator=gen,
+            cfg=cfg,
+            seq_length=target_seq,
+            n_assets=self.n_assets,
+            regime=int(regime_idx),
+            seed=int(seed),
+            volatility_scale=float(oc.get('bella_augment_volatility_scale', 0.015)),
+            asset_policy=str(oc.get('bella_augment_asset_policy', 'remap')),
+            period_assets=period_assets,
+            bella_canonical=getattr(self, '_bella_canonical_assets', None),
+            db_path=self.db_path,
+        )
+        bella_build_wall = _time.time() - t_build
+
+        label = (f"BELLA {group_key[0][-10:]}→{group_key[1][-10:]} "
+                 f"reg={regime_idx} seed={seed % 1_000_000:06d}")
+        bella_meta = {
+            'regime_idx': int(regime_idx),
+            'seed': int(seed),
+            'n_unknown_columns': int(getattr(bm, 'n_unknown_columns', 0)),
+            'seq_length': int(target_seq),
+            'build_wall_s': float(bella_build_wall),
+        }
+        self._bella_regime_counts = getattr(self, '_bella_regime_counts', None)
+        if self._bella_regime_counts is None:
+            import collections as _coll
+            self._bella_regime_counts = _coll.Counter()
+        self._bella_regime_counts[int(regime_idx)] += 1
+        logger.info(
+            f"[POOL:BELLA] {label}: build={bella_build_wall:.2f}s "
+            f"unknown_cols={bm.n_unknown_columns}/{self.n_assets} "
+            f"seq_length={target_seq}"
+        )
+
+        slot = self._finalize_slot(
+            bm, label, group_key, run_idx=0,
+            period_assets=period_assets, source='bella',
+            bella_meta=bella_meta,
+        )
+        return slot
 
     def _precompute_oracle(self, hm, label):
         """TASK_714: Compute oracle on full period. Returns numpy arrays."""
