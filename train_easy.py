@@ -541,6 +541,12 @@ class SegmentPool:
         self.slots = []  # List of slot dicts
         self._round_robin_idx = 0
         self.rng = np.random.default_rng(42)
+        # TASK_753 step 0: defensive init of _exhausted_groups. Previously
+        # referenced at .add(group_key) below without ever being defined in
+        # __init__ — crashed the first time a slot failed to load. Untriggered
+        # historically because foxglove periods load cleanly, but exposed by
+        # any path that introduces a new failure mode at slot construction.
+        self._exhausted_groups = set()
         n_init = min(n_slots, n_groups)
         for i in range(n_init):
             group_key = self._available_groups.pop(0)
