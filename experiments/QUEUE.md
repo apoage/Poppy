@@ -72,14 +72,15 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 
 749-b128 resolved as **second OOM**. Decision-tree branch (2) taken: Titans-MAG deprioritized. 750/751/749-x5 cancelled.
 
-**New active queue (sequential, ≤2-wide per TASK_742):**
+**Wave status as of 2026-05-19 ~15:00 UTC:**
 
-| Order | ID | Action | Wall | Why |
+| Order | ID | Action | Wall | Outcome |
 |---:|---|---|---:|---|
-| 1 | 752 | a1b1 baselines at s31, s42 | ~6h | Converts 746 proxy Δα → paired. 746 is currently the only positive Δα shape on Stage-B. |
-| 2 | 757 | Bella shape-distill 3-seed (TASK_754, b=128) | ~9h paired | Encoder-side mechanism with permutation-invariant target. Implementation landed 2026-05-17 (commit `9aa4885`). |
-| 3 | 758 | Bella augmentation 3-seed (TASK_753, b=128) | ~10h paired | Data-side mechanism. Implementation landed 2026-05-18 (commit `3b01cc0`). Carries C3 "too easy" risk — flag if oracle-PnL-ratio > 2× at training time. |
-| 4 | 756 | Value-target deeper probes spec→impl (TASK_756 stub at commit `be96cd4`) | ~3h impl + ~12h paired sweep | Doubles down on the only mechanism class that's worked. Highest priority if 757/758 close negative. |
+| 1 | 752 | a1b1 baselines at s31, s42 | ~6h | ✅ DONE. s31 α=+6.20, s42 α=+6.92. Used to revise 746 5-seed Δα to +0.72pp paired (was +2.23pp proxy). |
+| 1b | 749-bf16 | Titans-MAG @ b=128 paired 3-seed (post bf16 fix) | ~13h paired | ✅ DONE. **REGRESSION mean Δα −3.11pp (1/3+, range −8.33 to +7.28)**. bf16 fix structurally correct (gates engaged) but mechanism doesn't promote. Titans-MAG closed. |
+| 2 | 757 | Bella shape-distill 3-seed (TASK_754, b=128) | ~9h paired | ✅ DONE. **REGRESSION mean Δα −5.80pp (0/3+)**. Encoder-side Bella supervision 0-for-2 (740 + 757). |
+| 3 | 758 | Bella augmentation 3-seed (TASK_753, b=128) | ~10h paired | 🟡 IN FLIGHT. s7+s13 done, s23 training (~19:00 UTC closure). Final Bella-class probe; if negative, entire Bella mechanism class closed. |
+| 4 | 756 | Value-target deeper probes | — | ❌ DEPRIORITIZED. 746 paired ceiling +0.72pp too low to justify ~12h paired sweep. |
 
 ### Priority 3 — followups
 
