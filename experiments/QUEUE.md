@@ -79,8 +79,22 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 | 1 | 752 | a1b1 baselines at s31, s42 | ~6h | ✅ DONE. s31 α=+6.20, s42 α=+6.92. Used to revise 746 5-seed Δα to +0.72pp paired (was +2.23pp proxy). |
 | 1b | 749-bf16 | Titans-MAG @ b=128 paired 3-seed (post bf16 fix) | ~13h paired | ✅ DONE. **REGRESSION mean Δα −3.11pp (1/3+, range −8.33 to +7.28)**. bf16 fix structurally correct (gates engaged) but mechanism doesn't promote. Titans-MAG closed. |
 | 2 | 757 | Bella shape-distill 3-seed (TASK_754, b=128) | ~9h paired | ✅ DONE. **REGRESSION mean Δα −5.80pp (0/3+)**. Encoder-side Bella supervision 0-for-2 (740 + 757). |
-| 3 | 758 | Bella augmentation 3-seed (TASK_753, b=128) | ~10h paired | 🟡 IN FLIGHT. s7+s13 done, s23 training (~19:00 UTC closure). Final Bella-class probe; if negative, entire Bella mechanism class closed. |
-| 4 | 756 | Value-target deeper probes | — | ❌ DEPRIORITIZED. 746 paired ceiling +0.72pp too low to justify ~12h paired sweep. |
+| 3 | 758 | Bella augmentation 3-seed (TASK_753, b=128) | ~10h paired | ✅ DONE 2026-05-19 17:19 UTC. **CATASTROPHIC REGRESSION mean Δα −16.54pp (0/3+, s13 −37.93pp)**. Synthetic-data augmentation destabilizes training. Entire Bella mechanism class closed. |
+| 4 | 756 | Value-target deeper probes | — | ❌ DEPRIORITIZED → reopens as TASK_759 P2 at reduced scope. |
+
+### Priority 2e — Planning-side pivot (2026-05-19 EOD)
+
+Bella mechanism class CLOSED 2026-05-19 (740 + 757 + 758 all negative at paired 3-seed). Pivot to planning-side mechanisms — the only class with positive paired Δα signals (746 +0.72pp, 734 +0.20pp at 5-seed).
+
+Spec: `tasks/TASK_759_PLANNING_PIVOT.md`.
+
+| Order | ID | Action | Wall | Why |
+|---:|---|---|---:|---|
+| 1 | 759_P1 | MCTS rollouts sweep: sims ∈ {64, 128} paired 3-seed | ~22h paired (sims=64), conditional ~45h for sims=128 | Untouched surface, highest EV. `mcts_sims=32` unchanged since inception. |
+| 2 | 759_P2 | Value-target small probe: 0.7·nstep + 0.3·MC mixture, paired 3-seed | ~12h paired | Reopens TASK_756 at reduced scope; builds on 746's +0.72pp direction. |
+| 3 | TASK_760 (conditional) | Policy-head architecture sweep | TBD | Only spec if both P1 and P2 close negative. |
+
+**Promotion gate**: paired mean Δα ≥ +1pp AND no seed < −3pp at 3-seed → extend to 5-seed. 5-seed mean ≥ +3pp with no seed < −5pp → **first campaign promotion**, Bloom-trigger.
 
 ### Priority 3 — followups
 
