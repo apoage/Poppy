@@ -118,13 +118,40 @@ This is a **diagnostic sweep, not a mechanism-promotion test.** Outcomes:
 
 ## Server execution checklist
 
-1. Pull workstation training branch (commit `bcc5be1`).
+1. Pull workstation training branch (tip ≥ `bcc5be1`).
 2. Verify `tools/benchmark_easy.py` has `--eval-mcts-sims` flag (smoke).
 3. Confirm 741_mint baseline .pkl checkpoints exist.
 4. Server-side smoke (one ckpt, one period, sims=16 joint).
 5. Launch sweep: sims=16 (joint+per_asset) × 3 seeds, 2-wide.
 6. As results arrive: tag flags `/tmp/eval_mcts_s{N}_{decode}_seed_{S}_done.flag`.
 7. After sims=16 closes: operator (workstation) decides whether to continue sims=32 or stop.
+
+## Auto-continuation policy (explicit)
+
+**Smoke PASSES (both checks below) → auto-launch the full sims=16 sweep without operator confirmation.**
+
+Smoke pass criteria:
+1. Argmax re-run on one 741_mint checkpoint matches the existing `runs/741_mint/eval_baseline_seed_*/benchmark.json` `summary.avg_alpha` to within ≤ 1e-3 (catches workstation↔server config drift).
+2. sims=16 joint run on the same checkpoint (one period, e.g. shortest from `config/benchmark_periods.json`) completes without crash. No further numerical gate at smoke — the experiment IS the measurement.
+
+**Smoke FAILS → ABORT the entire experiment, do not launch the sweep.**
+
+Failure modes that must abort:
+- Argmax regression > 1e-3 → workstation↔server divergence; do not proceed until reconciled (likely an env / JAX / mctx version mismatch).
+- Crash in sims=16 path → implementation bug surfaced on server but not workstation; report and stop.
+- Missing PopArt metadata in ckpt → C3 violation; RuntimeError will fire; stop.
+- Missing .pkl at expected path → adjust path (per checklist step 3), but if no .pkl is recoverable, abort.
+
+On abort: write `runs/759_mcts_eval/ABORT.md` with the failure reason, log paths, and any stderr excerpt. Set `/tmp/759_smoke_failed.flag` for operator detection. Do NOT silently fall through to argmax-only runs or skip the sweep without leaving the abort artifact.
+
+**After sims=16 sweep closes (3 seeds × 2 decodes done, all flags posted) → STOP and wait for operator.**
+
+The sims=32 and sims=64 tiers are not auto-launched. Operator (workstation) inspects sims=16 result.md, then decides:
+- Continue with sims=32 (signal worth amplifying)
+- Skip to sims=64 (signal might need more depth)
+- Stop the sweep (signal is flat or worse)
+
+Rationale: each subsequent tier doubles compute. Auto-continuation past sims=16 risks burning 30-90h on a flat signal.
 
 ## References
 
