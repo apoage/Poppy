@@ -42,6 +42,7 @@ from easy_config import EasyConfig, get_large_config, get_medium_config, get_sma
 from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support_np
 from mcts_trader.jax_agent.path_solver import greedy_lookahead_path
+from mcts_trader.jax_agent.mctx_search import create_mctx_search
 from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_temporal
 from mcts_trader.data.history import HistoricalMarket
 
@@ -402,6 +403,32 @@ def generate_bella_prices(
 # Period Evaluation
 # =============================================================================
 
+def _mcts_decode_actions(
+    mcts_actions: np.ndarray,
+    policy_probs: np.ndarray,
+    n_assets: int,
+    decode: str,
+) -> np.ndarray:
+    """Decode MCTS output into per-asset actions (B, n_assets).
+
+    joint:     take the single action (idx in [0, n_assets*5)); set all other
+               assets to HOLD (=1). Matches real_trade_jax single-action behavior.
+    per_asset: reshape policy_probs (B, n_assets*5) -> (B, n_assets, 5),
+               argmax along last axis.
+    """
+    B = mcts_actions.shape[0]
+    if decode == 'per_asset':
+        per_asset = policy_probs.reshape(B, n_assets, 5)
+        return np.argmax(per_asset, axis=-1).astype(np.int32)
+    # joint
+    actions = np.ones((B, n_assets), dtype=np.int32)  # default HOLD
+    asset_idx = mcts_actions // 5
+    act = mcts_actions % 5
+    for b in range(B):
+        actions[b, int(asset_idx[b])] = int(act[b])
+    return actions
+
+
 def run_period_eval(
     period: dict,
     ohlcv: np.ndarray,
@@ -411,6 +438,8 @@ def run_period_eval(
     params: dict,
     config: EasyConfig,
     encoder_config: EncoderConfig,
+    mcts_search=None,
+    mcts_decode: str = 'joint',
 ) -> PeriodResult:
     """Evaluate model on a single benchmark period.
 
@@ -490,7 +519,19 @@ def run_period_eval(
             obs = jit_batch_encode_temporal(prices_jax, batch_starts, encoder_config)
             output = _jit_model_forward(params, obs, model)
             logits_per_asset = output['policy_logits'].reshape(-1, n_assets, 5)
-            all_model_actions.append(np.array(jnp.argmax(logits_per_asset, axis=-1)))
+            if mcts_search is None:
+                all_model_actions.append(np.array(jnp.argmax(logits_per_asset, axis=-1)))
+            else:
+                # MCTS path: deterministic per-window seed
+                B = obs.shape[0]
+                action_mask = jnp.ones((B, n_assets * 5), dtype=jnp.int8)
+                rng = jax.random.PRNGKey(int(start))
+                mcts_act, policy_probs, _ = mcts_search(params, rng, obs, action_mask)
+                acts = _mcts_decode_actions(
+                    np.array(mcts_act), np.array(policy_probs),
+                    n_assets, mcts_decode,
+                )
+                all_model_actions.append(acts)
             all_model_values.append(value_logits_to_scalar(np.array(output['value'])))
             # TASK_695: Collect oracle mask predictions
             if 'oracle_mask' in output:
@@ -558,7 +599,17 @@ def run_period_eval(
             value_logits = output['value']  # (1, 401)
 
             logits_per_asset = logits.reshape(1, n_assets, 5)
-            actions_i = np.array(jnp.argmax(logits_per_asset, axis=-1))[0]  # (n_assets,)
+            if mcts_search is None:
+                actions_i = np.array(jnp.argmax(logits_per_asset, axis=-1))[0]  # (n_assets,)
+            else:
+                # MCTS path: deterministic per-window seed
+                action_mask = jnp.ones((1, n_assets * 5), dtype=jnp.int8)
+                rng = jax.random.PRNGKey(int(i))
+                mcts_act, policy_probs, _ = mcts_search(params, rng, obs_full, action_mask)
+                actions_i = _mcts_decode_actions(
+                    np.array(mcts_act), np.array(policy_probs),
+                    n_assets, mcts_decode,
+                )[0]  # (n_assets,)
             all_model_actions.append(actions_i)
             all_model_values.append(value_logits_to_scalar(np.array(value_logits))[0])
 
@@ -765,6 +816,8 @@ def run_full_benchmark(
     config_preset: str = "large",
     include_bella: bool = False,
     bella_episodes: int = 10,
+    eval_mcts_sims: int = 0,
+    eval_mcts_decode: str = 'joint',
 ) -> List[PeriodResult]:
     """Run benchmark on all (or selected) periods.
 
@@ -878,6 +931,32 @@ def run_full_benchmark(
         n_channels=encoder_n_channels,
     )
 
+    # TASK_759 P1': optional eval-time MCTS
+    mcts_search = None
+    if eval_mcts_sims > 0:
+        # C3: PopArt scale/shift from checkpoint metadata (not defaults)
+        popart_state = metadata.get('popart_state', None) if isinstance(metadata, dict) else None
+        if popart_state is None:
+            raise RuntimeError(
+                "FATAL: --eval-mcts-sims > 0 requires popart_state in checkpoint "
+                "metadata (value_scale/value_shift). Checkpoint missing popart_state."
+            )
+        value_scale = float(np.sqrt(float(popart_state['var']) + 1e-8))
+        value_shift = float(popart_state['mean'])
+        print(f"\nEval MCTS: sims={eval_mcts_sims}, decode={eval_mcts_decode}, "
+              f"discount=0.95, value_scale={value_scale:.4f}, value_shift={value_shift:.4f}")
+        mcts_search = create_mctx_search(
+            model,
+            num_simulations=eval_mcts_sims,
+            max_num_considered_actions=min(16, config.action_space_size),
+            discount=0.95,                # C2: training mcts_discount
+            use_gumbel=True,
+            gumbel_scale=0.0,             # C4: deterministic
+            value_scale=value_scale,
+            value_shift=value_shift,
+            epsilon_greedy=0.0,
+        )
+
     # Evaluate each period
     results = []
     total_t0 = time.time()
@@ -893,6 +972,8 @@ def run_full_benchmark(
         result = run_period_eval(
             period, ohlcv, prices, symbols,
             model, params, config, encoder_config,
+            mcts_search=mcts_search,
+            mcts_decode=eval_mcts_decode,
         )
         results.append(result)
 
@@ -921,6 +1002,8 @@ def run_full_benchmark(
                 r = run_period_eval(
                     bella_period, bella_ohlcv, bella_close, symbols_bella,
                     model, params, config, encoder_config,
+                    mcts_search=mcts_search,
+                    mcts_decode=eval_mcts_decode,
                 )
                 bella_results.append(r)
 
@@ -1071,6 +1154,12 @@ def main():
                         help='Save results to JSON file')
     parser.add_argument('--quiet', '-q', action='store_true',
                         help='Suppress progress output')
+    # TASK_759 P1': eval-time MCTS
+    parser.add_argument('--eval-mcts-sims', type=int, default=0,
+                        help='If >0, replace argmax with MCTS using N sims (default: 0 = argmax)')
+    parser.add_argument('--eval-mcts-decode', type=str, default='joint',
+                        choices=['joint', 'per_asset'],
+                        help='How to decode MCTS output to per-asset actions (default: joint)')
 
     args = parser.parse_args()
 
@@ -1098,6 +1187,8 @@ def main():
         config_preset=args.preset,
         include_bella=args.bella,
         bella_episodes=args.bella_episodes,
+        eval_mcts_sims=args.eval_mcts_sims,
+        eval_mcts_decode=args.eval_mcts_decode,
     )
 
     # Save JSON if requested
