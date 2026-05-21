@@ -1,7 +1,7 @@
 # 763_entropy_reg — Policy Entropy Regularization Sweep
 
-**Status**: BLOCKED-ON-CODE (do not launch until code section below lands; runs after 762 closes)
-**Owner**: workstation implements code; server agent executes after deploy
+**Status**: READY-TO-LAUNCH (code shipped 2026-05-21 in commit `b4e0158`; runs after 762 closes)
+**Owner**: server agent executes; workstation reviews
 **Reference**: `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` Direction 2, `tasks/TASK_763_POLICY_ENTROPY_REG.md`, `lore/notes_2026-05-21.md` §153
 
 ## Goal
@@ -23,7 +23,7 @@ Sweep `entropy_coef` ∈ {0.005, 0.01 (canon-equivalent), 0.02, 0.05, 0.1}. Hold
 
 **Falsifiable mechanism gate**: a winning cell MUST show Δ-Bal.Acc < 0 (classifier less sharp at the readout, by construction) AND Δα > 0. If Alpha rises but Bal.Acc also rises, the anti-correlation pathway wasn't broken — hypothesis didn't fire. STOP regardless of Alpha sign.
 
-## Code prerequisites (workstation, BLOCKING)
+## Code prerequisites (SHIPPED in `b4e0158`)
 
 Per `lore/notes_2026-05-21.md` §153: `train_phase2.py` has no entropy bonus in its Stage-B loss (`train_phase2.py:1103` computes `policy_loss = optax.softmax_cross_entropy(...).mean()` with no regularization). Required:
 

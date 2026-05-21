@@ -1,7 +1,7 @@
 # 762_reward_shaping — Reward-Scale + Cost-Penalty Sweep
 
-**Status**: BLOCKED-ON-CODE (do not launch until code section below lands)
-**Owner**: workstation implements code; server agent executes after deploy
+**Status**: READY-TO-LAUNCH (code shipped 2026-05-21 in commit `b4e0158`)
+**Owner**: server agent executes; workstation reviews
 **Reference**: `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` Direction 1, `tasks/TASK_762_REWARD_SHAPING.md`, `lore/notes_2026-05-21.md` §153
 
 ## Goal
@@ -20,7 +20,7 @@ Two related interventions:
 
 **Falsifiable**: a winning cell must show **Δ-trade-rate < 0 AND Δα > 0** simultaneously. If Alpha rises but trade rate also rises, the mechanism isn't the over-trade pathway and the hypothesis didn't fire even if the result is good.
 
-## Code prerequisites (workstation, BLOCKING)
+## Code prerequisites (SHIPPED in `b4e0158`)
 
 Per `lore/notes_2026-05-21.md` §153 pre-flight: the Phase-2 path does not currently use `reward_scale` and has no fee-penalty term. Required:
 
