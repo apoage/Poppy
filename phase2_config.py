@@ -29,6 +29,21 @@ class Phase2Config(EasyConfig):
     reward_weight: float = 1.0
     reward_scale: float = 100.0    # Per-step rewards ~0.001, need 100x to spread across 401 bins
 
+    # === Reward Shaping (TASK_762) ===
+    # Additional per-trade fee penalty (basis points) applied on top of transaction_cost
+    # during reward target construction (train_phase2.py:632). 0.0 = canon (no extra fee).
+    # Sweep range 0–10 bps; tests whether explicit cost penalty breaks the over-trade
+    # collapse signature seen across single-mechanism regressions.
+    fee_penalty_bps: float = 0.0
+
+    # === Policy Entropy Regularization (TASK_763) ===
+    # Bonus on policy_loss: -entropy_coef * H(policy) + 5*entropy_coef * relu(min_entropy - H).
+    # Defaults 0.0 = canon (no regularization). entropy_coef sweep 0.005–0.1;
+    # min_entropy floor at 3.0 for joint MCTS (ln(320) ≈ 5.77). Joint MCTS only —
+    # factored search has different entropy semantics (per-asset, ln(5) ≈ 1.61).
+    entropy_coef: float = 0.0
+    min_entropy: float = 0.0
+
     # === MCTS (Stage B) ===
     mcts_sims: int = 32
     max_considered_actions: int = 16

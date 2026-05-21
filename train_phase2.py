@@ -69,7 +69,9 @@ DYNAMICS_KEYS = frozenset([
     'dynamics_ln', 'dynamics_state_norm',
 ])
 
-# Per-step rewards ~0.001, need 100x to spread across 401 bins
+# Per-step rewards ~0.001, need 100x to spread across 401 bins.
+# Fallback constant retained for backward compat; runtime path reads
+# self.config.reward_scale (TASK_762) — see SegmentBatchGenerator below.
 REWARD_SCALE = 100.0
 
 
@@ -629,8 +631,10 @@ class AsyncBatchPipeline:
             prev_indices = np.maximum(decision_indices - 1, 0)
             prev_sel = slot['oracle_selections'][prev_indices]
             changes = np.sum(np.abs(oracle_sel - prev_sel), axis=-1)
-            step_pnl = step_pnl - changes * self.config.transaction_cost
-            rewards = np.clip(step_pnl * REWARD_SCALE, -10.0, 10.0).astype(np.float32)
+            # TASK_762: transaction_cost + fee_penalty_bps (bps → fraction = ×1e-4)
+            per_trade_cost = self.config.transaction_cost + self.config.fee_penalty_bps * 1e-4
+            step_pnl = step_pnl - changes * per_trade_cost
+            rewards = np.clip(step_pnl * self.config.reward_scale, -10.0, 10.0).astype(np.float32)
             all_rewards.append(rewards)
 
             # Oracle remaining PnL (numpy)
@@ -643,7 +647,8 @@ class AsyncBatchPipeline:
             # VECTORIZED n-step rewards (numpy, no Python loop)
             steps = decision_indices[:, None] + np.arange(nstep)  # (n, N)
             steps = np.minimum(steps, len(oracle_cum_pnl) - 2)
-            per_step_r = (oracle_cum_pnl[steps + 1] - oracle_cum_pnl[steps]) * REWARD_SCALE
+            # TASK_762: scale via config knob, not module constant
+            per_step_r = (oracle_cum_pnl[steps + 1] - oracle_cum_pnl[steps]) * self.config.reward_scale
             per_step_r = np.clip(per_step_r, -10.0, 10.0)
             discounts = self.config.td_discount ** np.arange(nstep)
             nstep_sum = (per_step_r * discounts).sum(axis=1).astype(np.float32)
@@ -1002,6 +1007,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     nstep_gamma_N = config.td_discount ** config.nstep_horizon  # γ^N for bootstrap
     use_bc_balance = config.bc_class_balanced  # TASK_726: adaptive trade/hold weighting
     bc_max_tw = config.bc_max_trade_weight     # TASK_726: cap on trade weight boost
+    # TASK_763: policy entropy regularization (joint MCTS path only).
+    # Defaults 0.0 preserve canon (no bonus, no floor). Coef captured at JIT-trace
+    # time — sweep cells re-JIT but that's a one-time cost per cell.
+    entropy_coef = float(getattr(config, 'entropy_coef', 0.0))
+    min_entropy = float(getattr(config, 'min_entropy', 0.0))
     use_direction = config.use_direction_head  # TASK_727: aux direction head
     direction_w = config.direction_loss_weight # TASK_727: direction loss weight
     use_rank = getattr(config, 'use_rank_head', False)             # TASK_730: rank head
@@ -1101,6 +1111,22 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             else:
                 # Joint MCTS: visit_counts sum to 1.0 globally over 320 actions
                 policy_loss = optax.softmax_cross_entropy(policy_logits, mcts_visits).mean()
+
+            # TASK_763: policy entropy regularization (joint case only; factored
+            # has different semantics — sweep gated by use_factored=False).
+            if entropy_coef > 0.0 and not use_factored:
+                policy_probs = jax.nn.softmax(policy_logits, axis=-1)
+                policy_entropy = -jnp.sum(
+                    policy_probs * jnp.log(policy_probs + 1e-10), axis=-1
+                ).mean()
+                entropy_bonus = entropy_coef * policy_entropy
+                # 5× stronger push when below floor (mirrors trainer.py:1244)
+                floor_gap = jnp.maximum(min_entropy - policy_entropy, 0.0)
+                floor_penalty = entropy_coef * 5.0 * floor_gap
+                # Net adjustment: subtract bonus (encourage exploration), add penalty
+                policy_loss = policy_loss - entropy_bonus + floor_penalty
+            else:
+                policy_entropy = jnp.array(0.0)
 
             # === Shared: encode obs_t1 with stopped params (no gradients to encoder/reasoning) ===
             stopped_params = jax.lax.stop_gradient(params)
@@ -1317,6 +1343,7 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             return total_loss, {
                 'total_loss': total_loss,
                 'policy_loss': policy_loss,
+                'policy_entropy': policy_entropy,  # TASK_763
                 'value_loss': value_loss,
                 'consistency_loss': consistency_loss,
                 'reward_loss': reward_loss,
@@ -2041,6 +2068,20 @@ def parse_args():
                         help='Disable class-balanced BC (use plain per-asset CE mean)')
     parser.add_argument('--bc-max-trade-weight', type=float, default=None,
                         help='Max trade weight boost for class-balanced BC (default: 64.0)')
+    # TASK_762: Reward shaping (reward_scale + fee_penalty_bps)
+    parser.add_argument('--reward-scale', type=float, default=None,
+                        help='Per-step reward scaling factor (default: 100.0). '
+                             'Sweep ∈ {25, 50, 100, 200} per experiments/762/SPEC.md.')
+    parser.add_argument('--fee-penalty-bps', type=float, default=None,
+                        help='Extra per-trade fee penalty in basis points (default: 0). '
+                             'Sweep ∈ {0, 2, 5, 10} per experiments/762/SPEC.md.')
+    # TASK_763: Policy entropy regularization
+    parser.add_argument('--entropy-coef', type=float, default=None,
+                        help='Entropy bonus coefficient on policy loss (default: 0.0 = canon). '
+                             'Sweep ∈ {0.005, 0.01, 0.02, 0.05, 0.1} per experiments/763/SPEC.md.')
+    parser.add_argument('--min-entropy', type=float, default=None,
+                        help='Entropy floor below which 5× penalty fires (default: 0.0). '
+                             'Recommended 3.0 for joint MCTS (ln(320) ≈ 5.77).')
     # TASK_727: Auxiliary direction head
     parser.add_argument('--no-direction-head', action='store_true',
                         help='Disable per-asset direction head (default: on)')
@@ -2338,6 +2379,16 @@ def main():
         config.bc_class_balanced = False
     if args.bc_max_trade_weight is not None:
         config.bc_max_trade_weight = args.bc_max_trade_weight
+    # TASK_762: reward shaping overrides
+    if args.reward_scale is not None:
+        config.reward_scale = args.reward_scale
+    if args.fee_penalty_bps is not None:
+        config.fee_penalty_bps = args.fee_penalty_bps
+    # TASK_763: policy entropy regularization overrides
+    if args.entropy_coef is not None:
+        config.entropy_coef = args.entropy_coef
+    if args.min_entropy is not None:
+        config.min_entropy = args.min_entropy
     if args.no_direction_head:
         config.use_direction_head = False
     if args.direction_weight is not None:
