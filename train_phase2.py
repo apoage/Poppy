@@ -642,13 +642,41 @@ class AsyncBatchPipeline:
             horizon = self.config.oracle_value_horizon
             end_idx = np.minimum(decision_indices + horizon, len(oracle_cum_pnl) - 1)
             remaining = (oracle_cum_pnl[end_idx] - oracle_cum_pnl[decision_indices]).astype(np.float32)
+
+            # TASK_762 F1 fix: oracle_cum_pnl is precomputed upstream and includes
+            # transaction_cost but NOT fee_penalty_bps. Without this branch the
+            # reward head trains on penalized signal while the value head trains
+            # on unpenalized PnL — credit assignment breaks, fee penalty has no
+            # teeth. Only do the extra index gather when the knob is non-zero
+            # (canon = 0, hot path stays unchanged).
+            extra_bps = self.config.fee_penalty_bps * 1e-4
+            if extra_bps != 0.0:
+                horizon_offsets = np.arange(1, horizon + 1)
+                horizon_idx = np.minimum(
+                    decision_indices[:, None] + horizon_offsets[None, :],
+                    len(oracle_cum_pnl) - 1,
+                )
+                # Mask steps beyond end_idx per-sample (variable horizon clamp).
+                mask = horizon_idx <= end_idx[:, None]
+                sel_h = slot['oracle_selections'][horizon_idx]                 # (n, H, n_assets)
+                sel_h_prev = slot['oracle_selections'][np.maximum(horizon_idx - 1, 0)]
+                oracle_changes = (np.abs(sel_h - sel_h_prev).sum(axis=-1) * mask).sum(axis=-1)
+                remaining = (remaining - oracle_changes * extra_bps).astype(np.float32)
             all_oracle_values.append(remaining)
 
             # VECTORIZED n-step rewards (numpy, no Python loop)
             steps = decision_indices[:, None] + np.arange(nstep)  # (n, N)
             steps = np.minimum(steps, len(oracle_cum_pnl) - 2)
             # TASK_762: scale via config knob, not module constant
-            per_step_r = (oracle_cum_pnl[steps + 1] - oracle_cum_pnl[steps]) * self.config.reward_scale
+            per_step_pnl = oracle_cum_pnl[steps + 1] - oracle_cum_pnl[steps]
+            # TASK_762 F1 fix: same fee_penalty_bps asymmetry as oracle-remaining
+            # above. Subtract per-step extra penalty before scaling. Canon = 0.
+            if extra_bps != 0.0:
+                sel_t = slot['oracle_selections'][steps]
+                sel_tm1 = slot['oracle_selections'][np.maximum(steps - 1, 0)]
+                nstep_changes = np.abs(sel_t - sel_tm1).sum(axis=-1)            # (n, N)
+                per_step_pnl = per_step_pnl - nstep_changes * extra_bps
+            per_step_r = per_step_pnl * self.config.reward_scale
             per_step_r = np.clip(per_step_r, -10.0, 10.0)
             discounts = self.config.td_discount ** np.arange(nstep)
             nstep_sum = (per_step_r * discounts).sum(axis=1).astype(np.float32)
@@ -2304,8 +2332,8 @@ def parse_args():
                              'small inner-loop step).')
     parser.add_argument('--titans-gate-init', type=float, default=None,
                         help='TASK_749: init bias for MAG gate sigmoid '
-                             '(default -5.0 → mix≈0.7%, byte-identical baseline). '
-                             '-3 → mix≈4.7% for faster gate engagement.')
+                             '(default -5.0 → mix≈0.7%%, byte-identical baseline). '
+                             '-3 → mix≈4.7%% for faster gate engagement.')
     parser.add_argument('--titans-lr', type=float, default=None,
                         help='TASK_749 fix 5: dedicated outer-LR for Titans '
                              'params (gate + memory MLP + persistent tokens + '
