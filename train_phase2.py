@@ -2534,6 +2534,10 @@ def main():
                                  if k in Phase2Config.__dataclass_fields__})
         logger.info("Built config from checkpoint metadata")
 
+    # TASK_764: oracle_k is inherited silently from the Phase-1 imprint config.
+    # Log it explicitly so a wrong --checkpoint (k=4 vs k=8/12) is visible.
+    logger.info(f"[TASK_764] oracle_k inherited from Phase-1 checkpoint = {config.oracle_k}")
+
     # Apply stage + CLI overrides
     config.stage = args.stage
     config.get_stage_defaults()

@@ -1,6 +1,7 @@
 # TASK_764 — Oracle k-Reformulation (Phase 1 Re-Imprint)
 
 **Status**: DRAFT — operator-approval pending. Activates if TASK_762 + TASK_763 close null (per `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` Direction 3).
+**CLI flag SHIPPED 2026-05-22** (commit `<PENDING>`): `--oracle-k` added to `train_easy.py` (default `None` → canon `oracle_k=4` bit-identical) + Phase-2 inheritance-log in `train_phase2.py`. Deployed `--code-only`. The *experiment* (Phase-1 re-imprint) is still future — only the flag code shipped.
 **Created**: 2026-05-20.
 **Estimated wall**: ~35h server (single-GPU bottleneck on Phase 1).
 

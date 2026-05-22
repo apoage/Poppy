@@ -2969,6 +2969,8 @@ def main():
                         help='Override AR blend cap (0.0-1.0, e.g., 0.88 to freeze at 88%% AR)')
     parser.add_argument('--oracle-mask-head', action='store_true',
                         help='TASK_695: Enable oracle mask prediction auxiliary head')
+    parser.add_argument('--oracle-k', type=int, default=None,
+                        help='TASK_764: oracle top-k (sweep {4,8,12}); default None = use preset value')
 
     # TASK_698: Historical data training
     parser.add_argument('--db-path', type=str, default=None,
@@ -3043,6 +3045,10 @@ def main():
         config.use_oracle_mask_head = True  # TASK_695
     if args.target_agreement is not None:
         config.target_oracle_agreement = args.target_agreement
+    # TASK_764: oracle top-k override (None = keep preset/config value)
+    if args.oracle_k is not None:
+        config.oracle_k = args.oracle_k
+        logger.info(f"[TASK_764] oracle_k overridden via CLI -> {config.oracle_k}")
     if args.ar_max_blend is not None:
         config.ar_max_blend = args.ar_max_blend
     # TASK_729b: widen per-asset encoder capacity
