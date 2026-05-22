@@ -440,6 +440,7 @@ def run_period_eval(
     encoder_config: EncoderConfig,
     mcts_search=None,
     mcts_decode: str = 'joint',
+    disable_limit_orders: bool = False,
 ) -> PeriodResult:
     """Evaluate model on a single benchmark period.
 
@@ -453,6 +454,27 @@ def run_period_eval(
     n_assets = config.n_assets
     window_size = config.window_size
     T_prices = prices.shape[0]
+
+    # TASK_767: eval-MCTS action mask. The action mask passed to mcts_search
+    # is normally all-ones (every action valid). When the checkpoint was
+    # trained with disable_limit_orders=True the LimitSell (3) / LimitBuy (4)
+    # actions within each asset's 5-block must be masked at eval too, so the
+    # eval-MCTS tree expands the same effective 64x3=192 action space as
+    # training. _limit_mask_row is (320,) int8: 1 = valid, 0 = limit order.
+    # disable_limit_orders=False keeps it all-ones — eval is bit-identical to
+    # pre-767 behavior.
+    _limit_mask_row = np.ones((n_assets, 5), dtype=np.int8)
+    if disable_limit_orders:
+        _limit_mask_row[:, 3] = 0   # LimitSell
+        _limit_mask_row[:, 4] = 0   # LimitBuy
+    _limit_mask_row = _limit_mask_row.reshape(-1)  # (320,)
+    # Additive (5,) logit mask for the argmax (non-MCTS) eval path: 0.0 for
+    # kept actions, -inf for limits. Broadcasts over (..., n_assets, 5).
+    # All-zeros when disable_limit_orders=False → argmax bit-identical.
+    _argmax_logit_mask = jnp.asarray(
+        np.where(_limit_mask_row.reshape(n_assets, 5)[0] == 0, -np.inf, 0.0)
+        .astype(np.float32)
+    )  # (5,)
 
     # 1. Compute log returns
     returns = np.log(prices[1:] / np.maximum(prices[:-1], 1e-8))  # (T-1, n_assets)
@@ -520,11 +542,18 @@ def run_period_eval(
             output = _jit_model_forward(params, obs, model)
             logits_per_asset = output['policy_logits'].reshape(-1, n_assets, 5)
             if mcts_search is None:
-                all_model_actions.append(np.array(jnp.argmax(logits_per_asset, axis=-1)))
+                # TASK_767: _argmax_logit_mask is all-zeros unless limits are
+                # disabled, in which case limit logits become -inf → never the
+                # argmax. Bit-identical to pre-767 when the flag is off.
+                all_model_actions.append(np.array(jnp.argmax(
+                    logits_per_asset + _argmax_logit_mask, axis=-1)))
             else:
                 # MCTS path: deterministic per-window seed
                 B = obs.shape[0]
-                action_mask = jnp.ones((B, n_assets * 5), dtype=jnp.int8)
+                # TASK_767: tile the (320,) limit mask across the batch.
+                action_mask = jnp.asarray(
+                    np.broadcast_to(_limit_mask_row, (B, n_assets * 5))
+                )
                 rng = jax.random.PRNGKey(int(start))
                 mcts_act, policy_probs, _ = mcts_search(params, rng, obs, action_mask)
                 acts = _mcts_decode_actions(
@@ -600,10 +629,13 @@ def run_period_eval(
 
             logits_per_asset = logits.reshape(1, n_assets, 5)
             if mcts_search is None:
-                actions_i = np.array(jnp.argmax(logits_per_asset, axis=-1))[0]  # (n_assets,)
+                # TASK_767: limit logits → -inf when disabled (else all-zeros).
+                actions_i = np.array(jnp.argmax(
+                    logits_per_asset + _argmax_logit_mask, axis=-1))[0]  # (n_assets,)
             else:
                 # MCTS path: deterministic per-window seed
-                action_mask = jnp.ones((1, n_assets * 5), dtype=jnp.int8)
+                # TASK_767: (1, 320) limit mask (all-ones unless flag set).
+                action_mask = jnp.asarray(_limit_mask_row[None, :])
                 rng = jax.random.PRNGKey(int(i))
                 mcts_act, policy_probs, _ = mcts_search(params, rng, obs_full, action_mask)
                 actions_i = _mcts_decode_actions(
@@ -620,7 +652,11 @@ def run_period_eval(
                 )
 
             # 5. Update confidence from model's own softmax
-            model_softmax = np.array(jax.nn.softmax(logits_per_asset[0], axis=-1))  # (n_assets, 5)
+            # TASK_767: add _argmax_logit_mask (all-zeros unless limits are
+            # disabled) so the confidence reflects only actions the model can
+            # actually take. Bit-identical to pre-767 when the flag is off.
+            model_softmax = np.array(jax.nn.softmax(
+                logits_per_asset[0] + _argmax_logit_mask, axis=-1))  # (n_assets, 5)
             prev_confidence = np.max(model_softmax, axis=-1)  # (n_assets,)
 
             # 6. Update state from model's own action
@@ -818,6 +854,7 @@ def run_full_benchmark(
     bella_episodes: int = 10,
     eval_mcts_sims: int = 0,
     eval_mcts_decode: str = 'joint',
+    disable_limit_orders: Optional[bool] = None,
 ) -> List[PeriodResult]:
     """Run benchmark on all (or selected) periods.
 
@@ -868,14 +905,19 @@ def run_full_benchmark(
     ckpt_dir = Path(checkpoint_path).parent
     config_json = ckpt_dir / 'config.json'
 
+    # raw_config_dict holds the full unfiltered config dict (Phase-2 fields
+    # included) so Phase-2-only flags survive the EasyConfig field filter.
+    raw_config_dict = {}
     if 'config' in metadata:
         ckpt_config = metadata['config']
+        raw_config_dict = dict(ckpt_config)
         config = EasyConfig(**{k: v for k, v in ckpt_config.items()
                                if k in EasyConfig.__dataclass_fields__})
         print(f"Config: from checkpoint metadata ({config.name})")
     elif config_json.exists():
         with open(config_json) as f:
             cfg_data = json.load(f)
+        raw_config_dict = dict(cfg_data)
         # Filter to valid EasyConfig fields (config.json may have extra keys)
         valid_fields = EasyConfig.__dataclass_fields__
         config = EasyConfig(**{k: v for k, v in cfg_data.items() if k in valid_fields})
@@ -888,6 +930,17 @@ def run_full_benchmark(
         else:
             config = get_medium_config()
         print(f"Config: {config_preset} preset (no config.json found)")
+
+    # TASK_767: resolve disable_limit_orders. EasyConfig has no such field, so
+    # a Phase-2 checkpoint trained with --disable-limit-orders carries the flag
+    # only in raw_config_dict. Explicit caller arg (CLI --disable-limit-orders)
+    # overrides; otherwise auto-detect from the checkpoint config. Default
+    # False = canon 5-action eval, bit-identical to pre-767 behavior.
+    if disable_limit_orders is None:
+        disable_limit_orders = bool(raw_config_dict.get('disable_limit_orders', False))
+    if disable_limit_orders:
+        print("TASK_767: limit orders DISABLED for eval — MCTS masks "
+              "LimitSell/LimitBuy (effective 64x3=192 action space)")
 
     # TASK_733 safety rail: a cheat-channel checkpoint has trained on leaked
     # future prices. Benchmarking it as a production candidate is meaningless
@@ -974,6 +1027,7 @@ def run_full_benchmark(
             model, params, config, encoder_config,
             mcts_search=mcts_search,
             mcts_decode=eval_mcts_decode,
+            disable_limit_orders=disable_limit_orders,
         )
         results.append(result)
 
@@ -1004,6 +1058,7 @@ def run_full_benchmark(
                     model, params, config, encoder_config,
                     mcts_search=mcts_search,
                     mcts_decode=eval_mcts_decode,
+                    disable_limit_orders=disable_limit_orders,
                 )
                 bella_results.append(r)
 
@@ -1160,6 +1215,13 @@ def main():
     parser.add_argument('--eval-mcts-decode', type=str, default='joint',
                         choices=['joint', 'per_asset'],
                         help='How to decode MCTS output to per-asset actions (default: joint)')
+    # TASK_767: action-space restructure. Default (flag absent) = auto-detect
+    # from checkpoint config. --disable-limit-orders / --no-disable-limit-orders
+    # force the eval-MCTS mask on/off regardless of checkpoint metadata.
+    parser.add_argument('--disable-limit-orders', action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help='TASK_767: mask LimitSell/LimitBuy in eval-MCTS. '
+                             'Default = auto-detect from checkpoint config.')
 
     args = parser.parse_args()
 
@@ -1189,6 +1251,7 @@ def main():
         bella_episodes=args.bella_episodes,
         eval_mcts_sims=args.eval_mcts_sims,
         eval_mcts_decode=args.eval_mcts_decode,
+        disable_limit_orders=args.disable_limit_orders,
     )
 
     # Save JSON if requested

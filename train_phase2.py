@@ -1040,6 +1040,48 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     # time — sweep cells re-JIT but that's a one-time cost per cell.
     entropy_coef = float(getattr(config, 'entropy_coef', 0.0))
     min_entropy = float(getattr(config, 'min_entropy', 0.0))
+    # TASK_767: action-space restructure. When disable_limit_orders is True the
+    # LimitSell (3) / LimitBuy (4) actions are dropped from the Phase-2 action
+    # space. Two static arrays are built once at JIT-trace time:
+    #   limit_logit_mask  — (320,) additive logit mask; masked entries get a
+    #                       large-but-finite negative so softmax probability is
+    #                       an exact 0.0 while log_softmax stays finite.
+    #   limit_keep_mask   — (320,) float {0,1}; 1 = kept action. Used to zero
+    #                       and renormalize the policy / oracle CE targets so
+    #                       masked entries carry exactly 0 probability.
+    # WHY -1e9 and not jnp.finfo.min: the CE term for a masked index is
+    # target[i] * log_softmax(logits)[i]. With finfo.min (~-3.4e38) the
+    # subtraction -FLT_MAX - logsumexp rounds to literal -inf, and the oracle
+    # BC target is a per-asset softmax that puts a TINY but non-zero probability
+    # on limit indices -> tiny * (-inf) = -inf -> CE = +inf (observed in the
+    # first 767 smoke). -1e9 keeps log_softmax finite (no overflow) and still
+    # drives softmax probability to exactly 0.0. Belt-and-braces, the targets
+    # are also masked+renormalized below so the masked CE term is a clean 0.0
+    # and the masked logits get zero gradient.
+    # Canon (False) leaves both arrays None and every guard branch dead — the
+    # flag-off path is bit-identical to pre-767 code.
+    disable_limit_orders = bool(getattr(config, 'disable_limit_orders', False))
+    if disable_limit_orders:
+        _keep_np = np.ones((n_assets, n_actions_per_asset), dtype=np.float32)
+        _keep_np[:, 3] = 0.0   # LimitSell
+        _keep_np[:, 4] = 0.0   # LimitBuy
+        limit_keep_mask = jnp.asarray(_keep_np.reshape(-1))            # (320,)
+        _logit_np = np.where(_keep_np == 0.0, -1e9, 0.0).astype(np.float32)
+        limit_logit_mask = jnp.asarray(_logit_np.reshape(-1))         # (320,)
+    else:
+        limit_keep_mask = None
+        limit_logit_mask = None
+
+    def _mask_renorm_target(target_320):
+        """TASK_767: zero the limit-action entries of a per-asset CE target and
+        renormalize each asset's 5-block to sum to 1 over the kept actions.
+        target_320 is (B, 320). No-op semantics rely on the caller only
+        invoking this when limit_keep_mask is not None."""
+        t = target_320 * limit_keep_mask                              # (B, 320)
+        tr = t.reshape(-1, n_assets, n_actions_per_asset)
+        grp = jnp.sum(tr, axis=-1, keepdims=True)                     # (B, 64, 1)
+        tr = tr / jnp.maximum(grp, 1e-8)
+        return tr.reshape(-1, n_assets * n_actions_per_asset)
     use_direction = config.use_direction_head  # TASK_727: aux direction head
     direction_w = config.direction_loss_weight # TASK_727: direction loss weight
     use_rank = getattr(config, 'use_rank_head', False)             # TASK_730: rank head
@@ -1115,12 +1157,45 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             value_logits = root_out['value']            # (B, 401)
             latent_t = root_out['latent_state']         # (B, 128)
 
+            # TASK_767: mask the LimitSell/LimitBuy logits to -inf before any
+            # softmax/CE. This zeroes their probability and gradient in the
+            # policy CE, the BC CE and the entropy term alike. Canon path
+            # (limit_logit_mask is None) skips this entirely — policy_logits is
+            # untouched, every downstream op bit-identical to pre-767 code.
+            if limit_logit_mask is not None:
+                policy_logits = policy_logits + limit_logit_mask  # (B, 320)
+
+            # TASK_767: zero the limit-action probability in the CE *targets*.
+            # Left unmasked, target[limit] * log_softmax(masked_logits)[limit]
+            # is a non-zero probability times a hugely-negative log-prob, which
+            # dominates (or, with finfo.min, infinitises) the CE.
+            #  - oracle_targets is ALWAYS a per-asset softmax (each 5-block sums
+            #    to 1) and puts a small non-zero mass on limit indices ->
+            #    mask + per-asset renormalize.
+            #  - mcts_visits is per-asset under factored search (renormalize)
+            #    but a single GLOBAL distribution under joint MCTS, where mctx's
+            #    invalid_actions already drives the limit weights to exactly 0
+            #    -> only apply the {0,1} keep mask, never per-asset renormalize
+            #    (that would corrupt the global distribution).
+            # New local names (not a rebind of the closure params) so this is a
+            # pure addition. Canon path keeps mcts_visits_m / oracle_targets_m
+            # pointing straight at the originals — bit-identical to pre-767.
+            if limit_keep_mask is not None:
+                oracle_targets_m = _mask_renorm_target(oracle_targets)
+                if use_factored:
+                    mcts_visits_m = _mask_renorm_target(mcts_visits)
+                else:
+                    mcts_visits_m = mcts_visits * limit_keep_mask
+            else:
+                mcts_visits_m = mcts_visits
+                oracle_targets_m = oracle_targets
+
             # === Policy loss: distill search targets into single-step policy ===
             if use_factored:
                 # TASK_724: Per-asset CE — each asset's 5 actions are independent
                 # Targets are per-asset softmax (each group of 5 sums to 1.0)
                 pol_r = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
-                tgt_r = mcts_visits.reshape(-1, n_assets, n_actions_per_asset)
+                tgt_r = mcts_visits_m.reshape(-1, n_assets, n_actions_per_asset)
                 per_asset_ce_policy = optax.softmax_cross_entropy(pol_r, tgt_r)  # (B, 64)
                 if use_bc_balance:
                     # TASK_726 Change 2: factored policy targets also skew HOLD
@@ -1138,7 +1213,7 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                     policy_loss = per_asset_ce_policy.mean()
             else:
                 # Joint MCTS: visit_counts sum to 1.0 globally over 320 actions
-                policy_loss = optax.softmax_cross_entropy(policy_logits, mcts_visits).mean()
+                policy_loss = optax.softmax_cross_entropy(policy_logits, mcts_visits_m).mean()
 
             # TASK_763: policy entropy regularization (joint case only; factored
             # has different semantics — sweep gated by use_factored=False).
@@ -1225,8 +1300,10 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
 
             # === Oracle BC regularizer (decaying, per-asset CE matching Phase 1) ===
             # oracle_targets are per-asset softmaxed (each group of 5 sums to 1.0)
+            # oracle_targets_m == oracle_targets on the canon path; under
+            # TASK_767 it has the limit actions masked + renormalized.
             policy_reshaped = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
-            oracle_reshaped = oracle_targets.reshape(-1, n_assets, n_actions_per_asset)
+            oracle_reshaped = oracle_targets_m.reshape(-1, n_assets, n_actions_per_asset)
             per_asset_ce = optax.softmax_cross_entropy(policy_reshaped, oracle_reshaped)  # (B, 64)
             if use_bc_balance:
                 # TASK_726 Change 1: oracle targets are 93.75% HOLD (k=4/64). Without
@@ -1357,6 +1434,39 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 bella_shape_mean_resid = jnp.array(0.0)
                 bella_shape_std_resid = jnp.array(0.0)
 
+            # === TASK_767: action-distribution diagnostics ===
+            # mcts_visits is (B, 320). Reshape to (B, 64, 5) and sum over the
+            # 64-asset axis to get the action-type marginal (idx 1 = Hold,
+            # idx {3,4} = LimitSell/LimitBuy), then normalize by total mass so
+            # the metric is mode-agnostic:
+            #   joint MCTS — mcts_visits sums to 1.0 globally  -> total = 1.
+            #   factored   — each per-asset group sums to 1.0  -> total = 64.
+            # Dividing by the row total turns both into a proper action-type
+            # probability that sums to 1.
+            #   mean_trade_rate       = probability NOT on Hold.
+            #   limit_action_fraction = probability on the two limit actions;
+            #     the 767 mechanism-premise check (must collapse to ~0 when
+            #     disable_limit_orders is on; reveals the baseline's limit
+            #     bleed when off).
+            # Aux metrics only — never enter total_loss, so they add zero
+            # gradient and the canon training step is unchanged. Computed in
+            # the existing JIT step, so no extra device sync.
+            # NB: measured on the RAW search output mcts_visits (not the
+            # target-masked mcts_visits_m) so limit_action_fraction reports
+            # what the search genuinely produced — for the 767 variant the
+            # factored/joint search itself drives it to ~0; for canon it
+            # exposes the real limit bleed.
+            _vc = mcts_visits.reshape(-1, n_assets, n_actions_per_asset)
+            _act_marginal = jnp.sum(_vc, axis=1)                       # (B, 5)
+            _act_total = jnp.maximum(
+                jnp.sum(_act_marginal, axis=-1, keepdims=True), 1e-8
+            )
+            _act_frac = _act_marginal / _act_total                     # (B, 5), sums to 1
+            mean_trade_rate = jnp.mean(1.0 - _act_frac[:, 1])
+            limit_action_fraction = jnp.mean(
+                _act_frac[:, 3] + _act_frac[:, 4]
+            )
+
             # === Total ===
             total_loss = (policy_w * policy_loss +
                           value_w * value_loss +
@@ -1399,6 +1509,9 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 'bella_shape_std_resid': bella_shape_std_resid,
                 'pred_latent_std': jnp.std(dyn_out['latent_state']),
                 'target_latent_std': jnp.std(latent_t1),
+                # TASK_767: action-distribution diagnostics
+                'mean_trade_rate': mean_trade_rate,
+                'limit_action_fraction': limit_action_fraction,
                 'td_target_mean': jnp.mean(td_target_raw),
                 'td_target_std': jnp.std(td_target_raw),
                 'td_targets_raw': td_target_raw,  # (B,) for PopArt update outside JIT
@@ -1595,6 +1708,28 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             epsilon_greedy=config.epsilon_greedy,
         )
 
+    # TASK_767: train-time MCTS action mask. When disable_limit_orders is True
+    # build a (batch_size, 320) int8 mask (1 = valid market action,
+    # 0 = LimitSell/LimitBuy) and pass it to every search() call.
+    # MuZeroMCTXSearch forwards it as invalid_actions to
+    # mctx.gumbel_muzero_policy, so the search tree never expands the masked
+    # actions — this is the load-bearing branching-factor reduction
+    # (64x5=320 -> effective 64x3=192). mctx._mask_invalid_actions runs
+    # chex.assert_equal_shape against the (B, 320) prior logits, so the mask is
+    # sized to the full batch (AsyncBatchPipeline always yields exactly
+    # batch_size rows). Canon (False) leaves search_action_mask = None and
+    # search() is called exactly as before — bit-identical to pre-767 code.
+    search_action_mask = None
+    if bool(getattr(config, 'disable_limit_orders', False)):
+        _sm = np.ones((batch_size, config.n_assets, 5), dtype=np.int8)
+        _sm[:, :, 3] = 0   # LimitSell invalid
+        _sm[:, :, 4] = 0   # LimitBuy invalid
+        search_action_mask = jnp.asarray(_sm.reshape(batch_size, -1))  # (B, 320)
+        logger.info(
+            "TASK_767: limit orders DISABLED — MCTS action space 64x5=320 -> "
+            "effective 64x3=192 (LimitSell/LimitBuy masked in search + policy loss)"
+        )
+
     # PopArt value normalization (TASK_718b)
     popart_state = None
     if config.use_popart:
@@ -1662,6 +1797,9 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
         'titans_mem_norm', 'titans_surprise_mean',
         'titans_alpha_mean', 'titans_eta_mean', 'titans_theta_mean',
         'titans_gate_mean',
+        # TASK_767: action-distribution diagnostics — search trade rate and the
+        # fraction of search mass on limit orders (validates the 767 mechanism).
+        'mean_trade_rate', 'limit_action_fraction',
         'total_loss', 'grad_norm',
         'td_target_mean', 'td_target_std', 'pa_mean', 'pa_std',
         'elapsed_s', 'gen_s', 'mcts_s', 'train_s',
@@ -1745,7 +1883,19 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
 
             # 2. Run MCTS search (JIT'd internally)
             rng_key, search_key = jax.random.split(rng_key)
-            _actions, visit_counts, stats = search(params, search_key, obs)
+            if search_action_mask is None:
+                # Canon path — call site bit-identical to pre-767 code.
+                _actions, visit_counts, stats = search(params, search_key, obs)
+            else:
+                # TASK_767: pass the limit-order mask so MCTS never expands
+                # LimitSell/LimitBuy. mctx requires the mask shape to equal the
+                # (B, 320) logits exactly; slice to obs.shape[0] in case the
+                # final batch is short (search_action_mask is pre-sized to the
+                # configured batch_size, which is the upper bound).
+                _actions, visit_counts, stats = search(
+                    params, search_key, obs,
+                    search_action_mask[:obs.shape[0]],
+                )
             mcts_value = stats['root_value']  # (B,) scalar
             _tm1 = time.time()
             t_mcts += _tm1 - _tg1
@@ -1902,11 +2052,15 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                            f"/sup{titans_metrics['titans_surprise_mean']:.3e}"
                            f"/a{titans_metrics['titans_alpha_mean']:.3f}")
 
+        # TASK_767: search action-distribution diagnostics (always logged).
+        trade_info = (f" trade_rate={avg.get('mean_trade_rate', 0):.3f}"
+                      f"/limit={avg.get('limit_action_fraction', 0):.3f}")
+
         logger.info(
             f"E{epoch:4d}: policy={avg['policy_loss']:.4f} "
             f"value={avg['value_loss']:.4f} "
             f"consistency={avg['consistency_loss']:.4f} "
-            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{bella_shape_info}{bella_aug_info}{titans_info} "
+            f"bc={avg['bc_loss']:.4f}(w={avg['bc_weight']:.4f}){dir_info}{rank_info}{flow_info}{aux_price_info}{bella_info}{bella_shape_info}{bella_aug_info}{titans_info}{trade_info} "
             f"total={avg['total_loss']:.4f} "
             f"grad={avg['grad_norm']:.3f}"
             f"{pa_info} "
@@ -1950,6 +2104,9 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
             'titans_eta_mean': f"{titans_metrics['titans_eta_mean']:.6f}",
             'titans_theta_mean': f"{titans_metrics['titans_theta_mean']:.6f}",
             'titans_gate_mean': f"{titans_metrics['titans_gate_mean']:.6f}",
+            # TASK_767: action-distribution diagnostics
+            'mean_trade_rate': f"{avg.get('mean_trade_rate', 0):.6f}",
+            'limit_action_fraction': f"{avg.get('limit_action_fraction', 0):.6f}",
             'total_loss': f"{avg['total_loss']:.6f}",
             'grad_norm': f"{avg['grad_norm']:.6f}",
             'td_target_mean': f"{avg.get('td_target_mean', 0):.6f}",
@@ -2110,6 +2267,13 @@ def parse_args():
     parser.add_argument('--min-entropy', type=float, default=None,
                         help='Entropy floor below which 5× penalty fires (default: 0.0). '
                              'Recommended 3.0 for joint MCTS (ln(320) ≈ 5.77).')
+    # TASK_767: Action-space restructure (drop limit orders)
+    parser.add_argument('--disable-limit-orders', action='store_true',
+                        help='TASK_767: drop the two limit-order actions '
+                             '(LimitSell=3, LimitBuy=4) from the Phase-2 action '
+                             'space. Their policy logits are masked to -inf and '
+                             'MCTS never expands them — 64x5=320 -> effective '
+                             '64x3=192. Default off = canon (5-action).')
     # TASK_727: Auxiliary direction head
     parser.add_argument('--no-direction-head', action='store_true',
                         help='Disable per-asset direction head (default: on)')
@@ -2417,6 +2581,9 @@ def main():
         config.entropy_coef = args.entropy_coef
     if args.min_entropy is not None:
         config.min_entropy = args.min_entropy
+    # TASK_767: action-space restructure (drop limit orders)
+    if args.disable_limit_orders:
+        config.disable_limit_orders = True
     if args.no_direction_head:
         config.use_direction_head = False
     if args.direction_weight is not None:

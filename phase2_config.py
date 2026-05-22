@@ -36,6 +36,14 @@ class Phase2Config(EasyConfig):
     # collapse signature seen across single-mechanism regressions.
     fee_penalty_bps: float = 0.0
 
+    # === Action-Space Restructure (TASK_767) ===
+    # When True, the two limit-order actions (LimitSell=3, LimitBuy=4) are
+    # dropped from the Phase-2 action space: their policy logits are masked to
+    # -inf before softmax and MCTS never expands them — collapsing the live
+    # action space from 64×5=320 to an effective 64×3=192. Default False = canon
+    # (5-action, bit-identical to pre-767 behavior; all guard branches are dead).
+    disable_limit_orders: bool = False
+
     # === Policy Entropy Regularization (TASK_763) ===
     # Bonus on policy_loss: -entropy_coef * H(policy) + 5*entropy_coef * relu(min_entropy - H).
     # Defaults 0.0 = canon (no regularization). entropy_coef sweep 0.005–0.1;
