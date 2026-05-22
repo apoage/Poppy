@@ -96,6 +96,21 @@ Spec: `tasks/TASK_759_PLANNING_PIVOT.md`.
 
 **Promotion gate**: paired mean Δα ≥ +1pp AND no seed < −3pp at 3-seed → extend to 5-seed. 5-seed mean ≥ +3pp with no seed < −5pp → **first campaign promotion**, Bloom-trigger.
 
+### Priority 2f — Structural pivot wave (2026-05-20 → LIVE)
+
+Single-mechanism class CLOSED 2026-05-20 (`[[single-mechanism-exhausted]]`): every 738–759 perturbation null-or-worse under eval-MCTS sims=16 joint recal. Roadmap: `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` (4 directions + Gemini's 767 addition). Default campaign order: **762 → 767 → 763 → 764**. Baseline for all paired Δα = 760's a1b1 sims=32 set unless a cell promotes a new canon.
+
+| ID | SPEC | Status | Wall | Notes |
+|---|---|---|---|---|
+| 760 | `experiments/760_train_mcts_sims/SPEC.md` | ✅ DONE — **NULL** | ~22h | Train-time MCTS sims=64 vs 32. mean Δα **+0.35pp**, worst −0.17pp. Phase-3 gate failed. Train-time search saturates at sims=32; the 759 eval-MCTS lift is purely eval-side. `runs/760_train_mcts_sims/result.md`. Produced the a1b1 sims=32 baselines now shared by 762/763/767. |
+| 762 | `experiments/762_reward_shaping/SPEC.md` | 🟢 **IN FLIGHT — Wave 2** | ~15-21h | Direction 1. **Wave 1 (reward_scale sweep) DONE**: mechanism gate PASS — best cell rs050 (`reward_scale=50`) Δα **+0.27pp**, Δtrade-rate −0.243%; standard +3pp gate FAIL; rs200 a clear regression (−1.33pp). **Wave 2 (`fee_penalty_bps ∈ {2,5,10}` at rs050) authorized 2026-05-22** — `runs/762_reward_shaping/AUTHORIZATION_WAVE2_2026-05-22.md`. F1 fix (`bbcb4b0`/`5ba4071`) makes Wave 2 a real test. |
+| 769 | `experiments/769_value_clip/SPEC.md` | 🔴 **NEEDS CODE** (~30 lines, flag-gated) | ~12h + ~3h code | **F2 fix** — PopArt pre-clip reorder. 762 Wave 1's rs200 regression (−1.33pp) confirmed the bughunt's F2: `[−10,10]` clips on reward/value targets sit *before* PopArt normalization, censoring the range PopArt absorbs. Variant clips post-normalization. Tests if the fix rescues rs200 + un-blocks the `reward_scale` lever. Flag-gated default-OFF → deploys safe mid-campaign. Run after 762 Wave 2 (the reward-shaping conclusion). See `lore/notes_2026-05-22.md` §163. |
+| 767 | `experiments/767_action_space/SPEC.md` | 🔴 **NEEDS CODE** (~40 lines) | ~12h + ~4h code | Gemini addition (`TASK_767`, 2nd-highest EV/hr). Drop limit orders: 320-dim → 192-dim. Oracle audit cleared (0% limit usage — `path_solver.py:406,473`). Code: action mask + **MCTS expansion guard** (load-bearing) + config/CLI. Runs after 762. |
+| 763 | `experiments/763_entropy_reg/SPEC.md` | 🟢 **READY** (code shipped `b4e0158`) | ~19-24h | Direction 2. Policy `entropy_coef` sweep {0.005…0.1}. Mechanism gate: Δ-Bal.Acc < 0 AND Δα > 0. Runs after 767. |
+| 764 | `tasks/TASK_764_ORACLE_K_REFORMULATION.md` | 🟡 DRAFT — **breaks Phase-1 contract** | ~35h | Direction 3. Oracle k=4 → 8/12, requires Phase-1 re-imprint. SPEC not yet under `experiments/`. Last CLI-side direction. Phase-1 sanity gate (bull Bal.Acc +5pp) before Phase 2. |
+| 765 | `tasks/TASK_765_INCOMPATIBLE_DATASET.md` | ⛔ **DATA-BLOCKED** | ~300h+ | Direction 4. Iris-DEX block-level (12s) OHLCV. Pipeline not ready. Reframe as a bridge experiment (isolate data variable) per `TASK_766` §1. |
+| 768 | `tasks/TASK_768_BASE_MODEL_REFRESH.md` | 🟡 DRAFT/ROADMAP — activates after 762/767/763 | TBD | **New base model** = Phase-1 imprint refresh **+ channel-architecture redesign**. Motivation: the cross-sectional channel mixing (TASK_732) bakes the 64-asset universe into the input → blocks variable-universe / per-asset / transfer approaches. Naive scale-up rejected (VRAM allows it but `[[classifier-alpha-anticorrelation]]` contraindicates). Folds in TASK_764 (oracle axis). Needs channel-architecture deep-dive + operator decisions before executable. |
+
 ### Priority 3 — followups
 
 | ID | Description | Status | Action |
@@ -180,9 +195,12 @@ SPECs under `experiments/<id>/`.
 2. **Stagger benchmark eval** — also `train_phase2.py`? No, `benchmark_easy.py`
    is a separate path and doesn't seem to trigger the deadlock. Safe to
    run alongside training.
-3. **Each new experiment** stacks on top of the **current best** Stage-B
-   config. Today (2026-05-13) the current best is `no_aux_solo` (rank
-   ON, aux OFF). Update this comment when a new best emerges.
+3. **Each new experiment** pairs against the **canonical baseline**.
+   As of 2026-05-22 the canonical Stage-B config is **a1b1** (rank+aux);
+   `no_aux_solo` was deprecated 2026-05-14 after the TASK_743 multi-seed
+   reversal. No mechanism has promoted since — a1b1 remains canon. The
+   concrete baseline runs are 760's a1b1 sims=32 set. Update when a cell
+   promotes 5-seed.
 4. **Always write `result.md`** at the end of an experiment. The
    experiment isn't done until result.md exists.
 5. **Flag drops are the source of truth** for completion. The waiters
