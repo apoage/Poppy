@@ -69,3 +69,23 @@ Bull-blindness has been documented since the early campaign (`project_bull_blind
 - `~/.claude/projects/-home-lukas-Trader/memory/project_bull_blindness.md` — primary evidence base.
 - `mcts_trader/jax_agent/path_solver.py` — oracle implementation, k parameterization point.
 - `train_easy.py` + `tools/orchestration/e-dojo_v1.py` — Foxglove Phase 1 entry points.
+
+## Implementation deep-dive (2026-05-22) — SCOPE CORRECTED
+
+A read-only deep-dive agent verified this against source. **The "Code changes required" section above over-scopes — corrections:**
+
+- **`path_solver.py` needs ZERO changes.** `k` is already a parameterized `static_argnames` argument on every oracle function (`greedy_lookahead_path:41`, `batched_greedy_lookahead_path`, `multipass_oracle_policy`, `batched_*`). Strike code-change item #1.
+- **There is NO oracle disk cache.** The oracle is computed on-the-fly per run (`SegmentPool._precompute_oracle` → `greedy_lookahead_path`, ~4.6 s/slot — the `[POOL] Oracle computed` log line). `generate_oracle_data.py` is dead (orphan `.pyc` only). Strike code-change item #4 and the "~2-4h oracle re-precompute" wall — k=8/12 need no precompute.
+- **`oracle_k` is already a config field** (`easy_config.py:64`, `assert oracle_k > 0` at `:159`), already threaded to every oracle call, already saved to the ckpt config (`train_easy.py:3152`). **Phase-2 inherits it automatically** — `Phase2Config(EasyConfig)` + the config-load filter carry `oracle_k` over with no Phase-2 code change. Strike code-change item #3.
+- The 3 hardcoded `k=4` at `train_easy.py:88, 188, 327` are **inert function-signature defaults** — every live call passes `k=self.config.oracle_k`. Leave them.
+
+**Actual required change — ~5 lines in `train_easy.py`:**
+1. After `:2971` (end of the "Other" argparse group): `parser.add_argument('--oracle-k', type=int, default=None, help='TASK_764: oracle top-k, sweep {4,8,12}')`.
+2. After `:3045` (the `--target-agreement` override): `if args.oracle_k is not None: config.oracle_k = args.oracle_k`.
+   **Must use `default=None` + override-only-if-not-None** — a non-None default would clobber the preset's `oracle_k` on every run and blow away a `--config`-loaded value.
+
+**Optional safety (~1 line):** `logger.info(f"[TASK_764] oracle_k={config.oracle_k}")` at Phase-2 startup (`train_phase2.py` ~`:2535`). Phase-2's `oracle_k` inheritance is silent — a wrong `--checkpoint` would run k=4 with no error and void the experiment.
+
+**Gotcha — confirm the launch path before implementing.** If Phase-1 is launched via the dojo (`tools/orchestration/e-dojo_v1.py`), its `launch_branch` command builder (`~:1276-1288`) does NOT forward `oracle_k` — add it to `DEFAULT_PARAMS` (`~:1229`) + the cmd builder (~2 extra lines). If Phase-1 is launched by calling `train_easy.py` directly (SPEC-style server run), the dojo needs nothing.
+
+**Net: 764's code is ~5-7 lines.** The cost of 764 is entirely the Phase-1 re-imprint wall-time (~12 h/seed), not implementation. The TASK_764 wall estimate (~35 h) stands; the *code* estimate (~30 lines) was an overestimate.

@@ -144,3 +144,31 @@ A base-model refresh can move on one or more of these axes. They are not all equ
 - `mcts_trader/jax_agent/muzero_model.py:243`, `trm_flax.py`, `trm_encoder_v3.py` — the architecture.
 - `lore/notes_2026-05-12.md` §83 — the data corruption incident (the mistake to not repeat).
 - `~/.claude/projects/-home-lukas-Trader/memory/project_classifier_alpha_anti_correlation.md`, `project_single_mechanism_exhausted.md`, `project_bull_blindness.md` — why naive scale-up is contraindicated.
+
+## Implementation deep-dive (2026-05-22) — channel restructure
+
+A read-only deep-dive agent traced the encoder. The restructure is **feasible, bit-identical, and needs NO Phase-1 re-imprint** — confirming the §161 de-risk.
+
+**The approach — "Option A" (recommended):** split the preprocessing function `_compute_all_channels_temporal` (`jax_encoder.py:491-535`) into `_compute_per_asset_channels` (27, universe-independent) + `_compute_cross_sectional` (5, takes the raw price/return arrays + a runtime `n`). The model-input tensor drops to 27 per-asset + 7 agent = **34**; a thin wrapper re-derives the 5 and concatenates to 39. The universe `n` becomes a runtime arg of the preprocessing — no `nn.Module` signature surgery. (Option B — computing the 5 literally inside `StreamingAssetEncoder.__call__` — needs raw-returns plumbed through 3 files and cannot reproduce channel 28 exactly; rejected.)
+
+**Validation = spot-check, not re-imprint.** The 5 features are parameter-free deterministic functions; relocating their *computation* (same formulas, same raw inputs) is bit-identical. Confirm by `jnp.array_equal` on the 32-channel tensor old-vs-new + one benchmark period for Alpha-parity. No 12h re-imprint to validate correctness.
+
+**Two hard risks** (put in the implementation brief):
+1. **float32 discipline** — the cross-sectional math runs float32 today; if relocated code runs in the encoder's bf16 context it diverges. Compute float32, cast at concat. Highest-likelihood accidental non-identity.
+2. **Channel order** — must assemble `[0-26 per-asset][27-31 cross-sectional][32-38 agent]`. The base imprint's `temporal_proj.kernel` (`trm_encoder_v3.py:141`, shape `(39,32)`) binds each column to a channel index. Wrong order → not bit-identical → forces a re-imprint.
+
+**Two computation sites, not one** — the cross-sectional block is duplicated: `_compute_all_channels_temporal` (`:491-535`, active temporal path) AND `_compute_all_channels` (`:308-341`, tiled legacy). Update both in lockstep or formally retire the tiled path (confirm no live caller first).
+
+**n=64 sites for the restructure** (input stays n=64, Alpha-neutral): all in `jax_encoder.py` (`n_f`, output tensor shape, `broadcast_scalar`, the 3 universe means) + the `n_channels` constant 39→34 in `easy_config.py:27`, `train_easy.py` (`encoder_n_channels` `:1462`; the `use_state_channels = n_channels > 32` checks at `:1794, 2038, 2502` → `> 27`), `easy_trainer.py:70`. `trm_encoder_v3.py` needs **no change** — its forward pass is already n-runtime up to the configured max.
+
+**OUT of scope** — the variable-universe follow-on (needs re-imprint): the two genuine n=64 *weight-shape* hard-stops — `asset_identity_embed` and `global_proj` (`trm_encoder_v3.py`). The channel restructure alone keeps n=64 and is Alpha-neutral; variable-universe *training* is what it unblocks, separately.
+
+**Dead code confirmed:** `observation_encoder.py:226` `_cross_asset_rank` is legacy (TASK_125), not on the active encoder-v3 path — ignore.
+
+**Effort:** ~1-1.5 days, no GPU re-imprint.
+
+## Deploy DB-integrity check — chain item (the data-mistake guard)
+
+The 2026-05-12 corruption propagated because the `zstd → rsync` DB flow has no source-side integrity check (`tools/deploy/.training-exclude` excludes `*.db` / `trading_data.db.zst` / `.sha256` from the regular deploy — the DB moves via a separate manual step, and a `.sha256` of the *compressed* file does not catch SQLite page corruption: zstd faithfully compresses a corrupt DB and the checksum still matches).
+
+**Spec**: a small `tools/deploy/sync-db.sh` (~20 lines) — (1) `sqlite3 trading_data.db 'PRAGMA integrity_check'`, proceed only on `ok`; (2) `zstd` → `rsync` to server; (3) server-side, re-run `PRAGMA integrity_check` after decompress. Make this the *only* sanctioned DB-deploy path. Standalone, no dependency on the other chain links — implement anytime; it is a prerequisite for any base-model retrain.
