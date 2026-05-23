@@ -2576,17 +2576,37 @@ def main():
     # Look for config.json next to checkpoint
     ckpt_dir = Path(ckpt_path).parent
     p1_config_path = ckpt_dir / 'config.json'
+    p1_had_oracle_k = False
     if p1_config_path.exists():
         config = get_phase2_config(str(p1_config_path))
         logger.info(f"Loaded Phase 1 config from {p1_config_path}")
+        # TASK_771/764/F3: probe the JSON for explicit `oracle_k` presence so
+        # we can distinguish "inherited from ckpt" from "Phase2Config default
+        # fallback" — see the log below.
+        import json as _json_probe
+        try:
+            with open(p1_config_path) as _f:
+                p1_had_oracle_k = 'oracle_k' in _json_probe.load(_f)
+        except Exception:
+            p1_had_oracle_k = False
     else:
         config = Phase2Config(**{k: v for k, v in p1_config.items()
                                  if k in Phase2Config.__dataclass_fields__})
+        p1_had_oracle_k = 'oracle_k' in p1_config
         logger.info("Built config from checkpoint metadata")
 
     # TASK_764: oracle_k is inherited silently from the Phase-1 imprint config.
     # Log it explicitly so a wrong --checkpoint (k=4 vs k=8/12) is visible.
-    logger.info(f"[TASK_764] oracle_k inherited from Phase-1 checkpoint = {config.oracle_k}")
+    # TASK_771/764/F3: warn when the key was missing — the value is the
+    # `Phase2Config` (= `EasyConfig`) default, NOT inherited.
+    if p1_had_oracle_k:
+        logger.info(f"[TASK_764] oracle_k inherited from Phase-1 checkpoint = {config.oracle_k}")
+    else:
+        logger.warning(
+            f"[TASK_764] oracle_k MISSING from Phase-1 ckpt config — "
+            f"defaulted to {config.oracle_k} (this is a pre-TASK_764 ckpt; "
+            f"override with `--oracle-k` if Phase-1 used a non-default value)"
+        )
 
     # Apply stage + CLI overrides
     config.stage = args.stage
