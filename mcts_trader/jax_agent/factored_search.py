@@ -124,11 +124,23 @@ class FactoredPerAssetSearch:
         only (uniform = valid_mask / count_valid) instead of all 5 — otherwise
         the eps mix would re-inject eps/5 probability back into the masked
         limit actions. valid_mask=None keeps the original all-5 uniform.
-        """
-        # Center per asset for numerical stability
-        q_centered = q_values - q_values.mean(axis=-1, keepdims=True)
 
-        targets = jax.nn.softmax(q_centered / self.temperature, axis=-1)  # (B, 64, 5)
+        TASK_771/F1 (P0): the previous implementation subtracted the per-asset
+        mean before softmax for "numerical stability" — but softmax is shift-
+        invariant (softmax(x − c) ≡ softmax(x)) and `jax.nn.softmax` already
+        performs its own internal max-shift (x − x.max()). Under the 767 mask
+        the masked entries are driven to -1e9; the explicit mean step then
+        rounded the per-asset mean to ~-4e8 in float32, shifting the valid
+        Q's by +4e8 (ULP = 32 at that magnitude, swamping |Q| ≤ 20). All
+        valid q_centered entries collapsed to the same float32 value, making
+        the softmax output uniform across valid actions and silently
+        degrading the policy training target to [1/3, 1/3, 1/3, 0, 0] per
+        asset. Removing the mean-shift restores the Q-weighted softmax; the
+        canon (action_mask=None) path is mathematically identical because
+        softmax absorbs any per-row constant shift (the float32 arithmetic
+        differs by ULP-scale ≤ noise floor of training-pipeline scheduling).
+        """
+        targets = jax.nn.softmax(q_values / self.temperature, axis=-1)  # (B, 64, 5)
 
         if self.epsilon_greedy > 0:
             if valid_mask is None:
@@ -179,14 +191,14 @@ class FactoredPerAssetSearch:
         # 2. Q-values for all 320 (asset, action) pairs
         q_values, rewards = self._compute_q_values(params, latent)
 
-        # TASK_767: mask invalid (asset, action) Q-values. The sentinel is a
-        # MODERATE negative (-1e9), not jnp.finfo.min: _q_to_policy sums all 5
-        # per-asset Q-values for the mean-centering step, and finfo.min (~-3e38)
-        # would overflow that float32 sum to -inf and propagate NaN through the
-        # softmax. -1e9 sums cleanly (5 * -1e9 = -5e9, well inside float32) and
-        # is still ~1e8 below any real Q value (reward+γV ∈ ~[-10,10]) so after
-        # the /temperature scaling the masked-action softmax probability is an
-        # exact 0.0. softmax is max-stable, so no exp overflow either.
+        # TASK_767: mask invalid (asset, action) Q-values to -1e9. After
+        # TASK_771/F1 removed the explicit mean-shift in _q_to_policy, the
+        # -1e9 sentinel only feeds `jax.nn.softmax`'s internal max-shift,
+        # which gives exp(-1e9 - Q_max) = 0 (underflow) at masked positions
+        # while preserving full precision at valid positions. -1e9 is still
+        # safely ~1e8 below any real Q (reward+γV ∈ ~[-10,10]) and remains
+        # well inside float32 dynamic range; argmax-on-q_values continues to
+        # exclude limit indices.
         valid_mask_r = None
         if action_mask is not None:
             mask_r = action_mask.reshape(-1, self.n_assets, self.n_actions_per_asset)

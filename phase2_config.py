@@ -295,13 +295,24 @@ class Phase2Config(EasyConfig):
 
 
 def get_phase2_config(phase1_config_path: str = None) -> Phase2Config:
-    """Create Phase 2 config, optionally loading Phase 1 config as base."""
+    """Create Phase 2 config, optionally loading Phase 1 config as base.
+
+    TASK_771/F4 (P2): filter by Phase2Config.__dataclass_fields__ (the
+    superset of EasyConfig). Previously we filtered by EasyConfig only,
+    which silently dropped any Phase-2-only fields (e.g.
+    `disable_limit_orders`, `value_clip_mode`) when a stray Phase-2
+    `config.json` happened to sit next to the checkpoint. Using the
+    Phase2Config superset preserves both Phase-1 inherited fields AND any
+    Phase-2 fields that may already be present in the JSON — without
+    risking attribute errors on unknown keys (those are still filtered
+    out).
+    """
     if phase1_config_path:
         import json
         with open(phase1_config_path) as f:
             p1_data = json.load(f)
-        # Only carry over Phase 1 fields that exist in EasyConfig
-        easy_fields = {f.name for f in EasyConfig.__dataclass_fields__.values()}
-        p1_filtered = {k: v for k, v in p1_data.items() if k in easy_fields}
+        # Filter to Phase2Config fields (superset of EasyConfig).
+        p2_fields = {f.name for f in Phase2Config.__dataclass_fields__.values()}
+        p1_filtered = {k: v for k, v in p1_data.items() if k in p2_fields}
         return Phase2Config(**p1_filtered)
     return Phase2Config()

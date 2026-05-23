@@ -2297,13 +2297,21 @@ def parse_args():
     parser.add_argument('--min-entropy', type=float, default=None,
                         help='Entropy floor below which 5× penalty fires (default: 0.0). '
                              'Recommended 3.0 for joint MCTS (ln(320) ≈ 5.77).')
-    # TASK_767: Action-space restructure (drop limit orders)
-    parser.add_argument('--disable-limit-orders', action='store_true',
+    # TASK_767: Action-space restructure (drop limit orders).
+    # TASK_771/F4 (P2): switched to BooleanOptionalAction so --no-disable-limit-orders
+    # can force the flag OFF even when the resumed checkpoint config carries
+    # disable_limit_orders=True. Default (flag absent) = None = inherit from
+    # the checkpoint / config defaults.
+    parser.add_argument('--disable-limit-orders',
+                        action=argparse.BooleanOptionalAction,
+                        default=None,
                         help='TASK_767: drop the two limit-order actions '
                              '(LimitSell=3, LimitBuy=4) from the Phase-2 action '
                              'space. Their policy logits are masked to -inf and '
                              'MCTS never expands them — 64x5=320 -> effective '
-                             '64x3=192. Default off = canon (5-action).')
+                             '64x3=192. Default = None = inherit from checkpoint '
+                             'config (canon = False). Use --no-disable-limit-orders '
+                             'to explicitly force the flag OFF on resume.')
     # TASK_769: Value-clip mode (F2 fix — PopArt pre-clip reorder)
     parser.add_argument('--value-clip-mode', type=str, default=None,
                         choices=['pre_popart', 'post_popart'],
@@ -2626,9 +2634,11 @@ def main():
         config.entropy_coef = args.entropy_coef
     if args.min_entropy is not None:
         config.min_entropy = args.min_entropy
-    # TASK_767: action-space restructure (drop limit orders)
-    if args.disable_limit_orders:
-        config.disable_limit_orders = True
+    # TASK_767: action-space restructure (drop limit orders).
+    # TASK_771/F4 (P2): BooleanOptionalAction three-state semantics — None =
+    # inherit, True = force ON, False = force OFF.
+    if args.disable_limit_orders is not None:
+        config.disable_limit_orders = bool(args.disable_limit_orders)
     # TASK_769: value-clip mode override (F2 fix)
     if args.value_clip_mode is not None:
         config.value_clip_mode = args.value_clip_mode

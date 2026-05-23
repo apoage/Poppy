@@ -91,11 +91,20 @@ class MuZeroMCTXSearch:
         params: dict,
         rng: chex.PRNGKey,
         action: jnp.ndarray,
-        embedding: jnp.ndarray
+        embedding: jnp.ndarray,
+        action_mask: jnp.ndarray = None,
     ) -> mctx.RecurrentFnOutput:
         """
         Recurrent dynamics function for tree expansion.
         Called num_simulations times per search.
+
+        TASK_771/F2 (P1): when action_mask is provided, mask the returned
+        prior_logits at masked indices to a large finite negative so mctx's
+        `gumbel_muzero_interior_action_selection` (which uses prior_logits
+        directly with no `invalid_actions` argument — only the root selection
+        applies the mask in mctx) never expands limit-action branches at
+        depth ≥ 1. action_mask=None keeps the canon (5-arg with default)
+        path bit-identical to pre-771 code.
         """
         output = self.model_apply_fn(
             {'params': params},
@@ -105,22 +114,34 @@ class MuZeroMCTXSearch:
         )
 
         # Convert categorical outputs to scalars
-        # TASK_034: Rewards are trained with 100× scaling for better bin resolution
-        # Descale here to match actual environment reward scale
-        reward_scalar = self._categorical_to_scalar(output['reward']) / 100.0
+        # TASK_723 Fix 1: Rewards use raw categorical→scalar (no PopArt, no /100).
+        # Old code divided by 100 making rewards 0.04% of Q-value — MCTS was blind to rewards.
+        reward_scalar = self._reward_to_scalar(output['reward'])
         value_scalar = self._categorical_to_scalar(output['value'])
+
+        # TASK_771/F2: mask interior prior_logits when a search-action mask
+        # is active. Same sentinel as root-level mask in `_search`
+        # (`jnp.finfo.min`) — mctx's interior softmax sees finfo.min and the
+        # masked positions underflow to ~0, so limit branches are never
+        # picked at depth ≥ 1.
+        prior_logits = output['policy_logits']
+        if action_mask is not None:
+            min_logit = jnp.finfo(prior_logits.dtype).min
+            prior_logits = jnp.where(
+                action_mask.astype(bool), prior_logits, min_logit
+            )
 
         recurrent_output = mctx.RecurrentFnOutput(
             reward=reward_scalar,
             discount=jnp.full_like(reward_scalar, self.discount),
-            prior_logits=output['policy_logits'],
+            prior_logits=prior_logits,
             value=value_scalar
         )
         return recurrent_output, output['latent_state']
 
     def _categorical_to_scalar(self, logits: jnp.ndarray) -> jnp.ndarray:
         """
-        Convert categorical representation to scalar.
+        Convert categorical representation to scalar with PopArt denormalization.
 
         Args:
             logits: (batch, support_size) logits
@@ -138,6 +159,18 @@ class MuZeroMCTXSearch:
         scale = getattr(self, 'value_scale', 1.0)
         shift = getattr(self, 'value_shift', 0.0)
         return raw_value * scale + shift
+
+    def _reward_to_scalar(self, logits: jnp.ndarray) -> jnp.ndarray:
+        """Convert reward categorical to scalar. No PopArt — rewards aren't normalized.
+
+        TASK_723 Fix 1b: Rewards are trained with REWARD_SCALE=100 so they occupy
+        [-10, 10] support, but they are NOT PopArt-normalized. Using _categorical_to_scalar
+        would incorrectly apply value_scale/value_shift (PopArt params) to rewards.
+        """
+        from . import get_value_support
+        support = get_value_support()
+        probs = jax.nn.softmax(logits, axis=-1)
+        return jnp.sum(probs * support, axis=-1)
 
     def _search(
         self,
@@ -187,9 +220,15 @@ class MuZeroMCTXSearch:
         # mctx passes (action, embedding) where action/embedding are BATChED if called inside mctx's batch logic?
         # mctx docs: recurrent_fn(params, rng_key, action, embedding)
         # It expects inputs to be batched if we provide batched roots.
-        
+        #
+        # TASK_771/F2: capture action_mask in the closure so depth-≥1 prior
+        # logits get the same mask treatment as the root (mctx's interior
+        # action-selection has no invalid_actions argument; we have to bake
+        # the mask into the recurrent_fn output). Canon (action_mask=None)
+        # passes None through and the masking branch in _recurrent_fn is
+        # dead Python — bit-identical to pre-771 trace.
         recurrent_fn = lambda params, rng, action, embedding: self._recurrent_fn(
-            params, rng, action, embedding
+            params, rng, action, embedding, action_mask
         )
 
         if self.use_gumbel:
@@ -250,8 +289,18 @@ class MuZeroMCTXSearch:
         observation: jnp.ndarray,
         action_mask: jnp.ndarray = None
     ) -> Tuple[jnp.ndarray, jnp.ndarray, dict]:
-        """Convenience method for calling search"""
+        """Convenience method for calling search (uses JIT-compiled version)"""
         return self.search_fn(params, rng, observation, action_mask)
+
+    def raw_search(
+        self,
+        params: dict,
+        rng: chex.PRNGKey,
+        observation: jnp.ndarray,
+        action_mask: jnp.ndarray = None
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, dict]:
+        """Non-JITted search for use inside lax.scan (allows XLA fusion)"""
+        return self._search(params, rng, observation, action_mask)
 
 
 # Example usage
