@@ -280,6 +280,21 @@ class Phase2Config(EasyConfig):
     # === Checkpointing ===
     phase2_checkpoint_dir: str = "jax_ckpt_easy_phase2"
 
+    def __post_init__(self):
+        """Validate Phase2Config. Defers parent validators via super()."""
+        super().__post_init__()
+        # TASK_771/N1: validate value_clip_mode at construction time. argparse
+        # `choices=` already catches CLI typos, but JSON-loaded configs (via
+        # get_phase2_config()) or direct kwargs bypass that gate; without this
+        # check, a typo like "post-popart" would silently fall through the
+        # `if value_clip_mode == "pre_popart":` gates in train_phase2.py and
+        # behave as post_popart with no error.
+        if self.value_clip_mode not in ("pre_popart", "post_popart"):
+            raise ValueError(
+                f"value_clip_mode must be 'pre_popart' or 'post_popart', "
+                f"got {self.value_clip_mode!r}"
+            )
+
     def get_stage_defaults(self):
         """Apply stage-specific default overrides. Call after construction."""
         if self.stage == "A":

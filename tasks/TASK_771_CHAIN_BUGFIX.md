@@ -27,8 +27,8 @@
 | 764/F3 | P2 | Phase-2 inheritance log "inherited=4" masks missing-key fallback | current ckpts all have the field → risk low | guardrail |
 | 769/F1 | P2 | SPEC body has stale pre-patch line numbers | `:63, :71-76, :78, :82-83, :85` | doc accuracy |
 | 769/F2 | P2 | SPEC cites orphaned amended hash `c2ad6f5` | should be `95fcf98` | doc accuracy |
-| 769/F3 | P2 | no `logger.info` for `value_clip_mode` at training start | reproducibility / log readability | operator visibility |
-| 769/N1 | P2 | `value_clip_mode` accepts any string from JSON config-load (argparse `choices` only catches CLI) | typo bypass | guardrail |
+| 769/F3 | P2 | no `logger.info` for `value_clip_mode` at training start | reproducibility / log readability | ✓ FIXED (TASK_771 Batch 4 commit, 2026-05-23) |
+| 769/N1 | P2 | `value_clip_mode` accepts any string from JSON config-load (argparse `choices` only catches CLI) | typo bypass | ✓ FIXED (TASK_771 Batch 4 commit, 2026-05-23) |
 | di/N1 | P2 | sync-db.sh — server-side disk-full on 24 GB decompress unprotected | foot-gun if `$HOME` is short | rare-but-possible |
 | 767/F5, 769/N3 | P3 | various SPEC / commit message line drift | doc accuracy | polish | ✓ FIXED for 767+769 SPECs (TASK_771 doc commit, 2026-05-23) |
 | di/{F7-F13, N2-N7} | P3 | sync-db.sh papercuts | stderr leak, no DB lock, no `zstd -t`, etc. | polish |
@@ -90,6 +90,19 @@ Smoke (workstation, no actual rsync):
   - `--skip-compress --force-stale --dry-run` → printed mtime warning + `--force-stale set — proceeding with stale .zst.`, proceeded through sha256+rsync (dry-run), rc=0.
 
 Risk: zero on the success path (mathematically equivalent to the pre-patch flow); pure hardening of failure / interrupted / stale paths. No JAX or Python sub-process touched.
+
+**2026-05-23 — Batch 4 769 P2 fixes shipped (769/F3 + 769/N1).**
+
+Files changed:
+- `phase2_config.py` — 769/N1: added `Phase2Config.__post_init__` that calls `super().__post_init__()` (preserves the EasyConfig validators for `action_space_size`, `target_oracle_agreement`, `oracle_k`, `batch_size`) then validates `self.value_clip_mode in ("pre_popart", "post_popart")`. Closes the JSON-config-load / direct-kwargs typo gap that argparse `choices=` alone cannot catch. The comment explains the gap and the specific failure mode (a typo like `"post-popart"` would silently fall through the `if value_clip_mode == "pre_popart":` gates and behave as `post_popart`).
+- `train_phase2.py` — 769/F3: added `logger.info(f"  Value clip mode: {config.value_clip_mode} (TASK_769)")` immediately after the existing `Value targets:` line (`:1694`) in the Stage-B startup banner. Format mirrors the surrounding two-space-indented lines (BC, Value targets) and tags the TASK ID for grep-discoverability — matching the convention used by TASK_767's `disable_limit_orders` log block (`:1758-1761`).
+
+Smoke (workstation, pure dataclass test — no JAX dependency for the validator):
+- `python -c "from phase2_config import Phase2Config; c = Phase2Config(); print('valid:', c.value_clip_mode)"` → `valid: pre_popart`, rc=0.
+- `python -c "from phase2_config import Phase2Config; Phase2Config(value_clip_mode='bogus')"` → raises `ValueError: value_clip_mode must be 'pre_popart' or 'post_popart', got 'bogus'`, rc=1.
+- `python -c "from phase2_config import Phase2Config; c = Phase2Config(value_clip_mode='post_popart'); print('post_popart accepted:', c.value_clip_mode)"` → `post_popart accepted: post_popart`, rc=0.
+
+Risk: zero. The validator runs once at construction time; on canon `pre_popart` it is a no-op. The startup log adds one info line per training run — pure observability. F2 fix gate logic (`:680-689`, `:1260-1269`, `:1281-1284`, `:1293-1297`) untouched; the unconditional immediate-reward clip at `:637` (load-bearing for the dynamics-reward-head CE target) untouched.
 
 ---
 

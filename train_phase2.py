@@ -1692,6 +1692,7 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                 f"value={config.exit_value_weight}, consistency={config.exit_consistency_weight}")
     logger.info(f"  BC: {config.bc_weight} → {config.bc_weight_min} over {config.bc_decay_steps} steps")
     logger.info(f"  Value targets: {config.value_target_mode} (TD discount: {config.td_discount}, MCTS: {config.mcts_discount})")
+    logger.info(f"  Value clip mode: {config.value_clip_mode} (TASK_769)")
 
     # Reset value head to break Phase 1 saturation (V ≈ 10 for all states)
     if config.reset_value_head:
