@@ -3083,6 +3083,16 @@ def main():
         logger.info(f"  cheat scalar: {config.per_asset_inject_cheat}")
         logger.info("=" * 60)
 
+    # TASK_771/F1+N1 (Batch 3): re-run dataclass validators after CLI overrides.
+    # Direct attribute assignment in the override block above bypasses
+    # `EasyConfig.__post_init__` (which only runs at construction time). This
+    # call re-validates ALL invariants — `oracle_k > 0`, `batch_size > 0`,
+    # `0 < target_oracle_agreement <= 1.0`, `action_space_size == 5 * n_assets` —
+    # against the post-override state. Closes the silent-bypass gap surfaced by
+    # the 764 bug-hunt (e.g. `--oracle-k -1` would have silently trained on -1
+    # and exploded downstream with a cryptic JAX/XLA error).
+    config.__post_init__()
+
     logger.info("=" * 60)
     logger.info("Easy Mode Training - On-the-fly VRAM Generation")
     logger.info("=" * 60)

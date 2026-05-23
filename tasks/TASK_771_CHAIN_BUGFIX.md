@@ -22,9 +22,9 @@
 | di/F4 | P1 | sync-db.sh no WAL checkpoint before compress | latent — bites if DB ever in WAL mode | future Kraken-fetch path | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
 | di/F5 | P1 | sync-db.sh `--skip-compress` ships stale .zst | current .zst is 2026-01-20 (4 mo old) | operator misuse | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
 | 767/F4 | P2 | Stage-B resume drops `disable_limit_orders` if stray Phase-1 config.json | requires unusual ckpt layout | edge case | ✓ FIXED (TASK_771 commit, 2026-05-23) |
-| 764/F1+N1 | P2 | `__post_init__` validators bypassed by direct CLI override | covers `oracle_k, batch_size, target_oracle_agreement` | guardrail gap |
-| 764/F2 | P2 | e-dojo silently drops `--oracle-k` (only via programmatic kwargs) | operator CLI is rejected → safe; programmatic use voids | narrow gap |
-| 764/F3 | P2 | Phase-2 inheritance log "inherited=4" masks missing-key fallback | current ckpts all have the field → risk low | guardrail |
+| 764/F1+N1 | P2 | `__post_init__` validators bypassed by direct CLI override | covers `oracle_k, batch_size, target_oracle_agreement` | guardrail gap | ✓ FIXED (TASK_771 Batch 3 commit, 2026-05-23) |
+| 764/F2 | P2 | e-dojo silently drops `--oracle-k` (only via programmatic kwargs) | operator CLI is rejected → safe; programmatic use voids | narrow gap | DEFERRED to P3 (doc-only; e-dojo programmatic-kwargs path works, CLI rejected = safe) |
+| 764/F3 | P2 | Phase-2 inheritance log "inherited=4" masks missing-key fallback | current ckpts all have the field → risk low | guardrail | DEFERRED to P3 (current ckpts all carry the field) |
 | 769/F1 | P2 | SPEC body has stale pre-patch line numbers | `:63, :71-76, :78, :82-83, :85` | doc accuracy |
 | 769/F2 | P2 | SPEC cites orphaned amended hash `c2ad6f5` | should be `95fcf98` | doc accuracy |
 | 769/F3 | P2 | no `logger.info` for `value_clip_mode` at training start | reproducibility / log readability | ✓ FIXED (TASK_771 Batch 4 commit, 2026-05-23) |
