@@ -130,9 +130,40 @@ A base-model refresh can move on one or more of these axes. They are not all equ
 
 ## Status
 
-- **DRAFT / ROADMAP** — not executable.
-- **Blocking work before executable**: the channel-architecture deep-dive (3 items above); operator answers to the 4 open decisions.
-- **Activation**: after 762 → 767 → 763 close.
+- **Option A SHIPPED (workstation)** — channel-restructure split landed on `master` 2026-05-23, bit-identical, no re-imprint. Commit hash recorded in the Implementation log below.
+- **Activation of broader refresh** (oracle axis / re-imprint / re-fetch / scope-of-redesign decisions): still after 762 → 767 → 763 close. Option A is the *unblock-only* prerequisite, not the whole task.
+
+## Implementation log
+
+### 2026-05-23 — Option A channel-restructure SHIPPED
+
+**Commit**: on master — `TASK_768: channel restructure — Option A preprocessing split (bit-identical)`. Hash recorded by the commit script as a follow-up; look up via `git log --grep TASK_768` (typically the top result on master after this lands).
+
+**Files changed**:
+| File | Lines | Note |
+|------|-------|------|
+| `mcts_trader/env/jax_encoder.py` | +267 (Option A only; bundled commit may show more due to pre-existing master/training-branch drift) | Split `_compute_all_channels_temporal` and `_compute_all_channels` into `_compute_per_asset_channels{,_temporal}` (universe-independent, returns `(output, returns_1m)`) + `_compute_cross_sectional{,_temporal}` (universe-coupled, takes `n` as runtime arg). Wrapper functions retain their old signatures and produce bit-identical output. Cheat channel 32 stays in the wrapper (consumes `future_close` from the encoder entry point). |
+| `tools/benchmarks/task768_bit_identity_check.py` | new | numpy-emulated bit-identity gate: pre-768 monolithic vs post-768 split, across 3 seeds × {32-ch, 27-ch} × {temporal, tiled}. |
+| `tools/benchmarks/task768_jax_old_vs_new.py` | new | Definitive JAX-old-vs-JAX-new bit-identity gate. |
+| `tools/benchmarks/task768_jax_smoke.py` | new | Direct-invocation smoke (no NaN/Inf, shape correct, finite XS values). |
+| `tools/benchmarks/task768_jax_vs_numpy.py` | new | JAX-vs-numpy ULP-noise reference (informational — JAX float32 reductions diverge from numpy by ≤1e-6, NOT a bug from this commit). |
+| `tools/benchmarks/task768_train_easy_path.py` | new | Hot-path smoke via `jit_vmap_encode_temporal`. |
+
+**Bit-identity gate result**:
+- `task768_bit_identity_check.py` (numpy-old vs numpy-new): **PASS** — `np.array_equal` returns True, max abs diff = **0.0**, across seeds {7, 42, 123} × {temporal, tiled} × {32-ch, 27-ch} (12 configs).
+- `task768_jax_old_vs_new.py` (JAX-old vs JAX-new, the SPEC-mandated gate): **PASS** — `np.array_equal` returns True, max abs diff = **0.0**, across same 12 configs.
+
+**Channel order invariant** (preserved): `[0-26 per-asset][27-31 cross-sectional][32 cheat-opt-in]`. Encoder `temporal_proj.kernel` (`trm_encoder_v3.py:141`, shape `(39, 32)`) still binds the same columns to the same channel indices → **base imprint stays valid, no re-imprint needed**.
+
+**Float32 discipline** (SPEC risk #1): cross-sectional helper inputs (`prices`, `returns_1m`) come from the per-asset preprocessing which runs on float32 OHLCV slices. No bf16 boundary exists at the preprocessing layer today; the cheat-channel block and the wrapper concat all stay float32. Docstrings on the new helpers spell this out for future maintenance.
+
+**Divergence from SPEC**:
+- SPEC suggested also flipping `n_channels = 39 → 34` in `easy_config.py:27` and updating the `use_state_channels = n_channels > 32 → > 27` gates in `train_easy.py:1794/2038/2502` + `easy_trainer.py:70`. SPEC also wrote (line 152): "The conservative path (which I recommend): keep `n_channels = 39` everywhere; only the *internal split* of the preprocessing function changes; no external state changes." **Conservative path taken**: the model still sees a 39-channel post-injection tensor (27 per-asset + 5 XS recomputed + 7 agent), and `n_channels = 39` stays. This preserves bit-identity to the externally-visible model contract; flipping the gates was rejected as out-of-scope-and-risky for this minimal unblock commit. The split itself moves `n` from a static config field to a runtime arg of the helpers, which is the structural unblock the future variable-universe work needs.
+- `_compute_all_channels_compressed` (`:1076`, used only for pre-encoded demo storage) was left untouched: it has no cross-sectional code to relocate (only computes channels 0-26 in compressed form).
+
+**Sandbox status**: JAX-level execution was available in this environment via `python3` (pyenv 3.10.14, not the `trader_env` venv). All four gates ran successfully on workstation CPU. No GPU re-imprint was performed (none needed; this is the de-risked path the SPEC anticipated).
+
+**Deploy**: `tools/deploy/deploy.sh --code-only --dry-run` not run in this session (sandbox restriction); operator-run recommended before the next training-branch push.
 
 ## References
 

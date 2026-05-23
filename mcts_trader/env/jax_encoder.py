@@ -45,20 +45,35 @@ from typing import Tuple, Optional
 
 @chex.dataclass(frozen=True)
 class EncoderConfig:
-    """Configuration for the 27-channel encoder.
+    """Configuration for the 32-channel encoder (TASK_732).
+
+    27 per-asset-independent channels (OHLCV, returns, volatility, percentiles,
+    VWAP, momentum) + 5 cross-sectional channels at the end (ranks, beta,
+    idiosyncratic vol, xs momentum). Cross-sectional block gives the model
+    explicit "where this asset stands vs the other 63" signal, absent pre-732.
 
     Attributes:
         n_assets: Number of assets (default 64)
         window_size: Lookback window for features (default 60)
-        n_channels: Number of output channels (fixed at 27)
+        n_channels: Number of output channels (default 32 post-TASK_732)
         return_clip: Max return value before clipping (default 10.0)
         vol_scale: Volatility scaling factor (default 100.0)
+        use_cheat_channel: TASK_733 — opt-in diagnostic. Adds channel 32 with
+            sign-of-forward-log-return (perfect-information probe). Requires
+            the caller to pass `future_prices` to encoder entry points and
+            bump `n_channels` to ≥ 33. NEVER ship a checkpoint with this True.
+        cheat_lookahead: Steps ahead for forward return (matches oracle_lookahead).
+        cheat_epsilon: Dead-zone threshold on |r_fwd|; outside it → ±1, inside → 0.
     """
     n_assets: int = 64
     window_size: int = 60
-    n_channels: int = 27
+    n_channels: int = 32
     return_clip: float = 10.0
     vol_scale: float = 100.0
+    # TASK_733: cheat-channel diagnostic (opt-in, never for production)
+    use_cheat_channel: bool = False
+    cheat_lookahead: int = 20
+    cheat_epsilon: float = 1e-4
 
 
 # =============================================================================
@@ -132,22 +147,31 @@ def encode_observation(
     return output
 
 
-def _compute_all_channels(
+def _compute_per_asset_channels(
     prices: chex.Array,   # (n_assets, window_size)
     volumes: chex.Array,  # (n_assets, window_size)
     highs: chex.Array,    # (n_assets, window_size)
     lows: chex.Array,     # (n_assets, window_size)
     config: EncoderConfig,
-) -> chex.Array:
-    """Compute all 27 channels of the observation tensor.
+) -> Tuple[chex.Array, chex.Array]:
+    """TASK_768: Universe-independent per-asset channels 0-26 (tiled path).
 
-    All operations are vectorized across assets using JAX primitives.
+    Returns:
+        output:     (n_channels, n, n) tensor with channels 0-26 populated and
+                    channels 27+ left zero (cross-sectional + cheat are filled
+                    by the wrapper).
+        returns_1m: (n, ws) raw 1-step returns needed by the cross-sectional
+                    block. Returning this avoids recomputing it downstream.
+
+    Channel order is preserved bit-identically with the pre-768 monolithic
+    `_compute_all_channels` for slots 0-26.
     """
     n = config.n_assets
     ws = config.window_size
 
-    # Initialize output (27, n, n)
-    output = jnp.zeros((27, n, n), dtype=jnp.float32)
+    # Initialize output (n_channels, n, n)
+    # TASK_689: Parameterized channel count (was hardcoded 27)
+    output = jnp.zeros((config.n_channels, n, n), dtype=jnp.float32)
 
     # =========================================================================
     # Normalization
@@ -289,7 +313,509 @@ def _compute_all_channels(
     output = output.at[25].set(jnp.tile(jnp.clip(upper_band[:, None], 0, 1), (1, n)))
     output = output.at[26].set(jnp.tile(jnp.clip(lower_band[:, None], 0, 1), (1, n)))
 
+    return output, returns_1m
+
+
+def _compute_cross_sectional(
+    prices: chex.Array,      # (n_assets, window_size) — raw (un-normalized)
+    returns_1m: chex.Array,  # (n_assets, window_size) — clipped 1-step returns
+    n: int,                  # runtime asset-axis size; SPEC: n is a runtime arg
+    config: EncoderConfig,
+) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+    """TASK_768: Cross-sectional channels 27-31 (tiled path).
+
+    Float32 discipline (SPEC risk #1): all inputs and outputs stay float32.
+    Channel order (SPEC risk #2): callers MUST place these at slots 27-31 in
+    that exact order: rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom.
+
+    Computation is bit-identical to the pre-768 monolithic implementation
+    (same formulas, same intermediates, same clipping constants).
+    """
+    n_f = max(float(n - 1), 1.0)
+    lookback_20 = min(20, prices.shape[-1] - 1)
+
+    # Channel 27: rank of current 1-step return
+    cur_r1 = returns_1m[:, -1]  # (n,)
+    rank_1 = jnp.argsort(jnp.argsort(cur_r1)).astype(jnp.float32) / n_f
+
+    # Channel 28: rank of 20-step (or ws-1 if window shorter) cumulative return
+    r20 = (prices[:, -1] - prices[:, -lookback_20]) / (prices[:, -lookback_20] + 1e-8)
+    r20 = jnp.clip(r20, -config.return_clip, config.return_clip)
+    rank_20 = jnp.argsort(jnp.argsort(r20)).astype(jnp.float32) / n_f
+
+    # Channel 29: rolling beta to equal-weighted universe (full window)
+    uni_rets = jnp.mean(returns_1m, axis=0)
+    asset_centered = returns_1m - jnp.mean(returns_1m, axis=1, keepdims=True)
+    uni_centered = uni_rets - jnp.mean(uni_rets)
+    cov = jnp.mean(asset_centered * uni_centered[None, :], axis=1)
+    var_uni = jnp.mean(uni_centered ** 2)
+    beta_raw = cov / (var_uni + 1e-8)
+    beta_scaled = jnp.clip(beta_raw, -3.0, 3.0) / 3.0
+
+    # Channel 30: idiosyncratic vol — std of residuals after removing beta*universe
+    residuals = returns_1m - beta_raw[:, None] * uni_rets[None, :]
+    idio_vol = jnp.std(residuals, axis=1)
+    idio_vol_scaled = jnp.clip(idio_vol * config.vol_scale, 0, 1)
+
+    # Channel 31: cross-sectional momentum — current return minus universe mean
+    uni_mean_cur = jnp.mean(cur_r1)
+    xs_mom = jnp.clip((cur_r1 - uni_mean_cur) * 100.0, -1.0, 1.0)
+
+    return rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom
+
+
+def _compute_all_channels(
+    prices: chex.Array,   # (n_assets, window_size)
+    volumes: chex.Array,  # (n_assets, window_size)
+    highs: chex.Array,    # (n_assets, window_size)
+    lows: chex.Array,     # (n_assets, window_size)
+    config: EncoderConfig,
+) -> chex.Array:
+    """Compute all 27/32 channels of the observation tensor (tiled path).
+
+    TASK_768: Thin wrapper — per-asset slots 0-26 are computed by
+    `_compute_per_asset_channels` (universe-independent); cross-sectional
+    slots 27-31 are computed by `_compute_cross_sectional` (universe-aware,
+    takes `n` as a runtime arg). Output tensor is bit-identical to the
+    pre-768 monolithic implementation.
+
+    Channel order invariant (DO NOT CHANGE): `[0-26 per-asset][27-31 cross-sectional]`.
+    The base imprint's `temporal_proj.kernel` (trm_encoder_v3.py:141, shape
+    (39, 32)) binds each column to a channel index; reordering would force
+    a re-imprint.
+
+    All operations are vectorized across assets using JAX primitives.
+    """
+    n = config.n_assets
+
+    # Per-asset slots 0-26 + raw 1-step returns
+    output, returns_1m = _compute_per_asset_channels(
+        prices, volumes, highs, lows, config
+    )
+
+    # Cross-sectional slots 27-31 (universe-coupled)
+    if config.n_channels >= 32:
+        # TASK_738: skip in legacy 27-ch mode
+        rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom = _compute_cross_sectional(
+            prices, returns_1m, n, config
+        )
+        output = output.at[27].set(jnp.tile(rank_1[:, None], (1, n)))
+        output = output.at[28].set(jnp.tile(rank_20[:, None], (1, n)))
+        output = output.at[29].set(jnp.tile(beta_scaled[:, None], (1, n)))
+        output = output.at[30].set(jnp.tile(idio_vol_scaled[:, None], (1, n)))
+        output = output.at[31].set(jnp.tile(xs_mom[:, None], (1, n)))
+
     return output
+
+
+# =============================================================================
+# TASK_152: Temporal Encoder (Untiled - Real Time Series)
+# =============================================================================
+
+def _compute_per_asset_channels_temporal(
+    prices: chex.Array,   # (n_assets, window_size)
+    volumes: chex.Array,  # (n_assets, window_size)
+    highs: chex.Array,    # (n_assets, window_size)
+    lows: chex.Array,     # (n_assets, window_size)
+    config: EncoderConfig,
+) -> Tuple[chex.Array, chex.Array]:
+    """TASK_768: Universe-independent per-asset channels 0-26 (temporal path).
+
+    Returns:
+        output:     (n_channels, ws, n) tensor with channels 0-26 populated and
+                    channels 27+ left zero (cross-sectional + cheat are filled
+                    by the wrapper).
+        returns_1m: (n, ws) raw 1-step returns needed by the cross-sectional
+                    block. Returning this avoids recomputing it downstream.
+
+    Channel order is preserved bit-identically with the pre-768 monolithic
+    `_compute_all_channels_temporal` for slots 0-26.
+    """
+    n = config.n_assets
+    ws = config.window_size
+
+    # Initialize output (n_channels, ws, n) - TIME × ASSETS
+    # TASK_689: Parameterized channel count (was hardcoded 27)
+    output = jnp.zeros((config.n_channels, ws, n), dtype=jnp.float32)
+
+    # =========================================================================
+    # Normalization (same as original)
+    # =========================================================================
+    price_min = jnp.min(prices, axis=1, keepdims=True)  # (n, 1)
+    price_max = jnp.max(prices, axis=1, keepdims=True)  # (n, 1)
+    price_range = price_max - price_min
+    price_range = jnp.where(price_range < 1e-8, 1.0, price_range)
+
+    norm_prices = (prices - price_min) / price_range  # (n, ws)
+    norm_highs = (highs - price_min) / price_range
+    norm_lows = (lows - price_min) / price_range
+
+    vol_mean = jnp.mean(volumes, axis=1, keepdims=True)
+    vol_std = jnp.std(volumes, axis=1, keepdims=True) + 1e-8
+    norm_volumes = jnp.clip((volumes - vol_mean) / vol_std, -3, 3) / 3.0
+
+    # =========================================================================
+    # Channels 0-3: FULL TEMPORAL OHLC (not just latest!)
+    # Shape: (n, ws).T = (ws, n) - each row is a time step
+    # =========================================================================
+    output = output.at[0].set(norm_prices.T)    # Close prices over time
+    output = output.at[1].set(norm_highs.T)     # High prices over time
+    output = output.at[2].set(norm_lows.T)      # Low prices over time
+    output = output.at[3].set(norm_volumes.T)   # Volume over time
+
+    # =========================================================================
+    # Channel 4: FULL 1-minute returns time series
+    # =========================================================================
+    prev_prices = jnp.concatenate([prices[:, 0:1], prices[:, :-1]], axis=1)
+    returns_1m = (prices - prev_prices) / (prev_prices + 1e-8)
+    returns_1m = jnp.clip(returns_1m, -config.return_clip, config.return_clip)
+    output = output.at[4].set(returns_1m.T)     # 1m returns over time
+
+    # =========================================================================
+    # Channels 5-26: Scalar indicators (broadcast across time)
+    # These are computed at the CURRENT time step, then broadcast
+    # =========================================================================
+
+    # Helper to broadcast scalar (n,) to (ws, n)
+    def broadcast_scalar(x):
+        return jnp.broadcast_to(x[None, :], (ws, n))
+
+    # Channel 5-7: Multi-horizon returns (at current time)
+    returns_5m = (prices[:, -1] - prices[:, -5]) / (prices[:, -5] + 1e-8)
+    returns_15m = (prices[:, -1] - prices[:, -15]) / (prices[:, -15] + 1e-8)
+    returns_64m = (prices[:, -1] - prices[:, 0]) / (prices[:, 0] + 1e-8)  # Full window
+
+    output = output.at[5].set(broadcast_scalar(jnp.clip(returns_5m, -config.return_clip, config.return_clip)))
+    output = output.at[6].set(broadcast_scalar(jnp.clip(returns_15m, -config.return_clip, config.return_clip)))
+    output = output.at[7].set(broadcast_scalar(jnp.clip(returns_64m, -config.return_clip, config.return_clip)))
+
+    # Channel 8-11: Volume patterns
+    vol_ratio_5m = jnp.mean(volumes[:, -5:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_15m = jnp.mean(volumes[:, -15:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_30m = jnp.mean(volumes[:, -30:], axis=1) / (vol_mean[:, 0] + 1e-8)
+    vol_ratio_64m = jnp.mean(volumes, axis=1) / (vol_mean[:, 0] + 1e-8)
+
+    output = output.at[8].set(broadcast_scalar(jnp.clip(vol_ratio_5m, 0, 5) / 5.0))
+    output = output.at[9].set(broadcast_scalar(jnp.clip(vol_ratio_15m, 0, 5) / 5.0))
+    output = output.at[10].set(broadcast_scalar(jnp.clip(vol_ratio_30m, 0, 5) / 5.0))
+    output = output.at[11].set(broadcast_scalar(jnp.clip(vol_ratio_64m, 0, 5) / 5.0))
+
+    # Channel 12-15: Momentum
+    momentum_5 = (prices[:, -1] - prices[:, -5]) / (price_range[:, 0] + 1e-8)
+    momentum_15 = (prices[:, -1] - prices[:, -15]) / (price_range[:, 0] + 1e-8)
+    momentum_30 = (prices[:, -1] - prices[:, -30]) / (price_range[:, 0] + 1e-8)
+    momentum_64 = (prices[:, -1] - prices[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    output = output.at[12].set(broadcast_scalar(jnp.clip(momentum_5, -1, 1)))
+    output = output.at[13].set(broadcast_scalar(jnp.clip(momentum_15, -1, 1)))
+    output = output.at[14].set(broadcast_scalar(jnp.clip(momentum_30, -1, 1)))
+    output = output.at[15].set(broadcast_scalar(jnp.clip(momentum_64, -1, 1)))
+
+    # Channel 16-19: Volatility
+    vol_5 = jnp.std(returns_1m[:, -5:], axis=1)
+    vol_15 = jnp.std(returns_1m[:, -15:], axis=1)
+    vol_30 = jnp.std(returns_1m[:, -30:], axis=1)
+    vol_64 = jnp.std(returns_1m, axis=1)
+
+    output = output.at[16].set(broadcast_scalar(jnp.clip(vol_5 * config.vol_scale, 0, 1)))
+    output = output.at[17].set(broadcast_scalar(jnp.clip(vol_15 * config.vol_scale, 0, 1)))
+    output = output.at[18].set(broadcast_scalar(jnp.clip(vol_30 * config.vol_scale, 0, 1)))
+    output = output.at[19].set(broadcast_scalar(jnp.clip(vol_64 * config.vol_scale, 0, 1)))
+
+    # Channel 20-23: Price percentiles
+    def compute_percentile(window_prices, window):
+        window_data = window_prices[:, -window:]
+        w_min = jnp.min(window_data, axis=1)
+        w_max = jnp.max(window_data, axis=1)
+        w_range = jnp.where((w_max - w_min) < 1e-8, 1.0, w_max - w_min)
+        return (window_prices[:, -1] - w_min) / w_range
+
+    output = output.at[20].set(broadcast_scalar(compute_percentile(prices, 5)))
+    output = output.at[21].set(broadcast_scalar(compute_percentile(prices, 15)))
+    output = output.at[22].set(broadcast_scalar(compute_percentile(prices, 30)))
+    output = output.at[23].set(broadcast_scalar(compute_percentile(prices, 64)))
+
+    # Channel 24-26: VWAP and bands
+    vwap_window = 20
+    vwap_prices = prices[:, -vwap_window:]
+    vwap_volumes = volumes[:, -vwap_window:]
+    vol_sum = jnp.sum(vwap_volumes, axis=1, keepdims=True) + 1e-8
+    vwap = jnp.sum(vwap_prices * vwap_volumes, axis=1) / vol_sum[:, 0]
+    vwap_norm = (vwap - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    price_std = jnp.std(vwap_prices, axis=1)
+    upper_band = (vwap + price_std - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+    lower_band = (vwap - price_std - price_min[:, 0]) / (price_range[:, 0] + 1e-8)
+
+    output = output.at[24].set(broadcast_scalar(vwap_norm))
+    output = output.at[25].set(broadcast_scalar(jnp.clip(upper_band, 0, 1)))
+    output = output.at[26].set(broadcast_scalar(jnp.clip(lower_band, 0, 1)))
+
+    return output, returns_1m
+
+
+def _compute_cross_sectional_temporal(
+    prices: chex.Array,      # (n_assets, window_size) — raw (un-normalized)
+    returns_1m: chex.Array,  # (n_assets, window_size) — clipped 1-step returns
+    n: int,                  # runtime asset-axis size; SPEC: n is a runtime arg
+    ws: int,                 # runtime window size (used for the lookback_20 bound)
+    config: EncoderConfig,
+) -> Tuple[chex.Array, chex.Array, chex.Array, chex.Array, chex.Array]:
+    """TASK_768: Cross-sectional channels 27-31 (temporal path).
+
+    Float32 discipline (SPEC risk #1): all inputs and outputs stay float32.
+    `prices` and `returns_1m` come from the per-asset preprocessing function
+    which runs on float32 OHLCV slices; nothing downcasts before this point.
+    If the wrapper is ever invoked from inside a bf16 jit context, callers
+    must cast back to float32 before concat (no such site exists today).
+
+    Channel order (SPEC risk #2): the wrapper places these at slots 27-31 in
+    this exact order: rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom.
+
+    Computation is bit-identical to the pre-768 monolithic implementation
+    (same formulas, same intermediates, same clipping constants).
+    """
+    n_f = max(float(n - 1), 1.0)
+    lookback_20 = min(20, ws - 1)  # safe index for short windows
+
+    # Channel 27: rank of current 1-step return
+    cur_r1 = returns_1m[:, -1]  # (n,)
+    rank_1 = jnp.argsort(jnp.argsort(cur_r1)).astype(jnp.float32) / n_f
+
+    # Channel 28: rank of 20-step (or ws-1 if window shorter) cumulative return
+    r20 = (prices[:, -1] - prices[:, -lookback_20]) / (prices[:, -lookback_20] + 1e-8)
+    r20 = jnp.clip(r20, -config.return_clip, config.return_clip)
+    rank_20 = jnp.argsort(jnp.argsort(r20)).astype(jnp.float32) / n_f
+
+    # Channel 29: rolling beta to equal-weighted universe (full window)
+    uni_rets = jnp.mean(returns_1m, axis=0)                     # (ws,)
+    asset_centered = returns_1m - jnp.mean(returns_1m, axis=1, keepdims=True)  # (n, ws)
+    uni_centered = uni_rets - jnp.mean(uni_rets)                # (ws,)
+    cov = jnp.mean(asset_centered * uni_centered[None, :], axis=1)  # (n,)
+    var_uni = jnp.mean(uni_centered ** 2)                       # scalar
+    beta_raw = cov / (var_uni + 1e-8)                           # (n,) unclipped beta
+    beta_scaled = jnp.clip(beta_raw, -3.0, 3.0) / 3.0           # scale to [-1, 1]
+
+    # Channel 30: idiosyncratic vol — std of residuals after removing beta*universe
+    residuals = returns_1m - beta_raw[:, None] * uni_rets[None, :]  # (n, ws)
+    idio_vol = jnp.std(residuals, axis=1)                        # (n,)
+    idio_vol_scaled = jnp.clip(idio_vol * config.vol_scale, 0, 1)
+
+    # Channel 31: cross-sectional momentum — current return minus universe mean
+    uni_mean_cur = jnp.mean(cur_r1)
+    xs_mom = jnp.clip((cur_r1 - uni_mean_cur) * 100.0, -1.0, 1.0)
+
+    return rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom
+
+
+def _compute_all_channels_temporal(
+    prices: chex.Array,   # (n_assets, window_size)
+    volumes: chex.Array,  # (n_assets, window_size)
+    highs: chex.Array,    # (n_assets, window_size)
+    lows: chex.Array,     # (n_assets, window_size)
+    config: EncoderConfig,
+    future_close: Optional[chex.Array] = None,  # (n_assets,) close at t+ws+lookahead-1
+) -> chex.Array:
+    """Compute 32-channel observation with REAL temporal data.
+
+    TASK_152: Unlike _compute_all_channels which tiles scalar features,
+    this function preserves temporal information:
+    - Channels 0-4:  Full time series (normalized OHLC + 1m returns)
+    - Channels 5-26: Per-asset scalar indicators broadcast across time
+    - Channels 27-31 (TASK_732): Cross-sectional scalars broadcast across time
+      (rank-1step, rank-20step, beta-to-universe, idio-vol, xs-momentum)
+    - Channel 32 (TASK_733, opt-in): sign of forward log-return in {−1, 0, +1}
+      with dead-zone eps. Cheat input — never in production.
+
+    Output shape: (32, window_size, n_assets) - rows are TIME, cols are ASSETS.
+
+    TASK_768: Thin wrapper — per-asset slots 0-26 are computed by
+    `_compute_per_asset_channels_temporal` (universe-independent); cross-sectional
+    slots 27-31 are computed by `_compute_cross_sectional_temporal` (universe-aware,
+    takes `n` as a runtime arg). Output tensor is bit-identical to the
+    pre-768 monolithic implementation. Cheat channel 32 stays in this wrapper
+    because it consumes `future_close` from the encoder entry point.
+
+    Channel order invariant (DO NOT CHANGE): `[0-26 per-asset][27-31 cross-sectional]
+    [32 cheat-opt-in][33+ agent-state appended downstream]`. The base imprint's
+    `temporal_proj.kernel` (trm_encoder_v3.py:141, shape (39, 32)) binds each column
+    to a channel index; reordering would force a re-imprint.
+    """
+    n = config.n_assets
+    ws = config.window_size
+
+    # Helper to broadcast scalar (n,) to (ws, n) — also used by the cheat write below.
+    def broadcast_scalar(x):
+        return jnp.broadcast_to(x[None, :], (ws, n))
+
+    # Per-asset slots 0-26 + raw 1-step returns
+    output, returns_1m = _compute_per_asset_channels_temporal(
+        prices, volumes, highs, lows, config
+    )
+
+    # Cross-sectional slots 27-31 (universe-coupled; n + ws as runtime args)
+    if config.n_channels >= 32:
+        # TASK_738: legacy 27-ch mode skips cross-sectional channels.
+        # Only write them when the output array has room (32+ channels).
+        rank_1, rank_20, beta_scaled, idio_vol_scaled, xs_mom = _compute_cross_sectional_temporal(
+            prices, returns_1m, n, ws, config
+        )
+        output = output.at[27].set(broadcast_scalar(rank_1))
+        output = output.at[28].set(broadcast_scalar(rank_20))
+        output = output.at[29].set(broadcast_scalar(beta_scaled))
+        output = output.at[30].set(broadcast_scalar(idio_vol_scaled))
+        output = output.at[31].set(broadcast_scalar(xs_mom))
+
+    # =========================================================================
+    # Channel 32: CHEAT CHANNEL (TASK_733) — opt-in diagnostic
+    # Sign of forward log-return with dead-zone. Pure future information —
+    # NEVER enable for production checkpoints; benchmark pipeline refuses them.
+    # Computed AFTER other channels so cheat values cannot leak into the
+    # window-normalized price_min/price_max used by channels 0-4.
+    # =========================================================================
+    if config.use_cheat_channel and config.n_channels >= 33:
+        # future_close shape (n_assets,). Guarded log via jnp.maximum to match
+        # the zero-price-gap handling pattern elsewhere (TASK_705).
+        # Padding sentinel: callers pass a zero tensor past end-of-series; a
+        # non-positive future close is unambiguously "no data" (real OHLCV
+        # prices are always > 0). Treat it as HOLD (sign=0) so the cheat
+        # channel never emits a spurious direction from zero-padded tails.
+        cur_close = prices[:, -1]  # (n,)
+        safe_cur = jnp.maximum(cur_close, 1e-8)
+        safe_fut = jnp.maximum(future_close, 1e-8)
+        r_fwd = jnp.log(safe_fut / safe_cur)  # (n,)
+        eps = config.cheat_epsilon
+        raw_sign = jnp.where(
+            r_fwd > eps, 1.0,
+            jnp.where(r_fwd < -eps, -1.0, 0.0)
+        )
+        valid_future = future_close > 0.0
+        cheat_sign = jnp.where(valid_future, raw_sign, 0.0)  # (n,) in {-1, 0, +1}
+        output = output.at[32].set(broadcast_scalar(cheat_sign))
+
+    return output
+
+
+def encode_observation_temporal(
+    prices: chex.Array,        # (n_steps, n_assets, 5) OHLCV or (n_steps, n_assets) legacy
+    window_start: chex.Array,  # ()
+    config: EncoderConfig,
+    future_prices: Optional[chex.Array] = None,  # TASK_733 cheat input
+) -> chex.Array:
+    """Encode observation using temporal encoder (TASK_152 + TASK_732).
+
+    TASK_703: Accepts full OHLCV (n_steps, n_assets, 5) or legacy close-only (n_steps, n_assets).
+    Returns (32, window_size, n_assets) with real time series data
+    (27 per-asset channels + 5 cross-sectional channels).
+
+    TASK_733: When `config.use_cheat_channel=True`, the caller MUST pass
+    `future_prices` of shape (lookahead, n_assets, 5) or (lookahead, n_assets)
+    covering [window_start + window_size, window_start + window_size + lookahead).
+    The last row's close drives the sign-of-forward-log-return in channel 32.
+    """
+    n = config.n_assets
+    ws = config.window_size
+
+    # TASK_703: Handle both OHLCV and legacy close-only
+    if prices.ndim == 3:
+        # Full OHLCV: (n_steps, n_assets, 5) → O=0, H=1, L=2, C=3, V=4
+        ohlcv_window = jax.lax.dynamic_slice(prices, (window_start, 0, 0), (ws, n, 5))
+        close_T = ohlcv_window[:, :, 3].T   # (n_assets, ws)
+        high_T = ohlcv_window[:, :, 1].T
+        low_T = ohlcv_window[:, :, 2].T
+        volume_T = ohlcv_window[:, :, 4].T
+    else:
+        # Legacy close-only: (n_steps, n_assets)
+        price_window = jax.lax.dynamic_slice(prices, (window_start, 0), (ws, n))
+        close_T = price_window.T
+        high_T = close_T
+        low_T = close_T
+        volume_T = jnp.ones_like(close_T)
+
+    # TASK_733: extract cheat close from the last row of the forward window.
+    # `future_prices` layout mirrors `prices`: OHLCV-3D or close-only-2D.
+    future_close = None
+    if config.use_cheat_channel:
+        if future_prices is None:
+            raise ValueError(
+                "EncoderConfig.use_cheat_channel=True but future_prices is None. "
+                "Caller must pass a (lookahead, n_assets[, 5]) forward-window "
+                "tensor covering [t+window_size, t+window_size+lookahead)."
+            )
+        if future_prices.ndim == 3:
+            future_close = future_prices[-1, :, 3]  # (n_assets,)
+        else:
+            future_close = future_prices[-1, :]
+
+    return _compute_all_channels_temporal(
+        close_T, volume_T, high_T, low_T, config, future_close=future_close
+    )
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_encode_temporal(
+    prices: chex.Array,        # (n_steps, n_assets, 5) OHLCV or (n_steps, n_assets)
+    window_start: chex.Array,
+    config: EncoderConfig,
+    future_prices: Optional[chex.Array] = None,  # TASK_733: (lookahead, n_assets, 5) or (lookahead, n_assets)
+) -> chex.Array:
+    """JIT-compiled temporal encoder. TASK_703: accepts OHLCV or close-only.
+
+    TASK_733: `future_prices` is traced (dynamic) — not a static arg. When the
+    cheat channel is disabled (default), pass None; when enabled, pass a
+    (lookahead, n_assets[, 5]) slice covering the forward window.
+    """
+    return encode_observation_temporal(prices, window_start, config, future_prices)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_batch_encode_temporal(
+    prices: chex.Array,        # (n_steps, n_assets, 5) OHLCV or (n_steps, n_assets)
+    window_starts: chex.Array, # (batch,)
+    config: EncoderConfig,
+    future_prices: Optional[chex.Array] = None,  # TASK_733: (batch, lookahead, n_assets[, 5])
+) -> chex.Array:
+    """JIT-compiled batched temporal encoder. TASK_703: accepts OHLCV or close-only.
+
+    Returns (batch, 27, window_size, n_assets).
+
+    TASK_733: `future_prices` (if supplied) must have a leading batch dim
+    matching `window_starts`; each slot covers the forward window for its
+    corresponding window start.
+    """
+    if future_prices is None:
+        return jax.vmap(
+            lambda ws: encode_observation_temporal(prices, ws, config)
+        )(window_starts)
+    return jax.vmap(
+        lambda ws, fp: encode_observation_temporal(prices, ws, config, fp)
+    )(window_starts, future_prices)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_vmap_encode_temporal(
+    prices_batch: chex.Array,      # (N, n_steps, n_assets, 5) or (N, n_steps, n_assets)
+    window_starts: chex.Array,     # (L,) - shared window starts
+    config: EncoderConfig,
+    future_prices_batch: Optional[chex.Array] = None,  # TASK_733: (N, L, lookahead, n_assets[, 5])
+) -> chex.Array:
+    """Encode multiple environments in parallel via vmap (TASK_152 temporal).
+    TASK_703: accepts OHLCV (N, n_steps, n_assets, 5) or close-only (N, n_steps, n_assets).
+
+    Returns:
+        (N, L, 27, window_size, n_assets) encoded temporal observations
+
+    TASK_733: `future_prices_batch` (if supplied) mirrors `prices_batch`'s
+    outer N axis plus the shared L axis across window_starts.
+    """
+    # Double vmap: outer over episodes (N), inner over windows (L)
+    if future_prices_batch is None:
+        return jax.vmap(
+            lambda p: jit_batch_encode_temporal(p, window_starts, config)
+        )(prices_batch)
+    return jax.vmap(
+        lambda p, fp: jit_batch_encode_temporal(p, window_starts, config, fp)
+    )(prices_batch, future_prices_batch)
 
 
 # =============================================================================
@@ -561,8 +1087,9 @@ def _compute_all_channels_compressed(
     """
     n = config.n_assets
 
-    # Initialize output (27, n) - compressed!
-    output = jnp.zeros((27, n), dtype=jnp.float32)
+    # Initialize output (n_channels, n) - compressed!
+    # TASK_689: Parameterized channel count (was hardcoded 27)
+    output = jnp.zeros((config.n_channels, n), dtype=jnp.float32)
 
     # =========================================================================
     # Normalization (same as full encoder)
@@ -737,6 +1264,28 @@ def jit_batch_encode_compressed(
     return jax.vmap(
         lambda ws: encode_observation_compressed(prices, ws, config)
     )(window_starts)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_vmap_encode_compressed(
+    prices_batch: chex.Array,      # (N, n_steps, n_assets)
+    window_starts: chex.Array,     # (L,) - shared window starts
+    config: EncoderConfig,
+) -> chex.Array:
+    """Encode multiple environments in parallel via vmap.
+
+    Args:
+        prices_batch: (N, n_steps, n_assets) batched price data
+        window_starts: (L,) shared window indices
+        config: Encoder configuration
+
+    Returns:
+        (N, L, 27, n_assets) encoded observations
+    """
+    # Double vmap: outer over episodes (N), inner over windows (L)
+    return jax.vmap(
+        lambda p: jit_batch_encode_compressed(p, window_starts, config)
+    )(prices_batch)
 
 
 def tile_compressed_observation(
