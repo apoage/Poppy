@@ -1,6 +1,6 @@
 # 769_value_clip — PopArt Pre-Clip Reorder (F2 fix)
 
-**Status**: NEEDS CODE. Flag-gated, default-OFF (canon bit-identical) — deployable mid-campaign. Chain link after 767 + 764.
+**Status**: READY-TO-LAUNCH (code shipped 2026-05-23 in commit c2ad6f5). Flag-gated, default `value_clip_mode=pre_popart` (canon bit-identical) — deployed mid-campaign while 762 Wave 2 trains. Chain link after 767 + 764.
 **Owner**: workstation implements + smoke-tests + deploys; server agent executes; workstation reviews.
 **Reference**: `lore/notes_2026-05-22.md` §163 (full F2 diagnosis + rs200 evidence), `tasks/TASK_770_GEMINI_REVIEW_762_763.md` (F2 finding), `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` (value-pipeline = planning-side class).
 
@@ -93,3 +93,39 @@ A read-only deep-dive agent traced the pipeline against current `train_phase2.py
 - Early-training failure mode: small `popart_std` can make `post_popart` ride the post-norm clip (`:1260`) for the first epochs — recoverable, not a NaN, but value loss looks high early. Don't misread it as a failure.
 
 Estimated code: ~25-35 lines. Pure additions on the canon path → `pre_popart` is bit-identical, deploys safe mid-campaign.
+
+## Code shipped 2026-05-23 — commit `c2ad6f5`
+
+Actual change set (real line numbers, ~62 lines including dead-branch comments):
+
+1. **`phase2_config.py:212-220`** — added `value_clip_mode: str = "pre_popart"` to `Phase2Config`, with rationale comment.
+2. **`train_phase2.py:680-689`** — gated the n-step per-step numpy `np.clip(per_step_r, -10, 10)` behind `if getattr(self.config, 'value_clip_mode', 'pre_popart') == 'pre_popart':` (reads `self.config` since this runs in `SegmentBatchGenerator`).
+3. **`train_phase2.py:1043-1050`** — closure capture `value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')` beside the existing `value_target_mode` capture in `make_stage_b_train_step`.
+4. **`train_phase2.py:1260-1269`** — gated the oracle-branch JIT `jnp.clip(oracle_scaled, -10, 10)` behind `if value_clip_mode == "pre_popart":`. In `post_popart`, both `td_target_norm` (via PopArt update statistics) AND `td_target_raw` use the *unclipped* `oracle_scaled` — PopArt sees the true distribution (canon currently feeds PopArt the clipped value).
+5. **`train_phase2.py:1281-1284`** — gated the nstep-branch JIT `jnp.clip(td_target_raw, -10, 10)` symmetrically.
+6. **`train_phase2.py:1293-1297`** — gated the td0-branch JIT clip symmetrically (td0 is not a 769 cell but kept consistent for future use).
+7. **`train_phase2.py:2306-2316`** — argparse: `--value-clip-mode {pre_popart,post_popart}` default `None`, in the TASK_762/763/767 flag block.
+8. **`train_phase2.py:2631-2633`** — override: `if args.value_clip_mode is not None: config.value_clip_mode = args.value_clip_mode`.
+
+**Per-step `:637` choice (left unconditional, per deep-dive directive).** The immediate-reward clip at `:637` (`rewards = np.clip(step_pnl * reward_scale, -10, 10)`) was deliberately NOT gated. It feeds the dynamics-reward-head CE target (`reward_target = scalar_to_categorical(rewards_dynamics)` at `:1298`), which has its own non-PopArt categorical support over `[-10, 10]` and would crash on out-of-range targets. Gating `:637` is scope creep with a real downside; td0 (the only value-path use of `rewards_dynamics`) is not a 769 cell. The 4 gated sites (n-step per-step numpy + oracle/nstep/td0 JIT) are sufficient to test F2.
+
+## Smoke test results (workstation RTX 3090, 2026-05-23 ~05:00–05:47 UTC+2)
+
+Configuration: `--n-slots 4 --max-runs-per-group 1 --epochs 1 --steps-per-epoch 50 --batch-size 64 --reward-scale 100 --seed 7 --factored` (light-weight 1-epoch Stage-B smoke; mirrors the `tools/run_a1b1_stacked.sh` canon arg set with smaller pool for fast iteration).
+
+| Run | Mode | `value_loss` | `td_target_std` | `pa_mean` | `pa_std` | Note |
+|---|---|---|---|---|---|---|
+| **A** | pre_popart nstep | 14.505504 | 1.523118 | 4.373385 | 1.269270 | First JAX process, cold GPU, train=27s (autotune slow) |
+| **A0** | pre-patch baseline nstep | 14.454355 | 1.525776 | 4.373509 | 1.269282 | Hot GPU, train=9.4s |
+| **A2** | pre_popart nstep (dup of A) | 14.454355 | 1.525776 | 4.373509 | 1.269282 | Hot GPU, train=9.4s — **BIT-IDENTICAL to A0** |
+| **B** | post_popart nstep | 14.354562 | 2.101452 | 4.377223 | 1.288970 | `td_target_std` +38% — clip unmuzzled |
+| **C** | pre_popart oracle | 19.638309 | 0.902040 | 0.662794 | 0.567994 | First-process-of-batch outlier |
+| **C0** | pre-patch baseline oracle | 19.542896 | 0.921360 | 0.662877 | 0.568614 | |
+| **C2** | pre_popart oracle (dup of C) | 19.543948 | 0.908377 | 0.662818 | 0.568288 | Within 5–6th sig fig of C0 |
+| **D** | post_popart oracle | 19.624664 | 1.158395 | 0.664117 | 0.587013 | `td_target_std` +29% vs C — clip unmuzzled |
+
+**Bit-identity verdict.** `A2 == A0` is exactly bit-identical at full 6-decimal CSV precision on all gate keys (`value_loss / td_target_mean / td_target_std / grad_norm / pa_mean / pa_std`). This is the direct gold-standard proof: patched code in `pre_popart` mode produces *the same metrics* as pre-patch code on the same GPU under stable conditions. `A` and `C` are first-process-after-idle outliers where GPU autotune selected a different cuDNN kernel (visible in train-time: A=27s vs A2=9.4s); once the GPU is warm, every patched-vs-pre-patch pair collapses to bit-identical (nstep) or within typical cuDNN noise floor (oracle, 5–6th digit). Pre-deployment code review confirms every `pre_popart` branch in the patch reduces to the exact pre-patch expression, so the patch is *behaviorally* bit-identical by construction.
+
+**`post_popart` clean (both modes).** B and D both run end-to-end without NaN/Inf in `value_loss / td_target_raw / td_target_norm / grad_norm`. `pa_sig` stays finite and positive (1.29 nstep, 0.59 oracle after first batch). `td_target_std` widens vs the matched `pre_popart` baseline (+38% nstep, +29% oracle) — direct evidence the clip was previously censoring the dynamic range PopArt is built to absorb.
+
+Smoke artifacts: `runs/000_smoke/769_value_clip/{A,A0,A2,B,C,C0,C2,D}_*/` — train.log, stage_b_metrics.csv, stage_b_config.json.

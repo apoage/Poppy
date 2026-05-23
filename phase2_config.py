@@ -209,6 +209,16 @@ class Phase2Config(EasyConfig):
     # === Value Target Mode (TASK_719) ===
     value_target_mode: str = "oracle"  # "oracle" = oracle remaining PnL, "td0" = TD(0) bootstrap
 
+    # === Value Clip Mode (TASK_769) ===
+    # "pre_popart" = canon: clip reward/td targets to [-10, 10] BEFORE PopArt
+    #   normalization (current behavior — censors PopArt's dynamic range).
+    # "post_popart" = F2 fix: feed PopArt the unclipped target so its running
+    #   statistics see the true distribution; clip the post-normalized target
+    #   to the categorical support [-10, 10]. Per-step numpy reward clip is
+    #   also gated to widen the clip in the post_popart branch.
+    # Default keeps the canon path bit-identical for safe mid-campaign deploy.
+    value_clip_mode: str = "pre_popart"
+
     # === Stage B Learning Rates ===
     policy_lr: float = 3e-4
     value_lr: float = 3e-4

@@ -677,7 +677,16 @@ class AsyncBatchPipeline:
                 nstep_changes = np.abs(sel_t - sel_tm1).sum(axis=-1)            # (n, N)
                 per_step_pnl = per_step_pnl - nstep_changes * extra_bps
             per_step_r = per_step_pnl * self.config.reward_scale
-            per_step_r = np.clip(per_step_r, -10.0, 10.0)
+            # TASK_769: F2 fix — per-step n-step reward clip is upstream of
+            # PopArt. pre_popart (canon) keeps the original [-10, 10] clip on
+            # each step; the discounted sum and PopArt downstream then see
+            # already-censored steps. post_popart drops the clip here so the
+            # full reward distribution propagates to PopArt and the post-norm
+            # clip on td_target_norm handles outliers. The downstream
+            # td_target_raw clip in make_stage_b_train_step (nstep branch) is
+            # also gated symmetrically.
+            if getattr(self.config, 'value_clip_mode', 'pre_popart') == 'pre_popart':
+                per_step_r = np.clip(per_step_r, -10.0, 10.0)
             discounts = self.config.td_discount ** np.arange(nstep)
             nstep_sum = (per_step_r * discounts).sum(axis=1).astype(np.float32)
             all_nstep_rewards.append(nstep_sum)
@@ -1031,6 +1040,14 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     use_popart = config.use_popart
     use_factored = config.use_factored_search  # TASK_724: per-asset CE vs global CE
     value_target_mode = config.value_target_mode
+    # TASK_769: value-clip mode (F2 fix). "pre_popart" = canon (clip pre-norm,
+    # censoring PopArt's dynamic range). "post_popart" = feed PopArt the
+    # unclipped target so running statistics absorb the scale; only clip the
+    # post-normalized target to the categorical support [-10, 10] (those guards
+    # remain unconditional below). Captured at JIT-trace time — flag-flips
+    # re-JIT once per cell. Default mirrors canon; the pre_popart branch is
+    # bit-identical to pre-769 behavior.
+    value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')
     value_scale = config.value_scale  # 2.0 — same scaling as Phase 1
     nstep_gamma_N = config.td_discount ** config.nstep_horizon  # γ^N for bootstrap
     use_bc_balance = config.bc_class_balanced  # TASK_726: adaptive trade/hold weighting
@@ -1240,7 +1257,13 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             if value_target_mode == "oracle":
                 # TASK_719a: Oracle remaining PnL as value target (same as Phase 1)
                 oracle_scaled = oracle_values * value_scale
-                oracle_scaled = jnp.clip(oracle_scaled, -10.0, 10.0)
+                # TASK_769: F2 fix — gate the pre-PopArt clip behind value_clip_mode.
+                # pre_popart (canon) keeps the historical behavior bit-identical:
+                # the clipped value is what feeds BOTH PopArt normalization AND
+                # td_target_raw. post_popart feeds PopArt the unclipped value so
+                # its running statistics see the true distribution.
+                if value_clip_mode == "pre_popart":
+                    oracle_scaled = jnp.clip(oracle_scaled, -10.0, 10.0)
                 td_target_norm = (oracle_scaled - popart_mean) / jnp.maximum(popart_std, 1e-8)
                 td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
                 td_target_raw = oracle_scaled
@@ -1255,7 +1278,10 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # Denormalize V(s_{t+N}) if PopArt active (value head outputs normalized)
                 v_tN_raw = v_tN * popart_std + popart_mean
                 td_target_raw = nstep_rewards + nstep_gamma_N * v_tN_raw
-                td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
+                # TASK_769: F2 fix — gate the pre-PopArt clip. See oracle branch
+                # above for rationale.
+                if value_clip_mode == "pre_popart":
+                    td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
                 td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
                 td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
             else:
@@ -1264,7 +1290,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 support = get_value_support()
                 v_next = jnp.sum(jax.nn.softmax(out_t1['value'], axis=-1) * support, axis=-1)
                 td_target_raw = r_step + config_discount * v_next
-                td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
+                # TASK_769: F2 fix — gate the pre-PopArt clip. td0 is not a 769
+                # cell (oracle and nstep are), but we gate it for consistency so
+                # a future td0 run can't silently keep the bug.
+                if value_clip_mode == "pre_popart":
+                    td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
                 td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
                 td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
 
@@ -2274,6 +2304,17 @@ def parse_args():
                              'space. Their policy logits are masked to -inf and '
                              'MCTS never expands them — 64x5=320 -> effective '
                              '64x3=192. Default off = canon (5-action).')
+    # TASK_769: Value-clip mode (F2 fix — PopArt pre-clip reorder)
+    parser.add_argument('--value-clip-mode', type=str, default=None,
+                        choices=['pre_popart', 'post_popart'],
+                        help='TASK_769: when to clip value targets to [-10, 10]. '
+                             'pre_popart (default = canon, bit-identical to '
+                             'pre-769): clip BEFORE PopArt normalization '
+                             '(censors PopArt dynamic range — the F2 bug). '
+                             'post_popart: feed PopArt the unclipped target so '
+                             'running statistics absorb the scale; only the '
+                             'post-normalized target is clipped to the '
+                             'categorical support.')
     # TASK_727: Auxiliary direction head
     parser.add_argument('--no-direction-head', action='store_true',
                         help='Disable per-asset direction head (default: on)')
@@ -2588,6 +2629,9 @@ def main():
     # TASK_767: action-space restructure (drop limit orders)
     if args.disable_limit_orders:
         config.disable_limit_orders = True
+    # TASK_769: value-clip mode override (F2 fix)
+    if args.value_clip_mode is not None:
+        config.value_clip_mode = args.value_clip_mode
     if args.no_direction_head:
         config.use_direction_head = False
     if args.direction_weight is not None:
