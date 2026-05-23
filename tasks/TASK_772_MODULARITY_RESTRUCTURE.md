@@ -22,7 +22,7 @@ No deploy this task — pure local refactor. Deploy after the chain closes (oper
 |---|---|---|---:|---|
 | 772.1 | `parse_args` out of `train_phase2.py` → `train_phase2_cli.py` | LOW | 332 | ✓ SHIPPED (train_phase2.py 3140→2831; tests: import/--help/argparse-parse all green) |
 | 772.2 | `train_epoch`/`validate`/`_launch_benchmark`/`_check_benchmark_passed` out of `train_easy.py` → `train_easy_loop.py` | LOW | 158 | ✓ SHIPPED (train_easy.py 3541→3383; tests: import + --help + 4-symbol direct import all green) |
-| 772.3 | `RainbowTableLoader` out of `diff_teacher/data_loader.py` → `diff_teacher/rainbow_loader.py` | LOW | ~595 | PENDING |
+| 772.3 | `RainbowTableLoader` out of `diff_teacher/data_loader.py` → `diff_teacher/rainbow_loader.py` | LOW | 477 | ✓ SHIPPED (data_loader.py 1027→550; re-export shim preserves `from .data_loader import RainbowTableLoader`; tests: direct + re-export + module-resolution all green) |
 | 772.4 | `compute_large_margin_loss`/`compute_q_filtered_bc_loss`/`_compute_per_head_grad_norms`/`_clip_gradients_per_head`/`compute_annealed_lambda`/`compute_bc_weight`/`compute_scheduled_sampling_prob`/`compute_neural_scale` out of `mcts_trader/jax_agent/trainer.py` → `mcts_trader/jax_agent/trainer_losses.py` | MEDIUM | ~150 | PENDING |
 | 772.5 | `SegmentPool` out of `train_easy.py` → `mcts_trader/data/segment_pool.py` | MEDIUM | ~924 | PENDING |
 
