@@ -1,6 +1,6 @@
 # TASK_771 — Chain Bug-Fix (2026-05-23 multi-agent QA synthesis)
 
-**Status**: 767-related fixes (F1+F2+F4+F5) ✓ FIXED 2026-05-23 — synthesis from 4 bug-hunt + 4 cross-validation reports. Remaining batches (sync-db.sh P1s, 764/769 P2s) still pending.
+**Status**: 767-related fixes (F1+F2+F4+F5) ✓ FIXED 2026-05-23; Batch 1 sync-db.sh P1 hardening (di/F1-F5) ✓ FIXED 2026-05-23 — synthesis from 4 bug-hunt + 4 cross-validation reports. Remaining batches (Batch 2 mctx interior mask, 764/769 P2s, sync-db.sh further hardening) still pending.
 **Created**: 2026-05-23.
 **Context**: The chain quest shipped 4 implementations 2026-05-22/23 (767 action-space, 764 oracle-k flag, 769 F2 value-clip, deploy-integrity sync-db.sh). A multi-agent QA pass (8 agents — 4 hunters + 4 cross-validators) ran 2026-05-23 and surfaced **1 confirmed P0 + 6 P1s + N hardening items**. This task consolidates and ranks the fixes.
 
@@ -16,11 +16,11 @@
 |---|---|---|---|---|---|
 | 767/F1 | **P0** | `factored_search.py` mean-shift + `-1e9` mask | float32 ULP collapse → uniform policy target | 767 launch | ✓ FIXED (TASK_771 commit, 2026-05-23) |
 | 767/F2 | P1 | mctx interior priors unmasked | wastes search compute, biases value backup | quality, not correctness | ✓ FIXED (TASK_771 commit, 2026-05-23) |
-| di/F1 | P1 | sync-db.sh sqlite3-crash silent abort | failure-path-only; success path works | sync-db.sh failure visibility | pending |
-| di/F2 | P1 | sync-db.sh printed snippet does in-place overwrite | contradicts docstring "no live swap" | operator footgun | pending |
-| di/F3 | P1 | sync-db.sh interrupted zstd → corrupt-next-run | mtime check skips re-compress, sha matches itself | next sync after interrupt | pending |
-| di/F4 | P1 | sync-db.sh no WAL checkpoint before compress | latent — bites if DB ever in WAL mode | future Kraken-fetch path | pending |
-| di/F5 | P1 | sync-db.sh `--skip-compress` ships stale .zst | current .zst is 2026-01-20 (4 mo old) | operator misuse | pending |
+| di/F1 | P1 | sync-db.sh sqlite3-crash silent abort | failure-path-only; success path works | sync-db.sh failure visibility | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
+| di/F2 | P1 | sync-db.sh printed snippet does in-place overwrite | contradicts docstring "no live swap" | operator footgun | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
+| di/F3 | P1 | sync-db.sh interrupted zstd → corrupt-next-run | mtime check skips re-compress, sha matches itself | next sync after interrupt | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
+| di/F4 | P1 | sync-db.sh no WAL checkpoint before compress | latent — bites if DB ever in WAL mode | future Kraken-fetch path | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
+| di/F5 | P1 | sync-db.sh `--skip-compress` ships stale .zst | current .zst is 2026-01-20 (4 mo old) | operator misuse | ✓ FIXED (TASK_771 Batch 1 commit, 2026-05-23) |
 | 767/F4 | P2 | Stage-B resume drops `disable_limit_orders` if stray Phase-1 config.json | requires unusual ckpt layout | edge case | ✓ FIXED (TASK_771 commit, 2026-05-23) |
 | 764/F1+N1 | P2 | `__post_init__` validators bypassed by direct CLI override | covers `oracle_k, batch_size, target_oracle_agreement` | guardrail gap |
 | 764/F2 | P2 | e-dojo silently drops `--oracle-k` (only via programmatic kwargs) | operator CLI is rejected → safe; programmatic use voids | narrow gap |
@@ -67,6 +67,29 @@ F2 verified by structural code inspection — the mctx recurrent_fn closure now 
 F4 verified by python harness: `Phase2Config.__dataclass_fields__` contains `disable_limit_orders` (and `value_clip_mode`) by construction; a synthetic config dict with `disable_limit_orders: true` is preserved through `get_phase2_config()`. `argparse.BooleanOptionalAction` supports all three states (absent → None, `--disable-limit-orders` → True, `--no-disable-limit-orders` → False).
 
 Smoke artifacts: `runs/000_smoke/771_chain_bugfix/{flag_on_post,flag_on_pre,canon_post,canon_post_v2,canon_pre,canon_pre_v2,canon_pre_v3}/{train.log,stage_b_metrics.csv}`.
+
+**2026-05-23 — Batch 1 sync-db.sh P1 hardening shipped (di/F1-F5).**
+
+Files changed:
+- `tools/deploy/sync-db.sh` — five P1 fixes in one commit:
+  - **di/F1**: explicit `RC=0` + `RESULT=$(sqlite3 …) || RC=$?` rc-capture pattern around the integrity_check command substitution; on `RC != 0` (sqlite3 SIGSEGV / OOM-kill / locked-DB / missing-binary) the script now prints `❌ sqlite3 itself failed (exit=$RC) — could not run integrity_check` + the captured stderr instead of bare `set -e` exit.
+  - **di/F2**: the printed server-side snippet now decompresses to `trading_data.db.NEW` (`unzstd -k -f $ZST -o $DB.NEW`), runs `PRAGMA integrity_check` on the staged file with `tee /tmp/srv_integrity.out | grep -qx "ok"`, and on failure removes the staging file and exits non-zero. The operator then runs `mv $DB.NEW $DB` separately when training is idle. The live `trading_data.db` is never overwritten in-place — a failed staged integrity check leaves it untouched. Docstring + README updated to describe "atomic-rename swap" instead of the misleading "no live swap" framing.
+  - **di/F3**: compress now goes via `.zst.tmp` + atomic `mv` on zstd success. Carry-over cleanup block at script start removes a stale `.zst.tmp` from a prior crashed run. An interrupted zstd can no longer produce a corrupt `$ZST` newer than `$DB` that the next run's mtime check would silently re-ship.
+  - **di/F4**: `sqlite3 "$DB" 'PRAGMA wal_checkpoint(TRUNCATE);'` prepended to step 1 (before integrity_check + compress). No-op on non-WAL DBs (current workstation state); closes the latent silent-staleness gap if the DB ever flips to WAL mode (e.g. TASK_768 Kraken re-fetch).
+  - **di/F5**: `--skip-compress` now refuses to proceed when `$DB -nt $ZST` is true. Prints both mtimes loudly to stderr and exits 1 unless `--force-stale` is also passed. New `--force-stale` flag added to the case parser and documented in the help block.
+- `tools/deploy/README.md` — transport row updated to "atomic-rename swap"; surrounding paragraph rewritten to describe WAL checkpoint, atomic `.zst.tmp` rename, `.NEW` staging on the server, and the `--skip-compress` staleness gate.
+
+Smoke (workstation, no actual rsync):
+- `bash -n tools/deploy/sync-db.sh` → parse OK.
+- `tools/deploy/sync-db.sh --help` → banner prints lines 2-24 (now includes `--force-stale`).
+- `tools/deploy/sync-db.sh --check-only` → `WAL checkpoint` + `PRAGMA integrity_check on trading_data.db (24G)... integrity_check: ok`, rc=0. ~few-min wallclock on a 24GB DB (cold). Confirms the canonical success path still works.
+- `tools/deploy/sync-db.sh --dry-run` → full flow: WAL checkpoint → integrity_check ok → "$ZST newer than $DB — skipping compress" → sha256sum announce → rsync announce (dry-run skipped) → printed snippet with `.NEW` staging + re-verify + atomic rename. rc=0.
+- Carry-over test: touched `trading_data.db.zst.tmp` on disk, ran `--check-only` → script printed `==> Removing stale trading_data.db.zst.tmp from a prior interrupted compress` and removed it, then proceeded normally.
+- F5 staleness test: bumped `trading_data.db` mtime by 60s (then restored) and ran:
+  - `--skip-compress` → printed mtime warning + `❌ Refusing to ship stale .zst…`, rc=1.
+  - `--skip-compress --force-stale --dry-run` → printed mtime warning + `--force-stale set — proceeding with stale .zst.`, proceeded through sha256+rsync (dry-run), rc=0.
+
+Risk: zero on the success path (mathematically equivalent to the pre-patch flow); pure hardening of failure / interrupted / stale paths. No JAX or Python sub-process touched.
 
 ---
 
@@ -126,7 +149,7 @@ Canon (flag-OFF) is bit-identical: without the `−1e9` mask the mean-shift is j
 
 # P1 — fix soon (batch by component)
 
-## Batch 1 — `sync-db.sh` (5 fixes, one commit)
+## Batch 1 — `sync-db.sh` (5 fixes, one commit) — ✓ SHIPPED 2026-05-23
 
 ### di/F1 — explicit rc capture for sqlite3 crash visibility
 `tools/deploy/sync-db.sh:51`:

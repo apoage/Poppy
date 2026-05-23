@@ -9,15 +9,26 @@ Workstation is source of truth for code; server is execution-only.
 |-----------|-----------|----------|
 | ws → srv  | git push `training` branch | code, agent context, experiment specs |
 | ws → srv  | rsync                       | Bella checkpoints (`checkpoints/diff_teacher/`) |
-| ws → srv  | `sync-db.sh`                | `trading_data.db` (**integrity-gated**, manual server-side swap) |
+| ws → srv  | `sync-db.sh`                | `trading_data.db` (**integrity-gated**, manual server-side atomic-rename swap) |
 | srv → ws  | rsync                       | `runs/`, `logs/` (training output) |
 
 `sync-db.sh` exists because the 2026-05-12 corruption taught us that a sha256
 of the *compressed* file does not catch SQLite page-level corruption — zstd
 faithfully compresses a broken DB. The script gates the sync on a source-side
-`PRAGMA integrity_check`; the server-side decompress + re-verify is a manual
-step the operator runs only when training is idle (the script prints the
-exact command). Use this script — never raw `zstd → rsync` on the DB.
+`PRAGMA integrity_check` (preceded by a `wal_checkpoint(TRUNCATE)` so WAL-mode
+DBs don't ship stale main-file pages) and writes the compressed artifact via
+`.zst.tmp` + atomic rename so an interrupted compress can never produce a
+corrupt `.zst` that the next run's mtime check would silently re-ship. The
+server-side decompress + re-verify is a manual step the operator runs only
+when training is idle: the printed snippet decompresses to
+`trading_data.db.NEW`, runs `PRAGMA integrity_check` on the staged file, and
+only then renames into place — a failed staged integrity check leaves the
+live server DB untouched. Use this script — never raw `zstd → rsync` on the
+DB.
+
+`--skip-compress` refuses to ship a `.zst` older than the current `.db`
+unless `--force-stale` is also passed; this catches the case where the
+operator re-syncs after a Kraken refresh and forgets to recompress.
 
 The `training` branch is auto-built from the workstation **working tree** (uncommitted
 state included). Master commit cadence is independent.
