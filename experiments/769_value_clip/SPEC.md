@@ -60,29 +60,31 @@ Server run order: 769 is the natural **conclusion of the 762 reward-shaping arc*
 
 - `lore/notes_2026-05-22.md` §163 — full F2 diagnosis, the pre-clip pipeline trace, the rs200 evidence.
 - `tasks/TASK_770_GEMINI_REVIEW_762_763.md` — F2 as originally found by the bughunt (downgraded P1→P2, deferred — now promoted to an experiment).
-- `train_phase2.py:637, 680, 1197-1201, 1212-1214` — the clip sites.
+- `train_phase2.py:637, 689, 1266, 1284, 1297` — the clip sites (post-patch line numbers; pre-patch was `:637, 680, 1197-1201, 1212-1214`).
 - `mcts_trader/CLAUDE.md` — "Value head: PopArt mandatory, 401 bins over [−10, +10]."
 
 ## Implementation deep-dive (2026-05-22) — exact spec
 
 A read-only deep-dive agent traced the pipeline against current `train_phase2.py` (3081 lines). **The line numbers in "Code prerequisites" above are STALE** (drift since `b4e0158`) — these supersede them.
 
+**Line-number note (TASK_771/F5 refresh, 2026-05-23):** numbers below are written as `pre-patch → post-patch` (post-patch = current code after the 769 ship `95fcf98`). The deep-dive narrative is preserved; the post-patch column is the authoritative reference for the current file.
+
 **The F2 pre-clip sites** (clip BEFORE PopArt normalize — the bug), to flag-gate:
-- `:680` — n-step per-step reward clip (numpy `SegmentBatchGenerator`; reads `self.config`).
-- `:1243` — `oracle_scaled` clip (oracle mode, JIT).
-- `:1258` — `td_target_raw` clip (nstep mode = canon, JIT).
-- `:1267` — `td_target_raw` clip (td0 mode, JIT) — SPEC originally missed this; gate it too for consistency so a future td0 run can't silently keep the bug.
+- `:680 → :689` — n-step per-step reward clip (numpy `SegmentBatchGenerator`; reads `self.config`).
+- `:1243 → :1266` — `oracle_scaled` clip (oracle mode, JIT).
+- `:1258 → :1284` — `td_target_raw` clip (nstep mode = canon, JIT).
+- `:1267 → :1297` — `td_target_raw` clip (td0 mode, JIT) — SPEC originally missed this; gate it too for consistency so a future td0 run can't silently keep the bug.
 
-**Keep unconditional** (correct — post-normalize support guards): `:1245`, `:1260`, `:1269`, and `:83` (`scalar_to_categorical` internal clip — it operates on the already-normalized `td_target_norm`; `value_target = scalar_to_categorical(td_target_norm)` at `:1271`).
+**Keep unconditional** (correct — post-normalize support guards): `:1245 → :1268`, `:1260 → :1286`, `:1269 → :1299`, and `:83` (`scalar_to_categorical` internal clip — it operates on the already-normalized `td_target_norm`; `value_target = scalar_to_categorical(td_target_norm)` at `:1271 → :1301`).
 
-**Leave `:637` ALONE.** The immediate-reward clip doubles as the dynamics-reward-head CE target (`:1298` `scalar_to_categorical(rewards_dynamics)`), and that head has its own non-PopArt `[−10,10]` categorical support. Gating `:637` is scope creep with a real downside; td0 (its only value-path use) is not a 769 cell. Document this choice in `result.md`.
+**Leave `:637` ALONE.** The immediate-reward clip doubles as the dynamics-reward-head CE target (`:1298 → :1328` `scalar_to_categorical(rewards_dynamics)`), and that head has its own non-PopArt `[−10,10]` categorical support. Gating `:637` is scope creep with a real downside; td0 (its only value-path use) is not a 769 cell. Document this choice in `result.md`.
 
 **Exact change set:**
-1. `phase2_config.py` (PopArt section, ~`:200-210`): `value_clip_mode: str = "pre_popart"`.
-2. `train_phase2.py` argparse (~`:2256`, TASK_762 block): `--value-clip-mode {pre_popart,post_popart}` default `None`; override (~`:2574`) `if args.value_clip_mode is not None: config.value_clip_mode = ...`.
-3. `train_phase2.py` closure capture (~`:1031`, beside `value_target_mode`): `value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')`.
+1. `phase2_config.py` (PopArt section, `:212-220`): `value_clip_mode: str = "pre_popart"`.
+2. `train_phase2.py` argparse (`:2256 → :2308`, TASK_762 block): `--value-clip-mode {pre_popart,post_popart}` default `None`; override (`:2574 → :2643`) `if args.value_clip_mode is not None: config.value_clip_mode = ...`.
+3. `train_phase2.py` closure capture (`:1031 → :1050`, beside `value_target_mode`): `value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')`.
 4. Gate the 4 pre-clips behind `if value_clip_mode == "pre_popart":`.
-5. **Oracle path**: in `post_popart`, `td_target_raw` (`:1246`) must be the *unclipped* `oracle_scaled` — so PopArt statistics see the true distribution (canon currently feeds PopArt the clipped value).
+5. **Oracle path**: in `post_popart`, `td_target_raw` (`:1246 → :1267`) must be the *unclipped* `oracle_scaled` — so PopArt statistics see the true distribution (canon currently feeds PopArt the clipped value).
 
 **Smoke test** (1-epoch Stage-B, small SegmentPool, run BOTH `nstep` and `oracle`):
 - **Bit-identity gate**: fixed `--seed`, `pre_popart` before-vs-after the patch → identical `value_loss / td_target_mean / td_target_std / grad_norm / pa_mu / pa_sig` every step. This is the deploy-safety gate — `pre_popart` must be a pure no-op.
@@ -90,7 +92,7 @@ A read-only deep-dive agent traced the pipeline against current `train_phase2.py
 
 **Gotchas:**
 - A `.git-training-worktree/phase2_config.py` exists (server training worktree) — edit the **main** repo copy only; the worktree syncs via deploy.
-- Early-training failure mode: small `popart_std` can make `post_popart` ride the post-norm clip (`:1260`) for the first epochs — recoverable, not a NaN, but value loss looks high early. Don't misread it as a failure.
+- Early-training failure mode: small `popart_std` can make `post_popart` ride the post-norm clip (`:1260 → :1286`) for the first epochs — recoverable, not a NaN, but value loss looks high early. Don't misread it as a failure.
 
 Estimated code: ~25-35 lines. Pure additions on the canon path → `pre_popart` is bit-identical, deploys safe mid-campaign.
 

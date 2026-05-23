@@ -26,17 +26,21 @@ TASK_767 flagged a risk that the oracle relies on limit orders for bull-regime r
 
 All wiring landed default-OFF and bit-identical on the canon path. File:line references:
 
+**Line-number note (TASK_771/F5 refresh, 2026-05-23):** line numbers below have been refreshed against the post-769/post-771 reality. Drift since the original 7f41586 ship is +17 to +45 lines, caused by TASK_769's value-clip insertions (`95fcf98`) and TASK_771's BooleanOptionalAction switch on `--disable-limit-orders`. The `TASK_767:` comment markers at each site remain the authoritative anchor — `grep TASK_767` is drift-proof.
+
 1. **Config + CLI** — `disable_limit_orders: bool = False` in `Phase2Config`
-   (`phase2_config.py:39-46`). `--disable-limit-orders` argparse flag at
-   `train_phase2.py:2270-2276`, plumbed to config at `train_phase2.py:2584-2586`.
-2. **Policy + BC loss mask** — `train_phase2.py:1043-1083` builds, at JIT-trace
+   (`phase2_config.py:39-45`). `--disable-limit-orders` argparse flag at
+   `train_phase2.py:2300-2317` (TASK_771/F4 switched it to
+   `BooleanOptionalAction`; `--no-disable-limit-orders` now also accepted),
+   plumbed to config at `train_phase2.py:2640-2644`.
+2. **Policy + BC loss mask** — `train_phase2.py:1060-1090` builds, at JIT-trace
    time, a `(320,)` additive logit mask (`limit_logit_mask`, masked entries
    `-1e9`) and a `(320,) {0,1}` keep mask (`limit_keep_mask`), plus the
    `_mask_renorm_target` helper. Applied inside `loss_fn`: logits masked at
-   `train_phase2.py:1160-1166`; CE targets (`mcts_visits`, `oracle_targets`)
-   masked + per-asset renormalized at `train_phase2.py:1168-1191`; consumed by
-   the factored/joint policy CE (`:1198`, `:1216`) and the oracle BC CE
-   (`:1306`). NOTE — `-1e9`, not `-inf`/`finfo.min`: with `finfo.min`,
+   `train_phase2.py:1182-1183`; CE targets (`mcts_visits`, `oracle_targets`)
+   masked + per-asset renormalized at `train_phase2.py:1200-1208`; consumed by
+   the factored/joint policy CE (`:1216`, `:1233`) and the oracle BC CE
+   (`:1337`). NOTE — `-1e9`, not `-inf`/`finfo.min`: with `finfo.min`,
    `log_softmax` rounds to literal `-inf` and the oracle BC target's tiny
    non-zero limit probability gives `tiny*(-inf)=+inf` CE (caught in smoke v1).
    `-1e9` keeps `log_softmax` finite; the target mask makes the masked CE term
@@ -45,23 +49,35 @@ All wiring landed default-OFF and bit-identical on the canon path. File:line ref
    Stage-B search is FactoredPerAssetSearch (`--factored`), not joint MCTS** —
    it does 1-step lookahead over all 320 (asset,action) pairs, so the guard is
    "mask the limit-action Q-values" rather than "prune tree branches".
-   `factored_search.py:182-197` drives masked `(asset,action)` Q-values to
+   `factored_search.py:190-197` drives masked `(asset,action)` Q-values to
    `-1e9` before the per-asset softmax and the action-selection argmax;
    `factored_search.py:116-145` spreads the epsilon-greedy uniform over valid
-   actions only. Joint MCTS is also covered: `train_phase2.py:1711-1731` builds
-   a `(B,320)` int8 mask passed to `search()` at `train_phase2.py:1886-1896`;
-   `MuZeroMCTXSearch` forwards it to `mctx.gumbel_muzero_policy` as
-   `invalid_actions` (`mctx_search.py` — unchanged, already supported).
+   actions only. TASK_771/F1 removed the redundant per-asset mean-shift inside
+   `_q_to_policy` (was rounding the valid Q's to a single float32 value under
+   the `-1e9` mask). Joint MCTS is also covered: `train_phase2.py:1741-1761`
+   builds a `(B,320)` int8 mask passed to `search()` at
+   `train_phase2.py:1914-1928`; `MuZeroMCTXSearch` forwards it to
+   `mctx.gumbel_muzero_policy` as `invalid_actions` AND
+   (TASK_771/F2) into the recurrent_fn closure so interior priors are masked
+   too (`mctx_search.py:_recurrent_fn`).
    Eval-MCTS (sims=16) masked in `benchmark_easy.py:458-475` (mask build) +
    `:544-548` / `:633-638` (eval-MCTS call sites), auto-detected from the
    checkpoint config (`benchmark_easy.py:931-942`).
 4. **Logging** — per-epoch `mean_trade_rate` + `limit_action_fraction` computed
-   in-JIT (`train_phase2.py:1437-1462`), added to the metrics dict
-   (`:1512-1514`), the CSV fieldnames (`:1800-1802`) and the CSV row
-   (`:2107-2109`), and the epoch log line (`:2055-2057`).
+   in-JIT (`train_phase2.py:1467-1498`), added to the metrics dict
+   (`:1543-1544`), the CSV fieldnames (`:1830-1832`) and the CSV row
+   (`:2137-2139`), and the epoch log line (`:2085-2087`).
 5. **Smoke test** — two 1-epoch factored Stage-B smokes (seed 7) run on the
    workstation 2026-05-22. flag-ON: no NaN/inf, `limit_action_fraction=0.000`
    (search excludes limits). canon: clean, `limit_action_fraction=0.398`.
+6. **Post-ship bug-fix (TASK_771/F1)**: the original ship contained a P0
+   precision bug in `factored_search._q_to_policy` — the mean-shift before
+   softmax collapsed the policy training target to uniform across valid
+   actions per asset under the `-1e9` mask (`mean_trade_rate ≈ 0.667 ± 0.02`,
+   re-derived in `tasks/BUGHUNT_767_2026-05-23.md` and `tasks/CROSSVALIDATE_767_2026-05-23.md`).
+   Fixed pre-launch; smoke re-run with the fix shows `mean_trade_rate` off the
+   uniform fingerprint. F2 (mctx interior priors mask) and F4 (Phase-2 resume
+   filter) also shipped in TASK_771.
 
 **Mechanism-premise note for the launch**: the canon smoke measured the
 baseline `limit_action_fraction` at **0.398** — the 5-action factored search
