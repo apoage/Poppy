@@ -1,6 +1,6 @@
 # 769_value_clip — PopArt Pre-Clip Reorder (F2 fix)
 
-**Status**: READY-TO-LAUNCH (code shipped 2026-05-23 in commit c2ad6f5). Flag-gated, default `value_clip_mode=pre_popart` (canon bit-identical) — deployed mid-campaign while 762 Wave 2 trains. Chain link after 767 + 764.
+**Status**: READY-TO-LAUNCH (code shipped 2026-05-23 in commit 95fcf98). Flag-gated, default `value_clip_mode=pre_popart` (canon bit-identical) — deployed mid-campaign while 762 Wave 2 trains. Chain link after 767 + 764.
 **Owner**: workstation implements + smoke-tests + deploys; server agent executes; workstation reviews.
 **Reference**: `lore/notes_2026-05-22.md` §163 (full F2 diagnosis + rs200 evidence), `tasks/TASK_770_GEMINI_REVIEW_762_763.md` (F2 finding), `tasks/TASK_761_STRUCTURAL_PIVOT_ROADMAP.md` (value-pipeline = planning-side class).
 
@@ -94,7 +94,7 @@ A read-only deep-dive agent traced the pipeline against current `train_phase2.py
 
 Estimated code: ~25-35 lines. Pure additions on the canon path → `pre_popart` is bit-identical, deploys safe mid-campaign.
 
-## Code shipped 2026-05-23 — commit `c2ad6f5`
+## Code shipped 2026-05-23 — commit `95fcf98`
 
 Actual change set (real line numbers, ~62 lines including dead-branch comments):
 
