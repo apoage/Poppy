@@ -29,6 +29,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# TASK_772.5 (2026-05-23): cross-module dependencies SegmentPool used to get
+# transitively via train_easy.py's module-level imports. Replicated here so
+# the class is self-contained (no circular dependency on train_easy).
+from mcts_trader.data.history import HistoricalMarket
+from mcts_trader.jax_agent.path_solver import (
+    greedy_lookahead_path,
+    optimal_path_to_policy,
+    dense_sign_oracle,
+    dense_sign_labels_to_policy,
+)
+from mcts_trader.training.setup import setup_bella_generator
+
 logger = logging.getLogger(__name__)
 
 
