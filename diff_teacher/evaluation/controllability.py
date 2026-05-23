@@ -4,8 +4,10 @@ import numpy as np
 from typing import Optional, Dict
 from dataclasses import dataclass
 
-import sys
-sys.path.insert(0, '/home/lukas/Trader')
+# Note: this module previously did `sys.path.insert(0, '/home/lukas/Trader')`
+# which broke any non-workstation runtime (server, CI, etc.). The path is
+# unnecessary when `diff_teacher` is imported as a package from the repo root
+# (which is how every entry point invokes it). Drop the workstation pin.
 
 # Try to import skeleton types, fall back to dict handling
 try:
