@@ -249,14 +249,27 @@ def parse_args():
                         help='Dead-zone threshold on |r_fwd| for dense_sign oracle '
                              '(default: 1e-4). Tune to match 5-15%% per-asset trade density.')
 
-    # Value target mode (TASK_719)
+    # Value target mode (TASK_719, TASK_777)
     parser.add_argument('--value-target-mode', type=str, default=None,
-                        choices=['oracle', 'nstep', 'td0'],
-                        help='Value target: oracle (719a), nstep (719b), td0 (bootstrap)')
+                        choices=['oracle', 'nstep', 'td0', 'mixture'],
+                        help='Value target: oracle (719a), nstep (719b), td0 '
+                             '(bootstrap), mixture (777: α·oracle + (1−α)·nstep)')
     parser.add_argument('--nstep-horizon', type=int, default=None,
                         help='N for n-step TD returns (default: 20)')
     parser.add_argument('--td-discount', type=float, default=None,
                         help='Discount for TD value targets (default: 0.95)')
+    # TASK_777: mixture value-target controls. Only consumed when
+    # --value-target-mode=mixture. α=1.0 reproduces oracle bit-identical
+    # (§7a smoke gate); α=0.0 reproduces nstep bit-identical.
+    parser.add_argument('--value-mixture-alpha', type=float, default=None,
+                        help='TASK_777: convex blend α for value_target_mode=mixture. '
+                             'td_target_raw = α·oracle + (1−α)·nstep_target. '
+                             'Must be in [0, 1]. Default: 0.5 (symmetric blend). '
+                             'Ignored unless --value-target-mode mixture.')
+    parser.add_argument('--oracle-horizon', type=int, default=None,
+                        help='TASK_777/756b: override oracle_value_horizon '
+                             '(default: 400 = episode length). Effective for '
+                             'oracle and mixture modes; ignored for nstep/td0.')
 
     # Data diversity (TASK_716 follow-up)
     parser.add_argument('--n-slots', type=int, default=17,

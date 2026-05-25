@@ -211,8 +211,24 @@ class Phase2Config(EasyConfig):
     oracle_value_horizon: int = 400  # Steps ahead for oracle remaining PnL (match episode length)
     nstep_horizon: int = 20          # N for n-step TD returns (TASK_719b)
 
-    # === Value Target Mode (TASK_719) ===
-    value_target_mode: str = "oracle"  # "oracle" = oracle remaining PnL, "td0" = TD(0) bootstrap
+    # === Value Target Mode (TASK_719, TASK_777) ===
+    # "oracle"  = oracle remaining PnL (TASK_719a)
+    # "nstep"   = N-step discounted reward sum + γ^N·V(s_{t+N}) bootstrap (TASK_719b)
+    # "td0"     = TD(0) bootstrap r + γ·V(s_{t+1})
+    # "mixture" = α·oracle + (1−α)·nstep_target (TASK_777). α via
+    #             value_mixture_alpha; α=1.0 reproduces "oracle" bit-identical,
+    #             α=0.0 reproduces "nstep" bit-identical (the §Smoke gates).
+    value_target_mode: str = "oracle"
+
+    # === Mixture Value Target (TASK_777) ===
+    # Convex-combination weight for "mixture" value_target_mode. Hypothesis:
+    # 746 oracle's paired Δα +0.72pp (5-seed, STD 2.28pp) is variance-limited;
+    # blending with low-variance nstep should reduce per-seed STD and lift mean.
+    # Only consumed when value_target_mode == "mixture". Static at JIT-trace
+    # time — changing α re-JITs the train step (same pattern as
+    # value_target_mode / value_clip_mode). Must lie in [0, 1]; validated in
+    # __post_init__.
+    value_mixture_alpha: float = 0.5
 
     # === Value Clip Mode (TASK_769) ===
     # "pre_popart" = canon: clip reward/td targets to [-10, 10] BEFORE PopArt
@@ -298,6 +314,20 @@ class Phase2Config(EasyConfig):
             raise ValueError(
                 f"value_clip_mode must be 'pre_popart' or 'post_popart', "
                 f"got {self.value_clip_mode!r}"
+            )
+        # TASK_777: validate value_target_mode + mixture-alpha bounds.
+        # argparse `choices=` catches CLI typos, but JSON-loaded configs
+        # (via get_phase2_config()) or direct kwargs bypass that gate.
+        if self.value_target_mode not in ("oracle", "nstep", "td0", "mixture"):
+            raise ValueError(
+                f"value_target_mode must be one of "
+                f"('oracle', 'nstep', 'td0', 'mixture'), "
+                f"got {self.value_target_mode!r}"
+            )
+        if not (0.0 <= self.value_mixture_alpha <= 1.0):
+            raise ValueError(
+                f"value_mixture_alpha must lie in [0, 1], "
+                f"got {self.value_mixture_alpha!r}"
             )
 
     def get_stage_defaults(self):

@@ -1048,6 +1048,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     # re-JIT once per cell. Default mirrors canon; the pre_popart branch is
     # bit-identical to pre-769 behavior.
     value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')
+    # TASK_777: mixture value-target alpha. Captured at JIT-trace time so the
+    # constant is baked into the compiled HLO; changing α re-JITs the step
+    # (same pattern as value_target_mode / value_clip_mode). Ignored unless
+    # value_target_mode == "mixture".
+    value_mixture_alpha = getattr(config, 'value_mixture_alpha', 0.5)
     value_scale = config.value_scale  # 2.0 — same scaling as Phase 1
     nstep_gamma_N = config.td_discount ** config.nstep_horizon  # γ^N for bootstrap
     use_bc_balance = config.bc_class_balanced  # TASK_726: adaptive trade/hold weighting
@@ -1305,6 +1310,47 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # above for rationale.
                 if value_clip_mode == "pre_popart":
                     td_target_raw = jnp.clip(td_target_raw, -10.0, 10.0)
+                td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
+                td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
+            elif value_target_mode == "mixture":
+                # TASK_777: convex blend of oracle and nstep targets in the
+                # pre-PopArt "raw" space:
+                #     td_target_raw = α·oracle_scaled + (1−α)·nstep_target_raw
+                #
+                # Bit-identity smoke-gate construction (see TASK_777 §Smoke):
+                #     α=1.0  → td_target_raw == oracle branch's td_target_raw
+                #     α=0.0  → td_target_raw == nstep branch's td_target_raw
+                # Both legs below MUST mirror their dedicated branches exactly
+                # (same clip-gating, same v_tN denorm) — if either drifts, the
+                # bit-identity gate fails.
+                #
+                # Hypothesis: 746 oracle's paired Δα +0.72pp (5-seed, STD
+                # 2.28pp) is variance-limited; blending with low-variance nstep
+                # should reduce per-seed STD and lift mean. See
+                # tasks/TASK_777_MIXTURE_VALUE_TARGET.md §Hypothesis.
+                #
+                # Oracle leg — mirrors the "oracle" branch above.
+                oracle_scaled = oracle_values * value_scale
+                if value_clip_mode == "pre_popart":
+                    oracle_scaled = jnp.clip(oracle_scaled, -10.0, 10.0)
+                # Nstep leg — mirrors the "nstep" branch above (re-running
+                # `out_tN` here is unavoidable: this branch is reachable
+                # independently of the nstep branch).
+                out_tN = model.apply({'params': stopped_params},
+                                     observation=obs_tN, mode='initial_inference')
+                support = get_value_support()
+                v_tN = jnp.sum(jax.nn.softmax(out_tN['value'], axis=-1) * support, axis=-1)
+                v_tN_raw = v_tN * popart_std + popart_mean
+                nstep_target_raw = nstep_rewards + nstep_gamma_N * v_tN_raw
+                if value_clip_mode == "pre_popart":
+                    nstep_target_raw = jnp.clip(nstep_target_raw, -10.0, 10.0)
+                # Convex blend — α is captured at JIT-trace time (Python float
+                # constant), folded into the HLO; α∈{0.0, 1.0} collapse to a
+                # single leg, which is the bit-identity smoke gate.
+                td_target_raw = (
+                    value_mixture_alpha * oracle_scaled
+                    + (1.0 - value_mixture_alpha) * nstep_target_raw
+                )
                 td_target_norm = (td_target_raw - popart_mean) / jnp.maximum(popart_std, 1e-8)
                 td_target_norm = jnp.clip(td_target_norm, -10.0, 10.0)
             else:
@@ -2586,6 +2632,22 @@ def main():
         config.nstep_horizon = args.nstep_horizon
     if args.td_discount is not None:
         config.td_discount = args.td_discount
+    # TASK_777: mixture value target — α + oracle-horizon overrides.
+    # Phase2Config.__post_init__ validates 0 ≤ α ≤ 1 and the value_target_mode
+    # vocabulary; argparse `choices=` validates the CLI typo case. The guard
+    # below catches an operator using --value-mixture-alpha with a non-mixture
+    # mode (silent no-op otherwise — the override hits the field but no
+    # consumer reads it). Cheap upfront safety.
+    if args.value_mixture_alpha is not None:
+        if config.value_target_mode != "mixture":
+            raise ValueError(
+                f"--value-mixture-alpha={args.value_mixture_alpha} requires "
+                f"--value-target-mode mixture (got {config.value_target_mode!r}). "
+                f"Either set --value-target-mode mixture or drop --value-mixture-alpha."
+            )
+        config.value_mixture_alpha = args.value_mixture_alpha
+    if args.oracle_horizon is not None:
+        config.oracle_value_horizon = args.oracle_horizon
     if args.name:
         config.name = args.name
     else:
