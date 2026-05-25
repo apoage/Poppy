@@ -1057,6 +1057,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     nstep_gamma_N = config.td_discount ** config.nstep_horizon  # γ^N for bootstrap
     use_bc_balance = config.bc_class_balanced  # TASK_726: adaptive trade/hold weighting
     bc_max_tw = config.bc_max_trade_weight     # TASK_726: cap on trade weight boost
+    # TASK_781 / TASK_725-D: return-weighted BC. Per-sample multiplier
+    # |oracle_values| / mean(|oracle_values|). Default False = bit-identical
+    # canon (the bc_rwt guard branch is dead under JIT trace). Captured at
+    # JIT-trace time — flag-flips re-JIT once per cell.
+    use_bc_rwt = bool(getattr(config, 'bc_return_weighted', False))
     # TASK_763: policy entropy regularization (joint MCTS path only).
     # Defaults 0.0 preserve canon (no bonus, no floor). Coef captured at JIT-trace
     # time — sweep cells re-JIT but that's a one-time cost per cell.
@@ -1415,9 +1420,37 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 n_holds = jnp.maximum(jnp.sum(hold_prob), 1.0)
                 trade_weight = jnp.minimum(n_holds / n_trades, bc_max_tw)
                 bc_weights = 1.0 + trade_strength * (trade_weight - 1.0)  # (B, 64)
-                bc_loss = jnp.sum(per_asset_ce * bc_weights) / jnp.sum(bc_weights)
+                # TASK_781 / TASK_725-D: per-sample return-magnitude weighting.
+                # Multiplies the per-asset class-balance weights `bc_weights`
+                # by `|oracle_values| / mean(|oracle_values|)` (broadcast over
+                # the 64-asset axis). `oracle_values` is the oracle remaining
+                # PnL over `oracle_value_horizon` steps, already in the batch
+                # dict (precomputed at train_phase2.py:640-644 from
+                # `oracle_cum_pnl`). Mean-normalization keeps the total
+                # gradient magnitude comparable to the canon path. Default
+                # `use_bc_rwt=False` runs the original TASK_726 expression —
+                # bit-identical to pre-781 BC.
+                if use_bc_rwt:
+                    _abs_val = jnp.abs(oracle_values)                          # (B,)
+                    _mean_abs = jnp.maximum(jnp.mean(_abs_val), 1e-8)          # scalar
+                    sample_w = (_abs_val / _mean_abs)[:, None]                 # (B, 1) → (B, 64) bcast
+                    combined_w = bc_weights * sample_w
+                    bc_loss = jnp.sum(per_asset_ce * combined_w) / jnp.maximum(jnp.sum(combined_w), 1e-8)
+                else:
+                    bc_loss = jnp.sum(per_asset_ce * bc_weights) / jnp.sum(bc_weights)
             else:
-                bc_loss = per_asset_ce.mean()
+                # TASK_781: when class-balance is OFF, return-weighting still applies.
+                # `use_bc_rwt=False` falls through to the original `.mean()` path —
+                # bit-identical to pre-781.
+                if use_bc_rwt:
+                    _abs_val = jnp.abs(oracle_values)
+                    _mean_abs = jnp.maximum(jnp.mean(_abs_val), 1e-8)
+                    sample_w = (_abs_val / _mean_abs)[:, None]                 # (B, 1)
+                    bc_loss = jnp.sum(per_asset_ce * sample_w) / jnp.maximum(
+                        jnp.sum(sample_w) * float(n_assets), 1e-8
+                    )
+                else:
+                    bc_loss = per_asset_ce.mean()
 
             # === Direction head: per-asset sign-of-future-return (TASK_727) ===
             if use_direction and 'direction_logits' in root_out:
@@ -2385,6 +2418,12 @@ def main():
         config.bc_class_balanced = False
     if args.bc_max_trade_weight is not None:
         config.bc_max_trade_weight = args.bc_max_trade_weight
+    # TASK_781 / TASK_725-D: return-weighted BC. Flag stays default-OFF; setting
+    # it ON requires either --bc-return-weighted on the CLI or a JSON config
+    # override. The value-zero default (config.bc_return_weighted=False) keeps
+    # the canon BC path bit-identical.
+    if args.bc_return_weighted:
+        config.bc_return_weighted = True
     # TASK_762: reward shaping overrides
     if args.reward_scale is not None:
         config.reward_scale = args.reward_scale

@@ -67,6 +67,12 @@ def parse_args():
                         help='Disable class-balanced BC (use plain per-asset CE mean)')
     parser.add_argument('--bc-max-trade-weight', type=float, default=None,
                         help='Max trade weight boost for class-balanced BC (default: 64.0)')
+    # TASK_781 / TASK_725-D: Return-weighted BC
+    parser.add_argument('--bc-return-weighted', action='store_true',
+                        help='TASK_781 / TASK_725-D: weight each BC sample by '
+                             '|oracle_values| / mean(|oracle_values|). Bull-period '
+                             'samples (high |remaining PnL|) get more gradient. '
+                             'Default OFF = canon (bit-identical to pre-781 BC loss).')
     # TASK_762: Reward shaping (reward_scale + fee_penalty_bps)
     parser.add_argument('--reward-scale', type=float, default=None,
                         help='Per-step reward scaling factor (default: 100.0). '

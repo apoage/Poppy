@@ -78,7 +78,13 @@ class Phase2Config(EasyConfig):
     # the per-asset BUY/SELL conditional. Ported from easy_trainer.py:170-202.
     bc_class_balanced: bool = True     # Adaptive trade/hold weight balancing
     bc_max_trade_weight: float = 64.0  # Cap on trade weight boost (64 = full k/n balance)
-    bc_return_weighted: bool = False   # Deferred: return-magnitude weighted boost (Change 3)
+    # TASK_781 / TASK_725-D: Return-weighted BC (Change 3). When True, BC loss
+    # per sample is multiplied by `|oracle_values| / mean(|oracle_values|)` —
+    # the mean-normalized magnitude of the oracle's remaining PnL over
+    # `oracle_value_horizon`. Bull-period samples (high |remaining PnL|) get
+    # more gradient. Default False = canon (bit-identical to pre-781 BC path —
+    # the if-branch is dead under JIT trace).
+    bc_return_weighted: bool = False
 
     # === Auxiliary Direction Head (TASK_727) ===
     # Per-asset sign-of-future-return probe. Provides 64 BCE labels/sample vs
