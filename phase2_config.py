@@ -44,11 +44,16 @@ class Phase2Config(EasyConfig):
     # (5-action, bit-identical to pre-767 behavior; all guard branches are dead).
     disable_limit_orders: bool = False
 
-    # === Policy Entropy Regularization (TASK_763) ===
+    # === Policy Entropy Regularization (TASK_763, factored extension TASK_776) ===
     # Bonus on policy_loss: -entropy_coef * H(policy) + 5*entropy_coef * relu(min_entropy - H).
-    # Defaults 0.0 = canon (no regularization). entropy_coef sweep 0.005–0.1;
-    # min_entropy floor at 3.0 for joint MCTS (ln(320) ≈ 5.77). Joint MCTS only —
-    # factored search has different entropy semantics (per-asset, ln(5) ≈ 1.61).
+    # Defaults 0.0 = canon (no regularization).
+    # Joint MCTS path: H is computed over the 320-way joint softmax, max ≈ ln(320) ≈ 5.77;
+    # min_entropy ≈ 3.0 is a reasonable floor.
+    # Factored per-asset path (TASK_776): H is per-asset Shannon entropy averaged
+    # across the 64-asset axis, max ≈ ln(5) ≈ 1.61; min_entropy ≈ 0.7 is a
+    # reasonable floor (uniform-ish per-asset distribution). Operator MUST scale
+    # min_entropy to match the path — same coef does NOT mean same regularization
+    # strength across paths because the entropy ranges differ ~3.6×.
     entropy_coef: float = 0.0
     min_entropy: float = 0.0
 

@@ -1232,13 +1232,36 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # Joint MCTS: visit_counts sum to 1.0 globally over 320 actions
                 policy_loss = optax.softmax_cross_entropy(policy_logits, mcts_visits_m).mean()
 
-            # TASK_763: policy entropy regularization (joint case only; factored
-            # has different semantics — sweep gated by use_factored=False).
-            if entropy_coef > 0.0 and not use_factored:
-                policy_probs = jax.nn.softmax(policy_logits, axis=-1)
-                policy_entropy = -jnp.sum(
-                    policy_probs * jnp.log(policy_probs + 1e-10), axis=-1
-                ).mean()
+            # TASK_763 + TASK_776: policy entropy regularization. Joint and
+            # factored paths use different semantics:
+            #   - Joint MCTS (320-way global softmax): one Shannon entropy
+            #     computed over the joint distribution; max ≈ ln(320) ≈ 5.77.
+            #   - Factored per-asset (TASK_724/776): per-asset softmax over 5
+            #     actions, Shannon entropy computed per asset and averaged over
+            #     the 64-asset axis; max ≈ ln(5) ≈ 1.61. min_entropy floor is
+            #     interpreted in the same units (per-asset for factored, joint
+            #     for joint) — operator must scale min_entropy when sweeping
+            #     across paths.
+            # Canon (entropy_coef == 0.0) skips the entire branch → loss is
+            # bit-identical to pre-776 code in both paths.
+            if entropy_coef > 0.0:
+                if use_factored:
+                    # TASK_776: per-asset Shannon entropy. Reshape (B, 320) →
+                    # (B, 64, 5), per-asset softmax, per-asset entropy, then
+                    # mean over (B, 64) yielding a scalar with units of nats
+                    # per asset (max ln(5) ≈ 1.61).
+                    pol_r = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
+                    per_asset_probs = jax.nn.softmax(pol_r, axis=-1)
+                    per_asset_entropy = -jnp.sum(
+                        per_asset_probs * jnp.log(per_asset_probs + 1e-10),
+                        axis=-1,
+                    )  # (B, 64)
+                    policy_entropy = per_asset_entropy.mean()
+                else:
+                    policy_probs = jax.nn.softmax(policy_logits, axis=-1)
+                    policy_entropy = -jnp.sum(
+                        policy_probs * jnp.log(policy_probs + 1e-10), axis=-1
+                    ).mean()
                 entropy_bonus = entropy_coef * policy_entropy
                 # 5× stronger push when below floor (mirrors trainer.py:1244)
                 floor_gap = jnp.maximum(min_entropy - policy_entropy, 0.0)
