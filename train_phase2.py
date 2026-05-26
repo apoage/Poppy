@@ -640,8 +640,33 @@ class AsyncBatchPipeline:
             # Oracle remaining PnL (numpy)
             oracle_cum_pnl = slot['oracle_cum_pnl']
             horizon = self.config.oracle_value_horizon
+
+            # TASK_784: optional EWMA smoothing on per-step deltas of
+            # oracle_cum_pnl before the remaining-PnL gather. λ=0 → branch
+            # skipped → cum_pnl unchanged → bit-identical canon. λ>0 dampens
+            # per-window peakiness that drives 746's seed-variance signature.
+            # Done per-slot at batch-build (oracle_cum_pnl is the slot-resident
+            # RAM array, ~T floats, T≈400; recursion is a single numpy loop).
+            oracle_smoothing = getattr(self.config, 'oracle_smoothing', 0.0)
+            if oracle_smoothing > 0.0:
+                deltas = np.diff(oracle_cum_pnl)  # (T-2,) — first-difference
+                smoothed = np.empty_like(deltas)
+                smoothed[0] = deltas[0]
+                lam = float(oracle_smoothing)
+                one_minus_lam = 1.0 - lam
+                # Tight Python loop over ~T-2 ≈ 400 entries — well below the
+                # batch-build wall (~ms), no JAX/JIT involvement.
+                for i in range(1, len(deltas)):
+                    smoothed[i] = one_minus_lam * deltas[i] + lam * smoothed[i - 1]
+                # Reconstruct cum_pnl-shaped array anchored at oracle_cum_pnl[0].
+                cum_pnl_eff = np.concatenate(
+                    [oracle_cum_pnl[:1], oracle_cum_pnl[0] + np.cumsum(smoothed)]
+                ).astype(oracle_cum_pnl.dtype)
+            else:
+                cum_pnl_eff = oracle_cum_pnl
+
             end_idx = np.minimum(decision_indices + horizon, len(oracle_cum_pnl) - 1)
-            remaining = (oracle_cum_pnl[end_idx] - oracle_cum_pnl[decision_indices]).astype(np.float32)
+            remaining = (cum_pnl_eff[end_idx] - cum_pnl_eff[decision_indices]).astype(np.float32)
 
             # TASK_762 F1 fix: oracle_cum_pnl is precomputed upstream and includes
             # transaction_cost but NOT fee_penalty_bps. Without this branch the
@@ -2687,6 +2712,17 @@ def main():
         config.value_mixture_alpha = args.value_mixture_alpha
     if args.oracle_horizon is not None:
         config.oracle_value_horizon = args.oracle_horizon
+    # TASK_784: oracle_smoothing CLI override. Validate λ ∈ [0, 1) (λ=1 is
+    # degenerate — smoothed_delta would be constant and remaining = 0).
+    if getattr(args, 'oracle_smoothing', None) is not None:
+        if not (0.0 <= args.oracle_smoothing < 1.0):
+            raise ValueError(
+                f"--oracle-smoothing must lie in [0, 1), got {args.oracle_smoothing!r}"
+            )
+        config.oracle_smoothing = args.oracle_smoothing
+        if config.oracle_smoothing > 0.0:
+            logger.info(f"[TASK_784] oracle_smoothing λ={config.oracle_smoothing} "
+                        f"(EWMA on oracle_cum_pnl deltas at batch-build time)")
     if args.name:
         config.name = args.name
     else:

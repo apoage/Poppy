@@ -236,6 +236,23 @@ class Phase2Config(EasyConfig):
     # __post_init__.
     value_mixture_alpha: float = 0.5
 
+    # === Oracle EWMA Smoothing (TASK_784 / TASK_756c) ===
+    # EWMA smoothing constant λ applied to the per-step deltas of
+    # oracle_cum_pnl before the oracle remaining-PnL target is gathered.
+    # Recursion (numpy, per slot at batch-build time, only when λ > 0):
+    #   delta[t]          = oracle_cum_pnl[t+1] - oracle_cum_pnl[t]
+    #   smoothed_delta[0] = delta[0]
+    #   smoothed_delta[t] = (1-λ)·delta[t] + λ·smoothed_delta[t-1]
+    #   smoothed_cum_pnl  = oracle_cum_pnl[0] + cumsum(smoothed_delta)
+    #   remaining[d]      = smoothed_cum_pnl[d+H] - smoothed_cum_pnl[d]
+    # Hypothesis: 746 oracle's high seed-variance (paired Δα +0.72pp,
+    # STD 2.28pp) is driven by per-window peakiness of raw oracle PnL; EWMA
+    # over deltas smooths this and should reduce per-seed STD. Likely-null
+    # candidate ("Low" EV in ship-path memo) but cheap to falsify.
+    # Default 0.0 = canon: λ=0 branch is skipped entirely so the oracle
+    # precompute is bit-identical to the pre-784 raw point-difference path.
+    oracle_smoothing: float = 0.0
+
     # === Value Clip Mode (TASK_769) ===
     # "pre_popart" = canon: clip reward/td targets to [-10, 10] BEFORE PopArt
     #   normalization (current behavior — censors PopArt's dynamic range).

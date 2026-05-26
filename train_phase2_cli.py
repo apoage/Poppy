@@ -276,6 +276,15 @@ def parse_args():
                         help='TASK_777/756b: override oracle_value_horizon '
                              '(default: 400 = episode length). Effective for '
                              'oracle and mixture modes; ignored for nstep/td0.')
+    # TASK_784/756c: EWMA smoothing on oracle_cum_pnl per-step deltas before
+    # the remaining-PnL value target is gathered. λ=0 (default) → no-op,
+    # canon bit-identical. λ>0 smooths peakiness; targets the per-seed STD
+    # 2.28pp variance signature from runs/746_value_oracle/result.md.
+    parser.add_argument('--oracle-smoothing', type=float, default=None,
+                        help='TASK_784: EWMA λ on oracle_cum_pnl deltas before '
+                             'oracle value-target gather. Must lie in [0, 1). '
+                             'Default 0.0 = canon (smoothing OFF, bit-identical). '
+                             'Effective for --value-target-mode oracle.')
 
     # Data diversity (TASK_716 follow-up)
     parser.add_argument('--n-slots', type=int, default=17,
