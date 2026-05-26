@@ -44,6 +44,12 @@ def train_epoch(
     epoch: int,
 ) -> dict:
     """Train for one epoch with on-the-fly generation."""
+    # TASK_780: Bridge-trainer path is fully orthogonal to canon. Dispatch at
+    # the very top so no canon code runs (no AR warmup, no warmup_progress,
+    # no canon batch construction) when --oracle-mcts-distill is set.
+    if getattr(config, 'use_oracle_mcts_distill', False):
+        return _train_epoch_bridge(trainer, generator, config, epoch)
+
     # TASK_691: Update generator's epoch for oracle entropy schedule
     generator._current_epoch = epoch
     # TASK_707: Cycle to next historical period each epoch (legacy, pre-TASK_710)
@@ -109,6 +115,47 @@ def train_epoch(
     return {k: np.mean(v) if v else 0.0 for k, v in epoch_metrics.items()}
 
 
+def _train_epoch_bridge(
+    trainer: "EasyTrainer",  # actually BridgeTrainer at runtime
+    generator: "OnTheFlyGenerator",
+    config: "EasyConfig",
+    epoch: int,
+) -> dict:
+    """TASK_780: Bridge-trainer training-loop driver.
+
+    Sibling to `train_epoch` — keeps canon path 100% untouched. Differences
+    from canon:
+      - Uses `generator.generate_batch_bridge` (not `generate_batch`).
+      - No `warmup_progress` injection (bridge loss has no trade-weight ramp).
+      - No AR / state-channel refresh (the bridge buffer uses the simple
+        oracle-state path; AR-blend complexity is deferred to a later phase).
+    """
+    generator._current_epoch = epoch
+    epoch_metrics: dict = {}
+    steps_per_epoch = config.steps_per_epoch if hasattr(config, 'steps_per_epoch') else 200
+    unroll_steps = int(getattr(config, 'oracle_distill_unroll_steps', 5))
+
+    for step in range(steps_per_epoch):
+        batch = generator.generate_batch_bridge(config.batch_size, unroll_steps)
+        metrics = trainer.train_step(batch)
+
+        if not epoch_metrics:
+            epoch_metrics = {k: [] for k in metrics.keys()}
+        for key, value in metrics.items():
+            if key in epoch_metrics:
+                epoch_metrics[key].append(value)
+
+        if (step + 1) % 50 == 0:
+            avg_loss = np.mean(epoch_metrics.get('total_loss', [0])[-50:])
+            avg_agree = np.mean(epoch_metrics.get('oracle_agreement', [0])[-50:])
+            logger.info(
+                f"  [TASK_780] E{epoch} S{step+1}/{steps_per_epoch} | "
+                f"Loss: {avg_loss:.4f} | Agree: {avg_agree:.2%}"
+            )
+
+    return {k: np.mean(v) if v else 0.0 for k, v in epoch_metrics.items()}
+
+
 def validate(
     trainer: "EasyTrainer",
     generator: "OnTheFlyGenerator",
@@ -116,6 +163,11 @@ def validate(
     n_batches: int = 20,
 ) -> dict:
     """Validate with fresh generated data (uses trainer.evaluate_batch)."""
+    # TASK_780: Bridge-trainer val path uses the bridge batch sampler so the
+    # buffer format matches BridgeTrainer.evaluate_batch's expectations.
+    if getattr(config, 'use_oracle_mcts_distill', False):
+        return _validate_bridge(trainer, generator, config, n_batches)
+
     val_metrics = {}  # Dynamic initialization
 
     for _ in range(n_batches):
@@ -133,6 +185,27 @@ def validate(
                 val_metrics[k].append(v)
 
     # Safe averaging
+    return {k: np.mean(v) if v else 0.0 for k, v in val_metrics.items()}
+
+
+def _validate_bridge(
+    trainer: "EasyTrainer",  # actually BridgeTrainer at runtime
+    generator: "OnTheFlyGenerator",
+    config: "EasyConfig",
+    n_batches: int = 20,
+) -> dict:
+    """TASK_780: Bridge-trainer validation driver."""
+    val_metrics: dict = {}
+    unroll_steps = int(getattr(config, 'oracle_distill_unroll_steps', 5))
+    for _ in range(n_batches):
+        batch = generator.generate_batch_bridge(config.batch_size, unroll_steps)
+        metrics = trainer.evaluate_batch(batch)
+
+        if not val_metrics:
+            val_metrics = {k: [] for k in metrics.keys()}
+        for k, v in metrics.items():
+            if k in val_metrics:
+                val_metrics[k].append(v)
     return {k: np.mean(v) if v else 0.0 for k, v in val_metrics.items()}
 
 

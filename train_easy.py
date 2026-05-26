@@ -944,6 +944,382 @@ class OnTheFlyGenerator:
 
         return episode_datas
 
+    # =========================================================================
+    # TASK_780: Bridge buffer generation — Oracle-as-MCTS distillation targets.
+    # Sibling to `_generate_batch_episodes` (the canon path is UNTOUCHED).
+    # =========================================================================
+    def _generate_batch_episodes_bridge(self, prices_list: list, levels: list) -> list:
+        """TASK_780: Build bridge-format episode data.
+
+        Per-episode output dict matches the BridgeTrainer buffer contract
+        (see `bridge_trainer.BridgeTrainer` class docstring):
+
+            observations         (T_avail, C, W, N)            per-window obs
+            visit_distributions  (T_avail, n_assets * 5)       per-step visit dist
+            actions              (T_avail,) int                joint argmax action [0, 320)
+            rewards              (T_avail,)                    per-step PnL change
+            values               (T_avail,)                    per-step remaining PnL
+            root_value           scalar (float)                clean_pnl[-1]
+            n_samples            int                           = T_avail
+
+        Where T_avail is the number of decision windows in this episode (same
+        alignment as canon's `_generate_batch_episodes` output). Mini-batches
+        slice this trajectory into (K+1)-step windows in `generate_batch_bridge`.
+
+        This path uses `multipass_oracle_with_passes` + `oracle_to_mcts_targets`
+        for the per-step visit distribution (versus canon's collapsed mean policy).
+        """
+        n_batch = len(prices_list)
+        if n_batch == 0:
+            return []
+
+        from mcts_trader.jax_agent.oracle_distillation import (
+            multipass_oracle_with_passes, oracle_to_mcts_targets,
+        )
+
+        # Reuse canon's price-padding + encoding pipeline so the bridge
+        # observations are byte-identical to canon for the same price slice.
+        max_len = max(p.shape[0] for p in prices_list)
+        ohlcv_mode = prices_list[0].ndim == 3
+        if ohlcv_mode:
+            n_assets = prices_list[0].shape[1]
+            prices_padded = np.zeros((n_batch, max_len, n_assets, 5), dtype=np.float32)
+            prices_padded[:, :, :, :4] = 1.0
+            valid_lengths = []
+            for i, p in enumerate(prices_list):
+                prices_padded[i, :p.shape[0]] = p
+                valid_lengths.append(p.shape[0])
+            prices_jax = jnp.array(prices_padded)
+            close_jax = prices_jax[:, :, :, 3]
+        else:
+            n_assets = prices_list[0].shape[1]
+            prices_padded = np.zeros((n_batch, max_len, n_assets), dtype=np.float32)
+            valid_lengths = []
+            for i, p in enumerate(prices_list):
+                prices_padded[i, :p.shape[0]] = p
+                valid_lengths.append(p.shape[0])
+            prices_jax = jnp.array(prices_padded)
+            close_jax = prices_jax
+
+        log_returns = jnp.log(
+            jnp.maximum(close_jax[:, 1:], 1e-8) / jnp.maximum(close_jax[:, :-1], 1e-8)
+        )
+
+        n_passes = int(getattr(self.config, 'oracle_distill_n_passes', 32))
+        noise_scale = float(getattr(self.config, 'oracle_noise_scale', 0.03))
+        n_actions_per_asset = 5
+
+        # Compute MCTS targets per-episode (no vmap — the multipass oracle
+        # is itself JIT'd and a Python loop over n_batch is fine for Phase 2
+        # since the buffer fill is amortized across SAMPLES_PER_EPISODE samples).
+        per_episode_targets = []
+        for i in range(n_batch):
+            T_log = log_returns[i].shape[0]
+            self.jax_rng, subkey = jax.random.split(self.jax_rng)
+            all_policies, clean_pnl, _, clean_sel = multipass_oracle_with_passes(
+                log_returns[i],
+                subkey,
+                k=self.config.oracle_k,
+                lookahead=self.config.oracle_lookahead,
+                transaction_cost=self.config.transaction_cost,
+                min_alpha_threshold=getattr(self.config, 'min_alpha_threshold', 0.0),
+                n_passes=n_passes,
+                noise_scale=noise_scale,
+                n_actions_per_asset=n_actions_per_asset,
+                temperature=1.0,
+            )
+            targets = oracle_to_mcts_targets(
+                all_policies, clean_pnl, clean_sel,
+                n_assets=n_assets, n_actions_per_asset=n_actions_per_asset,
+            )
+            per_episode_targets.append({
+                'step_policies': targets['step_policies'],   # (T_log, A)
+                'step_values': targets['step_values'],        # (T_log,)
+                'step_actions': targets['step_actions'],      # (T_log, n_assets) int
+                'value_target': targets['value_target'],      # scalar
+                'clean_pnl': clean_pnl,                       # (T_log,)
+            })
+
+        # Window-aligned observations.
+        T_log = max_len - 1
+        n_valid = T_log - self.config.window_size
+        if n_valid <= 0:
+            return []
+
+        window_starts = jnp.arange(n_valid)
+        future_prices_batch = None
+        if self._cheat_lookahead > 0:
+            la = self._cheat_lookahead
+            ws_cfg = self.config.window_size
+            pad_width = [(0, 0), (0, la)] + [(0, 0)] * (prices_jax.ndim - 2)
+            prices_padded_fwd = jnp.pad(prices_jax, pad_width)
+            future_prices_batch = jax.vmap(
+                lambda p: jax.vmap(
+                    lambda w: jax.lax.dynamic_slice_in_dim(p, w + ws_cfg, la, axis=0)
+                )(window_starts)
+            )(prices_padded_fwd)
+
+        all_observations = jit_vmap_encode_temporal(
+            prices_jax, window_starts, self.encoder_config, future_prices_batch,
+        )
+
+        use_state_channels = self.config.n_channels > 32
+
+        episode_datas = []
+        for i in range(n_batch):
+            T = valid_lengths[i] - 1
+            start_idx = self.config.window_size - 1
+            end_idx = min(start_idx + n_valid, T)
+            n_windows = end_idx - start_idx
+            if n_windows <= 0:
+                continue
+
+            obs_i = all_observations[i, :n_windows]  # (n_windows, C, W, N)
+
+            # State channels (oracle-only path for Phase 2 — AR/blend is canon-only
+            # complexity; bridge buffer keeps it simple by always using clean
+            # oracle selections to compute state channels).
+            if use_state_channels:
+                sel_i = per_episode_targets[i]['step_actions'].astype(jnp.float32)
+                # step_actions is (T_log, n_assets) integer; for state-channel
+                # computation we need the binary "asset selected" mask. Anything
+                # that's not action 1 (HOLD) is a "selected" position.
+                asset_selected = (sel_i != 1).astype(jnp.float32)  # (T_log, n_assets)
+                target_pos_i = compute_target_position(
+                    asset_selected, log_returns[i, :T]
+                )
+                state_ch_i = build_state_channels(
+                    target_pos_i, log_returns[i, :T],
+                    n_assets=n_assets,
+                    k=self.config.oracle_k,
+                    window_size=self.config.window_size,
+                )  # (T, 6, n_assets)
+                step_policies_T = per_episode_targets[i]['step_policies']  # (T_log, A)
+                oracle_per_asset = step_policies_T[:T].reshape(
+                    T, n_assets, n_actions_per_asset
+                )
+                conf_i = jnp.max(oracle_per_asset, axis=-1)  # (T, n_assets)
+                ws = self.config.window_size
+                state_at_w = state_ch_i[start_idx - 1:end_idx - 1]
+                state_tiled = jnp.tile(state_at_w[:, :, None, :], (1, 1, ws, 1))
+                conf_at_w = conf_i[start_idx - 1:end_idx - 1]
+                conf_tiled = jnp.tile(conf_at_w[:, None, None, :], (1, 1, ws, 1))
+                obs_i = jnp.concatenate([obs_i, state_tiled, conf_tiled], axis=1)
+
+            # Per-step visit distributions / values / actions, aligned to
+            # decision points (start_idx..end_idx).
+            t_data = per_episode_targets[i]
+            step_policies_aligned = t_data['step_policies'][start_idx:end_idx]
+            step_values_aligned = t_data['step_values'][start_idx:end_idx]
+            step_actions_per_asset_aligned = t_data['step_actions'][start_idx:end_idx]
+            # Joint argmax action: pick the (asset, action) slot with the highest
+            # visit probability across all 320 slots — this is what we feed to
+            # `recurrent_inference` (which expects a single int per step).
+            joint_actions = jnp.argmax(step_policies_aligned, axis=-1)  # (n_windows,)
+
+            # Per-step rewards: PnL CHANGE between consecutive root-value targets.
+            # step_values[t] = clean_pnl[-1] - clean_pnl[t]  (remaining PnL).
+            # The reward arriving at step t (after taking action at t-1) is
+            # clean_pnl[t] - clean_pnl[t-1]. We approximate that as
+            #   step_values[t-1] - step_values[t]  ( = -(remaining_change) )
+            # but for Phase 2 the simplest finite approximation that matches
+            # train_phase2.REWARD_SCALE convention is the diff of clean_pnl.
+            clean_pnl_i = t_data['clean_pnl']
+            # rewards[t] = clean_pnl[t+1] - clean_pnl[t] for t in [start, end-1)
+            rewards_unscaled = clean_pnl_i[start_idx + 1:end_idx + 1] - clean_pnl_i[start_idx:end_idx]
+
+            ep_data = {
+                'observations': obs_i,                          # (n_windows, C, W, N)
+                'visit_distributions': step_policies_aligned,    # (n_windows, A)
+                'values': step_values_aligned,                   # (n_windows,)
+                'step_actions_per_asset': step_actions_per_asset_aligned,  # (n_windows, n_assets) int
+                'actions': joint_actions,                        # (n_windows,) int
+                'rewards': rewards_unscaled,                     # (n_windows,)
+                'root_value': float(t_data['value_target']),     # scalar
+                'level': levels[i],
+                'n_samples': n_windows,
+            }
+            if ep_data['n_samples'] > 0:
+                episode_datas.append(ep_data)
+
+        return episode_datas
+
+    def _refill_buffer_bridge(self):
+        """TASK_780: Sibling of `_refill_buffer` that uses the bridge
+        episode-generation path. Independent of canon's refill logic so
+        future canon changes don't break the bridge.
+        """
+        # Clean up exhausted entries (same FIFO logic as canon).
+        if self.buffer:
+            keep_indices = [i for i, cnt in enumerate(self.buffer_sample_counts)
+                            if cnt < self.SAMPLES_PER_EPISODE]
+            self.buffer = [self.buffer[i] for i in keep_indices]
+            self.buffer_sample_counts = [self.buffer_sample_counts[i] for i in keep_indices]
+            if self._buffer_param_ids:
+                self._buffer_param_ids = [self._buffer_param_ids[i] for i in keep_indices]
+
+        needed = self.N_BUFFER - len(self.buffer)
+        if needed <= 0:
+            return
+
+        while len(self.buffer) < self.N_BUFFER:
+            n_to_refill = min(self.n_envs, self.N_BUFFER - len(self.buffer))
+
+            # Source prices (same dispatching logic as canon's _refill_buffer,
+            # minus segment_pool/historical which require separate adaptation
+            # in a later phase).
+            if self.bella_generator is not None:
+                self.jax_rng, subkey = jax.random.split(self.jax_rng)
+                prices_batch = generate_bella_prices_on_device(
+                    self.bella_generator, subkey, n_envs=n_to_refill,
+                    invert_regime=self.invert_regime,
+                )
+                prices_list = [np.array(prices_batch[i]) for i in range(n_to_refill)]
+                levels = [-1] * n_to_refill
+            elif self._use_gpu_synth:
+                level = int(self.rng.choice(self.config.synthetic_levels))
+                self.jax_rng, subkey = jax.random.split(self.jax_rng)
+                prices_batch = generate_synthetic_on_device(
+                    subkey, n_to_refill, level,
+                    self.config.n_assets, self._synth_n_steps,
+                    self.config.synthetic_noise,
+                )
+                prices_list = [np.array(prices_batch[i]) for i in range(n_to_refill)]
+                levels = [level] * n_to_refill
+            else:
+                # CPU synthetic fallback.
+                prices_list = []
+                levels = []
+                while len(prices_list) < n_to_refill:
+                    try:
+                        level, prices_cpu = self.price_queue.get(timeout=0.1)
+                        prices_list.append(prices_cpu)
+                        levels.append(level)
+                        new_level = self.rng.choice(self.config.synthetic_levels)
+                        new_seed = self.rng.integers(0, 2**31)
+                        future = self.executor.submit(
+                            self._generate_prices_cpu, new_level, new_seed
+                        )
+                        future.add_done_callback(self._on_prices_ready)
+                    except Empty:
+                        level = self.rng.choice(self.config.synthetic_levels)
+                        seed = self.rng.integers(0, 2**31)
+                        _, prices_cpu = self._generate_prices_cpu(level, seed)
+                        prices_list.append(prices_cpu)
+                        levels.append(level)
+
+            if not prices_list:
+                continue
+
+            episode_datas = self._generate_batch_episodes_bridge(prices_list, levels)
+            for ep_data in episode_datas:
+                self.buffer.append(ep_data)
+                self.buffer_sample_counts.append(0)
+                self._buffer_param_ids.append(self._param_version)
+
+    def generate_batch_bridge(self, batch_size: int, unroll_steps: int) -> dict:
+        """TASK_780: Bridge batch sampler.
+
+        Each batch element is a *trajectory* of `unroll_steps + 1` consecutive
+        windows from a buffered episode. Returns the dict shape expected by
+        `BridgeTrainer.train_step`:
+
+            observations         (B, T, C, W, N)        T = unroll_steps + 1
+            actions              (B, K) int             K = unroll_steps
+            rewards              (B, K)
+            visit_distributions  (B, T, A)              A = n_assets * 5
+            values               (B, T)
+            root_value           (B,)
+            dones                (B, K) bool
+        """
+        T = unroll_steps + 1
+        K = unroll_steps
+
+        all_obs = []
+        all_actions = []
+        all_rewards = []
+        all_visit = []
+        all_values = []
+        all_root = []
+        all_dones = []
+
+        n_collected = 0
+        attempts = 0
+        max_attempts = batch_size * 8  # avoid pathological infinite loop on short episodes
+        while n_collected < batch_size:
+            attempts += 1
+            if attempts > max_attempts:
+                break
+            # Find episode with samples remaining + enough room for an unroll.
+            available = [
+                i for i, cnt in enumerate(self.buffer_sample_counts)
+                if cnt < self.SAMPLES_PER_EPISODE
+                and self.buffer[i]['n_samples'] >= T
+            ]
+            if not available:
+                self._refill_buffer_bridge()
+                if not self.buffer:
+                    raise RuntimeError(
+                        "Bridge buffer empty after refill — check price/data pipeline"
+                    )
+                available = [
+                    i for i, ep in enumerate(self.buffer) if ep['n_samples'] >= T
+                ]
+                if not available:
+                    # All episodes too short for the unroll horizon → bail.
+                    raise RuntimeError(
+                        f"All episodes too short for unroll_steps+1={T} "
+                        f"(buffer episode lengths: "
+                        f"{[ep['n_samples'] for ep in self.buffer]})"
+                    )
+
+            ep_idx = int(self.rng.choice(available))
+            ep_data = self.buffer[ep_idx]
+            n_available = ep_data['n_samples']
+            max_start = n_available - T
+            if max_start <= 0:
+                self.buffer_sample_counts[ep_idx] = self.SAMPLES_PER_EPISODE
+                continue
+
+            # Random start index for this trajectory window.
+            start = int(self.rng.integers(0, max_start + 1))
+            end = start + T
+
+            traj_obs = ep_data['observations'][start:end]                   # (T, C, W, N)
+            traj_visit = ep_data['visit_distributions'][start:end]           # (T, A)
+            traj_values = ep_data['values'][start:end]                       # (T,)
+            traj_actions = ep_data['actions'][start:end - 1]                 # (K,)
+            traj_rewards = ep_data['rewards'][start:end - 1]                 # (K,)
+            # All steps within a complete trajectory window are valid → no
+            # padding mask needed (dones all False for now).
+            traj_dones = jnp.zeros((K,), dtype=jnp.bool_)
+
+            all_obs.append(traj_obs)
+            all_actions.append(traj_actions)
+            all_rewards.append(traj_rewards)
+            all_visit.append(traj_visit)
+            all_values.append(traj_values)
+            all_root.append(float(ep_data['root_value']))
+            all_dones.append(traj_dones)
+
+            self.buffer_sample_counts[ep_idx] += 1
+            n_collected += 1
+
+        if n_collected == 0:
+            raise RuntimeError("generate_batch_bridge collected zero samples")
+
+        batch = {
+            'observations': jnp.stack(all_obs, axis=0),
+            'actions': jnp.stack(all_actions, axis=0).astype(jnp.int32),
+            'rewards': jnp.stack(all_rewards, axis=0).astype(jnp.float32),
+            'visit_distributions': jnp.stack(all_visit, axis=0).astype(jnp.float32),
+            'values': jnp.stack(all_values, axis=0).astype(jnp.float32),
+            'root_value': jnp.array(all_root, dtype=jnp.float32),
+            'dones': jnp.stack(all_dones, axis=0),
+        }
+        self.global_step += 1
+        return batch
+
     def _build_historical_episode(self, slot, cursor_start, n_steps):
         """TASK_714: Build episode from precomputed full-period oracle.
 
@@ -2156,8 +2532,14 @@ def main():
         logger.info("Creating trainer...")
         trainer = create_trainer(config, seed=config.seed)
 
+    # TASK_780: Bridge trainer needs raw obs at every unroll step → latent
+    # caching is incompatible (and unnecessary, since BridgeTrainer encodes
+    # all T obs in one batched initial_inference pass). AR rollout is also
+    # bypassed (the bridge buffer uses the simple oracle-state path).
+    bridge_mode = getattr(config, 'use_oracle_mcts_distill', False)
+
     # Enable latent state caching (removes TRM encoder from training loop)
-    if not getattr(args, 'no_latent_cache', False):
+    if not getattr(args, 'no_latent_cache', False) and not bridge_mode:
         logger.info("Enabling latent state caching...")
         generator.set_encoder(trainer.model, trainer.params)
         val_generator.set_encoder(trainer.model, trainer.params)
@@ -2167,7 +2549,7 @@ def main():
     ar_warmup = getattr(config, 'ar_warmup_epochs', 0)
     ar_blend_epochs = getattr(config, 'ar_blend_epochs', 0)
     ar_max_blend = getattr(config, 'ar_max_blend', 1.0)
-    if autoregressive_state:
+    if autoregressive_state and not bridge_mode:
         if ar_warmup > 0:
             blend_msg = f", {ar_blend_epochs}-epoch blend" if ar_blend_epochs > 0 else ""
             cap_msg = f", capped at {ar_max_blend:.0%}" if ar_max_blend < 1.0 else ""
@@ -2258,7 +2640,8 @@ def main():
                 # TASK_691: Val generator needs same epoch for entropy schedule
                 val_generator._current_epoch = epoch
                 # BUG-5 fix: Update val_generator with current model params
-                if autoregressive_state and epoch >= ar_warmup:
+                # TASK_780: bridge mode skips AR (uses oracle-state path only).
+                if autoregressive_state and epoch >= ar_warmup and not bridge_mode:
                     val_generator.set_model_params(trainer.model, trainer.params)
                 val_metrics = validate(trainer, val_generator, config, n_batches=20)
             else:

@@ -1,41 +1,43 @@
 """
-TASK_780 — Bridge Trainer (Oracle-as-MCTS Distillation, Phase A skeleton)
+TASK_780 — Bridge Trainer (Oracle-as-MCTS Distillation, Phase A imprint)
 
 This module is the **parallel** Phase-1 trainer that replaces Foxglove's flat
 soft-one-hot policy + scalar remaining-PnL targets with MCTS-shaped targets
-(visit distributions, per-step policies, per-action Q-values, multi-step
-latent-dynamics consistency loss). It runs alongside `easy_trainer.py`; the
-canon path is selected via `easy_config.EasyConfig.use_oracle_mcts_distill`.
+(visit distributions, per-step policies, multi-step latent-dynamics consistency
+loss). It runs alongside `easy_trainer.py`; the canon path is selected via
+`easy_config.EasyConfig.use_oracle_mcts_distill`.
 
-**Phase 1 status (this dispatch): SKELETON ONLY.**
-- `__init__` wires the model with `use_prediction_head=True`, creates the
-  optimizer (same `optax.chain(clip + adamw)` pattern as `easy_trainer.py`),
-  and registers the JIT-ready training-step signature.
-- `_train_step_impl` body raises `NotImplementedError("bridge_trainer Phase 2")`.
-- `train_step` / `evaluate_batch` are thin wrappers that also raise.
-- `save_checkpoint` / `load_checkpoint` preserve the EasyTrainer pickle
-  contract (`{'params', 'opt_state', 'epoch', 'metrics', 'config', 'n_params'}`),
-  so `train_phase2.load_phase1_checkpoint` (`:96-100`) works unchanged.
+**Phase 2 status (this dispatch): TRAINING-STEP MATH IMPLEMENTED.**
 
-Phase 2 (next dispatch) fills `_train_step_impl` per TASK_697 §A.2:
-    total_loss = policy_w * CE(policy_logits, visit_distribution)
-               + value_w  * hybrid_value(value_logits, root_value)
-               + reward_w * CE(reward_logits, oracle_step_reward)
-               + consistency_w * ‖encode(s_t) − dynamics(h_{t−1}, a_{t−1})‖²
+The loss (TASK_697 §A.2) is computed over a K-step unroll:
+
+    total_loss = sum_{k=0..K-1}( policy_w * CE(policy_logits_k, visit_dist_k) )
+               + value_w * CE(value_logits_root, root_value_categorical)
+               + consistency_w * sum_{k=0..K-1}( ‖pred_latent_{k+1} - target_latent_{k+1}‖² )
+               + reward_w * sum_{k=0..K-1}( CE(pred_reward_k, reward_target_k) )
+
+Where:
+- `policy_logits_k` from `model.recurrent_inference(latent_k, action_k)` at unroll step k
+  (k=0 uses `initial_inference(obs_root).policy_logits`)
+- `visit_dist_k` is the per-step visit distribution target (per-asset 5-way softmax)
+- `target_latent_{k+1}` = `stop_gradient(model.initial_inference(obs_{k+1}).latent_state)`
+- `root_value_categorical` = `scalar_to_categorical(value_target * value_scale)`
+
+Q-value loss is gated OFF by default (`oracle_distill_q_value_weight = 0.0`)
+since the simple multipass-oracle Q-values reduce to `value_target * visit_indicator`
+(see TASK_780_IMPLEMENTATION_PLAN.md §"Surprises" #3).
 
 References
 ----------
 - `tasks/TASK_780_ORACLE_AS_MCTS_DISTILLATION.md`
-- `tasks/TASK_780_IMPLEMENTATION_PLAN.md`
+- `tasks/TASK_780_IMPLEMENTATION_PLAN.md` (Phase 2 spec)
 - `tasks/TASK_697_ORACLE_AS_MCTS_DISTILLATION.md` §A.1, §A.2
 - `runs/780_oracle_as_mcts/AUTHORIZATION_2026-05-26.md` §"Build phase outline"
-- `easy_trainer.py:29-573` — the canon Phase-1 trainer being bridged.
-- `train_phase2.py:96-100` — the load contract this trainer's checkpoints
-  must satisfy.
-- `train_phase2.py:1613-1700` — the Stage-A dynamics warmup that Phase-A
-  imprint will replace.
-- `mcts_trader/jax_agent/oracle_distillation.py` — the target-generation
-  helpers this trainer consumes.
+- `easy_trainer.py:29-573` — canon Phase-1 trainer (target reference for value CE).
+- `train_phase2.py:96-100` — load contract (this trainer's checkpoints must satisfy).
+- `train_phase2.py:311-370` — Stage-A dynamics warmup (closest analog for consistency).
+- `train_phase2.py:1235-1700` — Stage-B joint training (closest analog for multi-loss).
+- `mcts_trader/jax_agent/oracle_distillation.py` — target-generation helpers consumed here.
 """
 
 from __future__ import annotations
@@ -53,7 +55,32 @@ from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support
 from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 
 
-_PHASE2_TODO = "bridge_trainer Phase 2 — see tasks/TASK_780_IMPLEMENTATION_PLAN.md"
+# Bin width / range mirrors train_phase2.scalar_to_categorical so this trainer's
+# value targets land in the same 401-bin support the rest of the stack uses.
+_VALUE_SUPPORT_MIN = -10.0
+_VALUE_SUPPORT_MAX = 10.0
+
+
+def _scalar_to_categorical(values: jnp.ndarray) -> jnp.ndarray:
+    """Convert scalar values to one-hot over the 401-bin value support.
+
+    Mirrors `train_phase2.scalar_to_categorical` (`:78-87`) so bridge value
+    targets share the same 401-bin layout as Phase-2 Stage-B.
+
+    Parameters
+    ----------
+    values : jnp.ndarray
+        Any shape. Clipped to [-10, +10] then binned.
+
+    Returns
+    -------
+    jnp.ndarray of shape (*values.shape, 401)
+    """
+    values = jnp.clip(values, _VALUE_SUPPORT_MIN, _VALUE_SUPPORT_MAX)
+    bin_width = (_VALUE_SUPPORT_MAX - _VALUE_SUPPORT_MIN) / (VALUE_SUPPORT_SIZE - 1)
+    bin_idx = ((values - _VALUE_SUPPORT_MIN) / bin_width).astype(jnp.int32)
+    bin_idx = jnp.clip(bin_idx, 0, VALUE_SUPPORT_SIZE - 1)
+    return jax.nn.one_hot(bin_idx, VALUE_SUPPORT_SIZE)
 
 
 class BridgeTrainer:
@@ -67,13 +94,19 @@ class BridgeTrainer:
     skipped (operator decision at smoke time per AUTHORIZATION §"Build phase
     outline").
 
-    Phase 1 deliverable
-    -------------------
-    The training-step body is NotImplementedError. The class is intentionally
-    constructed end-to-end (model init, optimizer, value support, JIT
-    registration) so the parameter tree shape is locked in for Phase 2's
-    loss implementation and so the checkpoint contract is verifiable by
-    `train_phase2.load_phase1_checkpoint` without ever calling `train_step`.
+    Bridge buffer contract (consumed by `train_step`)
+    -------------------------------------------------
+    A bridge batch is a dict with the following keys:
+
+      observations         (B, T, C, W, N)   T = unroll_steps + 1
+      actions              (B, K)            K = unroll_steps; joint int over [0, 320)
+      rewards              (B, K)            per-step scalar PnL change
+      visit_distributions  (B, T, A)         A = n_assets * 5; per-step visit dist
+      values               (B, T)            per-step remaining PnL (root at index 0)
+      root_value           (B,)              episode total PnL (clean_pnl[-1])
+      dones                (B, K) bool       True past end-of-episode (mask)
+
+    Index 0 along the T-axis is the root step; indices 1..K are unroll targets.
     """
 
     def __init__(self, config: EasyConfig, rng_key: jax.random.PRNGKey):
@@ -149,19 +182,41 @@ class BridgeTrainer:
         )
         self.opt_state = self.optimizer.init(self.params)
 
-        # Value support for hybrid value loss (Phase 2 will use it; cached here
-        # so the JIT step doesn't re-derive it).
+        # Value support for hybrid value loss (cached so the JIT step doesn't
+        # re-derive it).
         self.value_support = get_value_support()
 
-        # JIT registration. Static argnames match the kwargs the Phase-2 body
-        # will need; declaring them now keeps the recompile surface stable.
+        # Cache static config values used inside the JIT step (Python-level
+        # constants — captured in HLO at trace time).
+        self._n_assets = int(config.n_assets)
+        self._n_actions_per_asset = 5  # 5 actions per asset by TASK_780 convention
+        self._value_scale = float(getattr(config, 'value_scale', 2.0))
+        self._policy_weight = float(getattr(config, 'policy_weight', 1.0))
+        self._value_weight = float(getattr(config, 'value_weight', 0.5))
+        self._consistency_weight = float(
+            getattr(config, 'oracle_distill_consistency_weight', 1.0)
+        )
+        self._reward_weight = float(
+            getattr(config, 'oracle_distill_reward_weight', 1.0)
+        )
+        self._unroll_steps = int(
+            getattr(config, 'oracle_distill_unroll_steps', 5)
+        )
+
+        # JIT registration. `unroll_steps` is static so the loop body is
+        # traced once per K value; `n_assets` is also static for the
+        # reshape op.
         self._train_step = jax.jit(
             self._train_step_impl,
             static_argnames=['unroll_steps'],
         )
+        self._eval_step = jax.jit(
+            self._evaluate_batch_impl,
+            static_argnames=['unroll_steps'],
+        )
 
     # ----------------------------------------------------------------
-    # Training step (Phase 2 fills the body)
+    # Training step — MuZero-shaped loss over a K-step unroll.
     # ----------------------------------------------------------------
     def _train_step_impl(
         self,
@@ -170,39 +225,453 @@ class BridgeTrainer:
         batch: Dict[str, jnp.ndarray],
         unroll_steps: int = 5,
     ) -> Tuple[Any, Any, Dict[str, jnp.ndarray]]:
-        """Single training step.
+        """Single training step (JIT-compiled).
 
-        Phase 2 will implement the MuZero-shaped loss per TASK_697 §A.2:
-            policy_w * CE(policy_logits, visit_distribution)
-          + value_w * hybrid_value(value_logits, root_value)
-          + reward_w * CE(reward_logits, oracle_step_reward)
-          + consistency_w * ‖encode(s_t) − dynamics(h_{t−1}, a_{t−1})‖²
+        Implements the TASK_697 §A.2 MuZero-shaped loss:
+            total_loss = policy_w * CE(policy_logits, visit_distribution)        (per unroll step)
+                       + value_w * CE(value_logits_root, root_value_categorical)
+                       + reward_w * CE(reward_logits, oracle_step_reward)        (per unroll step)
+                       + consistency_w * ‖pred_latent_{k+1} - target_latent_{k+1}‖²  (per unroll step)
 
-        Buffer keys expected by Phase 2:
-            observations          (B, C, W, N)
-            visit_distributions   (B, T_unroll, n_actions)
-            step_values           (B, T_unroll)
-            step_actions          (B, T_unroll, n_assets)  int
-            per_step_rewards      (B, T_unroll)
-            root_value            (B,)
-            policy_target         (B, n_actions)        root visit distribution
+        Targets are derived from `oracle_to_mcts_targets` (see
+        `mcts_trader/jax_agent/oracle_distillation.py`) and assembled into the
+        bridge batch by `OnTheFlyGenerator._generate_batch_episodes_bridge`.
+
+        Buffer contract: see class docstring.
         """
-        raise NotImplementedError(_PHASE2_TODO)
+        n_assets = self._n_assets
+        n_actions_per_asset = self._n_actions_per_asset
+        policy_w = self._policy_weight
+        value_w = self._value_weight
+        consistency_w = self._consistency_weight
+        reward_w = self._reward_weight
+        value_scale = self._value_scale
+
+        observations = batch['observations']      # (B, K+1, C, W, N)
+        actions = batch['actions']                # (B, K) int
+        rewards = batch['rewards']                # (B, K)
+        visit_distributions = batch['visit_distributions']  # (B, K+1, A) — A = n_assets*5
+        root_value = batch['root_value']          # (B,)
+        dones = batch['dones']                    # (B, K) bool
+
+        B = observations.shape[0]
+        T = observations.shape[1]  # = unroll_steps + 1
+        C = observations.shape[2]
+        W = observations.shape[3]
+        N = observations.shape[4]
+
+        def loss_fn(params):
+            # ----------------------------------------------------------
+            # 1. Encode every obs in the unroll trajectory through the
+            #    representation head. Stop-gradient on targets latents (k>=1)
+            #    so consistency loss only updates the dynamics+encoder path
+            #    of the prediction chain, not the target encoder.
+            # ----------------------------------------------------------
+            # Flatten (B, T, C, W, N) → (B*T, C, W, N) for a single batched
+            # initial_inference pass.
+            obs_flat = observations.reshape(B * T, C, W, N)
+            init_out_flat = self.model.apply(
+                {'params': params},
+                observation=obs_flat,
+                mode='initial_inference',
+            )
+            latent_all = init_out_flat['latent_state']         # (B*T, S)
+            policy_logits_all = init_out_flat['policy_logits']  # (B*T, A)
+            value_all = init_out_flat['value']                  # (B*T, support)
+
+            S = latent_all.shape[-1]
+            latent_all = latent_all.reshape(B, T, S)
+            policy_logits_all = policy_logits_all.reshape(B, T, -1)
+            value_all = value_all.reshape(B, T, VALUE_SUPPORT_SIZE)
+
+            # Root logits / latent (k = 0).
+            value_logits_root = value_all[:, 0, :]       # (B, support)
+            latent_root = latent_all[:, 0, :]            # (B, S)
+            # Target latents for unroll consistency: indices 1..K.
+            # MuZero convention: target latent is computed from a fresh
+            # `initial_inference(obs_{k+1})` and detached.
+            target_latents = jax.lax.stop_gradient(latent_all[:, 1:, :])  # (B, K, S)
+
+            # ----------------------------------------------------------
+            # 2. Unroll dynamics: at each k=0..K-1 do
+            #    (latent_k, action_k) -> recurrent_inference -> (latent_{k+1}_pred,
+            #     policy_logits_k+1, reward_k, value_k+1)
+            # Use lax.scan with K=unroll_steps static.
+            # ----------------------------------------------------------
+            # We also compute the policy loss at each step using the visit
+            # distribution at that same step (per-step CE).
+            # The visit distribution at k=0 (root) uses the encoded
+            # policy_logits at root (`policy_logits_all[:, 0]`), not a
+            # dynamics-recurrent output — this matches MuZero's standard
+            # setup (root policy from initial_inference).
+
+            def unroll_step(latent_k, k):
+                action_k = actions[:, k]  # (B,)
+                dyn_out = self.model.apply(
+                    {'params': params},
+                    latent_k,
+                    action_k,
+                    mode='recurrent_inference',
+                )
+                next_latent = dyn_out['latent_state']         # (B, S)
+                policy_logits_k1 = dyn_out['policy_logits']    # (B, A)
+                value_logits_k1 = dyn_out['value']             # (B, support)
+                reward_logits_k = dyn_out['reward']            # (B, support)
+                return next_latent, (
+                    next_latent,
+                    policy_logits_k1,
+                    value_logits_k1,
+                    reward_logits_k,
+                )
+
+            # Note: we cannot use jax.lax.scan with a model.apply inside the
+            # scanned body because each step closes over `params` (already
+            # captured) — but Python-level static unrolling is fine for K=5.
+            # We use a Python `for` loop here; the JIT trace fully unrolls
+            # it once per static K. This matches train_phase2's Stage-B
+            # implementation pattern (which also unrolls statically).
+            pred_latents = []
+            unroll_policy_logits = []
+            unroll_reward_logits = []
+            latent_k = latent_root
+            for k in range(unroll_steps):
+                action_k = actions[:, k]  # (B,)
+                dyn_out = self.model.apply(
+                    {'params': params},
+                    latent_k,
+                    action_k,
+                    mode='recurrent_inference',
+                )
+                latent_k = dyn_out['latent_state']
+                pred_latents.append(latent_k)
+                unroll_policy_logits.append(dyn_out['policy_logits'])
+                unroll_reward_logits.append(dyn_out['reward'])
+
+            # Stack along time axis: (B, K, ...)
+            pred_latents_stack = jnp.stack(pred_latents, axis=1)         # (B, K, S)
+            unroll_policy_logits_stack = jnp.stack(
+                unroll_policy_logits, axis=1
+            )  # (B, K, A)
+            unroll_reward_logits_stack = jnp.stack(
+                unroll_reward_logits, axis=1
+            )  # (B, K, support)
+
+            # ----------------------------------------------------------
+            # 3. Policy CE (per-asset 5-way softmax, per unroll step).
+            # ----------------------------------------------------------
+            # Stack root + unroll policy logits along T-axis: (B, K+1, A)
+            policy_logits_T = jnp.concatenate(
+                [policy_logits_all[:, 0:1, :], unroll_policy_logits_stack],
+                axis=1,
+            )  # (B, K+1, A)
+
+            A = policy_logits_T.shape[-1]
+            # Reshape both pred & target to (B, K+1, n_assets, 5) for per-asset CE.
+            policy_logits_reshaped = policy_logits_T.reshape(
+                B, T, n_assets, n_actions_per_asset
+            )
+            visit_dist_reshaped = visit_distributions.reshape(
+                B, T, n_assets, n_actions_per_asset
+            )
+
+            # Per-step per-asset softmax cross-entropy. Output shape (B, K+1, n_assets).
+            per_step_per_asset_ce = optax.softmax_cross_entropy(
+                policy_logits_reshaped, visit_dist_reshaped
+            )
+
+            # Mask out unroll steps that are past end-of-episode (dones[k] = True).
+            # The root step (k=0) is never masked. dones is (B, K), so we
+            # prepend an all-False column for the root.
+            done_mask_T = jnp.concatenate(
+                [jnp.zeros((B, 1), dtype=jnp.bool_), dones], axis=1
+            )  # (B, K+1)
+            # valid mask is the inverse — broadcast to (B, K+1, n_assets).
+            valid_mask = (~done_mask_T).astype(jnp.float32)[:, :, None]  # (B, K+1, 1)
+            per_step_per_asset_ce = per_step_per_asset_ce * valid_mask
+
+            # Average over (B, T, n_assets); divide by valid count to remain
+            # invariant under dones masking.
+            valid_count = jnp.maximum(jnp.sum(valid_mask) * n_assets, 1.0)
+            policy_loss = jnp.sum(per_step_per_asset_ce) / valid_count
+
+            # ----------------------------------------------------------
+            # 4. Value CE — root value only (TASK_780 design: dynamics
+            #    rollouts share the clean PnL trajectory, so we anchor the
+            #    value head to root_value × value_scale).
+            # ----------------------------------------------------------
+            scaled_root_value = root_value * value_scale  # (B,)
+            root_value_target = _scalar_to_categorical(scaled_root_value)
+            value_loss = optax.softmax_cross_entropy(
+                value_logits_root, root_value_target
+            ).mean()
+
+            # ----------------------------------------------------------
+            # 5. Consistency loss — MSE between predicted unroll latents
+            #    and target encoder latents at the same step.
+            #    pred_latents_stack: (B, K, S)
+            #    target_latents:     (B, K, S)
+            # ----------------------------------------------------------
+            consistency_diff = pred_latents_stack - target_latents       # (B, K, S)
+            # Mean over feature dim, then per-step mean over (B, K).
+            consistency_per_step = jnp.mean(consistency_diff ** 2, axis=-1)  # (B, K)
+            valid_unroll_mask = (~dones).astype(jnp.float32)              # (B, K)
+            valid_unroll_count = jnp.maximum(jnp.sum(valid_unroll_mask), 1.0)
+            consistency_loss = (
+                jnp.sum(consistency_per_step * valid_unroll_mask)
+                / valid_unroll_count
+            )
+
+            # ----------------------------------------------------------
+            # 6. Reward CE — per unroll step. Targets are scaled by
+            #    train_phase2's REWARD_SCALE (=100.0) to land in the
+            #    401-bin support; that matches the canonical pipeline
+            #    so the bridge ckpt's reward head agrees with Phase-2
+            #    Stage-B on the same scale.
+            # ----------------------------------------------------------
+            # rewards: (B, K) raw scalar PnL change. We follow
+            # train_phase2.REWARD_SCALE = 100.0 (matches `train_phase2.py:75`).
+            scaled_rewards = rewards * 100.0  # (B, K)
+            reward_targets = _scalar_to_categorical(scaled_rewards)  # (B, K, support)
+            # softmax_cross_entropy reduces over the last axis automatically.
+            reward_ce = optax.softmax_cross_entropy(
+                unroll_reward_logits_stack, reward_targets
+            )  # (B, K)
+            reward_loss = (
+                jnp.sum(reward_ce * valid_unroll_mask) / valid_unroll_count
+            )
+
+            # ----------------------------------------------------------
+            # 7. Total loss + metrics
+            # ----------------------------------------------------------
+            total_loss = (
+                policy_w * policy_loss
+                + value_w * value_loss
+                + consistency_w * consistency_loss
+                + reward_w * reward_loss
+            )
+
+            # Diagnostic: per-asset agreement at the ROOT only (matches
+            # easy_trainer.py:236-238 semantics for sanity-gate comparison).
+            policy_logits_root = policy_logits_all[:, 0, :]  # (B, A)
+            visit_dist_root = visit_distributions[:, 0, :]   # (B, A)
+            pred_action_type = jnp.argmax(
+                policy_logits_root.reshape(B, n_assets, n_actions_per_asset),
+                axis=-1,
+            )
+            oracle_action_type = jnp.argmax(
+                visit_dist_root.reshape(B, n_assets, n_actions_per_asset),
+                axis=-1,
+            )
+            per_asset_agreement = jnp.mean(
+                (pred_action_type == oracle_action_type).astype(jnp.float32)
+            )
+
+            # TASK_147 balanced accuracy at root (HOLD = action type 1)
+            oracle_is_trade = oracle_action_type != 1
+            oracle_is_hold = oracle_action_type == 1
+            trade_correct = (
+                (pred_action_type == oracle_action_type) & oracle_is_trade
+            )
+            n_trades = jnp.sum(oracle_is_trade.astype(jnp.float32))
+            agree_trade = jnp.where(
+                n_trades > 0,
+                jnp.sum(trade_correct.astype(jnp.float32)) / n_trades,
+                0.0,
+            )
+            hold_correct = (
+                (pred_action_type == oracle_action_type) & oracle_is_hold
+            )
+            n_holds = jnp.sum(oracle_is_hold.astype(jnp.float32))
+            agree_hold = jnp.where(
+                n_holds > 0,
+                jnp.sum(hold_correct.astype(jnp.float32)) / n_holds,
+                0.0,
+            )
+            balanced_agreement = 0.5 * agree_trade + 0.5 * agree_hold
+
+            metrics = {
+                'total_loss': total_loss,
+                'policy_loss': policy_loss,
+                'value_loss': value_loss,
+                'consistency_loss': consistency_loss,
+                'reward_loss': reward_loss,
+                'per_asset_agreement': per_asset_agreement,
+                'oracle_agreement': balanced_agreement,
+                'agree_trade': agree_trade,
+                'agree_hold': agree_hold,
+                'pred_latent_std': jnp.std(pred_latents_stack),
+                'target_latent_std': jnp.std(target_latents),
+            }
+            return total_loss, metrics
+
+        (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, new_opt_state = self.optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+
+        metrics['grad_norm'] = optax.global_norm(grads)
+        return new_params, new_opt_state, metrics
 
     def train_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """Run a single training step. Phase 2 fills."""
-        raise NotImplementedError(_PHASE2_TODO)
+        """Run a single training step on a bridge batch (host-facing API)."""
+        unroll_steps = self._unroll_steps
+        self.params, self.opt_state, metrics = self._train_step(
+            self.params, self.opt_state, batch, unroll_steps=unroll_steps
+        )
+        return {k: float(v) for k, v in metrics.items()}
+
+    # ----------------------------------------------------------------
+    # Evaluate (Phase-A sanity gate). Computes the same losses without
+    # an optimizer step so it can be called on a val batch.
+    # ----------------------------------------------------------------
+    def _evaluate_batch_impl(
+        self,
+        params: Any,
+        batch: Dict[str, jnp.ndarray],
+        unroll_steps: int = 5,
+    ) -> Dict[str, jnp.ndarray]:
+        """Compute metrics on a single bridge batch (no gradient update)."""
+        n_assets = self._n_assets
+        n_actions_per_asset = self._n_actions_per_asset
+        value_scale = self._value_scale
+
+        observations = batch['observations']
+        actions = batch['actions']
+        rewards = batch['rewards']
+        visit_distributions = batch['visit_distributions']
+        root_value = batch['root_value']
+        dones = batch['dones']
+
+        B = observations.shape[0]
+        T = observations.shape[1]
+        C = observations.shape[2]
+        W = observations.shape[3]
+        N = observations.shape[4]
+
+        obs_flat = observations.reshape(B * T, C, W, N)
+        init_out_flat = self.model.apply(
+            {'params': params}, observation=obs_flat, mode='initial_inference'
+        )
+        latent_all = init_out_flat['latent_state'].reshape(B, T, -1)
+        policy_logits_all = init_out_flat['policy_logits'].reshape(B, T, -1)
+        value_all = init_out_flat['value'].reshape(B, T, VALUE_SUPPORT_SIZE)
+
+        # Multi-step unroll (no gradient).
+        latent_root = latent_all[:, 0, :]
+        pred_latents = []
+        unroll_policy_logits = []
+        unroll_reward_logits = []
+        latent_k = latent_root
+        for k in range(unroll_steps):
+            action_k = actions[:, k]
+            dyn_out = self.model.apply(
+                {'params': params},
+                latent_k,
+                action_k,
+                mode='recurrent_inference',
+            )
+            latent_k = dyn_out['latent_state']
+            pred_latents.append(latent_k)
+            unroll_policy_logits.append(dyn_out['policy_logits'])
+            unroll_reward_logits.append(dyn_out['reward'])
+
+        pred_latents_stack = jnp.stack(pred_latents, axis=1)
+        unroll_policy_logits_stack = jnp.stack(unroll_policy_logits, axis=1)
+        unroll_reward_logits_stack = jnp.stack(unroll_reward_logits, axis=1)
+        target_latents = latent_all[:, 1:, :]
+
+        policy_logits_T = jnp.concatenate(
+            [policy_logits_all[:, 0:1, :], unroll_policy_logits_stack], axis=1
+        )
+
+        policy_logits_reshaped = policy_logits_T.reshape(
+            B, T, n_assets, n_actions_per_asset
+        )
+        visit_dist_reshaped = visit_distributions.reshape(
+            B, T, n_assets, n_actions_per_asset
+        )
+        per_step_per_asset_ce = optax.softmax_cross_entropy(
+            policy_logits_reshaped, visit_dist_reshaped
+        )
+        done_mask_T = jnp.concatenate(
+            [jnp.zeros((B, 1), dtype=jnp.bool_), dones], axis=1
+        )
+        valid_mask = (~done_mask_T).astype(jnp.float32)[:, :, None]
+        per_step_per_asset_ce = per_step_per_asset_ce * valid_mask
+        valid_count = jnp.maximum(jnp.sum(valid_mask) * n_assets, 1.0)
+        policy_loss = jnp.sum(per_step_per_asset_ce) / valid_count
+
+        scaled_root_value = root_value * value_scale
+        root_value_target = _scalar_to_categorical(scaled_root_value)
+        value_loss = optax.softmax_cross_entropy(
+            value_all[:, 0, :], root_value_target
+        ).mean()
+
+        consistency_diff = pred_latents_stack - target_latents
+        consistency_per_step = jnp.mean(consistency_diff ** 2, axis=-1)
+        valid_unroll_mask = (~dones).astype(jnp.float32)
+        valid_unroll_count = jnp.maximum(jnp.sum(valid_unroll_mask), 1.0)
+        consistency_loss = (
+            jnp.sum(consistency_per_step * valid_unroll_mask) / valid_unroll_count
+        )
+
+        scaled_rewards = rewards * 100.0
+        reward_targets = _scalar_to_categorical(scaled_rewards)
+        reward_ce = optax.softmax_cross_entropy(
+            unroll_reward_logits_stack, reward_targets
+        )
+        reward_loss = jnp.sum(reward_ce * valid_unroll_mask) / valid_unroll_count
+
+        # Root-only sanity-gate metric (matches easy_trainer.py:399).
+        policy_logits_root = policy_logits_all[:, 0, :]
+        visit_dist_root = visit_distributions[:, 0, :]
+        pred_action_type = jnp.argmax(
+            policy_logits_root.reshape(B, n_assets, n_actions_per_asset), axis=-1
+        )
+        oracle_action_type = jnp.argmax(
+            visit_dist_root.reshape(B, n_assets, n_actions_per_asset), axis=-1
+        )
+        per_asset_agreement = jnp.mean(
+            (pred_action_type == oracle_action_type).astype(jnp.float32)
+        )
+        oracle_is_trade = oracle_action_type != 1
+        oracle_is_hold = oracle_action_type == 1
+        n_trades = jnp.sum(oracle_is_trade.astype(jnp.float32))
+        n_holds = jnp.sum(oracle_is_hold.astype(jnp.float32))
+        trade_correct = (pred_action_type == oracle_action_type) & oracle_is_trade
+        hold_correct = (pred_action_type == oracle_action_type) & oracle_is_hold
+        agree_trade = jnp.where(
+            n_trades > 0,
+            jnp.sum(trade_correct.astype(jnp.float32)) / n_trades,
+            0.0,
+        )
+        agree_hold = jnp.where(
+            n_holds > 0,
+            jnp.sum(hold_correct.astype(jnp.float32)) / n_holds,
+            0.0,
+        )
+        balanced_agreement = 0.5 * agree_trade + 0.5 * agree_hold
+
+        return {
+            'total_loss': (
+                self._policy_weight * policy_loss
+                + self._value_weight * value_loss
+                + self._consistency_weight * consistency_loss
+                + self._reward_weight * reward_loss
+            ),
+            'policy_loss': policy_loss,
+            'value_loss': value_loss,
+            'consistency_loss': consistency_loss,
+            'reward_loss': reward_loss,
+            'per_asset_agreement': per_asset_agreement,
+            'oracle_agreement': balanced_agreement,
+            'agree_trade': agree_trade,
+            'agree_hold': agree_hold,
+        }
 
     def evaluate_batch(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate a single batch (for the Phase-A sanity gate). Phase 2 fills.
-
-        Phase 5 will implement the per-asset Bal.Acc comparator. Specifically,
-        per AUTHORIZATION §"Phase-A sanity gate" item 1, the predicted action
-        per asset is `argmax(visit_distribution[asset, :])` over the 5 actions
-        — directly comparable to `easy_trainer.py:287`'s `oracle_agreement`
-        (balanced trade/hold accuracy).
-        """
-        raise NotImplementedError(_PHASE2_TODO)
+        """Evaluate a single bridge batch (host-facing API)."""
+        metrics = self._eval_step(self.params, batch, unroll_steps=self._unroll_steps)
+        return {k: float(v) for k, v in metrics.items()}
 
     # ----------------------------------------------------------------
     # Checkpoint contract (Phase 1 IMPLEMENTED — load contract must hold
