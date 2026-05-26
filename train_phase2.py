@@ -2642,6 +2642,12 @@ def main():
         config.encoder_version = args.encoder_version
     if args.encoder_lr is not None:
         config.encoder_lr = args.encoder_lr
+    # TASK_782 / TASK_780 Phase 4: encoder unfreeze schedule (None = never).
+    # Phase2Config exposes the field; the CLI flag now lets operators set it
+    # without editing the JSON. Bridge ckpts (TASK_780) often need this set
+    # to e.g. 50 so the encoder joins Stage-B training mid-run.
+    if args.encoder_unfreeze_epoch is not None:
+        config.encoder_unfreeze_epoch = args.encoder_unfreeze_epoch
     # TASK_741 (Mint): per-asset injection override
     if args.per_asset_injection is not None:
         if args.per_asset_injection == 'none':

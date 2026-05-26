@@ -125,6 +125,10 @@ def parse_args():
                         help='Disable structural direction→policy bias refiner')
     parser.add_argument('--encoder-lr', type=float, default=None,
                         help='Encoder learning rate (0=frozen, default: config)')
+    # TASK_782 / TASK_780 Phase 4: epoch at which to unfreeze encoder mid-training
+    # (None = never; if set, encoder joins training at lr=encoder_lr after this epoch).
+    parser.add_argument('--encoder-unfreeze-epoch', type=int, default=None,
+                        help='Epoch to unfreeze encoder (None = encoder_lr behavior from epoch 0)')
     # TASK_728b: Warm-start refiner kernel to break zero-init dead-gradient basin
     parser.add_argument('--warm-direction-refiner', action='store_true',
                         help='Overwrite refiner kernel with action priors (BUY=+α, SELL=−α)')
