@@ -137,6 +137,38 @@ class EasyConfig:
     per_asset_inject_xs: bool = False       # cross-sectional scalars (production-safe)
     per_asset_inject_cheat: bool = False    # cheat scalar (diagnostic only)
 
+    # === TASK_780: Oracle-as-MCTS Distillation (bridge_trainer.py) ===
+    # When use_oracle_mcts_distill=True, train_easy.py routes to BridgeTrainer
+    # instead of EasyTrainer. BridgeTrainer trains the full MuZero stack
+    # (encoder + TRM + dynamics + heads) against MCTS-shaped targets:
+    # visit-count distributions, per-step policies, root value, multi-step
+    # dynamics consistency loss. Phase-1 dispatch lands the skeleton only;
+    # Phase-2+ fills the training step. Default OFF preserves canon byte-
+    # identically. See tasks/TASK_780_IMPLEMENTATION_PLAN.md for the build phasing.
+    use_oracle_mcts_distill: bool = False
+    # N noisy oracle passes used as MCTS-simulation analog (TASK_697 §A.3).
+    # Phase-1 default 32; annealed to 16 then 8 across epochs via the schedule below.
+    oracle_distill_n_passes: int = 32
+    # Epoch → n_passes anneal table (TASK_697 §A.3 verbatim). Tuple-of-tuples
+    # for JSON round-trip + dataclass `field(default_factory=...)` compatibility.
+    oracle_distill_pass_schedule: List[List[int]] = field(
+        default_factory=lambda: [[0, 32], [50, 16], [150, 8]]
+    )
+    # Visit-distribution sharpening temperature (post-aggregation). 1.0 = no sharpening.
+    oracle_distill_temperature: float = 1.0
+    # Multi-step latent consistency loss weight (matches train_phase2 Stage-A
+    # consistency_weight by default; tuneable per TASK_697 §A.2).
+    oracle_distill_consistency_weight: float = 1.0
+    # Per-step reward CE weight (matches train_phase2 Stage-A reward_weight).
+    oracle_distill_reward_weight: float = 1.0
+    # Multi-step unroll depth (matches train_phase2.py:1613-1700 Stage-A default).
+    oracle_distill_unroll_steps: int = 5
+    # Q-value aux head weight. Gated OFF in Phase 1 — Q-values in the simple
+    # multipass-oracle case reduce to value_target * visit_indicator (see
+    # TASK_780_IMPLEMENTATION_PLAN.md §"Surprises" #3). Phase 2 may upgrade
+    # to per-pass actual realized PnL and turn this loss on.
+    oracle_distill_q_value_weight: float = 0.0
+
     def save(self, path: str):
         """Save config to JSON."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)

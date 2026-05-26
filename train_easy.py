@@ -1844,6 +1844,20 @@ def main():
                              'on the post-pool feature surface. xs is '
                              'production-safe; cheat is diagnostic only.')
 
+    # TASK_780: Oracle-as-MCTS Distillation (bridge_trainer.py)
+    parser.add_argument('--oracle-mcts-distill', action='store_true',
+                        help='TASK_780: Route through bridge_trainer.py — train '
+                             'against MCTS-shaped targets (visit distributions, '
+                             'per-step policies, multi-step dynamics consistency) '
+                             'instead of flat soft-one-hot policy + scalar PnL. '
+                             'Default OFF preserves canon Foxglove behaviour.')
+    parser.add_argument('--oracle-distill-passes', type=int, default=None,
+                        help='TASK_780: Override oracle_distill_n_passes '
+                             '(epoch-0 pass count). Default None = use config.')
+    parser.add_argument('--oracle-distill-unroll', type=int, default=None,
+                        help='TASK_780: Override oracle_distill_unroll_steps. '
+                             'Default None = use config (5).')
+
     args = parser.parse_args()
 
     # Load or create config
@@ -1922,6 +1936,26 @@ def main():
         logger.info(f"[MINT] Per-asset injection: {args.per_asset_injection}")
         logger.info(f"  xs scalars: {config.per_asset_inject_xs}")
         logger.info(f"  cheat scalar: {config.per_asset_inject_cheat}")
+        logger.info("=" * 60)
+
+    # TASK_780: Oracle-as-MCTS Distillation routing — bridge_trainer.py
+    if args.oracle_mcts_distill:
+        config.use_oracle_mcts_distill = True
+        if args.oracle_distill_passes is not None:
+            config.oracle_distill_n_passes = args.oracle_distill_passes
+        if args.oracle_distill_unroll is not None:
+            config.oracle_distill_unroll_steps = args.oracle_distill_unroll
+        logger.info("=" * 60)
+        logger.info("[TASK_780] Oracle-as-MCTS Distillation ENABLED")
+        logger.info(f"  Trainer:               bridge_trainer.BridgeTrainer")
+        logger.info(f"  n_passes (epoch 0):    {config.oracle_distill_n_passes}")
+        logger.info(f"  pass schedule:         {config.oracle_distill_pass_schedule}")
+        logger.info(f"  unroll steps:          {config.oracle_distill_unroll_steps}")
+        logger.info(f"  consistency_weight:    {config.oracle_distill_consistency_weight}")
+        logger.info(f"  reward_weight:         {config.oracle_distill_reward_weight}")
+        logger.info(f"  q_value_weight:        {config.oracle_distill_q_value_weight}")
+        logger.info("  Phase 1 skeleton only — training step raises "
+                    "NotImplementedError until Phase 2 lands.")
         logger.info("=" * 60)
 
     # TASK_771/F1+N1 (Batch 3): re-run dataclass validators after CLI overrides.
@@ -2113,8 +2147,14 @@ def main():
     )
 
     # Create trainer
-    logger.info("Creating trainer...")
-    trainer = create_trainer(config, seed=config.seed)
+    # TASK_780: route to BridgeTrainer when --oracle-mcts-distill set; otherwise canon.
+    if getattr(config, 'use_oracle_mcts_distill', False):
+        logger.info("Creating BridgeTrainer (TASK_780)...")
+        from bridge_trainer import create_bridge_trainer
+        trainer = create_bridge_trainer(config, seed=config.seed)
+    else:
+        logger.info("Creating trainer...")
+        trainer = create_trainer(config, seed=config.seed)
 
     # Enable latent state caching (removes TRM encoder from training loop)
     if not getattr(args, 'no_latent_cache', False):
