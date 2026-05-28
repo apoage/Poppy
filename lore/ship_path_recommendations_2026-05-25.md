@@ -15,9 +15,9 @@ This memo is a triage of what is left to try. Where I can, I point to *partially
 | 1 | TASK_695 oracle-mask aux head (Phase-1 re-imprint) | Phase-1 imprint | High | ~12h imprint + 8h P2 | ~0 (already in model+trainer; needs `--oracle-mask-head` flag) | LOW (planning-side aux, not classifier sharpening) | Yes — paired Δα vs 760 a1b1 |
 | 2 | rs050 + entropy_coef sweep (combination, never jointly run) | Reward + entropy | High | ~18h | ~0 (both flags shipped) | LOW (entropy *de-sharpens* the classifier) | Yes |
 | 3 | TASK_756 mixture value target (oracle/nstep blend) | Planning-side | Mid-High | ~12h | ~50 LOC (insertion point known, `train_phase2.py:1257`) | LOW (planning-side, same class as 746 +0.72pp) | Yes |
-| 4 | TASK_722 Bella-as-rollouts for MCTS dynamics (closed-loop replacement of dynamics MLP) | Planning + closed-loop | Mid (high ceiling, high risk) | ~3-5 days code + ~12h paired | Large (~500 LOC new module + train loop wiring) | LOW (touches dynamics, not classifier) | Yes once built |
+| 4 | TASK_722 Bella-as-rollouts for MCTS dynamics (closed-loop replacement of dynamics MLP) | Planning + closed-loop | Mid (high ceiling, high risk) | ~12h paired | Large (~500 LOC new module + train loop wiring) | LOW (touches dynamics, not classifier) | Yes once built |
 | 5 | rs050 + 767 (action restructure) stacking | Reward + branching | Mid | ~12h | 0 (both shipped, never combined) | LOW (767 prunes search, not classifier) | Yes |
-| 6 | TASK_697 oracle-as-MCTS distillation (Phase A: train Phase 1 on MCTS-shaped visit-count targets) | Phase-1 rewrite | Mid (largest unexecuted design) | ~2 weeks code + ~12h imprint | Very large (new bridge_trainer.py per spec) | UNKNOWN | Yes once built |
+| 6 | TASK_697 oracle-as-MCTS distillation (Phase A: train Phase 1 on MCTS-shaped visit-count targets) | Phase-1 rewrite | Mid (largest unexecuted design) | ~12h imprint | Very large (new bridge_trainer.py per spec) | UNKNOWN | Yes once built |
 | 7 | TASK_725-D return-weighted BC + 767 + rs050 (3-stack) | BC weighting + action + reward | Mid | ~12h | ~10 LOC (725-D never landed) | MEDIUM (BC return-weighting may sharpen classifier; mitigated by 767 mask) | Yes |
 | 8 | Encoder unfreeze schedule at canon Stage-B | Phase-2 fine-tune | Low-Mid | ~9h | 0 (`encoder_unfreeze_epoch` / `encoder_lr` already wired) | MEDIUM (touches encoder; flagged by anti-correlation) | Yes |
 | 9 | Class-balance + entropy joint sweep (canon vs balanced+entropy) | BC weighting + entropy | Mid | ~15h | 0 (both shipped) | MEDIUM (balanced BC is classifier-side; entropy partially counteracts) | Yes |
@@ -148,7 +148,7 @@ EV ordering reflects (a) preferring partially-built mechanisms over greenfield, 
 - `generator.generate(seq_length=1440)` JAX pad bug — TASK_722 §134 documents the workaround (chained `generate_on_device` at native 400 with a seam tolerance). This is a known issue, not new work.
 
 **Cost**:
-- Code: 3-5 days for the bella_dynamics module + integration + smoke, two-gate review protocol per `lore/notes_2026-05-18.md` §138.
+- Code: bella_dynamics module + integration + smoke, two-gate review protocol per `lore/notes_2026-05-18.md` §138.
 - Wall: per TASK_722 §"Performance Budget", expect ~200-500 ms per train batch (vs ~105 ms canon), so ~2-3× slower training step. Stage-B at ~5-7 h/seed instead of 2.5. Paired 3-seed × 2-wide = **~12-15 h wall** for the experiment itself.
 
 **Falsifier**: paired Δα ≥ +3pp vs 760 a1b1, no seed < −5pp. Mechanism diagnostic: consistency score distribution must concentrate (Bella futures the dynamics MLP "agrees with" should be a non-trivial subset); if every Bella future is rejected as inconsistent, Bella's flow isn't aligned with the learned latent dynamics and the integration is meaningless.
@@ -203,18 +203,15 @@ EV ordering reflects (a) preferring partially-built mechanisms over greenfield, 
 - `easy_trainer.py` and `train_easy.py` are the imprint loop to be replaced by `bridge_trainer.py`.
 
 **What's missing**:
-- New `bridge_trainer.py` (per TASK_697 §"Recommended approach") — ~3-5 days code.
-- New `oracle_to_mcts_targets()` function — ~1 day.
-- Dynamics training in bridge — ~2 days (replaces the consistency-only Phase-2 Stage-A).
+- New `bridge_trainer.py` (per TASK_697 §"Recommended approach").
+- New `oracle_to_mcts_targets()` function.
+- Dynamics training in bridge (replaces the consistency-only Phase-2 Stage-A).
 - Buffer-format change: from `(observations, oracle_targets)` to `(observations, actions, rewards, visit_distributions, values, dones)`.
 - Action-space alignment decision (TASK_697 §A.4): 320 vs 192 — operator pick.
 - Phase A imprint + Phase B freeze + Phase C unfreeze pipeline.
 
 **Cost**:
-- Code: ~2 weeks per TASK_697 §"Implementation Estimate".
 - Phase A imprint: ~165 min server (k8_s7 baseline) × 3 seeds = ~9 h.
-- Phase B bootstrap + Phase C fine-tune: estimated 1-2 days additional.
-- Total: ~2.5-3 weeks first attempt.
 
 **Falsifier**: paired Δα ≥ +3pp vs 760 a1b1 at end-of-Phase-C. Earlier gate: Phase-A imprint must hit a balanced-accuracy floor comparable to current xs32 imprint (~85%) within same epoch budget.
 
@@ -376,7 +373,7 @@ The minimal Phase-3 implementation that matches `docs/easy_mode.md`:
 3. Generate fresh training targets from MCTS rollouts on real data.
 4. Retrain Phase 2 Stage B on these targets (ExIt round 2).
 
-Estimated 1-2 weeks of code. Combines candidates #1 + #4 (Bella rollouts) naturally.
+Combines candidates #1 + #4 (Bella rollouts) naturally.
 
 ---
 
@@ -400,9 +397,9 @@ These are deployment-relevant constraints. The biggest is that **factored search
 
 The operator asked for this explicitly. Reading the 25 oldest lore notes plus the design docs in `lore/`, the dormant ideas are:
 
-1. **Adversarial market generator self-play** (`lore/ALPHAZERO_TRADING_VISION.md` Phase 2, 2025-12-19, never tasked beyond design): an agent-vs-market game where the market generator learns to attack the agent's portfolio. Could be implemented today using Bella as the generator backbone. *Concrete attack surface*: Bella's flow-matching loss + a reward signal "Bella loss when conditioned to produce a sequence agent loses on." Never tested. Combines with TASK_722 (Bella as MCTS rollouts) — Bella becomes both world-model AND adversarial generator. Estimate: 2-3 weeks design, hard to falsify on the canon scorecard (would need a paired comparison: agent trained with adversarial Bella vs canon, both eval'd on real-data benchmark).
+1. **Adversarial market generator self-play** (`lore/ALPHAZERO_TRADING_VISION.md` Phase 2, 2025-12-19, never tasked beyond design): an agent-vs-market game where the market generator learns to attack the agent's portfolio. Could be implemented today using Bella as the generator backbone. *Concrete attack surface*: Bella's flow-matching loss + a reward signal "Bella loss when conditioned to produce a sequence agent loses on." Never tested. Combines with TASK_722 (Bella as MCTS rollouts) — Bella becomes both world-model AND adversarial generator. Hard to falsify on the canon scorecard (would need a paired comparison: agent trained with adversarial Bella vs canon, both eval'd on real-data benchmark).
 
-2. **Self-Play Dojo with population + ELO** (`lore/SELF_PLAY_DOJO_VISION.md` 2026-01-11, never tasked): N=8 to 32 agents competing on shared markets, winner-loser distillation, exploiters/champions. Spec'd at the architecture level (`SelfPlayDojo`, `MultiAgentMarketEnv`), never implemented. Estimated 1-2 weeks code. **Most aligned with the AlphaZero pedigree of MuZero.** Falsifiable: a self-play champion benchmarks against canon on eval-MCTS sims=16. Risk: market-impact modelling complexity (the multi-agent env needs to model how agents' actions affect prices). Could start without market impact (just independent agents on same data) for cheap.
+2. **Self-Play Dojo with population + ELO** (`lore/SELF_PLAY_DOJO_VISION.md` 2026-01-11, never tasked): N=8 to 32 agents competing on shared markets, winner-loser distillation, exploiters/champions. Spec'd at the architecture level (`SelfPlayDojo`, `MultiAgentMarketEnv`), never implemented. **Most aligned with the AlphaZero pedigree of MuZero.** Falsifiable: a self-play champion benchmarks against canon on eval-MCTS sims=16. Risk: market-impact modelling complexity (the multi-agent env needs to model how agents' actions affect prices). Could start without market impact (just independent agents on same data) for cheap.
 
 3. **Synthetic curriculum Levels 4-22** (`lore/MATHEMATICAL_TRADING_TACTICS_CURRICULUM.md`, 2025-12-19, partially implemented at Levels 0-14 per `lore/notes_2026-01-13.md` §1): pairs trading, triangle arbitrage, index arbitrage, momentum-reversal patterns. The dojo has been deprecated (current campaign uses `tools/orchestration/e-dojo_v1.py` per `tools/orchestration/CLAUDE.md`). Levels 15-22 (volatility clustering GARCH, microstructure noise, etc.) never implemented. *This is curriculum design*, separate from architecture experiments.
 
@@ -425,12 +422,12 @@ The highest-impact salvage candidates are **(1) adversarial market generator** (
 A small-perturbation candidate from the table above (#1, #2, #3, #5, #7, #8, #10) *might* ship. The honest prior, given the campaign's 14 evaluations 0 promotions and the eval-MCTS recal asymmetric-lift finding, is that each has 10-30% individual probability of clearing +3pp. None are slam-dunks. The **combinations** (#2 rs050+entropy and #5 rs050+767) are the most prior-favorable because both legs were independently zero-to-positive.
 
 If none of the small candidates ship, the project is at a structural choice:
-- **TASK_722 Bella rollouts** is the largest already-designed unrun mechanism with code budget < 2 weeks. This is the smallest *rewrite* on the table.
-- **TASK_697 oracle-as-MCTS** is the largest already-designed unrun mechanism that touches the imprint layer. ~2-3 weeks rewrite.
-- **Phase 3 ExIt closed-loop** (combining candidate #1 + candidate #4) is the design `docs/easy_mode.md` originally specified; the project has never implemented its own final phase. ~2-4 weeks rewrite.
-- **Self-play dojo** (`lore/SELF_PLAY_DOJO_VISION.md`) is the AlphaZero-aligned rewrite. ~2-4 weeks.
+- **TASK_722 Bella rollouts** is the smallest *rewrite* on the table — already-designed unrun mechanism.
+- **TASK_697 oracle-as-MCTS** is a larger already-designed unrun mechanism that touches the imprint layer.
+- **Phase 3 ExIt closed-loop** (combining candidate #1 + candidate #4) is the design `docs/easy_mode.md` originally specified; the project has never implemented its own final phase.
+- **Self-play dojo** (`lore/SELF_PLAY_DOJO_VISION.md`) is the AlphaZero-aligned rewrite.
 
-**Rewrite identified**: **the rewrite is Phase 3 / ExIt closed-loop, with the oracle-mask aux head as its gating prerequisite**. Every other "rewrite" candidate on this list is a partial step toward Phase 3. The project's original 3-phase design has only ever shipped Phases 1 and 2; Phase 3 — the mechanism that distinguishes ExIt-based training from supervised + RL — is unbuilt. If small-perturbation candidates close null, that is the path. Wall is 2-4 weeks code; cost of the experiment after build is the same as any candidate (~12 h paired 3-seed).
+**Rewrite identified**: **the rewrite is Phase 3 / ExIt closed-loop, with the oracle-mask aux head as its gating prerequisite**. Every other "rewrite" candidate on this list is a partial step toward Phase 3. The project's original 3-phase design has only ever shipped Phases 1 and 2; Phase 3 — the mechanism that distinguishes ExIt-based training from supervised + RL — is unbuilt. If small-perturbation candidates close null, that is the path. Cost of the experiment after build is the same as any candidate (~12 h paired 3-seed).
 
 The "no rewrite, ship from small candidate" path is real but its probability mass is concentrated in the combinations (#2, #5) not the standalone retries. Recommend running those first as the cheap last small-mechanism probes before committing to Phase 3 ExIt build.
 

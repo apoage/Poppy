@@ -13,7 +13,7 @@ Workstation tip checked: `79430e3` (master). Cross-checks performed against curr
 | TASK_777 | READY-TO-MERGE w/ caveat | MID | Diff is clean. Master ALREADY has a stale copy of `tasks/TASK_777_*.md` (81-line diff vs worktree) and `experiments/777_mixture_value/SPEC.md`. Worktree branch is the source of truth; the master untracked files should be deleted before merge to avoid a confusing "already there" condition. |
 | TASK_778 | READY (design only) | HIGH | Status correctly marked BLOCKED on code-budget. No code committed. Cited line ranges verified accurate (dynamics MLP at `:380-388` + `:583-610`; factored search expansion `:80-114`; mctx recurrent_fn `:89-140`). |
 | TASK_779 | READY | HIGH | Self-corrected line citations. Two residual citation drifts (the MCTS expansion mask claim `:1742-1762` is actually `:1783-1795`; CLI override claim `:2348-2349, 2355-2356` is actually `:2361-2362, 2373-2374`). Mechanism + flags verified. |
-| TASK_780 | READY (design only) | HIGH | Status correctly marked BLOCKED on code-budget. Path solver citations `:222`, `:345`, `:380` verified accurate. ~2-3 week budget acknowledged. |
+| TASK_780 | READY (design only) | HIGH | Status correctly marked BLOCKED on code-budget. Path solver citations `:222`, `:345`, `:380` verified accurate. Code budget acknowledged. |
 | TASK_781 | READY-TO-MERGE | HIGH | Diff is clean. `bc_return_weighted` flag-gated default OFF; canon paths in both BC arms are literal pre-781 expressions. |
 | TASK_782 | READY w/ patch caveat | HIGH | Important canon-correction discovered ('canon a1b1 already has encoder_lr=3e-5'). Schedule A is byte-equivalent to canon; Schedule B needs 4-line CLI patch OR JSON-override path. Sub-agent correctly declined to commit the patch. |
 | TASK_783 | READY-with-dependency | HIGH | Explicit dependency on TASK_776 merge documented. SPEC will be no-op on canon (factored search) without 776's factored-path entropy term. Dependency note is unambiguous. |
@@ -141,8 +141,8 @@ Workstation tip checked: `79430e3` (master). Cross-checks performed against curr
 ### TASK_780 — Oracle-as-MCTS distillation (design-only)
 
 - **TASK file** (`/home/lukas/Trader/tasks/TASK_780_ORACLE_AS_MCTS_DISTILLATION.md`): PASS.
-  - Status: DRAFT, revival of TASK_697 (parked Feb 2026). Operator authorization required for ~2-3 week code budget (line 8).
-  - Hypothesis, verified-code-state (multi-pass oracle infrastructure, Phase-1 imprint loop, Phase-2 expected interface), code-change scope table (~2 weeks per TASK_697 estimate), action-space alignment decision (defaults to 320, operator-confirmable), two-gate review protocol, variants (Phase A 3-cell + Phase B paired 3-seed + Phase C out-of-scope), Phase-A sanity gate (Bal.Acc ≥ canon − 3pp AND consistency loss < 0.01), Phase-B canon promotion gate, anti-correlation check (UNKNOWN by direct precedent — closest priors are 740/757/738), cost estimate (~2.5-3 weeks to first measurable result).
+  - Status: DRAFT, revival of TASK_697 (parked Feb 2026). Operator authorization required for code budget (line 8).
+  - Hypothesis, verified-code-state (multi-pass oracle infrastructure, Phase-1 imprint loop, Phase-2 expected interface), code-change scope table, action-space alignment decision (defaults to 320, operator-confirmable), two-gate review protocol, variants (Phase A 3-cell + Phase B paired 3-seed + Phase C out-of-scope), Phase-A sanity gate (Bal.Acc ≥ canon − 3pp AND consistency loss < 0.01), Phase-B canon promotion gate, anti-correlation check (UNKNOWN by direct precedent — closest priors are 740/757/738).
 - **Citation spot-checks**:
   - `path_solver.py:222` multipass_oracle_policy: **VERIFIED** at 222.
   - `path_solver.py:345` batched_multipass_oracle_policy: **VERIFIED** at 345.
@@ -152,7 +152,7 @@ Workstation tip checked: `79430e3` (master). Cross-checks performed against curr
   - Code prerequisites listed (lines 18-32), two-gate review protocol (lines 34-43), variants matrix, sanity gate, promotion gate, planned imprint command (provisional), pre-launch checklist (lines 123-135), expected wall.
   - Important warning (line 135): **"this is the largest re-imprint in the project. Subsequent paired Δα measurements are NO LONGER comparable to the 738-769 campaign data. Accept the campaign reset as the cost of the structural pivot."** This is the right warning to surface.
 - **Verdict**: READY (design only — no code to verify).
-- **Recommended action**: wait. Authorize the ~2-3 week code budget only if TASK_775/776/777/779 + TASK_781/782/783/784 all close null.
+- **Recommended action**: wait. Authorize the code budget only if TASK_775/776/777/779 + TASK_781/782/783/784 all close null.
 
 ### TASK_781 — Return-weighted BC + 767 + rs050 stack
 
@@ -310,8 +310,8 @@ Each merge should be followed by a 5-epoch canon smoke (run with all flags OFF, 
 - TASK_783 (after TASK_776 merges; sweep is no-op without 776's factored-path entropy term).
 
 **Design-only, hold for operator code-budget greenlight**:
-- TASK_778 (Bella-as-rollouts, ~3-5 days code + smoke; only authorize if TASK_775/776/777/779 all close null).
-- TASK_780 (oracle-as-MCTS distillation via bridge_trainer.py, ~2-3 weeks code; only authorize after the full small-perturbation queue closes).
+- TASK_778 (Bella-as-rollouts; only authorize if TASK_775/776/777/779 all close null).
+- TASK_780 (oracle-as-MCTS distillation via bridge_trainer.py; only authorize after the full small-perturbation queue closes).
 
 **Verdict count**:
 - Ship-ready (no follow-up): 3
