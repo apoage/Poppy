@@ -524,7 +524,10 @@ class OnTheFlyGenerator:
 
         # Initial refill (skip when pool is active — direct pipeline doesn't use buffer)
         if self.segment_pool is None:
-            self._refill_buffer()
+            if getattr(self.config, 'use_oracle_mcts_distill', False):
+                self._refill_buffer_bridge()
+            else:
+                self._refill_buffer()
         self.global_step = 0
 
     def _load_period(self, idx: int):
@@ -567,7 +570,10 @@ class OnTheFlyGenerator:
         # Flush buffer so next refill uses new period data
         self.buffer.clear()
         self.buffer_sample_counts.clear()
-        self._refill_buffer()
+        if getattr(self.config, 'use_oracle_mcts_distill', False):
+            self._refill_buffer_bridge()
+        else:
+            self._refill_buffer()
 
     def _get_thread_market(self, level: int) -> SyntheticMarket:
         """
