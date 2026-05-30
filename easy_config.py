@@ -168,6 +168,13 @@ class EasyConfig:
     # TASK_780_IMPLEMENTATION_PLAN.md §"Surprises" #3). Phase 2 may upgrade
     # to per-pass actual realized PnL and turn this loss on.
     oracle_distill_q_value_weight: float = 0.0
+    # TASK_786: chunk size for the B*T `initial_inference` encoder forward in
+    # bridge_trainer. The single batched encode of (B*(K+1)) windows is the
+    # 11.6 GiB OOM site at batch_size=256. Chunking it over the leading axis
+    # (lax.map + remat) bounds the peak to `encode_chunk` rows, math-identical.
+    # 384 divides 1536 (256*6) evenly → 4 chunks → ~2.9 GiB peak. Sentinel 0
+    # (or >= B*T) restores the legacy single-shot forward. See TASK_786.
+    oracle_distill_encode_chunk: int = 384
 
     def save(self, path: str):
         """Save config to JSON."""

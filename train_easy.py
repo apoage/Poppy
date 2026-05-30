@@ -2239,6 +2239,10 @@ def main():
     parser.add_argument('--oracle-distill-unroll', type=int, default=None,
                         help='TASK_780: Override oracle_distill_unroll_steps. '
                              'Default None = use config (5).')
+    parser.add_argument('--oracle-distill-encode-chunk', type=int, default=None,
+                        help='TASK_786: chunk size for the B*T initial_inference '
+                             'encoder forward in bridge_trainer (OOM fix). '
+                             '0 = legacy single-shot. Default None = use config (384).')
 
     args = parser.parse_args()
 
@@ -2327,12 +2331,15 @@ def main():
             config.oracle_distill_n_passes = args.oracle_distill_passes
         if args.oracle_distill_unroll is not None:
             config.oracle_distill_unroll_steps = args.oracle_distill_unroll
+        if args.oracle_distill_encode_chunk is not None:
+            config.oracle_distill_encode_chunk = args.oracle_distill_encode_chunk
         logger.info("=" * 60)
         logger.info("[TASK_780] Oracle-as-MCTS Distillation ENABLED")
         logger.info(f"  Trainer:               bridge_trainer.BridgeTrainer")
         logger.info(f"  n_passes (epoch 0):    {config.oracle_distill_n_passes}")
         logger.info(f"  pass schedule:         {config.oracle_distill_pass_schedule}")
         logger.info(f"  unroll steps:          {config.oracle_distill_unroll_steps}")
+        logger.info(f"  encode_chunk:          {config.oracle_distill_encode_chunk}")
         logger.info(f"  consistency_weight:    {config.oracle_distill_consistency_weight}")
         logger.info(f"  reward_weight:         {config.oracle_distill_reward_weight}")
         logger.info(f"  q_value_weight:        {config.oracle_distill_q_value_weight}")

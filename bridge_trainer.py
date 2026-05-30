@@ -202,6 +202,11 @@ class BridgeTrainer:
         self._unroll_steps = int(
             getattr(config, 'oracle_distill_unroll_steps', 5)
         )
+        # TASK_786: chunk size for the B*T initial_inference encoder forward.
+        # 0 = legacy single-shot. See `_encode_obs_chunked`.
+        self._encode_chunk = int(
+            getattr(config, 'oracle_distill_encode_chunk', 384)
+        )
 
         # JIT registration. `unroll_steps` is static so the loop body is
         # traced once per K value; `n_assets` is also static for the
@@ -214,6 +219,54 @@ class BridgeTrainer:
             self._evaluate_batch_impl,
             static_argnames=['unroll_steps'],
         )
+
+    # ----------------------------------------------------------------
+    # TASK_786: memory-bounded encoder forward.
+    # ----------------------------------------------------------------
+    def _encode_obs_chunked(self, params, obs_flat):
+        """Batched `initial_inference` over (BT, C, W, N), peak-bounded.
+
+        The single-shot encode of all `B*(K+1)` windows is the 11.6 GiB OOM
+        site (TASK_786). We chunk the leading axis into `_encode_chunk`-row
+        groups and `lax.map` over them, remat-ing each chunk's forward so the
+        backward recomputes rather than retains. Rows are independent through
+        the encoder (cross-asset attention is within-window, never cross-batch),
+        so this is numerically identical to the single-shot path.
+
+        Returns `(latent_all, policy_logits_all, value_all)`, each `(BT, *)`.
+        """
+        BT = obs_flat.shape[0]
+        chunk = self._encode_chunk
+
+        def _encode(p, obs):
+            out = self.model.apply(
+                {'params': p}, observation=obs, mode='initial_inference'
+            )
+            return out['latent_state'], out['policy_logits'], out['value']
+
+        # Legacy single-shot: chunking off, or chunk covers the whole batch.
+        if chunk <= 0 or chunk >= BT:
+            return _encode(params, obs_flat)
+
+        # Pad BT up to a multiple of chunk (static shapes under jit). Padded
+        # rows are sliced off before any loss term → zero gradient.
+        n_chunks = (BT + chunk - 1) // chunk
+        pad = n_chunks * chunk - BT
+        if pad:
+            obs_flat = jnp.pad(
+                obs_flat, ((0, pad), (0, 0), (0, 0), (0, 0))
+            )
+        obs_chunked = obs_flat.reshape(n_chunks, chunk, *obs_flat.shape[1:])
+
+        encode_remat = jax.checkpoint(_encode)
+        lat, pol, val = jax.lax.map(
+            lambda oc: encode_remat(params, oc), obs_chunked
+        )
+        # (n_chunks, chunk, *) → (n_chunks*chunk, *) → drop padding.
+        lat = lat.reshape(n_chunks * chunk, -1)[:BT]
+        pol = pol.reshape(n_chunks * chunk, -1)[:BT]
+        val = val.reshape(n_chunks * chunk, -1)[:BT]
+        return lat, pol, val
 
     # ----------------------------------------------------------------
     # Training step — MuZero-shaped loss over a K-step unroll.
@@ -270,14 +323,10 @@ class BridgeTrainer:
             # Flatten (B, T, C, W, N) → (B*T, C, W, N) for a single batched
             # initial_inference pass.
             obs_flat = observations.reshape(B * T, C, W, N)
-            init_out_flat = self.model.apply(
-                {'params': params},
-                observation=obs_flat,
-                mode='initial_inference',
-            )
-            latent_all = init_out_flat['latent_state']         # (B*T, S)
-            policy_logits_all = init_out_flat['policy_logits']  # (B*T, A)
-            value_all = init_out_flat['value']                  # (B*T, support)
+            # TASK_786: chunked + remat encode bounds the peak HBM here.
+            latent_all, policy_logits_all, value_all = self._encode_obs_chunked(
+                params, obs_flat
+            )                                                   # each (B*T, *)
 
             S = latent_all.shape[-1]
             latent_all = latent_all.reshape(B, T, S)
@@ -548,12 +597,13 @@ class BridgeTrainer:
         N = observations.shape[4]
 
         obs_flat = observations.reshape(B * T, C, W, N)
-        init_out_flat = self.model.apply(
-            {'params': params}, observation=obs_flat, mode='initial_inference'
+        # TASK_786: chunked + remat encode bounds the peak HBM here.
+        latent_flat, policy_flat, value_flat = self._encode_obs_chunked(
+            params, obs_flat
         )
-        latent_all = init_out_flat['latent_state'].reshape(B, T, -1)
-        policy_logits_all = init_out_flat['policy_logits'].reshape(B, T, -1)
-        value_all = init_out_flat['value'].reshape(B, T, VALUE_SUPPORT_SIZE)
+        latent_all = latent_flat.reshape(B, T, -1)
+        policy_logits_all = policy_flat.reshape(B, T, -1)
+        value_all = value_flat.reshape(B, T, VALUE_SUPPORT_SIZE)
 
         # Multi-step unroll (no gradient).
         latent_root = latent_all[:, 0, :]
