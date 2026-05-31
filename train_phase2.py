@@ -1092,6 +1092,12 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     # time — sweep cells re-JIT but that's a one-time cost per cell.
     entropy_coef = float(getattr(config, 'entropy_coef', 0.0))
     min_entropy = float(getattr(config, 'min_entropy', 0.0))
+    # TASK_787 (experiment A): over-trade penalty weight. Per-asset L2 penalty on
+    # (1 - hold_prob) added to total_loss. Default 0.0 = canon — the term is gated
+    # by a compile-time `> 0` test below, so when OFF it is never traced into the
+    # XLA graph and the loss/gradients are bit-identical to pre-787 code. Captured
+    # at JIT-trace time — flipping the weight re-JITs the step once per cell.
+    trade_rate_penalty_weight = float(getattr(config, 'trade_rate_penalty_weight', 0.0))
     # TASK_767: action-space restructure. When disable_limit_orders is True the
     # LimitSell (3) / LimitBuy (4) actions are dropped from the Phase-2 action
     # space. Two static arrays are built once at JIT-trace time:
@@ -1635,6 +1641,23 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                           bella_distill_w * bella_distill_loss +
                           bella_shape_w * bella_shape_loss)
 
+            # TASK_787 (experiment A): over-trade penalty. Per-asset L2 on the
+            # network's trade probability (1 - hold_prob). HOLD is action index 1
+            # within each per-asset 5-block (the diagnostic at _act_frac[:, 1] uses
+            # the same convention). policy_logits is (B, 320) per-asset-flattened —
+            # reshape to (B, 64, 5), per-asset softmax, take the HOLD column, and
+            # penalize squared trade probability averaged over (B, 64).
+            # Compile-time gate: when trade_rate_penalty_weight == 0.0 this branch
+            # is not traced — total_loss/grads are bit-identical to pre-787 canon.
+            if trade_rate_penalty_weight > 0.0:
+                _pol_ot = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
+                _per_asset_probs_ot = jax.nn.softmax(_pol_ot, axis=-1)
+                _hold_prob_ot = _per_asset_probs_ot[..., 1]            # (B, 64)
+                overtrade_penalty = ((1.0 - _hold_prob_ot) ** 2).mean()
+                total_loss = total_loss + trade_rate_penalty_weight * overtrade_penalty
+            else:
+                overtrade_penalty = jnp.array(0.0)
+
             return total_loss, {
                 'total_loss': total_loss,
                 'policy_loss': policy_loss,
@@ -1669,6 +1692,8 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # TASK_767: action-distribution diagnostics
                 'mean_trade_rate': mean_trade_rate,
                 'limit_action_fraction': limit_action_fraction,
+                # TASK_787 (experiment A): over-trade penalty diagnostic
+                'overtrade_penalty': overtrade_penalty,
                 'td_target_mean': jnp.mean(td_target_raw),
                 'td_target_std': jnp.std(td_target_raw),
                 'td_targets_raw': td_target_raw,  # (B,) for PopArt update outside JIT
@@ -1820,6 +1845,8 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
     logger.info(f"  BC: {config.bc_weight} → {config.bc_weight_min} over {config.bc_decay_steps} steps")
     logger.info(f"  Value targets: {config.value_target_mode} (TD discount: {config.td_discount}, MCTS: {config.mcts_discount})")
     logger.info(f"  Value clip mode: {config.value_clip_mode} (TASK_769)")
+    if config.trade_rate_penalty_weight > 0.0:
+        logger.info(f"  Over-trade penalty: weight={config.trade_rate_penalty_weight} (TASK_787, ON)")
 
     # Reset value head to break Phase 1 saturation (V ≈ 10 for all states)
     if config.reset_value_head:
@@ -2459,6 +2486,9 @@ def main():
         config.entropy_coef = args.entropy_coef
     if args.min_entropy is not None:
         config.min_entropy = args.min_entropy
+    # TASK_787 (experiment A): over-trade penalty override
+    if args.trade_rate_penalty_weight is not None:
+        config.trade_rate_penalty_weight = args.trade_rate_penalty_weight
     # TASK_767: action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): BooleanOptionalAction three-state semantics — None =
     # inherit, True = force ON, False = force OFF.

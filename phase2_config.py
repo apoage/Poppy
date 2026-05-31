@@ -36,6 +36,17 @@ class Phase2Config(EasyConfig):
     # collapse signature seen across single-mechanism regressions.
     fee_penalty_bps: float = 0.0
 
+    # === Over-Trade Penalty in Stage-B loss (TASK_787, experiment A) ===
+    # Adds a default-OFF realized-over-trade gradient to the Stage-B objective.
+    # Per-asset L2 penalty on (1 - hold_prob): the net is pushed to assign more
+    # probability to HOLD unless the trade is justified by the other loss terms.
+    # 0.0 = canon (the penalty branch is gated by a compile-time `> 0` test, so
+    # the term is never traced into the XLA graph and the OFF-path is bit-identical
+    # to pre-787 behavior). Sweep range {0.05, 0.1, 0.2}; tests whether a direct
+    # trade-rate gradient breaks the classifier-vs-alpha anti-correlation
+    # ("trade-rate explosion") seen across single-mechanism regressions.
+    trade_rate_penalty_weight: float = 0.0
+
     # === Action-Space Restructure (TASK_767) ===
     # When True, the two limit-order actions (LimitSell=3, LimitBuy=4) are
     # dropped from the Phase-2 action space: their policy logits are masked to

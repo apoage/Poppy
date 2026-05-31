@@ -87,6 +87,11 @@ def parse_args():
     parser.add_argument('--min-entropy', type=float, default=None,
                         help='Entropy floor below which 5× penalty fires (default: 0.0). '
                              'Recommended 3.0 for joint MCTS (ln(320) ≈ 5.77).')
+    # TASK_787 (experiment A): over-trade penalty in Stage-B loss
+    parser.add_argument('--trade-rate-penalty-weight', type=float, default=None,
+                        help='Per-asset L2 over-trade penalty weight on Stage-B loss '
+                             '(default: 0.0 = canon, term not traced). '
+                             'Sweep ∈ {0.05, 0.1, 0.2} per tasks/TASK_787_PNL_IN_LOSS.md.')
     # TASK_767: Action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): switched to BooleanOptionalAction so --no-disable-limit-orders
     # can force the flag OFF even when the resumed checkpoint config carries
