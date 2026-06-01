@@ -92,6 +92,12 @@ def parse_args():
                         help='Per-asset L2 over-trade penalty weight on Stage-B loss '
                              '(default: 0.0 = canon, term not traced). '
                              'Sweep ∈ {0.05, 0.1, 0.2} per tasks/TASK_787_PNL_IN_LOSS.md.')
+    # TASK_790 (experiment A2): realized-PnL value term in Stage-B loss
+    parser.add_argument('--realized-value-weight', type=float, default=None,
+                        help='Immediate realized-PnL value weight on Stage-B loss '
+                             '(default: 0.0 = canon, term not traced). Grounds the '
+                             'policy in executed next-step return. Sweep ∈ {0.05, 0.1, '
+                             '0.2, 0.5} per tasks/TASK_790_REALIZED_PNL_VALUE.md.')
     # TASK_767: Action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): switched to BooleanOptionalAction so --no-disable-limit-orders
     # can force the flag OFF even when the resumed checkpoint config carries

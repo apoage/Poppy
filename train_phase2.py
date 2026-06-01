@@ -1098,6 +1098,9 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     # XLA graph and the loss/gradients are bit-identical to pre-787 code. Captured
     # at JIT-trace time — flipping the weight re-JITs the step once per cell.
     trade_rate_penalty_weight = float(getattr(config, 'trade_rate_penalty_weight', 0.0))
+    # TASK_790 (experiment A2): realized-PnL value weight, captured at JIT-trace time.
+    # 0.0 → term not traced → bit-identical to canon (same compile-time gate as A).
+    realized_value_weight = float(getattr(config, 'realized_value_weight', 0.0))
     # TASK_767: action-space restructure. When disable_limit_orders is True the
     # LimitSell (3) / LimitBuy (4) actions are dropped from the Phase-2 action
     # space. Two static arrays are built once at JIT-trace time:
@@ -1658,6 +1661,25 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
             else:
                 overtrade_penalty = jnp.array(0.0)
 
+            # TASK_790 (experiment A2): immediate realized-PnL value term. Ground the
+            # policy in EXECUTED next-step return, not oracle hindsight. Expected
+            # per-asset position from the policy (action order 0=Sell,1=Hold,2=Buy,
+            # 3=LimitSell,4=LimitBuy): pos = P(Buy)+P(LimitBuy) - P(Sell) - P(LimitSell)
+            # in [-1,1]. r_next = horizon-1 realized log-return (future_log_returns[:,0]).
+            # MSE onto best-achievable per-step PnL |r_next| pushes pos -> sign(r_next)
+            # scaled by move size. Same compile-time gate → bit-identical when weight==0.
+            if realized_value_weight > 0.0:
+                _pol_rv = policy_logits.reshape(-1, n_assets, n_actions_per_asset)
+                _probs_rv = jax.nn.softmax(_pol_rv, axis=-1)
+                _pos_rv = (_probs_rv[..., 2] + _probs_rv[..., 4]) \
+                          - (_probs_rv[..., 0] + _probs_rv[..., 3])      # (B, 64) in [-1,1]
+                _r_next = future_log_returns[:, 0, :]                    # (B, n_assets)
+                _realized_pred = _pos_rv * _r_next
+                realized_value = ((_realized_pred - jnp.abs(_r_next)) ** 2).mean()
+                total_loss = total_loss + realized_value_weight * realized_value
+            else:
+                realized_value = jnp.array(0.0)
+
             return total_loss, {
                 'total_loss': total_loss,
                 'policy_loss': policy_loss,
@@ -1694,6 +1716,8 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 'limit_action_fraction': limit_action_fraction,
                 # TASK_787 (experiment A): over-trade penalty diagnostic
                 'overtrade_penalty': overtrade_penalty,
+                # TASK_790 (experiment A2): realized-PnL value diagnostic
+                'realized_value': realized_value,
                 'td_target_mean': jnp.mean(td_target_raw),
                 'td_target_std': jnp.std(td_target_raw),
                 'td_targets_raw': td_target_raw,  # (B,) for PopArt update outside JIT
@@ -1847,6 +1871,8 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
     logger.info(f"  Value clip mode: {config.value_clip_mode} (TASK_769)")
     if config.trade_rate_penalty_weight > 0.0:
         logger.info(f"  Over-trade penalty: weight={config.trade_rate_penalty_weight} (TASK_787, ON)")
+    if getattr(config, 'realized_value_weight', 0.0) > 0.0:
+        logger.info(f"  Realized-PnL value: weight={config.realized_value_weight} (TASK_790, ON)")
 
     # Reset value head to break Phase 1 saturation (V ≈ 10 for all states)
     if config.reset_value_head:
@@ -2489,6 +2515,9 @@ def main():
     # TASK_787 (experiment A): over-trade penalty override
     if args.trade_rate_penalty_weight is not None:
         config.trade_rate_penalty_weight = args.trade_rate_penalty_weight
+    # TASK_790 (experiment A2): realized-PnL value override
+    if args.realized_value_weight is not None:
+        config.realized_value_weight = args.realized_value_weight
     # TASK_767: action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): BooleanOptionalAction three-state semantics — None =
     # inherit, True = force ON, False = force OFF.

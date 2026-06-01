@@ -47,6 +47,14 @@ class Phase2Config(EasyConfig):
     # ("trade-rate explosion") seen across single-mechanism regressions.
     trade_rate_penalty_weight: float = 0.0
 
+    # === Realized-PnL value term (TASK_790, experiment A2) ===
+    # Grounds the policy in EXECUTED next-step return instead of oracle hindsight.
+    # Expected per-asset position pos = P(Buy)+P(LimitBuy) - P(Sell) - P(LimitSell)
+    # is pushed toward sign(r_next)*|move| via MSE onto the best-achievable per-step
+    # PnL. Default 0.0 = OFF: the term is gated at JIT-trace time so the OFF-path XLA
+    # graph + gradients are bit-identical to canon. Sweep {0.05, 0.1, 0.2, 0.5}.
+    realized_value_weight: float = 0.0
+
     # === Action-Space Restructure (TASK_767) ===
     # When True, the two limit-order actions (LimitSell=3, LimitBuy=4) are
     # dropped from the Phase-2 action space: their policy logits are masked to
