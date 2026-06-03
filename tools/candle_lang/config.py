@@ -69,10 +69,16 @@ DEFAULT_HOLDOUT_ASSETS = (365, 1118, 1121, 711, 61)
 
 
 def db_path() -> str:
-    """DB path resolution: $CANDLE_DB env override, else repo default. A --db CLI flag
-    should pass through to CandleConfig(db=...). NEVER hardcode a worktree/workstation path
-    into a shipped module (the data.py:28 / run_gate.py:45 anti-patterns)."""
-    return os.environ.get("CANDLE_DB", "/home/lukas/Trader/trading_data.db")
+    """DB path resolution: $CANDLE_DB env override, else REPO-ROOT-RELATIVE (the DB sits at
+    repo root on both the workstation and gpu-server — `/home/lukas/Trader/` vs
+    `/home/operator/Trader/`). This auto-resolves on either host without an env var; NEVER hardcode
+    a single host's path into a shipped module (the data.py:28 / run_gate.py:45 anti-pattern that
+    bit the 2026-06-03 first server launch). A --db CLI flag still overrides via CandleConfig(db=...)."""
+    env = os.environ.get("CANDLE_DB")
+    if env:
+        return env
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(repo_root, "trading_data.db")
 
 
 @dataclass(frozen=True)

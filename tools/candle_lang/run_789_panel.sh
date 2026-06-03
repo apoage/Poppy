@@ -93,24 +93,29 @@ precheck_db() {
     echo "[789][WARN] DB not found at '$DB' — members will fall back to config.db_path()." >&2
     return 0
   fi
-  echo "[789] PRAGMA quick_check on $DB ..."
+  # Cheap sanity probe — NOT a full PRAGMA quick_check (that is a multi-minute per-page scan of the
+  # whole 25GB DB and is the wrong launch gate). Open read-only + one indexed read confirms the file
+  # opens, the schema is intact, and the ohlcv table + PK index are readable — catches a truncated /
+  # corrupt-header DB instantly without scanning 25GB. (Build plan §6 allowed "row-count sanity".)
+  echo "[789] DB sanity probe on $DB ..."
   local res
   res="$($PY - "$DB" <<'PYEOF' 2>/dev/null || true
 import sqlite3, sys
 db = sys.argv[1]
 try:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    row = con.execute("PRAGMA quick_check").fetchone()
+    con.execute("PRAGMA schema_version").fetchone()
+    row = con.execute("SELECT timestamp FROM ohlcv ORDER BY rowid LIMIT 1").fetchone()
     con.close()
-    print(row[0] if row else "no-result")
+    print("ok" if row else "empty")
 except Exception as e:
     print(f"error: {e}")
 PYEOF
 )"
   if [[ "$res" == "ok" ]]; then
-    echo "[789] DB quick_check: ok"
+    echo "[789] DB sanity: ok"
   else
-    echo "[789][WARN] DB quick_check NOT ok: '$res' (continuing — non-fatal)." >&2
+    echo "[789][WARN] DB sanity NOT ok: '$res' (continuing — non-fatal)." >&2
   fi
 }
 
