@@ -35,6 +35,29 @@ from .volunit import features_for_run
 # Worker housekeeping cadence — gc.collect() every N emitted batches (bounded RAM hygiene).
 _GC_EVERY = 64
 
+# --------------------------------------------------------------------------- #
+# Per-process windowed-corpus cache (load-once).
+#
+# WHY: each symbolic member re-streams the build corpus ~9x (alphabet fit, BPE/segmentation fit,
+# A2 template, A1/A2/A8/A9 evals) and L4 re-streams it once per epoch. With max_windows set the
+# corpus is tiny (~0.5 GB for the default 20k-window panel), so reading it from the 25 GB DB on
+# every pass is the CLAUDE.md anti-pattern "repeated disk reads in the loop". We cache the single
+# most-recent-`max_windows` chunk per (db, asset, window, max_windows, stride) so the ~9 passes
+# collapse to ONE disk read + RAM replays (and L4 epochs 2+ replay from RAM).
+#
+# GATED ON max_windows being set: max_windows=None => the UNBOUNDED full-resolution path, NEVER
+# cached (true streaming / HARD-REQ#2 preserved — caching the full 64-asset minute history would
+# defeat the bounded-RAM contract). Cached arrays are READ-ONLY so an accidental in-place mutation
+# of a shared window raises loudly instead of silently corrupting later passes.
+_WIN_CACHE = {}
+_WIN_CACHE_LOCK = threading.Lock()
+
+
+def clear_window_cache():
+    """Drop the per-process windowed-corpus cache (frees the ~0.5 GB resident corpus)."""
+    with _WIN_CACHE_LOCK:
+        _WIN_CACHE.clear()
+
 
 # --------------------------------------------------------------------------- #
 # read-only connect (donor data.py:43-44)
@@ -102,16 +125,35 @@ def _bar_valid(o, h, l, c):
 # --------------------------------------------------------------------------- #
 # paged row reader (NEVER fetchall a whole asset)
 # --------------------------------------------------------------------------- #
-def _iter_pages(con, asset_id, cfg):
+def _tail_start_ts(con, asset_id, cfg, max_windows, stride):
+    """Tail-seek: the timestamp to BEGIN a forward scan from so it yields >= max_windows windows
+    without reading the asset's whole history. Uses the PK index to jump to a row near the tail via
+    ORDER BY timestamp DESC LIMIT 1 OFFSET <budget>, over-fetching generously (factor 3 + slack) to
+    absorb gaps and run-boundary losses — recent minute data is dense, so this is ample. Returns
+    None (=> scan from the asset start) when the asset has fewer rows than the over-fetch budget."""
+    W = int(cfg.window)
+    need = int(max_windows) * max(int(stride), 1) + W + 1
+    budget = need * 3 + 10000
+    row = con.execute(
+        "SELECT timestamp FROM ohlcv WHERE asset_id=? ORDER BY timestamp DESC LIMIT 1 OFFSET ?",
+        (int(asset_id), int(budget)),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
+def _iter_pages(con, asset_id, cfg, start_ts=None):
     """Yield (ts,o,h,l,c) numpy arrays page by page, ordered by timestamp, paging by a moving
     timestamp lower bound so we never materialize a multi-million-row asset. Each SQL fetch is
     bounded to cfg.page_rows rows (LIMIT), advancing `lo` past the last seen timestamp.
 
     The PK (asset_id, timestamp) makes the BETWEEN+ORDER+LIMIT seek index-only on the cursor side.
+    `start_ts` (tail-seek) begins the scan near the tail instead of at the asset's first bar.
     """
     lo, hi = _asset_ts_span(con, asset_id)
     if lo is None:
         return
+    if start_ts is not None:
+        lo = max(lo, int(start_ts))
     page_rows = int(cfg.page_rows)
     cur_lo = lo
     while cur_lo <= hi:
@@ -151,13 +193,13 @@ def _iter_pages(con, asset_id, cfg):
 # --------------------------------------------------------------------------- #
 # runs (maximal dt==60 contiguous segments)
 # --------------------------------------------------------------------------- #
-def iter_runs(db: str, asset_id: int, cfg: "C.CandleConfig"):
+def iter_runs(db: str, asset_id: int, cfg: "C.CandleConfig", start_ts=None):
     """Yield (ts,o,h,l,c) numpy arrays, ONE per maximal dt==60 contiguous run of bar-VALID rows.
 
     Pages the cursor (never fetchall). A run breaks whenever consecutive timestamps differ by != 60,
     OR a row is not bar-valid (the invalid bar terminates the current run and is itself dropped). NO
     forward-fill. Page boundaries are stitched: a carry buffer holds the open run tail across pages
-    so a run that spans a page boundary is emitted whole.
+    so a run that spans a page boundary is emitted whole. `start_ts` tail-seeks the underlying scan.
     """
     con = _connect(db)
     try:
@@ -175,7 +217,7 @@ def iter_runs(db: str, asset_id: int, cfg: "C.CandleConfig"):
                 )
             return None
 
-        for ts, o, h, l, c in _iter_pages(con, asset_id, cfg):
+        for ts, o, h, l, c in _iter_pages(con, asset_id, cfg, start_ts=start_ts):
             valid = _bar_valid(o, h, l, c)
             n = len(ts)
             for i in range(n):
@@ -245,9 +287,15 @@ def iter_windows(db: str, asset_id: int, cfg: "C.CandleConfig", max_windows=None
     """Yield per-asset dict(X(n,W,6)f32, C(n,W)f32, end_ts(n,)i64) in chunks, ONE chunk per run.
 
     Windows are sliced WITHIN a single dt==60 run only and are all-finite. `max_windows` caps the
-    total windows yielded for the asset, keeping the MOST-RECENT ones (runs arrive in chrono order,
-    so we drain a bounded ring of the last `max_windows` and flush at the end). With max_windows
-    None we stream run-by-run (never materializing all windows of the asset at once).
+    total windows yielded for the asset, keeping the MOST-RECENT ones.
+
+    Two paths:
+      * max_windows is None  -> UNBOUNDED, run-by-run TRUE streaming, NEVER cached (HARD-REQ#2:
+        the full-resolution corpus must not be materialized).
+      * max_windows is set   -> bounded + CACHEABLE. The single most-recent-`cap` chunk is built
+        ONCE (tail-seeked so we read ~cap windows from the tail, not the whole asset) and replayed
+        from a per-process RAM cache on every later pass (the ~9 re-reads each member does, and L4
+        epochs 2+, become RAM replays). Cached arrays are READ-ONLY.
     """
     stride = int(stride)
     if max_windows is None:
@@ -257,10 +305,27 @@ def iter_windows(db: str, asset_id: int, cfg: "C.CandleConfig", max_windows=None
                 yield {"X": X, "C": Cp, "end_ts": end_ts}
         return
 
-    # bounded most-recent ring: keep at most `max_windows` (chrono-latest) across the asset.
     cap = int(max_windows)
     if cap <= 0:
         return
+
+    # cache lookup (load-once). A cached value of None means "built, but the asset has no windows".
+    key = (str(db), int(asset_id), int(cfg.window), cap, stride)
+    with _WIN_CACHE_LOCK:
+        cached = key in _WIN_CACHE
+        chunk = _WIN_CACHE.get(key)
+    if cached:
+        if chunk is not None:
+            yield chunk
+        return
+
+    # MISS -> build once. Tail-seek the scan to ~cap windows from the tail (not the whole asset).
+    con = _connect(db)
+    try:
+        start_ts = _tail_start_ts(con, asset_id, cfg, cap, stride)
+    finally:
+        con.close()
+
     ring_X, ring_C, ring_ts = [], [], []
     held = 0
 
@@ -273,18 +338,30 @@ def iter_windows(db: str, asset_id: int, cfg: "C.CandleConfig", max_windows=None
             held -= ring_X[0].shape[0]
             ring_X.pop(0); ring_C.pop(0); ring_ts.pop(0)
 
-    for ts, o, h, l, c in iter_runs(db, asset_id, cfg):
+    for ts, o, h, l, c in iter_runs(db, asset_id, cfg, start_ts=start_ts):
         X, Cp, end_ts = _windows_from_run(ts, o, h, l, c, cfg, stride)
         if X is not None:
             _append(X, Cp, end_ts)
+
     if not ring_X:
+        with _WIN_CACHE_LOCK:
+            _WIN_CACHE[key] = None
         return
     X = np.concatenate(ring_X, axis=0)
     Cp = np.concatenate(ring_C, axis=0)
     end_ts = np.concatenate(ring_ts, axis=0)
     if X.shape[0] > cap:                              # keep the most-recent cap rows
         X = X[-cap:]; Cp = Cp[-cap:]; end_ts = end_ts[-cap:]
-    yield {"X": X, "C": Cp, "end_ts": end_ts}
+    # store READ-ONLY so a shared cached window can't be mutated in place (every member already
+    # copies before its phase-shuffle control; read-only turns any future aliasing bug into a loud raise).
+    X = np.ascontiguousarray(X); Cp = np.ascontiguousarray(Cp); end_ts = np.ascontiguousarray(end_ts)
+    X.flags.writeable = False
+    Cp.flags.writeable = False
+    end_ts.flags.writeable = False
+    chunk = {"X": X, "C": Cp, "end_ts": end_ts}
+    with _WIN_CACHE_LOCK:
+        _WIN_CACHE[key] = chunk
+    yield chunk
 
 
 # --------------------------------------------------------------------------- #
