@@ -1,7 +1,8 @@
 # TASK_795 — Candle-Language JAX build (the implementation of TASK_791/792)
 
-**Status**: BUILD-READY — design + adversarial leak/OOM audit complete; 6 blocking corrections gate
-first server launch.
+**Status**: BUILT + CPU-VERIFIED (2026-06-03) — all 13 modules written on the verified foundation;
+all 6 blocking corrections SATISFIED (audited with file:line evidence + crossval); CPU smoke PASS incl.
+A0=1.0 end-to-end. Ready for server L4 + full-corpus panel run. See "## Build complete" at the bottom.
 **Created**: 2026-06-02 · **Parent**: TASK_789 · **Implements**: TASK_791 (tokenizer) + TASK_792 (gate)
 **Plan**: `docs/candle_language/04_jax_build_plan.md` · **Audit**: `docs/candle_language/05_leak_oom_audit.md`
 **Source**: workflow `wzx1vegea` (3 repo maps → build plan → adversarial OOM/leak audit).
@@ -89,3 +90,44 @@ multi-GPU.
 
 git-push deploy is broken (TASK_785 / handoff #8) — panel code may need direct scp like A2/C0.
 Sub-agents: **build + commit only, NEVER call `deploy.sh`** (main agent owns server writes).
+
+---
+
+## Build complete (2026-06-03) — `tools/candle_lang/` (15 modules, ~3.5k LOC)
+
+Foundation authored + CPU-proven by hand (the keystones): `config.py` (the binding contract),
+`fsq_core.py` (FSQ even-level bug FIXED → reference formulation; **reachability gate PROVEN** per-dim +
+basis-bijective for even/odd/mixed levels), `volunit.py` (vol-unit substrate; **A0 rescale-invariance
+byte-identical, max|Δ|=0.000e+00** for λ∈[1e-3,7777]). The other 13 (`db_stream`, `base_alphabet`,
+`shard`, `result_writer`, `l4_model`, `eval_battery`, `train_l4`, `symbolic/{l1_bpe,l2_abba,
+l3_sax_grammar,l5_matrix_profile}`, `run_789_panel.sh`) built by a verify-gated workflow (`wl3uffw6j`,
+22 agents) against the pinned contract.
+
+**Verification verdict (adversarial qa-hunt × crossval):** all **6 blocking corrections SATISFIED**
+with file:line evidence — #1 no blind `--gpu 1,2,3` (panel `pick_idle_gpu()` gates on `nvidia-smi`;
+single-GPU default), #2 `fsq_core` imported + `assert_all_codes_reachable` called at `train_l4` startup
+before device init, #3 online `np.bincount` (no full token-stream host list), #4 tail-pad-to-`cfg.batch`
++ `valid` loss-mask + `batch%n_dev` assert, #5 `donate_argnums=(1,)` = xb only (state never donated),
+#6 no `history.py`/no forward-fill (paged read-only cursor, `dt==60` runs). JAX/leak hygiene JX-01..06
+and interface-consistency IF-06..11 all SATISFIED. Only CONFIRM was IF-02 (a stale docstring in
+`eval_battery._ratio_logmse_pair` — computation correct; **fixed**). IF-01/03/04/05 demoted (latent
+doc/dead-code smells, not runtime defects).
+
+**CPU smoke PASS** (`safe_run --cpu`, 284 s): import-all 11 modules clean; `db_stream` streamed the real
+25 GB DB (1193 assets) with batch `(128,32,6)` + tail-pad `valid=False` confirmed; `l1_bpe` ran
+end-to-end → `runs/789_token_c0/L1_SMOKE.md`. **A0 = 1.0000** (48 trials, λ∈{0.01,100}) — transfer-by-
+construction proven through the full BPE pipeline, not just the substrate.
+
+**Watch-items for the full-corpus run (smoke-scale numbers, NOT mechanism verdicts — 3 assets/2000 win):**
+- A1 compression 0.43 (<1): boundary bits ≈ covered bits at this cap → needs many more merges / full
+  corpus to clear the >1 gate. The honest "charge boundary bits" is biting (by design).
+- A2 frac_within 0.07: coarse 8-bin move alphabet over 32-bar cumsum paths reconstructs poorly; revisit
+  at full alphabet/window.
+- A8 beats_control **False** (holdout cov 0.993 vs shuffle 0.9995): THE headline gate, uninformative at
+  3 build assets — this is the number the full run must move.
+
+**Next (server):** `run_789_panel.sh` → base-alphabet fit → L1/L2/L3/L5 CPU members (concurrent,
+`safe_run --cpu`) → L4 single-GPU on a `nvidia-smi`-verified-idle GPU (`safe_run --gpu N --gpu-frac 0.7`).
+Operability note: asset set is via `CandleConfig` defaults (9 build / 5 holdout, ~$0.007–$30k); members
+expose `--max-windows-per-asset`/`--window`/`--out` but not `--build-assets` (add if ablations need it).
+Deploy via direct scp (git-push deploy broken, TASK_785).
