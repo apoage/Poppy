@@ -129,5 +129,24 @@ construction proven through the full BPE pipeline, not just the substrate.
 **Next (server):** `run_789_panel.sh` → base-alphabet fit → L1/L2/L3/L5 CPU members (concurrent,
 `safe_run --cpu`) → L4 single-GPU on a `nvidia-smi`-verified-idle GPU (`safe_run --gpu N --gpu-frac 0.7`).
 Operability note: asset set is via `CandleConfig` defaults (9 build / 5 holdout, ~$0.007–$30k); members
-expose `--max-windows-per-asset`/`--window`/`--out` but not `--build-assets` (add if ablations need it).
-Deploy via direct scp (git-push deploy broken, TASK_785).
+expose `--max-windows-per-asset`/`--out` but not `--build-assets` (add if ablations need it). l1/l3 take
+`--window`; l5 does not. Deploy via direct scp (git-push deploy broken, TASK_785).
+
+## Server launch + I/O fix (2026-06-03) — RUNNING on gpu-server
+
+First server launch surfaced 3 fixes (all committed):
+- **DB path** (`5ece1f7` parent): `config.db_path()` hardcoded the workstation path → members died on the
+  server. Fixed to **repo-root-relative** (resolves `/home/lukas/…` vs `/home/operator/…` with no env). Proven.
+- **quick_check** gate: full `PRAGMA quick_check` scanned all 25 GB (5+ min block) → cheap indexed-read sanity.
+- **I/O bottleneck** (`5ece1f7`): members re-streamed the ~0.5 GB corpus ~9× each (alphabet/BPE/template/
+  A1/A2/A8/A9) and each pass full-scanned the asset for the tail; 4 members × that pinned the run at ~5% CPU
+  (D-state disk-wait). Fix in `db_stream.py`: **load-once per-process windowed-corpus cache** (key
+  `(db,asset,window,max_windows,stride)`, replay from RAM, read-only) + **tail-seek** (`OFFSET` jump near
+  the tail, ~20k rows not millions), both gated on `max_windows` set (unbounded path stays true-streaming).
+  Verified: asset 384 cold 0.25 s / warm 0.00 s (35612× hit); full-corpus L1 A0=1.0 in 55 s; l2/l3/l5
+  read-only-safe (no member changes). Relaunched → members flipped 5%→~100% CPU (compute-bound).
+
+**State:** panel running in tmux `789_panel`, full corpus (9 build + 5 holdout, cap 20k), CPU members
+~100% CPU concurrent → L4 on GPU 3 to follow. Linger enabled (survives workstation-off). L5 matrix-profile
+is the compute long-pole. Scorecards land at `runs/789_token_c0/{L1_BPE,l2_abba,L3,L5,L4}_RESULT.md`;
+**A8 cross-asset transfer is the headline gate.**
