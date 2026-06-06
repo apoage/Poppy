@@ -1,6 +1,15 @@
 # TASK_797 — Asset fingerprints from candle-language tokens (model-unbound token use)
 
-**Status**: DRAFTED 2026-06-06. CPU-only first cut. Opened off the candle-lang tech-debt sweep.
+**Status**: Stage 1 + Stage 2 BUILT + first result (2026-06-06). CPU-only. Committed `d78b01e`.
+- **Stage 1 DONE** — `tokenizer_api.py` (`CandleTokenizer`, `save_vocab`/`load_vocab`/`encode_asset`);
+  round-trip gate byte-identical (frozen == in-process); `l1_bpe.py` untouched.
+- **Stage 2 DONE** — `fingerprint.py`; first N×N over 30 price-stratified assets → `runs/797_fingerprint/`.
+  **corr(unigram-JS, bigram-JS) = 0.57** (bigram carries structure beyond marginals); tight mutual-nearest
+  pairs (1016↔120 0.71, 387↔544 0.71, 997↔1016 0.76) over a ~0.95 background + one dominant cluster.
+  First evidence the tokens carry recognizable real-asset structure, outside the synthetic A8 harness.
+- **Next**: run the shuffle-collapse control; validate tight pairs against asset metadata; rerun on the
+  (denser) server DB with a thicker vocab + more assets; then Stage-3 roadmap (regime clustering / motif mining).
+
 **Parent**: TASK_789 (candle-language). **Sibling-of, not-blocked-by**: TASK_793/794 (those are GPU +
 trained-model downstream stages; this one is deliberately **unbound to any trained model**).
 
