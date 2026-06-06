@@ -6,10 +6,17 @@
   control → PROCEED**; **L4 collapse fixed** (grid-256 → 75/256=29% codebook usage, was 1.3%). Symbolic
   members do NOT beat the marginal-preserving substrate controls (shuffle/random_merge) → needs the
   deferred **bigram/transition codelength** to make that axis meaningful.
-- **Scale-up LAUNCHED** (committed `c0a3d3c`): **150 build / 150 holdout** stratified split spanning the
-  full price range, 99-seed null, **A-by-B transfer matrix**. Running on gpu-server: tmux `796_scaled`
-  (CPU L1/L2/L3/L5) + `796_scaled_l4` (GPU 3), `runs/796_scaled/`. Overnight. Awaiting scorecards +
-  `holdout_transfer_rate` (fraction of 150 holdout assets that transfer).
+- **Scale-up + BIGRAM + GPU-L5 LAUNCHED** (committed `c0a3d3c` scale-up, `89f698d` bigram+GPU):
+  - **Bigram transition codelength** (`transfer_bits_bigram` / `beats_substrate_bigram` /
+    `beats_all_bigram`): codes each token on its predecessor `p(curr|prev)` — the structure a
+    phase-shuffle DESTROYS, making the substrate-control axis meaningful (the v2-baseline gap). Power-
+    proven (`a8_bigram_power_check`): bigram distinguishes ordered vs shuffled where the unigram is blind.
+  - **L5 GPU acceleration**: tiled z-norm Euclidean matrix-profile (`A@Bᵀ`) ported to JAX
+    (`sampled_tiled_matrix_profile_jax`, `--device gpu`); CPU-parity 9.5e-7. Runs on a single idle GPU.
+  - **150 build / 150 holdout**, stratified across the full price range, 99-seed null, A-by-B matrix.
+  - Running on gpu-server (`runs/796_bigram/`): tmux `796b_cpu` (L1/L2/L3 CPU) + `796b_l5` (GPU 1) +
+    `796b_l4` (GPU 3). Overnight. Watch: `transfer_bits_bigram` + `beats_substrate_bigram` (does real
+    beat shuffle on TRANSITIONS now) + `holdout_transfer_rate`.
 **Parent**: TASK_789 (candle-language umbrella) · **Supersedes the v1 verdict** in `runs/789_token_c0/`
 **Predecessor**: TASK_795 (panel build) — built + ran v1; v1's "branch-C null" is **not a result**.
 
