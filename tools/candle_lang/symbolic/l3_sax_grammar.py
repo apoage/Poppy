@@ -635,13 +635,27 @@ def _parse_args(argv=None):
     p.add_argument("--fit-window-cap", type=int, default=4000,
                    help="windows/asset pooled for the base-alphabet (SAX edges) fit.")
     p.add_argument("--window", type=int, default=C.DEFAULT_WINDOW)
+    # TASK_796 scale-up: explicit UNIFORM asset selection + A-by-B transfer matrix.
+    p.add_argument("--build-assets", nargs="+", type=int, default=None,
+                   help="explicit BUILD asset ids (default: CandleConfig build_assets).")
+    p.add_argument("--holdout-assets", nargs="+", type=int, default=None,
+                   help="explicit HOLDOUT asset ids (default: CandleConfig holdout_assets).")
+    p.add_argument("--transfer-matrix", action="store_true",
+                   help="compute the per-asset A8 A-by-B transfer matrix + per-holdout breakdown.")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
     t0 = time.time()
-    cfg = C.CandleConfig(window=int(args.window), db=args.db)
+    # TASK_796: frozen dataclass -> pass explicit asset lists into the constructor; bare invocation
+    # keeps the existing CandleConfig defaults (build_assets / holdout_assets) untouched.
+    cfg = C.CandleConfig(
+        window=int(args.window), db=args.db,
+        build_assets=tuple(args.build_assets) if args.build_assets else C.DEFAULT_BUILD_ASSETS,
+        holdout_assets=tuple(args.holdout_assets) if args.holdout_assets is not None
+        else C.DEFAULT_HOLDOUT_ASSETS,
+    )
     mwpa = int(args.max_windows_per_asset)
 
     print(f"[L3] SAX+grammar member | db={cfg.db} window={cfg.window} "
@@ -728,6 +742,7 @@ def main(argv=None) -> int:
             build_vocab_fn, encode_assets_fn,
             build_assets=build_assets, holdout_assets=holdout_assets,
             controls=("shuffle", "random_merge"), exclude_top_k=8,
+            per_asset_matrix=args.transfer_matrix,
         )
         print(f"[L3] A8: transfer_bits={a8['transfer_bits']:.4f} "
               f"perm_min={a8['perm_min_bits']:.4f} beats_random_codebook={a8['beats_random_codebook']} "
@@ -805,6 +820,11 @@ def main(argv=None) -> int:
                 f"- band {a8['band']} | excludes top-{a8['exclude_top_k']} mega-tokens | "
                 f"**beats_all {a8['beats_all']}**",
             ]))
+        if a8.get("holdout_transfer_rate") is not None:
+            sections[-1][1].append(
+                f"- holdout assets with real transfer (beat random codebook): "
+                f"{a8['holdout_transfer_rate']}"
+            )
 
     meta = dict(
         member="L3_sax_grammar",

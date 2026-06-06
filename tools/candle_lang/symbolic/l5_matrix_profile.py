@@ -40,6 +40,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 
 import numpy as np
@@ -500,7 +501,8 @@ def _sample_ohlc_windows(db, assets, cfg, n=16, seed=0):
     return out
 
 
-def run_eval(db, cfg, table, accum, *, motif_frac, subseq_len, has_holdout, seed):
+def run_eval(db, cfg, table, accum, *, motif_frac, subseq_len, has_holdout, seed,
+             transfer_matrix=False):
     """Assemble the A0/A1/A2/A8/A9 battery results for L5 from the online accumulators."""
     n_symbols = BA.N_SYMBOLS(table)
     results = {}
@@ -554,7 +556,8 @@ def run_eval(db, cfg, table, accum, *, motif_frac, subseq_len, has_holdout, seed
     # --- A8: cross-asset transfer (only if holdout assets are present). Build the L5 anchor-token
     # vocab on BUILD, encode BUILD + HOLDOUT, compare against the donor phase-shuffle control. ---
     if has_holdout and cfg.holdout_assets:
-        results["A8"] = _run_a8(db, cfg, table, motif_frac=motif_frac, subseq_len=subseq_len, seed=seed)
+        results["A8"] = _run_a8(db, cfg, table, motif_frac=motif_frac, subseq_len=subseq_len,
+                                seed=seed, transfer_matrix=transfer_matrix)
 
     # --- A9: length non-degeneracy. L5 anchors are FIXED-length (subseq_len) by construction, so the
     # raw length distribution is a single spike at subseq_len. The shared battery's max_token_share
@@ -572,7 +575,7 @@ def run_eval(db, cfg, table, accum, *, motif_frac, subseq_len, has_holdout, seed
     return results
 
 
-def _run_a8(db, cfg, table, *, motif_frac, subseq_len, seed):
+def _run_a8(db, cfg, table, *, motif_frac, subseq_len, seed, transfer_matrix=False):
     """A8 wiring for L5: the 'vocab' is the anchor-token counter; encode_assets_fn streams anchor
     base symbols per asset, optionally under the donor phase-shuffle control (structure-destroyed
     substrate). Uses the shared eval_battery.a8_cross_asset_transfer reducer.
@@ -600,6 +603,7 @@ def _run_a8(db, cfg, table, *, motif_frac, subseq_len, seed):
         build_vocab_fn, encode_assets_fn,
         build_assets=cfg.build_assets, holdout_assets=cfg.holdout_assets,
         controls=("shuffle", "random_merge"), exclude_top_k=8,
+        per_asset_matrix=transfer_matrix,
     )
 
 
@@ -736,6 +740,12 @@ def parse_args(argv=None):
                         "the absolute recurrence threshold (motif coverage = real anchors below it).")
     p.add_argument("--no-holdout", action="store_true",
                    help="Skip the A8 cross-asset transfer test.")
+    p.add_argument("--build-assets", nargs="+", type=int, default=None,
+                   help="Explicit BUILD asset ids (default: config.CandleConfig.build_assets).")
+    p.add_argument("--holdout-assets", nargs="+", type=int, default=None,
+                   help="Explicit HOLDOUT asset ids (default: config.CandleConfig.holdout_assets).")
+    p.add_argument("--transfer-matrix", action="store_true",
+                   help="Compute the per-asset A8 A-by-B transfer matrix + holdout_transfer_rate.")
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args(argv)
 
@@ -745,6 +755,13 @@ def main(argv=None):
     db = args.db if args.db else C.db_path()
     max_windows = None if int(args.max_windows_per_asset) <= 0 else int(args.max_windows_per_asset)
     cfg = C.CandleConfig(db=db)
+    # TASK_796: explicit asset-list override (frozen dataclass -> replace). Defaults unchanged when
+    # the flags are absent, so a bare invocation behaves exactly as before.
+    cfg = dataclasses.replace(
+        cfg,
+        build_assets=tuple(args.build_assets) if args.build_assets else cfg.build_assets,
+        holdout_assets=tuple(args.holdout_assets) if args.holdout_assets is not None else cfg.holdout_assets,
+    )
 
     # one-time cheap DB quick_check (non-fatal warning by contract).
     if not DS.quick_check(db):
@@ -784,6 +801,7 @@ def main(argv=None):
         db, cfg, table, accum,
         motif_frac=float(args.motif_frac), subseq_len=int(args.subseq_len),
         has_holdout=not args.no_holdout, seed=int(args.seed),
+        transfer_matrix=bool(args.transfer_matrix),
     )
     verdict = _verdict(results)
 
@@ -851,6 +869,11 @@ def _a8_lines(a8: dict):
         f"- **band**: {tuple(a8.get('band', ()))}  exclude_top_k={int(a8.get('exclude_top_k', 0))}  "
         f"codebook_size={int(a8.get('codebook_size', 0))}",
     ]
+    if a8.get("holdout_transfer_rate") is not None:
+        headline.append(
+            "- holdout assets with real transfer (beat random codebook): "
+            f"{float(a8.get('holdout_transfer_rate')):.6g}"
+        )
     for ctl, d in (a8.get("per_control") or {}).items():
         headline.append(
             f"- **control[{ctl}]**: transfer_bits={float(d.get('transfer_bits', float('inf'))):.6g} "

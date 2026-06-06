@@ -48,6 +48,8 @@ MEM="64G"                   # cgroup RAM cap per cell
 GPU_FRAC="0.7"              # VRAM fraction for the L4 GPU cell
 SKIP_L4=0
 CPU_OVERLAP=1               # L1/L2/L3/L5 may run concurrently (they're independent)
+ASSET_SPLIT=""             # TASK_796: JSON {build:[...],holdout:[...]} for the scaled run (else member defaults)
+TRANSFER_MATRIX=0          # TASK_796: pass --transfer-matrix to every member (A-by-B per-asset matrix)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +60,8 @@ while [[ $# -gt 0 ]]; do
     --gpu-frac) GPU_FRAC="$2"; shift 2;;
     --skip-l4) SKIP_L4=1; shift;;
     --no-cpu-overlap) CPU_OVERLAP=0; shift;;
+    --asset-split) ASSET_SPLIT="$2"; shift 2;;
+    --transfer-matrix) TRANSFER_MATRIX=1; shift;;
     -h|--help) sed -n '2,40p' "$0"; exit 0;;
     *) echo "[789] unknown arg: $1" >&2; exit 2;;
   esac
@@ -71,6 +75,21 @@ mkdir -p "$LOG_DIR"
 if [[ -z "$DB" ]]; then
   DB="${CANDLE_DB:-$($PY -c 'from tools.candle_lang import config as C; print(C.db_path())' 2>/dev/null || echo "$REPO_ROOT/trading_data.db")}"
 fi
+
+# TASK_796: shared extra args forwarded to EVERY member (CPU cells + L4). Empty by default ->
+# members use their config-default 9/5 asset split (v1/v2 baseline behavior unchanged).
+declare -a MEMBER_EXTRA
+if [[ -n "$ASSET_SPLIT" ]]; then
+  BUILD_IDS="$($PY -c "import json;print(' '.join(map(str,json.load(open('$ASSET_SPLIT'))['build'])))")"
+  HOLDOUT_IDS="$($PY -c "import json;print(' '.join(map(str,json.load(open('$ASSET_SPLIT'))['holdout'])))")"
+  if [[ -z "$BUILD_IDS" || -z "$HOLDOUT_IDS" ]]; then
+    echo "[789][FATAL] --asset-split $ASSET_SPLIT did not yield build/holdout id lists." >&2; exit 2
+  fi
+  # word-split intentionally (nargs='+' wants separate int args).
+  MEMBER_EXTRA+=(--build-assets $BUILD_IDS --holdout-assets $HOLDOUT_IDS)
+  echo "[789] asset-split: $(wc -w <<<"$BUILD_IDS") build / $(wc -w <<<"$HOLDOUT_IDS") holdout from $ASSET_SPLIT"
+fi
+(( TRANSFER_MATRIX )) && MEMBER_EXTRA+=(--transfer-matrix)
 
 echo "============================================================"
 echo "[789] candle-language PANEL orchestrator"
@@ -208,10 +227,10 @@ launch_cpu() {  # name out_basename module [extra args...]
 }
 
 echo "[789] >>> Cell 2: CPU symbolic members (overlap=$CPU_OVERLAP)"
-launch_cpu L1_bpe            L1_BPE_RESULT.md   tools.candle_lang.symbolic.l1_bpe
-launch_cpu L2_abba          l2_abba_RESULT.md  tools.candle_lang.symbolic.l2_abba
-launch_cpu L3_sax_grammar   L3_RESULT.md       tools.candle_lang.symbolic.l3_sax_grammar
-launch_cpu L5_matrix_profile L5_RESULT.md      tools.candle_lang.symbolic.l5_matrix_profile
+launch_cpu L1_bpe            L1_BPE_RESULT.md   tools.candle_lang.symbolic.l1_bpe            "${MEMBER_EXTRA[@]}"
+launch_cpu L2_abba          l2_abba_RESULT.md  tools.candle_lang.symbolic.l2_abba          "${MEMBER_EXTRA[@]}"
+launch_cpu L3_sax_grammar   L3_RESULT.md       tools.candle_lang.symbolic.l3_sax_grammar   "${MEMBER_EXTRA[@]}"
+launch_cpu L5_matrix_profile L5_RESULT.md      tools.candle_lang.symbolic.l5_matrix_profile "${MEMBER_EXTRA[@]}"
 
 CPU_FAILED=0
 if (( CPU_OVERLAP )); then
@@ -244,7 +263,7 @@ else
         "$PY" -m tools.candle_lang.train_l4 "${DB_FLAG[@]}" \
           --out "$OUT_DIR/L4_RESULT.md" \
           --max-windows-per-asset "$MAX_WPA" \
-          --gpu-frac "$GPU_FRAC" 2>&1 | tee "$L4_LOG"; then
+          --gpu-frac "$GPU_FRAC" "${MEMBER_EXTRA[@]}" 2>&1 | tee "$L4_LOG"; then
       echo "[789] L4 OK"
     else
       echo "[789][WARN] L4 FAILED (rc=${PIPESTATUS[0]:-?})." >&2

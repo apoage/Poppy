@@ -580,8 +580,13 @@ def _make_tokenize_window_fn(cfg, vocab: AbbaVocab):
 # --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
-def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md, seed=0):
-    """Fit ABBA, run the A0/A1/A2/A8/A9 battery, write the RESULT.md + .json."""
+def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md, seed=0,
+        transfer_matrix=False):
+    """Fit ABBA, run the A0/A1/A2/A8/A9 battery, write the RESULT.md + .json.
+
+    transfer_matrix (TASK_796): when True, threads per_asset_matrix=True into the a8 call so the
+    battery also returns the per-asset A-by-B transfer matrix + per-holdout breakdown +
+    holdout_transfer_rate (fraction of holdout assets that beat the random-codebook null)."""
     t0 = time.time()
     print(f"[L2-ABBA] db={cfg.db}", flush=True)
     print(f"[L2-ABBA] build_assets={tuple(build_assets)} holdout_assets={tuple(holdout_assets)}", flush=True)
@@ -656,7 +661,8 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
         a8 = EB.a8_cross_asset_transfer(_build_vocab_fn, _encode_assets_fn,
                                         build_assets=tuple(build_assets),
                                         holdout_assets=tuple(holdout_assets),
-                                        controls=("shuffle", "random_merge"), exclude_top_k=8)
+                                        controls=("shuffle", "random_merge"), exclude_top_k=8,
+                                        per_asset_matrix=transfer_matrix)
 
     wall = time.time() - t0
 
@@ -724,6 +730,10 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
         a8_lines.append(
             f"- beats_substrate={a8['beats_substrate']} | **beats_all={a8['beats_all']}** "
             f"(beats_control alias={a8['beats_control']})")
+        if a8.get("holdout_transfer_rate") is not None:
+            a8_lines.append(
+                f"- holdout assets with real transfer (beat random codebook): "
+                f"{a8['holdout_transfer_rate']}")
         sections.append(("A8 — cross-asset transfer (codelength vs random-codebook + substrate controls)",
                          a8_lines))
     sections.append(("Timing", [f"- wallclock={wall:.1f}s"]))
@@ -830,8 +840,10 @@ def main(argv=None):
     p.add_argument("--max-windows-per-asset", type=int, default=None,
                    help="cap pieces/tokens contributed per asset (bounded RAM); None = no cap")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--build-assets", type=int, nargs="*", default=None)
-    p.add_argument("--holdout-assets", type=int, nargs="*", default=None)
+    p.add_argument("--build-assets", type=int, nargs="+", default=None)
+    p.add_argument("--holdout-assets", type=int, nargs="+", default=None)
+    p.add_argument("--transfer-matrix", action="store_true",
+                   help="compute the per-asset A-by-B transfer matrix + holdout_transfer_rate (TASK_796)")
     p.add_argument("--smoke", action="store_true",
                    help="tiny self-contained run: survey DB, pick the top asset, cap windows, no holdout")
     args = p.parse_args(argv)
@@ -849,14 +861,16 @@ def main(argv=None):
                 float(args.abba_tol))
             return run(cfg, list(top), [], k=min(args.k, 64), scl=args.scl,
                        max_windows_per_asset=args.max_windows_per_asset or 2000,
-                       out_md=args.out, seed=args.seed)
+                       out_md=args.out, seed=args.seed,
+                       transfer_matrix=args.transfer_matrix)
         print("[L2-ABBA smoke] empty DB survey; nothing to do", flush=True)
         return "INCONCLUSIVE"
 
     return run(cfg, list(cfg.build_assets), list(cfg.holdout_assets),
                k=args.k, scl=args.scl,
                max_windows_per_asset=args.max_windows_per_asset,
-               out_md=args.out, seed=args.seed)
+               out_md=args.out, seed=args.seed,
+               transfer_matrix=args.transfer_matrix)
 
 
 if __name__ == "__main__":

@@ -468,6 +468,13 @@ def parse_args(argv=None):
                    help="A2 per-bar log-ratio tolerance (mode=ratio; unused in additive mode).")
     p.add_argument("--abs-tol", type=float, default=0.25,
                    help="A2 additive vol-unit tolerance (TASK_796 mode=additive; shared panel default).")
+    # TASK_796 scale-up: explicit asset lists + per-asset transfer matrix for the 150/150 run.
+    p.add_argument("--build-assets", nargs="+", type=int, default=None,
+                   help="explicit BUILD asset ids (default: config.build_assets).")
+    p.add_argument("--holdout-assets", nargs="+", type=int, default=None,
+                   help="explicit HOLDOUT asset ids (default: config.holdout_assets).")
+    p.add_argument("--transfer-matrix", action="store_true",
+                   help="compute the per-asset A8 A-by-B transfer matrix (per_asset_matrix=True).")
     return p.parse_args(argv)
 
 
@@ -490,8 +497,10 @@ def main(argv=None):
     if not DS.quick_check(cfg.db):
         print(f"[L1] WARNING: PRAGMA quick_check did not return 'ok' for {cfg.db}", flush=True)
 
-    build_assets = list(cfg.build_assets)
-    holdout_assets = list(cfg.holdout_assets)
+    # TASK_796 scale-up: explicit CLI asset lists override config defaults (bare run == unchanged).
+    build_assets = list(tuple(args.build_assets) if args.build_assets else cfg.build_assets)
+    holdout_assets = list(tuple(args.holdout_assets) if args.holdout_assets is not None
+                          else cfg.holdout_assets)
 
     # ----- 1) fit the shared base alphabet on a POOLED vol-unit sample (bounded) ----- #
     print("[L1] fitting base alphabet on pooled build sample...", flush=True)
@@ -580,6 +589,7 @@ def main(argv=None):
             build_vocab_fn, encode_assets_fn,
             build_assets=build_assets, holdout_assets=holdout_assets,
             controls=("shuffle", "random_merge"), exclude_top_k=8,
+            per_asset_matrix=bool(args.transfer_matrix),
         )
 
     # A9 — length non-degeneracy (streamed unit-length tally)
@@ -649,6 +659,11 @@ def main(argv=None):
                 f"Spearman: {a8['spearman']:.4f} (reported, not the sole gate)",
                 f"- band {a8['band']} | exclude_top_k {a8['exclude_top_k']} | "
                 f"codebook_size {a8['codebook_size']}",
+            ] + (
+                [f"- holdout assets with real transfer (beat random codebook): "
+                 f"{a8['holdout_transfer_rate']}"]
+                if a8.get("holdout_transfer_rate") is not None else []
+            ) + [
                 f"- **beats all controls: {bool(a8['beats_all'])}**",
             ] if a8 is not None else ["- skipped (no holdout assets configured)."]
         )),

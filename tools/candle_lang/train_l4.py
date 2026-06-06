@@ -93,6 +93,13 @@ def parse_args(argv=None):
     p.add_argument("--out", type=str,
                    default="/home/lukas/Trader/runs/789_token_c0/L4_RESULT.md",
                    help="RESULT.md output path (a .json sidecar is written alongside).")
+    # TASK_796 scale-up: explicit asset selection + per-asset transfer matrix (for the 150/150 run).
+    p.add_argument("--build-assets", nargs="+", type=int, default=None,
+                   help="explicit BUILD asset ids; default None => config.DEFAULT_BUILD_ASSETS.")
+    p.add_argument("--holdout-assets", nargs="+", type=int, default=None,
+                   help="explicit HOLDOUT asset ids; default None => config.DEFAULT_HOLDOUT_ASSETS.")
+    p.add_argument("--transfer-matrix", action="store_true",
+                   help="compute the per-asset A-by-B cross-asset transfer matrix in A8.")
     return p.parse_args(argv)
 
 
@@ -301,12 +308,17 @@ def main(argv=None):
     print(f"[shard] n_devices={n_dev}", flush=True)
 
     db = args.db if args.db else C.db_path()
+    # TASK_796: explicit asset selection overrides the config defaults; a bare invocation (both None)
+    # behaves exactly as before (DEFAULT_BUILD_ASSETS / DEFAULT_HOLDOUT_ASSETS).
+    build_assets = tuple(args.build_assets) if args.build_assets else C.DEFAULT_BUILD_ASSETS
+    holdout_assets = tuple(args.holdout_assets) if args.holdout_assets is not None \
+        else C.DEFAULT_HOLDOUT_ASSETS
     cfg = C.CandleConfig(
         window=int(args.window),
         fsq_levels=levels,
         batch=int(args.batch),
-        build_assets=C.DEFAULT_BUILD_ASSETS,
-        holdout_assets=C.DEFAULT_HOLDOUT_ASSETS,
+        build_assets=build_assets,
+        holdout_assets=holdout_assets,
         db=db,
     )
     codebook_size = cfg.codebook_size
@@ -459,7 +471,8 @@ def main(argv=None):
     # A8: cross-asset transfer (only meaningful with a distinct holdout corpus).
     a8 = None
     if have_holdout:
-        a8 = _a8_transfer(apply_encode, frozen_params, cfg, codebook_size)
+        a8 = _a8_transfer(apply_encode, frozen_params, cfg, codebook_size,
+                          per_asset_matrix=bool(args.transfer_matrix))
         print(f"[A8] {a8}", flush=True)
 
     # ---- RESULT.md + json sidecar ----
@@ -542,7 +555,7 @@ def _a1_from_counts(counts: np.ndarray, codebook_size: int, n_tokens: int, windo
 # --------------------------------------------------------------------------- #
 # A8 transfer wired to eval_battery (build vocab = trained model; encode = online ids)
 # --------------------------------------------------------------------------- #
-def _a8_transfer(apply_encode, params, cfg, codebook_size) -> dict:
+def _a8_transfer(apply_encode, params, cfg, codebook_size, per_asset_matrix=False) -> dict:
     """Wire the trained, frozen L4 tokenizer into eval_battery.a8_cross_asset_transfer.
 
     The 'vocab' is the frozen model itself (its codebook is the alphabet). build_vocab_fn just
@@ -611,6 +624,7 @@ def _a8_transfer(apply_encode, params, cfg, codebook_size) -> dict:
         build_vocab_fn, encode_assets_fn,
         build_assets=cfg.build_assets, holdout_assets=cfg.holdout_assets,
         controls=("shuffle", "random_merge"), exclude_top_k=8,
+        per_asset_matrix=per_asset_matrix,
     )
 
 
@@ -655,6 +669,11 @@ def _a8_lines(a8) -> list:
             f"- control[{ctl}]: transfer_bits={d.get('transfer_bits'):.4f} "
             f"coverage={d.get('coverage'):.4f} jaccard={d.get('jaccard'):.4f} "
             f"spearman={d.get('spearman'):.4f} beats={d.get('beats')}"
+        )
+    if a8.get("holdout_transfer_rate") is not None:
+        lines.append(
+            f"- holdout assets with real transfer (beat random codebook): "
+            f"{a8.get('holdout_transfer_rate')}"
         )
     lines.append(f"- **beats_all (== beats_control): {a8.get('beats_all')}**")
     return lines

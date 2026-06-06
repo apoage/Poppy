@@ -274,8 +274,8 @@ def _top_k_megatokens(counts: np.ndarray, k: int) -> set:
 
 def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, holdout_assets,
                             controls=("shuffle", "random_merge"), exclude_top_k=8,
-                            n_perm_seeds=19, band=(0.10, 0.90), alpha=1.0,
-                            codelen_margin=0.02, control=None) -> dict:
+                            n_perm_seeds=99, band=(0.10, 0.90), alpha=1.0,
+                            codelen_margin=0.02, control=None, per_asset_matrix=False) -> dict:
     """A8 (TASK_796 v2): does a language fit on BUILD assets transfer to UNSEEN HOLDOUT assets?
 
     The v1 gate `bool(cov_real > cov_ctrl)` was a measurement artifact: mass coverage saturates to
@@ -312,8 +312,21 @@ def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, hold
     cb = int(_vocab_codebook_size(vocab))
 
     # --- 1) real substrate: build + holdout counts ---
-    build_counts = _fold_counts(encode_assets_fn(vocab, build_assets, None), cb)
-    hold_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, None), cb)
+    # per_asset_matrix: encode each asset SEPARATELY into its own O(codebook) count vector so we can
+    # report (a) which holdout assets transfer and (b) the A-by-B build-asset x holdout-asset matrix.
+    # The pooled aggregates are recovered by summing the per-asset vectors, so the headline metric is
+    # identical to the non-matrix path (the real substrate is still encoded exactly once per asset).
+    build_by_asset = hold_by_asset = None
+    if per_asset_matrix:
+        build_by_asset = {int(a): _fold_counts(encode_assets_fn(vocab, [a], None), cb) for a in build_assets}
+        hold_by_asset = {int(a): _fold_counts(encode_assets_fn(vocab, [a], None), cb) for a in holdout_assets}
+        build_counts = np.sum(list(build_by_asset.values()), axis=0).astype(np.int64) \
+            if build_by_asset else np.zeros(cb, dtype=np.int64)
+        hold_counts = np.sum(list(hold_by_asset.values()), axis=0).astype(np.int64) \
+            if hold_by_asset else np.zeros(cb, dtype=np.int64)
+    else:
+        build_counts = _fold_counts(encode_assets_fn(vocab, build_assets, None), cb)
+        hold_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, None), cb)
 
     mask = _nonzero_quantile_band(build_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
     cov_real, jac_real, sp_real = _transfer_stats(build_counts, hold_counts, mask)
@@ -342,6 +355,36 @@ def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, hold
         )
 
     beats_all = bool(beats_random_codebook and beats_substrate)
+
+    # --- 4) per-asset breakdown + A-by-B matrix (TASK_796 scale-up) ---
+    # per_holdout: each holdout asset's transfer_bits under the POOLED build vocab + whether it beats
+    #   its OWN freq-matched random-codebook null (the actionable "how many of the N holdout assets
+    #   show real cross-asset transfer"). matrix[a][b]: holdout b under build asset a's own profile.
+    per_holdout = None
+    transfer_matrix = None
+    holdout_transfer_rate = None
+    if per_asset_matrix and build_by_asset and hold_by_asset:
+        per_holdout = {}
+        n_beat = 0
+        for b, hc in hold_by_asset.items():
+            d_b, _ = _transfer_codelength(build_counts, hc, mask, alpha=alpha)
+            perm_b = _codelength_perm_controls(build_counts, hc, mask, n_seeds=n_perm_seeds, alpha=alpha)
+            beats_b = bool(perm_b.size and np.isfinite(d_b) and d_b < perm_b.min())
+            n_beat += int(beats_b)
+            per_holdout[int(b)] = dict(transfer_bits=float(d_b),
+                                       perm_min_bits=float(perm_b.min()) if perm_b.size else float("inf"),
+                                       beats_random_codebook=beats_b)
+        holdout_transfer_rate = float(n_beat) / float(max(len(hold_by_asset), 1))
+        # A-by-B matrix: holdout b coded under build asset a's OWN profile (band fit on a).
+        transfer_matrix = {}
+        for a, bc_a in build_by_asset.items():
+            mask_a = _nonzero_quantile_band(bc_a, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
+            row = {}
+            for b, hc_b in hold_by_asset.items():
+                d_ab, _ = _transfer_codelength(bc_a, hc_b, mask_a, alpha=alpha)
+                row[int(b)] = float(d_ab)
+            transfer_matrix[int(a)] = row
+
     return dict(
         # headline (non-saturating)
         transfer_bits=float(d_real),
@@ -359,6 +402,11 @@ def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, hold
         coverage=float(cov_real),
         jaccard=float(jac_real),
         spearman=float(sp_real),
+        # per-asset breakdown + A-by-B matrix (None unless per_asset_matrix=True)
+        per_holdout=per_holdout,
+        holdout_transfer_rate=holdout_transfer_rate,
+        n_holdout_assets=(len(hold_by_asset) if hold_by_asset else None),
+        transfer_matrix=transfer_matrix,
         # band/config
         band=tuple(float(b) for b in band),
         exclude_top_k=int(exclude_top_k),
