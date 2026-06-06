@@ -839,12 +839,17 @@ def _run_a8(db, cfg, table, *, motif_frac, subseq_len, seed, transfer_matrix=Fal
             if syms.size:
                 yield syms
 
-    return a8_cross_asset_transfer(
+    a8 = a8_cross_asset_transfer(
         build_vocab_fn, encode_assets_fn,
         build_assets=cfg.build_assets, holdout_assets=cfg.holdout_assets,
         controls=("shuffle", "random_merge"), exclude_top_k=8,
         per_asset_matrix=transfer_matrix,
     )
+    # TASK_797: attach the positive-control power result so render_a8_lines surfaces the metric-power
+    # gate and the reader can see the unigram/bigram nulls actually have teeth (synthetic, no DB/GPU).
+    if a8 is not None:
+        a8["a8_power"] = EB.run_a8_power()
+    return a8
 
 
 def _asset_anchor_symbols(db, asset_id, cfg, table, *, subseq_len, seed, control,
@@ -917,11 +922,16 @@ def _phase_shuffle_run(feats, finite, rng):
 # verdict
 # --------------------------------------------------------------------------- #
 def _verdict(results) -> str:
-    """L5 verdict (TASK_796): PROCEED requires (i) A0 rescale-invariance, (ii) A9 non-degeneracy,
-    (iii) recurrence BEYOND CHANCE (motif coverage above the control-quantile chance floor), AND
-    (iv) A8 cross-asset transfer beating its controls (`beats_control` == `beats_all`). The v1
-    verdict NEVER consulted A8, so a language that did not transfer could still PROCEED — fixed
-    here: no A8 win => downgrade to WEAK (or KILL on the hard A0/A9 gates)."""
+    """L5 verdict (TASK_796 / §186): PROCEED requires (i) A0 rescale-invariance, (ii) A9
+    non-degeneracy, (iii) recurrence BEYOND CHANCE (motif coverage above the control-quantile chance
+    floor), AND (iv) A8 cross-asset transfer passing the §186-aligned go/no-go via EB.a8_verdict(a8).
+    The v1 verdict NEVER consulted A8, so a language that did not transfer could still PROCEED.
+
+    TASK_796/797: the A8 sub-gate now delegates to EB.a8_verdict(a8), which gates on the FAIR
+    freq-matched random-codebook null on BOTH unigram AND bigram (transition) axes. The OLD gate
+    keyed off `beats_control` (== beats_all == random-codebook AND substrate-UNIGRAM) — i.e. it
+    folded in the ENTROPY-CONFOUNDED substrate control (lore §186), which is wrong. Substrate
+    controls are REPORTED, not gated."""
     a0 = results.get("A0", {})
     a9 = results.get("A9", {})
     a2 = results.get("A2_motif", {})
@@ -944,12 +954,12 @@ def _verdict(results) -> str:
     if not recurs_beyond_chance:
         return ("WEAK (motif coverage %.3f at/below chance floor %.3f — no recurrence beyond chance)"
                 % (coverage, chance))
-    # A8 gate (TASK_796): cross-asset transfer must beat its controls. beats_control == beats_all.
+    # A8 gate (TASK_796/797 / §186): delegate to the shared, substrate-unconfounded go/no-go.
     if a8 is None:
         return "WEAK (recurrence beyond chance, but A8 transfer not evaluated — no holdout)"
-    a8_pass = bool(a8.get("beats_control", a8.get("beats_all", False)))
-    if not a8_pass:
-        return "WEAK (motifs recur beyond chance but A8 cross-asset transfer failed its controls)"
+    if not EB.a8_verdict(a8):
+        return ("WEAK (motifs recur beyond chance but A8 cross-asset transfer failed the "
+                "random-codebook null on the unigram/bigram axes)")
     return "PROCEED"
 
 
@@ -1095,46 +1105,19 @@ def _format_sections(results, args, cfg, n_symbols):
     for key in ("A0", "A1", "A2_motif", "A8", "A9"):
         if key in results:
             if key == "A8":
-                sections.append((key, _a8_lines(results[key])))
+                # TASK_797: render via the SHARED helpers — unigram + BIGRAM + per-control + power,
+                # plus the per-holdout transfer table / A-by-B matrix summary when present.
+                a8 = results[key]
+                a8_lines = list(EB.render_a8_lines(a8))
+                a8_lines += EB.render_transfer_matrix(a8)
+                a8_lines.append(
+                    "- **a8_verdict (§186 gate: random-codebook null on unigram+bigram)**: "
+                    f"{bool(EB.a8_verdict(a8))}"
+                )
+                sections.append((key, a8_lines))
             else:
                 sections.append((key, _kv_lines(results[key])))
     return sections
-
-
-def _a8_lines(a8: dict):
-    """Render the TASK_796 A8 result. HEADLINE is transfer_bits (non-saturating bits/in-band-token of
-    the holdout under the build unigram); the freq-matched random-codebook rank test and each
-    substrate control are surfaced explicitly. The old saturating coverage_control/jaccard_control/
-    spearman_control keys are GONE — never reference them (KeyError) and never compare these L5
-    coverage/jaccard/spearman numbers as A2."""
-    headline = [
-        "- **transfer_bits** (HEADLINE, bits/in-band-token, lower=better): "
-        f"{float(a8.get('transfer_bits', float('inf'))):.6g}",
-        f"- **n_band_tokens**: {int(a8.get('n_band_tokens', 0))}",
-        f"- **beats_random_codebook**: {bool(a8.get('beats_random_codebook', False))} "
-        f"(perm_min={float(a8.get('perm_min_bits', float('inf'))):.6g}, "
-        f"perm_mean={float(a8.get('perm_mean_bits', float('inf'))):.6g}, "
-        f"n_perm_seeds={int(a8.get('n_perm_seeds', 0))})",
-        f"- **beats_substrate**: {bool(a8.get('beats_substrate', False))}",
-        f"- **beats_control (== beats_all, VERDICT GATE)**: {bool(a8.get('beats_control', False))}",
-        f"- **coverage** (mid-freq, reported): {float(a8.get('coverage', 0.0)):.6g}",
-        f"- **jaccard** (mid-freq, reported): {float(a8.get('jaccard', 0.0)):.6g}",
-        f"- **spearman** (mid-freq, reported): {float(a8.get('spearman', 0.0)):.6g}",
-        f"- **band**: {tuple(a8.get('band', ()))}  exclude_top_k={int(a8.get('exclude_top_k', 0))}  "
-        f"codebook_size={int(a8.get('codebook_size', 0))}",
-    ]
-    if a8.get("holdout_transfer_rate") is not None:
-        headline.append(
-            "- holdout assets with real transfer (beat random codebook): "
-            f"{float(a8.get('holdout_transfer_rate')):.6g}"
-        )
-    for ctl, d in (a8.get("per_control") or {}).items():
-        headline.append(
-            f"- **control[{ctl}]**: transfer_bits={float(d.get('transfer_bits', float('inf'))):.6g} "
-            f"beats={bool(d.get('beats', False))} coverage={float(d.get('coverage', 0.0)):.4g} "
-            f"jaccard={float(d.get('jaccard', 0.0)):.4g} spearman={float(d.get('spearman', 0.0)):.4g}"
-        )
-    return headline
 
 
 def _format_meta(results, args, cfg, n_symbols, accum, verdict):

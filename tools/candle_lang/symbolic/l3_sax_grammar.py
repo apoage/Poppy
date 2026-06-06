@@ -297,14 +297,24 @@ class L3Grammar:
     Public attributes used by the eval battery / A8:
         codebook_size : int   contiguous token-id alphabet size
         base_card     : int   number of SAX letters (terminals)
+        edges_card    : (edges, card) tuple   SAX breakpoints + alphabet size (encode params)
+        halflife      : float                 vol-unit EWMA halflife (A0 substrate const)
+        sigma_floor   : float                 vol-unit sigma floor    (A0 substrate const)
     Public methods:
         encode_symbols(reduced_letters(int64,)) -> token-ids(int64,)   apply frozen rules then remap
         expand(token_id) -> list[terminal letters]                     for A2 reconstruction
     """
 
-    def __init__(self, table: dict, rules: dict, kept: set, base_card: int):
+    def __init__(self, table: dict, rules: dict, kept: set, base_card: int,
+                 edges: np.ndarray, card: int, halflife: float, sigma_floor: float):
         self.table = table
         self.base_card = int(base_card)
+        # static encode params + substrate constants — set HERE so the returned grammar is
+        # self-contained (fit_grammar no longer bolts these on in main(): the A0/A1/A2/A8/A9 closures
+        # read grammar.edges_card / .halflife / .sigma_floor directly off the object).
+        self.edges_card = (edges, int(card))
+        self.halflife = float(halflife)
+        self.sigma_floor = float(sigma_floor)
         # keep only surviving rules; renumber to a dense id space for eval_battery's bincount.
         kept_nts = sorted(int(nt) for nt in kept)
         self.rules = {nt: rules[nt] for nt in kept_nts}  # original-id-keyed production table
@@ -491,7 +501,9 @@ def fit_grammar(db: str, cfg: "C.CandleConfig", max_windows_per_asset,
     encoded_pre = [_apply_rules_static(s, rules) for s in reduced_seqs]
     kept = _set_cover_prune(rules, card, encoded_pre, lengths)
 
-    grammar = L3Grammar(table, rules, kept, card)
+    grammar = L3Grammar(table, rules, kept, card,
+                        edges=edges, card=card,
+                        halflife=cfg.ewma_halflife, sigma_floor=cfg.sigma_floor)
     return grammar, table, edges, card, len(reduced_seqs)
 
 
@@ -624,12 +636,20 @@ def _sample_a0_windows(db: str, cfg: "C.CandleConfig", n: int = 16):
 # --------------------------------------------------------------------------- #
 # CLI / main
 # --------------------------------------------------------------------------- #
+def _default_out() -> str:
+    """ABSOLUTE default --out path (repo-root-relative, like C.db_path()). A relative default
+    resolves against the agent's cwd — which the orchestrator resets between calls — so it must be
+    anchored to the repo root so the RESULT.md always lands in the same place on either host."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    return os.path.join(repo_root, "runs", "789_token_c0", "L3_RESULT.md")
+
+
 def _parse_args(argv=None):
     p = argparse.ArgumentParser(description="L3 SAX + grammar candle-language member (CPU).")
     p.add_argument("--db", type=str, default=C.db_path(), help="trading_data.db path (or $CANDLE_DB).")
     p.add_argument("--out", type=str,
-                   default="runs/789_token_c0/L3_RESULT.md",
-                   help="RESULT.md output path (.json sidecar written alongside).")
+                   default=_default_out(),
+                   help="RESULT.md output path (.json sidecar written alongside; absolute by default).")
     p.add_argument("--max-windows-per-asset", type=int, default=25000,
                    help="cap windows kept per asset (most-recent ring; RAM bound).")
     p.add_argument("--fit-window-cap", type=int, default=4000,
@@ -669,11 +689,8 @@ def main(argv=None) -> int:
     grammar, table, edges, card, n_fit = fit_grammar(
         cfg.db, cfg, max_windows_per_asset=mwpa, fit_window_cap=int(args.fit_window_cap)
     )
-    # stash the static encode params + substrate constants on the grammar (so the battery closures
-    # need only the grammar object). edges_card is a (edges, card) tuple consumed everywhere.
-    grammar.edges_card = (edges, card)
-    grammar.halflife = cfg.ewma_halflife
-    grammar.sigma_floor = cfg.sigma_floor
+    # grammar is self-contained: edges_card / halflife / sigma_floor are set inside L3Grammar.__init__
+    # (fit_grammar passes them through), so every battery closure reads them off the object directly.
 
     n_rules = len(grammar.rules)
     print(f"[L3] fit done: SAX card={card}, grammar rules kept={n_rules}, "
@@ -744,12 +761,20 @@ def main(argv=None) -> int:
             controls=("shuffle", "random_merge"), exclude_top_k=8,
             per_asset_matrix=args.transfer_matrix,
         )
+        # positive-control power harnesses (synthetic, no DB/GPU) — stored on the a8 dict so the
+        # shared render_a8_lines surfaces metric validity (the panel never showed this before).
+        a8["a8_power"] = eval_battery.run_a8_power()
         print(f"[L3] A8: transfer_bits={a8['transfer_bits']:.4f} "
               f"perm_min={a8['perm_min_bits']:.4f} beats_random_codebook={a8['beats_random_codebook']} "
-              f"beats_substrate={a8['beats_substrate']} beats_all={a8['beats_all']}", flush=True)
+              f"beats_random_codebook_bigram={a8.get('beats_random_codebook_bigram')} "
+              f"a8_verdict={eval_battery.a8_verdict(a8)}", flush=True)
 
     # ---- verdict (design §6 KILL/PROCEED, A8 + A2 + A1 + A9) ----
-    a8_ok = bool(a8 is None or a8["beats_control"])
+    # A8 gate = the §186-aligned go/no-go: gate on the FAIR freq-matched random-codebook null on BOTH
+    # unigram AND bigram axes. The old gate (a8["beats_control"] == beats_all) folded in the
+    # entropy-CONFOUNDED substrate controls (phase-shuffle/random-merge) — those are now REPORTED, not
+    # gated. a8_verdict(None) -> True (no holdout = not applicable).
+    a8_ok = bool(eval_battery.a8_verdict(a8))
     a2_ok = bool(a2["frac_within_tol"] >= 0.90)
     a1_ok = bool(a1["compression_ratio"] > 1.0)
     a9_ok = bool(a9["pass"])
@@ -800,31 +825,18 @@ def main(argv=None) -> int:
         ]),
     ]
     if a8 is not None:
-        ctl_lines = [
-            f"  - `{name}`: transfer_bits {d['transfer_bits']:.4f} | coverage {d['coverage']:.4f} "
-            f"| jaccard {d['jaccard']:.4f} | spearman {d['spearman']:.4f} | beats {d['beats']}"
-            for name, d in a8.get("per_control", {}).items()
-        ]
+        # SHARED renderers (TASK_797): render_a8_lines surfaces unigram + BIGRAM transfer + per-control
+        # (reported) + the power harness; render_transfer_matrix surfaces the per-holdout transfer rate
+        # + transferring assets + A-by-B matrix summary. Both were COMPUTED before but never rendered.
+        a8_lines = list(eval_battery.render_a8_lines(a8))
+        a8_lines += list(eval_battery.render_transfer_matrix(a8))
+        a8_lines.append(
+            f"- **A8 verdict (§186 gate: random-codebook null on unigram AND bigram): "
+            f"{eval_battery.a8_verdict(a8)}** "
+            f"(substrate controls are entropy-confounded -> reported, NOT gated)"
+        )
         sections.append((
-            "A8 — cross-asset transfer (headline = non-saturating transfer codelength)", [
-                f"- **transfer_bits {a8['transfer_bits']:.4f}** bits/in-band-token (HEADLINE; "
-                f"lower = holdout mass concentrates where build put its mass) over "
-                f"{a8['n_band_tokens']} band tokens",
-                f"- freq-matched random-codebook null: perm_min {a8['perm_min_bits']:.4f} | "
-                f"perm_mean {a8['perm_mean_bits']:.4f} ({a8['n_perm_seeds']} seeds) -> "
-                f"beats_random_codebook {a8['beats_random_codebook']}",
-                f"- substrate controls {a8['controls']} -> beats_substrate {a8['beats_substrate']}",
-                *ctl_lines,
-                f"- secondary (reported, band-desaturated): coverage {a8['coverage']:.4f} | "
-                f"jaccard {a8['jaccard']:.4f} | spearman {a8['spearman']:.4f}",
-                f"- band {a8['band']} | excludes top-{a8['exclude_top_k']} mega-tokens | "
-                f"**beats_all {a8['beats_all']}**",
-            ]))
-        if a8.get("holdout_transfer_rate") is not None:
-            sections[-1][1].append(
-                f"- holdout assets with real transfer (beat random codebook): "
-                f"{a8['holdout_transfer_rate']}"
-            )
+            "A8 — cross-asset transfer (headline = non-saturating transfer codelength)", a8_lines))
 
     meta = dict(
         member="L3_sax_grammar",

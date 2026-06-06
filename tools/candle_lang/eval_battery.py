@@ -835,6 +835,94 @@ def a9_length_nondegeneracy(length_counts) -> dict:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Shared A8 rendering + verdict (TASK_796/797 tech-debt closure). Every member rendered its own
+# hand-rolled A8 block and (importantly) the BIGRAM transfer fields + the per-asset matrix + the
+# power-harness result were computed but NEVER shown or gated on. These shared helpers fix that so the
+# panel's scorecard + verdict reflect what the design actually claims.
+# --------------------------------------------------------------------------- #
+def render_a8_lines(a8) -> list:
+    """Render the full A8 result (unigram + BIGRAM + power) to RESULT.md lines. Reads the new schema
+    (transfer_bits / transfer_bits_bigram / beats_random_codebook[_bigram] / per_control / power)."""
+    if not a8:
+        return ["- (no A8 — no holdout assets)"]
+    g = a8.get
+    lines = [
+        f"- **transfer_bits (unigram HEADLINE, lower=better)**: {g('transfer_bits'):.4f}  "
+        f"over {g('n_band_tokens')} band tokens",
+        f"- random-codebook null (unigram): perm_min {g('perm_min_bits'):.4f} / "
+        f"perm_mean {g('perm_mean_bits'):.4f} ({g('n_perm_seeds')} seeds) -> "
+        f"**beats_random_codebook: {g('beats_random_codebook')}**",
+    ]
+    if g("bigram_available"):
+        lines += [
+            f"- **transfer_bits_bigram (TRANSITIONS, the phase-shuffle-proof axis)**: "
+            f"{g('transfer_bits_bigram'):.4f}  over {g('n_transitions')} transitions",
+            f"- random-codebook null (bigram): perm_min {g('bigram_perm_min_bits'):.4f} -> "
+            f"**beats_random_codebook_bigram: {g('beats_random_codebook_bigram')}**",
+        ]
+    else:
+        lines.append(f"- bigram: unavailable (codebook {g('codebook_size')} > {_BIGRAM_MAX_K})")
+    for ctl, d in (g("per_control") or {}).items():
+        bi = f" | bigram_bits={d.get('transfer_bits_bigram'):.4f} beats_bigram={d.get('beats_bigram')}" \
+            if d.get("transfer_bits_bigram") is not None else ""
+        lines.append(f"- substrate-control[{ctl}] (REPORTED, entropy-confounded — see lore §186): "
+                     f"uni_bits={d.get('transfer_bits'):.4f} beats={d.get('beats')}{bi}")
+    lines.append(f"- beats_substrate (unigram): {g('beats_substrate')} | "
+                 f"beats_substrate_bigram: {g('beats_substrate_bigram')}  "
+                 f"(reported-only — NOT the gate)")
+    if a8.get("a8_power"):
+        p = a8["a8_power"]
+        lines.append(f"- **metric power**: power_ok={p.get('power_ok')} "
+                     f"bigram_power_ok={p.get('bigram_power_ok')}  (positive-control gate)")
+    return lines
+
+
+def render_transfer_matrix(a8, max_holdout=40) -> list:
+    """Render the per-holdout transfer table + a compact A-by-B matrix summary (markdown). The
+    numbers are already in the a8 dict (per_asset_matrix run); this just surfaces them."""
+    if not a8 or a8.get("holdout_transfer_rate") is None:
+        return []
+    g = a8.get
+    lines = [
+        f"- **holdout assets with real transfer (beat their random-codebook null): "
+        f"{g('holdout_transfer_rate'):.3f}** of {g('n_holdout_assets')}",
+    ]
+    ph = g("per_holdout") or {}
+    if ph:
+        beat = sorted((int(b) for b, d in ph.items() if d.get("beats_random_codebook")))
+        lines.append(f"- transferring holdout assets ({len(beat)}): "
+                     f"{', '.join(map(str, beat[:max_holdout]))}{' …' if len(beat) > max_holdout else ''}")
+    tm = g("transfer_matrix") or {}
+    if tm:
+        lines.append(f"- A-by-B transfer matrix: {len(tm)} build x "
+                     f"{len(next(iter(tm.values()), {}))} holdout (full matrix in the JSON sidecar)")
+    return lines
+
+
+def a8_verdict(a8) -> bool:
+    """The TASK_796/§186-aligned A8 go/no-go. The fair, unconfounded control is the freq-matched
+    random-codebook null (it holds token ENTROPY fixed and only breaks id-alignment). Real must beat
+    it on BOTH marginals (unigram) AND transitions (bigram, when available). The substrate controls
+    (phase-shuffle/random-merge) are entropy-confounded (lore §186) and are REPORTED, not gated.
+    Returns True (transfer supported) / False. None a8 (no holdout) -> True (not applicable)."""
+    if not a8:
+        return True
+    uni = bool(a8.get("beats_random_codebook"))
+    if a8.get("bigram_available"):
+        return bool(uni and a8.get("beats_random_codebook_bigram"))
+    return uni
+
+
+def run_a8_power() -> dict:
+    """Run BOTH positive-control power harnesses (synthetic, no DB/GPU) so a member can store the
+    result in its meta and a reader can see the metric was valid. power_ok must be True."""
+    p = a8_power_check(codebook_size=256, n_seeds=99)
+    b = a8_bigram_power_check()
+    return dict(power_ok=bool(p.get("power_ok")), bigram_power_ok=bool(b.get("bigram_power_ok")),
+                detail=dict(unigram=p, bigram=b))
+
+
 if __name__ == "__main__":
     # CPU self-test (no DB, no GPU): exercise every battery function on synthetic streams so a
     # sanity import + run is meaningful. This is a SHAPE/contract test, not a real eval.

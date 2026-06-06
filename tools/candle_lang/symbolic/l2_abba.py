@@ -663,6 +663,8 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
                                         holdout_assets=tuple(holdout_assets),
                                         controls=("shuffle", "random_merge"), exclude_top_k=8,
                                         per_asset_matrix=transfer_matrix)
+        # TASK_796/797: positive-control power harnesses (synthetic; the metric-is-valid gate).
+        a8["a8_power"] = EB.run_a8_power()
 
     wall = time.time() - t0
 
@@ -670,7 +672,10 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
     a0_pass = bool(a0.get("pass", False))
     a9_pass = bool(a9.get("pass", False))
     a1_beats_null = bool(a1["compression_ratio"] > 1.0)
-    a8_beats = bool(a8["beats_control"]) if a8 is not None else None
+    # TASK_796/797 (§186): gate on the FAIR random-codebook null on BOTH unigram AND bigram axes
+    # (a8_verdict), NOT on beats_control (== the entropy-confounded substrate control). When there is
+    # no holdout, a8_verdict returns True and is dropped from the gate list (a8 is None).
+    a8_beats = EB.a8_verdict(a8) if a8 is not None else None
     verdict = _verdict(a0_pass, a1_beats_null, a9_pass, a8_beats)
 
     sections = [
@@ -711,29 +716,12 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
         ]),
     ]
     if a8 is not None:
-        a8_lines = [
-            f"- **transfer_bits={a8['transfer_bits']:.4f}** bits/in-band-token (HEADLINE; lower=better) "
-            f"over {a8['n_band_tokens']} band tokens",
-            f"- freq-matched random-codebook null: perm_min={a8['perm_min_bits']:.4f} "
-            f"perm_mean={a8['perm_mean_bits']:.4f} over {a8['n_perm_seeds']} seeds "
-            f"(**beats_random_codebook={a8['beats_random_codebook']}**)",
-        ]
-        for ctl in a8['controls']:
-            pc = a8['per_control'][ctl]
-            a8_lines.append(
-                f"- control[{ctl}]: transfer_bits={pc['transfer_bits']:.4f} "
-                f"coverage={pc['coverage']:.4f} jaccard={pc['jaccard']:.4f} "
-                f"spearman={pc['spearman']:.4f} beats={pc['beats']}")
-        a8_lines.append(
-            f"- mid-freq (reported): coverage={a8['coverage']:.4f} jaccard={a8['jaccard']:.4f} "
-            f"spearman={a8['spearman']:.4f} | band={a8['band']} exclude_top_k={a8['exclude_top_k']}")
-        a8_lines.append(
-            f"- beats_substrate={a8['beats_substrate']} | **beats_all={a8['beats_all']}** "
-            f"(beats_control alias={a8['beats_control']})")
-        if a8.get("holdout_transfer_rate") is not None:
-            a8_lines.append(
-                f"- holdout assets with real transfer (beat random codebook): "
-                f"{a8['holdout_transfer_rate']}")
+        # TASK_796/797: shared renderer surfaces the BIGRAM transfer axis + power harness (previously
+        # computed but never shown); the verdict gates via a8_verdict (above), not beats_control.
+        a8_lines = EB.render_a8_lines(a8)
+        a8_lines += EB.render_transfer_matrix(a8)
+        a8_lines.append(f"- **a8_verdict (FAIR random-codebook null, uni+bigram; THE gate): "
+                        f"{EB.a8_verdict(a8)}**")
         sections.append(("A8 — cross-asset transfer (codelength vs random-codebook + substrate controls)",
                          a8_lines))
     sections.append(("Timing", [f"- wallclock={wall:.1f}s"]))
@@ -829,7 +817,7 @@ class _CfgWithTol:
 def main(argv=None):
     p = argparse.ArgumentParser(description="L2 ABBA candle-language panel member (CPU)")
     p.add_argument("--db", default=None, help="DB path (default: config.db_path())")
-    p.add_argument("--out", default="runs/789_token_c0/l2_abba_RESULT.md",
+    p.add_argument("--out", default="/home/lukas/Trader/runs/789_token_c0/l2_abba_RESULT.md",
                    help="RESULT.md output path (.json sidecar written alongside)")
     p.add_argument("--window", type=int, default=C.DEFAULT_WINDOW)
     p.add_argument("--k", type=int, default=DEFAULT_K, help="symbol alphabet size (k-means clusters)")

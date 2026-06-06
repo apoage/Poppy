@@ -48,7 +48,14 @@ def asset_stats(db: str, min_bars: int):
 
 
 def select_split(db: str, n_build: int, n_holdout: int, min_bars: int = 20000, seed: int = 42) -> dict:
-    """Stratified, non-overlapping build/holdout split spanning the price range. Deterministic."""
+    """Stratified, non-overlapping build/holdout split spanning the price range. Deterministic.
+
+    NOTE: `seed` is RESERVED and currently a NO-OP. The selection is fully deterministic —
+    assets are sorted by AVG(close) and picked at evenly-spaced indices via np.linspace, with
+    no RNG drawn anywhere. `seed` is accepted (and echoed into the returned dict) only so the
+    signature/JSON stays stable if a future randomized tie-break or sampling variant is added.
+    Passing different seeds today does NOT change the split.
+    """
     stats = asset_stats(db, min_bars)
     total = int(n_build) + int(n_holdout)
     if len(stats) < total:

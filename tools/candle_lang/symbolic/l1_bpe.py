@@ -597,16 +597,23 @@ def main(argv=None):
     lc = _length_counts(cfg.db, build_assets, cfg, vocab, mwpa)
     a9 = EB.a9_length_nondegeneracy(lc)
 
+    # A8 metric power harnesses (synthetic, no DB/GPU) — stored on the a8 dict (so render_a8_lines
+    # surfaces them) and in meta. None when no holdout (a8 is None / empty).
+    a8_power = EB.run_a8_power()
+    if a8:
+        a8["a8_power"] = a8_power
+
     wall = time.time() - t0
 
     # ----- 5) verdict + write result ----- #
-    # beats_all == beats_control (back-compat alias); gate on the explicit beats_all (TASK_796).
-    a8_ok = bool(a8["beats_all"]) if a8 is not None else False
+    # A8 go/no-go via the SHARED §186-aligned verdict: gate on the FAIR random-codebook null on BOTH
+    # unigram AND bigram axes; the entropy-confounded substrate controls are reported, not gated.
+    a8_ok = EB.a8_verdict(a8) if a8 else True
     passes = [
         bool(a0["pass"]),
         bool(a1["compression_ratio"] > 1.0),
         bool(a2["frac_within_tol"] >= 0.50),
-        a8_ok if a8 is not None else True,
+        a8_ok,
         bool(a9["pass"]),
     ]
     verdict = "PROCEED" if all(passes) else "REVIEW"
@@ -643,29 +650,8 @@ def main(argv=None):
             f"- bars: {a2['n_bars']} | pairs: {a2['n_pairs']}",
         ]),
         ("A8 — cross-asset transfer (build vocab -> holdout)", (
-            [
-                f"- **transfer codelength (HEADLINE): {a8['transfer_bits']:.4f} bits/in-band-token** "
-                f"over {a8['n_band_tokens']} band tokens (lower = more shared structure)",
-                f"- random-codebook null: min {a8['perm_min_bits']:.4f} | mean "
-                f"{a8['perm_mean_bits']:.4f} bits over {a8['n_perm_seeds']} seeds "
-                f"-> beats_random_codebook: {bool(a8['beats_random_codebook'])}",
-                "- substrate controls ("
-                + ", ".join(
-                    f"{ctl}: {pc['transfer_bits']:.4f} bits (beats {bool(pc['beats'])})"
-                    for ctl, pc in a8['per_control'].items()
-                )
-                + f") -> beats_substrate: {bool(a8['beats_substrate'])}",
-                f"- mid-freq coverage: {a8['coverage']:.4f} | Jaccard: {a8['jaccard']:.4f} | "
-                f"Spearman: {a8['spearman']:.4f} (reported, not the sole gate)",
-                f"- band {a8['band']} | exclude_top_k {a8['exclude_top_k']} | "
-                f"codebook_size {a8['codebook_size']}",
-            ] + (
-                [f"- holdout assets with real transfer (beat random codebook): "
-                 f"{a8['holdout_transfer_rate']}"]
-                if a8.get("holdout_transfer_rate") is not None else []
-            ) + [
-                f"- **beats all controls: {bool(a8['beats_all'])}**",
-            ] if a8 is not None else ["- skipped (no holdout assets configured)."]
+            EB.render_a8_lines(a8) + EB.render_transfer_matrix(a8)
+            if a8 else ["- skipped (no holdout assets configured)."]
         )),
         ("A9 — length non-degeneracy", [
             f"- median token length (units): {a9['median_len']:.2f}",
@@ -677,7 +663,8 @@ def main(argv=None):
             f"- A0 pass: {passes[0]}",
             f"- A1 compression>1: {passes[1]}",
             f"- A2 frac_within>=0.50: {passes[2]}",
-            f"- A8 beats control: {a8_ok if a8 is not None else 'n/a (no holdout)'}",
+            f"- A8 verdict (random-codebook null, uni+bigram): "
+            f"{a8_ok if a8 else 'n/a (no holdout)'}",
             f"- A9 non-degenerate: {passes[4]}",
             f"- wallclock: {wall:.0f}s",
         ]),
@@ -696,6 +683,7 @@ def main(argv=None):
         codebook_size=int(cb),
         len_buckets=int(N_LEN_BUCKETS),
         a0=a0, a1=a1, a2=a2, a8=(a8 if a8 is not None else {}), a9=a9,
+        a8_power=a8_power,
         wallclock_s=float(wall),
     )
 
@@ -708,9 +696,11 @@ def main(argv=None):
     print(f"A1 bits/candle {a1['bits_per_candle']:.4f} compression {a1['compression_ratio']:.4f}",
           flush=True)
     print(f"A2 frac_within {a2['frac_within_tol']:.4f}", flush=True)
-    if a8 is not None:
-        print(f"A8 transfer_bits {a8['transfer_bits']:.4f} beats_all {bool(a8['beats_all'])} "
-              f"(rand_cb {bool(a8['beats_random_codebook'])}, substrate {bool(a8['beats_substrate'])})",
+    if a8:
+        print(f"A8 transfer_bits {a8['transfer_bits']:.4f} verdict {a8_ok} "
+              f"(rand_cb {bool(a8['beats_random_codebook'])}, "
+              f"rand_cb_bigram {bool(a8.get('beats_random_codebook_bigram'))}, "
+              f"power_ok {bool(a8_power.get('power_ok'))})",
               flush=True)
     print(f"A9 median_len {a9['median_len']:.2f} pass {bool(a9['pass'])}", flush=True)
     print(f"VERDICT {verdict}  wall {wall:.0f}s", flush=True)

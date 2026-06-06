@@ -470,10 +470,17 @@ def main(argv=None):
 
     # A8: cross-asset transfer (only meaningful with a distinct holdout corpus).
     a8 = None
+    a8_power = None
     if have_holdout:
         a8 = _a8_transfer(apply_encode, frozen_params, cfg, codebook_size,
                           per_asset_matrix=bool(args.transfer_matrix))
+        # TASK_796/797: run BOTH positive-control power harnesses (synthetic, no DB/GPU) and store on
+        # the a8 dict so EB.render_a8_lines surfaces the metric-power line and a reader can see the
+        # transfer metric itself was valid (unigram + bigram) before trusting the go/no-go.
+        a8_power = EB.run_a8_power()
+        a8["a8_power"] = a8_power
         print(f"[A8] {a8}", flush=True)
+        print(f"[A8.power] {a8_power}", flush=True)
 
     # ---- RESULT.md + json sidecar ----
     verdict = _verdict(a0, a1, a2, a9, a8)
@@ -486,7 +493,7 @@ def main(argv=None):
         used_codes=used, top1_share=top1, final_recon_mse=float(mean_loss),
         n_devices=n_dev, build_assets=list(cfg.build_assets), holdout_assets=list(cfg.holdout_assets),
         train_wall_s=train_wall,
-        a0=a0, a1=a1, a2=a2, a9=a9, a8=a8,
+        a0=a0, a1=a1, a2=a2, a9=a9, a8=a8, a8_power=a8_power,
     )
     write_result(args.out, title="L4 FSQ-VQ candle-language member (TASK_789)",
                  sections=sections, verdict=verdict, meta=meta)
@@ -632,51 +639,34 @@ def _a8_transfer(apply_encode, params, cfg, codebook_size, per_asset_matrix=Fals
 # verdict + report sections
 # --------------------------------------------------------------------------- #
 def _verdict(a0, a1, a2, a9, a8) -> str:
-    """A0 (rescale invariance) and A9 (non-degeneracy) are HARD gates; A8 (if present) must beat
-    its control. A1/A2 are reported but not pass/fail gates on their own."""
+    """A0 (rescale invariance) and A9 (non-degeneracy, incl. the used_codes/codebook_collapse floor
+    gates) are HARD gates; A8 (if present) must pass the §186-aligned go/no-go. A1/A2 are reported
+    but not pass/fail gates on their own.
+
+    TASK_796/797: the A8 term now gates on EB.a8_verdict(a8) — the FAIR freq-matched random-codebook
+    null on BOTH unigram AND bigram axes — NOT the OLD beats_control (== beats_all == beats_random_-
+    codebook AND beats_substrate-UNIGRAM), which folded in the entropy-confounded substrate control
+    (lore §186, wrong to gate on)."""
     a0_ok = bool(a0.get("pass", False)) if a0 else False
     a9_ok = bool(a9.get("pass", False)) if a9 else False
-    a8_ok = True if a8 is None else bool(a8.get("beats_control", False))
+    a8_ok = EB.a8_verdict(a8)  # None a8 (no holdout) -> True (not applicable)
     if a0_ok and a9_ok and a8_ok:
         return "PASS"
     return "FAIL"
 
 
 def _a8_lines(a8) -> list:
-    """Render the TASK_796 v2 A8 dict to readable RESULT lines around the NEW headline keys.
+    """Render the A8 dict via the SHARED eval_battery renderers (TASK_796/797 tech-debt closure).
 
-    The repaired a8_cross_asset_transfer returns transfer_bits (non-saturating headline),
-    perm_min_bits / beats_random_codebook (freq-matched random-codebook rank test), and a
-    per_control dict (one entry per substrate control: shuffle / random_merge). The OLD keys
-    (coverage_control / jaccard_control / spearman_control / control) are REMOVED — referencing
-    them would KeyError; this renderer only reads the new schema."""
+    The panel COMPUTES the bigram-transfer fields, the per-asset transfer matrix, and the metric
+    power harness, but members historically hand-rolled a renderer that only surfaced the UNIGRAM
+    headline + the entropy-confounded substrate controls (lore §186). We now delegate to the canonical
+    EB.render_a8_lines (unigram + BIGRAM + per-control + power) and EB.render_transfer_matrix
+    (per-holdout transfer rate + transferring assets + matrix summary) so every member renders the
+    same §186-aligned view. The substrate controls remain REPORTED (not gated)."""
     if not a8:
         return ["(none)"]
-    lines = [
-        f"- transfer_bits (HEADLINE, bits/in-band-token, lower=better): {a8.get('transfer_bits'):.4f}",
-        f"- n_band_tokens: {a8.get('n_band_tokens')}",
-        f"- perm_min_bits / perm_mean_bits ({a8.get('n_perm_seeds')} seeds): "
-        f"{a8.get('perm_min_bits'):.4f} / {a8.get('perm_mean_bits'):.4f}",
-        f"- beats_random_codebook: {a8.get('beats_random_codebook')}",
-        f"- beats_substrate: {a8.get('beats_substrate')}",
-        f"- coverage / jaccard / spearman (mid-band, reported): "
-        f"{a8.get('coverage'):.4f} / {a8.get('jaccard'):.4f} / {a8.get('spearman'):.4f}",
-        f"- codebook_size: {a8.get('codebook_size')}  band: {a8.get('band')}  "
-        f"exclude_top_k: {a8.get('exclude_top_k')}",
-    ]
-    for ctl, d in (a8.get("per_control") or {}).items():
-        lines.append(
-            f"- control[{ctl}]: transfer_bits={d.get('transfer_bits'):.4f} "
-            f"coverage={d.get('coverage'):.4f} jaccard={d.get('jaccard'):.4f} "
-            f"spearman={d.get('spearman'):.4f} beats={d.get('beats')}"
-        )
-    if a8.get("holdout_transfer_rate") is not None:
-        lines.append(
-            f"- holdout assets with real transfer (beat random codebook): "
-            f"{a8.get('holdout_transfer_rate')}"
-        )
-    lines.append(f"- **beats_all (== beats_control): {a8.get('beats_all')}**")
-    return lines
+    return list(EB.render_a8_lines(a8)) + list(EB.render_transfer_matrix(a8))
 
 
 def _build_sections(a0, a1, a2, a9, a8, used, codebook_size, top1, n_tokens, mean_loss,
