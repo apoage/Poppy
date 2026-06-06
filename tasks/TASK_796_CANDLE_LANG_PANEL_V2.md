@@ -1,6 +1,7 @@
 # TASK_796 — Candle-Language Panel v2: repair the eval battery, fix L4/L3/L5, re-run before any branch-C keep/kill
 
-**Status**: IN PROGRESS (opened 2026-06-05)
+**Status**: IN PROGRESS — eval battery repaired + all 5 members fixed + **v2 re-run LAUNCHED** on
+gpu-server (committed `4c4393c`, tmux `796_panel`, `runs/796_token_v2`). Awaiting scorecards. (opened 2026-06-05)
 **Parent**: TASK_789 (candle-language umbrella) · **Supersedes the v1 verdict** in `runs/789_token_c0/`
 **Predecessor**: TASK_795 (panel build) — built + ran v1; v1's "branch-C null" is **not a result**.
 
@@ -102,24 +103,30 @@ Stage-2 trader-on-tokens, real codebook vs random codebook, ≥3 seeds, BEFORE a
 ---
 
 ## Priority order
-1. ✅/⏳ L4 crash one-liner (5 min, zero-risk) — unblocks L4's A8.
-2. Repair A8 (non-saturating transfer-compression + mid-freq band + margin'd composite + controls list).
-3. Positive-control power harness — gate all verdicts behind it (BEFORE any re-run).
-4. Wire `random_merge` at 5 call sites + L4 distinct transform.
-5. A1 per-bar null + re-key gate (KEEP boundary_bits).
-6. A2 additive signed metric + single ratio_tol; interim L1 base=10.0; label L5 non-A2.
-7. L3 incremental RePair + cap rules + p_min.
-8. L4 collapse remedy: grid→256 first; then entropy loss + pool + usage logging + A9 floor.
-9. L5 absolute-threshold motif metric + `_verdict` consults A8.
-10. Re-run on gpu-server; read A-by-B matrix + beats_all + power-harness pass.
-11. Only if beats_all: downstream trader-on-tokens real-vs-random, ≥3 seeds.
+1. ✅ L4 crash one-liner (`train_l4.py:559-562`) — done.
+2. ✅ Repair A8 (non-saturating transfer-codelength + mid-freq [p10,p90] band + margin'd composite + controls list).
+3. ✅ Positive-control power harness (`a8_power_check`) gating all verdicts — **power-proven on CPU** (PASS transferable / FAIL not).
+4. ✅ Wire `controls=("shuffle","random_merge")` at all 5 sites + L4 distinct transform (id-permutation).
+5. ✅ A1 per-bar null (`n_bars_covered`) + KEEP boundary_bits.
+6. ✅ A2 additive signed metric (L1/L2/L3 per-bar mv, abs_tol=0.25); L5 number labeled non-A2 (motif). (No base-offset hack.)
+7. ✅ L3 incremental RePair (in-place pair-counts) + `_MAX_RULES`→512 + p_min — full fix, not just the cap.
+8. ⏳ L4 collapse remedy: **grid→256 (8,8,4) done** (zero-risk first experiment). DEFERRED if grid-256 insufficient:
+   MAGVIT-v2 entropy loss + strided/multi-token pool + masked-token objective (Phase 1).
+9. ✅ L5 absolute control-reservoir motif threshold + `_verdict` consults A8.
+10. ⏳ **RUNNING** — `796_token_v2` on gpu-server; read transfer_bits + beats_random_codebook + beats_all + power-harness pass.
+11. ☐ Only if beats_all: downstream trader-on-tokens real-vs-random, ≥3 seeds.
+
+### Deferred to a follow-up (documented, not blocking the v2 verdict)
+- A-by-B per-asset transfer matrix (v2 ships the aggregate B-under-A headline + per-control breakdown).
+- IAAFT surrogate as a 4th control (the freq-matched random-codebook permutation null + shuffle + random_merge are in).
+- L4 collapse Phase-1 mechanisms (entropy loss / pool / masked objective) — only if grid-256 doesn't clear the A9 usage floor.
 
 ## Deliverable
 A defensible PROCEED/REVIEW/KILL per member from a metric that has **passed its own positive control**,
 plus the A-by-B transfer-compression matrix as the new headline scorecard.
 
 ## References
-- Diagnosis: `lore/notes_2026-06-05.md` · workflow `wheo5htsj` (29 agents).
+- Diagnosis + rebuild story: `lore/notes_2026-06-06.md` §179–182 · diagnostic workflow `wheo5htsj` (29 agents).
 - Research: transfer-compression headline — arxiv 2505.14411 (BPE-for-TS), TOTEM 2402.16412,
   surrogate-data/IAAFT testing; FSQ fixes — Mentzer 2023 (2309.15505), MAGVIT-v2/LFQ entropy loss
   (2310.05737), Discrete-JEPA masked objective (2506.14373).
