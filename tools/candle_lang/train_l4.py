@@ -47,8 +47,8 @@ from . import config as C
 from . import shard
 from . import eval_battery as EB
 from .db_stream import BatchStreamer, survey_row_counts
-from .fsq_core import assert_all_codes_reachable
-from .l4_model import L4Tokenizer, recon_loss
+from .fsq_core import assert_all_codes_reachable, level_centers
+from .l4_model import L4Tokenizer, recon_loss, entropy_loss
 from .result_writer import write_result
 from .volunit import features_for_run
 
@@ -88,6 +88,25 @@ def parse_args(argv=None):
     p.add_argument("--hidden", type=int, default=128, help="bottleneck Dense width.")
     p.add_argument("--conv-ch", type=str, default="64,128", help="comma-separated conv channel ladder.")
     p.add_argument("--seed", type=int, default=0, help="PRNG seed for param init.")
+    # ---- TASK_796 codebook-collapse FIX mechanisms (both OPT-IN; defaults reproduce current behavior) ----
+    p.add_argument("--entropy-weight", type=float, default=0.0,
+                   help="MAGVIT/LFQ usage-entropy loss weight on the FSQ pre-quant latent. "
+                        "0.0 (default) = OFF = exact recon-only behavior. >0 adds "
+                        "weight * (H(q|x) - H(E[q])) to the recon MSE to populate the FSQ grid.")
+    p.add_argument("--entropy-temp", type=float, default=0.5,
+                   help="softmax temperature for the soft level-assignment (integer-grid units). "
+                        "~0.5 makes q meaningful (not one-hot); larger = softer.")
+    p.add_argument("--entropy-anneal-steps", type=int, default=0,
+                   help="linearly DECAY the entropy weight from entropy_weight*ANNEAL_HI down to "
+                        "entropy_weight over the first N steps (0 = no anneal, constant weight). "
+                        "Research: start ~3x then settle over ~2000 steps to seed usage early.")
+    p.add_argument("--entropy-anneal-hi", type=float, default=3.0,
+                   help="multiplier on entropy_weight at step 0 when annealing (default 3x).")
+    p.add_argument("--pool", type=str, default="mean", choices=("mean", "strided", "attn"),
+                   help="time-pool to ONE token/window. mean=current default (variance sink); "
+                        "strided/attn preserve more latent variance (token count unchanged).")
+    p.add_argument("--pool-segments", type=int, default=4,
+                   help="--pool strided: number of contiguous time segments to mean then combine.")
     p.add_argument("--encode-chunk", type=int, default=4096,
                    help="host chunk size for the online-bincount encode pass.")
     p.add_argument("--out", type=str,
@@ -331,21 +350,49 @@ def main(argv=None):
 
     # ---- model + optimizer ----
     model = L4Tokenizer(window=cfg.window, n_feat=C.N_FEAT, hidden=int(args.hidden),
-                        fsq_levels=levels, conv_ch=conv_ch)
+                        fsq_levels=levels, conv_ch=conv_ch,
+                        pool=str(args.pool), pool_segments=int(args.pool_segments))
     key = jax.random.PRNGKey(int(args.seed))
     dummy = jnp.zeros((cfg.batch, cfg.window, C.N_FEAT), dtype=jnp.float32)
     params = model.init(key, dummy)
     tx = optax.adam(float(args.lr))
     state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
 
+    # ---- TASK_796 usage-entropy loss: static per-dim level centers/mask (host-computed once) ----
+    # centers/mask are (d, max_L) static buffers (fsq_core.level_centers); they enter the jit step as
+    # device constants. entropy_w is a SCALAR traced arg so the annealed weight schedule needs no
+    # retrace. With --entropy-weight 0 the term is multiplied by 0.0 -> the gradient is exactly the
+    # recon-only gradient (backward-compatible: a bare run is unchanged).
+    _centers_np, _mask_np = level_centers(levels)
+    centers_dev = jnp.asarray(_centers_np)
+    mask_dev = jnp.asarray(_mask_np)
+    entropy_temp = float(args.entropy_temp)
+    base_entropy_w = float(args.entropy_weight)
+    anneal_steps = int(args.entropy_anneal_steps)
+    anneal_hi = float(args.entropy_anneal_hi)
+
+    def _entropy_weight_at(step):
+        """Linear-decay schedule: base_w*anneal_hi at step 0 -> base_w at step >= anneal_steps.
+        anneal_steps<=0 (or base_w==0) => constant base_w (no anneal). Pure host arithmetic; the
+        result is passed as a scalar into the jit step (no retrace)."""
+        if base_entropy_w == 0.0 or anneal_steps <= 0:
+            return base_entropy_w
+        frac = min(max(float(step) / float(anneal_steps), 0.0), 1.0)   # 0 -> 1 over anneal_steps
+        hi = base_entropy_w * anneal_hi
+        return float(hi + (base_entropy_w - hi) * frac)                # hi -> base_w linearly
+
     # ---- (3)(4) jit train step: donate xb ONLY; block_until_ready after each step ----
-    def _train_step(state, xb, valid):
+    # entropy_w is a traced scalar (annealed on host); centers/mask are static device constants.
+    def _train_step(state, xb, valid, entropy_w):
         def loss_fn(p):
             out = state.apply_fn(p, xb)
-            return recon_loss(out, xb, valid)
-        loss, grads = jax.value_and_grad(loss_fn)(state.params)
-        return state.apply_gradients(grads=grads), loss
+            rl = recon_loss(out, xb, valid)
+            el = entropy_loss(out["z_bound"], centers_dev, mask_dev, valid, temp=entropy_temp)
+            return rl + entropy_w * el, (rl, el)
+        (loss, (rl, el)), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+        return state.apply_gradients(grads=grads), loss, rl, el
     # donate the batch buffer (arg index 1 = xb) ONLY — NEVER state (params/opt_state, arg 0).
+    # entropy_w (arg 3) is a tiny scalar — NOT donated.
     train_step = jax.jit(_train_step, donate_argnums=(1,))
 
     # ---- (7) frozen encode: idx (+ optional recon for A2). NOT donated (read-only). ----
@@ -370,7 +417,9 @@ def main(argv=None):
     for ep in range(int(args.epochs)):
         streamer = BatchStreamer(cfg, cfg.build_assets, shuffle=True,
                                  max_windows_per_asset=max_windows)
-        ep_loss = 0.0
+        ep_recon = 0.0
+        ep_ent = 0.0
+        last_entropy_w = base_entropy_w
         nb = 0
         # TASK_796 collapse visibility: accumulate a per-epoch O(codebook) id histogram so we can log
         # effective-code-count (2^entropy of the id distribution) + top1_share EACH epoch. This makes
@@ -381,28 +430,35 @@ def main(argv=None):
             for batch in streamer:
                 xb = jax.device_put(np.ascontiguousarray(batch["X"], dtype=np.float32))
                 valid = jax.device_put(np.ascontiguousarray(batch["valid"], dtype=bool))
+                # annealed entropy weight for THIS step (host arithmetic -> scalar device const).
+                ew = _entropy_weight_at(global_step)
+                last_entropy_w = ew
+                ew_dev = jnp.asarray(ew, dtype=jnp.float32)
                 # encode with CURRENT params BEFORE the donating train step consumes xb (donate_argnums
                 # frees xb in-place); _encode_idx does NOT donate, so this read is safe and cheap.
                 ids_dev = _encode_idx(state.params, xb)
-                state, loss = train_step(state, xb, valid)
+                state, loss, rl, el = train_step(state, xb, valid, ew_dev)
                 # (4) host must not run ahead of device -> no un-freed async buffer pileup.
                 jax.block_until_ready(loss)
                 ids = np.asarray(ids_dev)[np.asarray(batch["valid"])]
                 if ids.size:
                     ids = np.clip(ids.astype(np.int64), 0, int(codebook_size) - 1)
                     ep_id_counts += np.bincount(ids, minlength=int(codebook_size)).astype(np.int64)
-                ep_loss += float(loss)
+                ep_recon += float(rl)              # TRUE recon MSE (reported separately)
+                ep_ent += float(el)                # raw entropy-loss term (pre-weight)
                 nb += 1
                 global_step += 1
         finally:
             streamer.close()
-        mean_loss = ep_loss / max(nb, 1)
+        mean_loss = ep_recon / max(nb, 1)          # final_recon_mse stays a TRUE recon MSE
+        mean_ent = ep_ent / max(nb, 1)
         # effective-code-count = 2^entropy(id_hist); top1_share = mass of the single most-used id.
         ep_total = int(ep_id_counts.sum())
         ep_used = int((ep_id_counts > 0).sum())
         ep_eff = float(2.0 ** EB._entropy_bits_from_counts(ep_id_counts)) if ep_total else 0.0
         ep_top1 = float(ep_id_counts.max() / ep_total) if ep_total else 1.0
         print(f"[train] epoch {ep+1}/{args.epochs}  batches={nb}  recon_mse={mean_loss:.6f}  "
+              f"ent_loss={mean_ent:+.4f} (w={last_entropy_w:.4f})  "
               f"used={ep_used}/{codebook_size}  eff_codes(2^H)={ep_eff:.1f}  top1={ep_top1:.4f}  "
               f"({time.time()-t0:.1f}s)", flush=True)
 
@@ -493,6 +549,11 @@ def main(argv=None):
         used_codes=used, top1_share=top1, final_recon_mse=float(mean_loss),
         n_devices=n_dev, build_assets=list(cfg.build_assets), holdout_assets=list(cfg.holdout_assets),
         train_wall_s=train_wall,
+        # TASK_796 codebook-collapse FIX mechanism settings (so a reader sees if the fix was ON).
+        pool=str(args.pool), pool_segments=int(args.pool_segments),
+        entropy_weight=float(args.entropy_weight), entropy_temp=float(args.entropy_temp),
+        entropy_anneal_steps=int(args.entropy_anneal_steps),
+        entropy_anneal_hi=float(args.entropy_anneal_hi),
         a0=a0, a1=a1, a2=a2, a9=a9, a8=a8, a8_power=a8_power,
     )
     write_result(args.out, title="L4 FSQ-VQ candle-language member (TASK_789)",

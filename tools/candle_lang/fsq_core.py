@@ -63,9 +63,43 @@ class FSQ(nn.Module):
         return jnp.sum(idx_per_dim * self._basis, axis=-1)
 
     def __call__(self, z):
-        zhat = self.quantize(z)
+        # z_bound is the continuous pre-quant latent FSQ rounds (after tanh+shift bound, BEFORE
+        # round_ste) — the target of the MAGVIT/LFQ-style usage-entropy loss in train_l4. Its
+        # integer bin centers are fsq_core.level_centers(levels) (spacing 1.0 in this space).
+        z_bound = self.bound(z)
+        q = round_ste(z_bound)
+        zhat = q / self._half_width
         idx = self.codes_to_indices(zhat)
-        return zhat, idx
+        return zhat, idx, z_bound
+
+
+def level_centers(levels):
+    """Per-dim FSQ bin-center integers in the BOUND space (the value round_ste rounds), padded to
+    max(levels) with a validity mask. Used by the MAGVIT/LFQ-style entropy (usage) loss in train_l4.
+
+    For a dim with L levels, bound(z) = tanh(z+shift)*half_l - offset ranges over exactly the L
+    consecutive integers that round() snaps to (verified empirically against FSQ.bound):
+        odd  L: {-(L//2), ..., +(L//2)}        (L ints, symmetric about 0)
+        even L: {-(L//2), ..., +(L//2)-1}      (L ints, shifted by the -0.5 even-level offset)
+    i.e. centers_j = arange(L) - (L//2). Spacing is exactly 1.0 in the bound space, so a soft
+    assignment temp is calibrated in integer-grid units (temp~0.5 => meaningful, not one-hot).
+
+    Returns:
+        centers : (d, max_L) float32  per-dim integer centers, right-padded with 0.0
+        mask    : (d, max_L) float32  1.0 for the L valid level slots, 0.0 for pad slots
+    where d = len(levels), max_L = max(levels). Pad slots are masked OUT of the softmax (set to
+    -inf logit) so they carry zero probability.
+    """
+    lv = [int(L) for L in levels]
+    d = len(lv)
+    max_L = max(lv) if lv else 1
+    centers = np.zeros((d, max_L), dtype=np.float32)
+    mask = np.zeros((d, max_L), dtype=np.float32)
+    for j, L in enumerate(lv):
+        c = np.arange(L, dtype=np.float32) - (L // 2)        # {-(L//2) .. -(L//2)+L-1}
+        centers[j, :L] = c
+        mask[j, :L] = 1.0
+    return centers, mask
 
 
 def assert_all_codes_reachable(levels, eps=1e-3, n_sweep=4096):
