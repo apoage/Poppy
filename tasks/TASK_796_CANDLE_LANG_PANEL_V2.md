@@ -1,7 +1,15 @@
 # TASK_796 — Candle-Language Panel v2: repair the eval battery, fix L4/L3/L5, re-run before any branch-C keep/kill
 
-**Status**: IN PROGRESS — eval battery repaired + all 5 members fixed + **v2 re-run LAUNCHED** on
-gpu-server (committed `4c4393c`, tmux `796_panel`, `runs/796_token_v2`). Awaiting scorecards. (opened 2026-06-05)
+**Status**: IN PROGRESS. (opened 2026-06-05)
+- **v2 9/5 baseline DONE** (`runs/796_token_v2`, committed `4c4393c`/`48790e6`): **v1 null OVERTURNED** —
+  all 5 members beat the freq-matched random-codebook null (real cross-asset transfer); **L5 beats every
+  control → PROCEED**; **L4 collapse fixed** (grid-256 → 75/256=29% codebook usage, was 1.3%). Symbolic
+  members do NOT beat the marginal-preserving substrate controls (shuffle/random_merge) → needs the
+  deferred **bigram/transition codelength** to make that axis meaningful.
+- **Scale-up LAUNCHED** (committed `c0a3d3c`): **150 build / 150 holdout** stratified split spanning the
+  full price range, 99-seed null, **A-by-B transfer matrix**. Running on gpu-server: tmux `796_scaled`
+  (CPU L1/L2/L3/L5) + `796_scaled_l4` (GPU 3), `runs/796_scaled/`. Overnight. Awaiting scorecards +
+  `holdout_transfer_rate` (fraction of 150 holdout assets that transfer).
 **Parent**: TASK_789 (candle-language umbrella) · **Supersedes the v1 verdict** in `runs/789_token_c0/`
 **Predecessor**: TASK_795 (panel build) — built + ran v1; v1's "branch-C null" is **not a result**.
 
