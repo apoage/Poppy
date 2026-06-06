@@ -373,6 +373,29 @@ def encode_asset_ids(cfg, asset_id, vocab: AbbaVocab, control=None, max_windows_
             break
 
 
+def encode_asset_pieces(cfg, asset_id, vocab: AbbaVocab, max_windows_per_asset=None):
+    """Like encode_asset_ids (control=None) but yields (ids, lens) per run, where `lens` are the
+    per-piece bar-lengths aligned 1:1 with `ids`. Used by A1 to thread true bars-covered
+    (n_bars_covered = sum of piece lengths in bars; TASK_796). The same per-asset cap is applied,
+    and `lens` is truncated identically to `ids` so the bar sum matches the emitted token stream."""
+    cap = None if max_windows_per_asset is None else int(max_windows_per_asset)
+    emitted = 0
+    for ts, o, h, l, c in iter_runs(cfg.db, int(asset_id), cfg):
+        lens, incs, _ = _pieces_for_run(ts, o, h, l, c, cfg)
+        if lens.size == 0:
+            continue
+        ids = vocab.encode_tuples(lens, incs)
+        if cap is not None and emitted + ids.size > cap:
+            keep = max(0, cap - emitted)
+            ids = ids[:keep]
+            lens = lens[:keep]
+        if ids.size:
+            yield ids, lens
+            emitted += int(ids.size)
+        if cap is not None and emitted >= cap:
+            break
+
+
 def _pieces_for_run_control(ts, o, h, l, c, cfg, control, rng):
     """ABBA pieces for one run under an optional A8 control transform of the vol-unit features."""
     if control is None:
@@ -419,11 +442,13 @@ def _pieces_for_run_control(ts, o, h, l, c, cfg, control, rng):
 # A2 reconstruction: rebuild the vol-unit move path from (len, inc) tokens
 # --------------------------------------------------------------------------- #
 def _recon_pairs_for_asset(cfg, asset_id, vocab: AbbaVocab, max_windows_per_asset=None):
-    """Yield (recon_mv_path, true_mv_path) pairs (one per dt==60 run) for A2.
+    """Yield (recon_mv, true_mv) PER-BAR signed increment pairs (one per dt==60 run) for A2.
 
     Decode: each token id -> its raw (len, inc) cluster template; spread `inc` uniformly over `len`
-    bars -> a per-bar recon mv; concatenate. The true path is the original finite mv sequence. A2
-    measures the multiplicative agreement of the recon vs true cumulative move (scale-free)."""
+    bars -> a per-bar recon mv; concatenate. The true path is the original finite mv sequence.
+    TASK_796: A2 runs in mode="additive" on the SIGNED PER-BAR vol-unit move (NOT cumulative paths,
+    NO base offset): we yield (recon_mv[:m], mv_true[:m]) so |recon-true|<=abs_tol is well-posed at
+    zero-crossings and sign-sensitive. The mv channel is already in vol-units (std~1)."""
     cap = None if max_windows_per_asset is None else int(max_windows_per_asset)
     seen = 0
     for ts, o, h, l, c in iter_runs(cfg.db, int(asset_id), cfg):
@@ -447,12 +472,8 @@ def _recon_pairs_for_asset(cfg, asset_id, vocab: AbbaVocab, max_windows_per_asse
                     recon_mv = _decode_mv(ids, lens, vocab)
                     m = min(recon_mv.size, mv_true.size)
                     if m > 0:
-                        # cumulative vol-unit move paths (offset so both start at a fixed positive base
-                        # -> the A2 ratio metric is well-defined and scale-free).
-                        base = 10.0
-                        true_path = base + np.cumsum(mv_true[:m])
-                        recon_path = base + np.cumsum(recon_mv[:m])
-                        yield recon_path, true_path
+                        # SIGNED per-bar vol-unit move increments (additive A2; no cumulation/offset).
+                        yield recon_mv[:m], mv_true[:m]
                         seen += 1
                         if cap is not None and seen >= cap:
                             return
@@ -589,21 +610,27 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
                 yield chunk
 
     # n_boundaries == number of pieces == number of tokens (each token is one ABBA piece/boundary).
+    # n_bars_covered (TASK_796) == sum of piece lengths in BARS over the same (capped) token stream;
+    # each ABBA piece merges `len` raw move-bars into one token, so the per-bar A1 null must be
+    # charged over these covered bars, not over the token count.
     n_tokens = 0
+    n_bars_covered = 0
     for a in build_assets:
-        for chunk in encode_asset_ids(cfg, int(a), vocab, control=None,
-                                      max_windows_per_asset=max_windows_per_asset):
-            n_tokens += int(chunk.size)
+        for ids, lens in encode_asset_pieces(cfg, int(a), vocab,
+                                             max_windows_per_asset=max_windows_per_asset):
+            n_tokens += int(ids.size)
+            n_bars_covered += int(lens.sum())
     codebook_bits = float(cb) * 2.0 * 32.0  # (len, inc) float32 template per code (model cost)
     a1 = EB.a1_mdl(_token_stream(), codebook_size=cb, null_bits_per_bar=null_bits_per_bar,
-                   n_boundaries=n_tokens, codebook_bits=codebook_bits)
+                   n_boundaries=n_tokens, codebook_bits=codebook_bits,
+                   n_bars_covered=n_bars_covered)
 
     # ---- A2 reconstruction (streamed pairs) ----
     def _recon_pairs():
         for a in build_assets:
             yield from _recon_pairs_for_asset(cfg, int(a), vocab,
                                               max_windows_per_asset=max_windows_per_asset)
-    a2 = EB.a2_reconstruction(_recon_pairs(), ratio_tol=0.02)
+    a2 = EB.a2_reconstruction(_recon_pairs(), mode="additive", abs_tol=0.25)
 
     # ---- A9 length non-degeneracy ----
     len_acc = _accumulate_lengths(cfg, build_assets, vocab,
@@ -629,7 +656,7 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
         a8 = EB.a8_cross_asset_transfer(_build_vocab_fn, _encode_assets_fn,
                                         build_assets=tuple(build_assets),
                                         holdout_assets=tuple(holdout_assets),
-                                        control="shuffle", exclude_top_k=8)
+                                        controls=("shuffle", "random_merge"), exclude_top_k=8)
 
     wall = time.time() - t0
 
@@ -661,12 +688,15 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
             f"- null_bits/bar(base)={null_bits_per_bar:.4f} | entropy_bits/token={a1['entropy_bits_per_token']:.4f}",
             f"- covered_bits={a1['covered_bits']:.1f} | boundary_bits={a1['boundary_bits']:.1f} "
             f"| codebook_bits={a1['codebook_bits']:.1f}",
+            f"- n_tokens={a1['n_tokens']} | n_bars_covered={a1['n_bars_covered']} "
+            f"(per-bar null over covered bars, TASK_796)",
             f"- compression_ratio(null/code)={a1['compression_ratio']:.4f}  "
             f"(**beats null={a1_beats_null}**)",
         ]),
-        ("A2 — reconstruction fidelity (vol-unit move path)", [
-            f"- frac_within_tol={a2['frac_within_tol']:.4f}  (ratio_tol={a2['ratio_tol']})",
-            f"- mean_log_ratio_mse={a2['mean_log_ratio_mse']:.6f} over {a2['n_bars']} bars / {a2['n_pairs']} pieces",
+        ("A2 — reconstruction fidelity (signed per-bar vol-unit move)", [
+            f"- frac_within_tol={a2['frac_within_tol']:.4f}  (mode={a2['mode']}, abs_tol={a2['abs_tol']})",
+            f"- mean_abs_err={a2['mean_abs_err']:.6f} | mse={a2['mean_log_ratio_mse']:.6f} "
+            f"over {a2['n_bars']} bars / {a2['n_pairs']} pieces",
         ]),
         ("A9 — length non-degeneracy", [
             f"- median_len={a9['median_len']:.2f} | max_length_share={a9['max_token_share']:.4f} "
@@ -675,12 +705,27 @@ def run(cfg, build_assets, holdout_assets, k, scl, max_windows_per_asset, out_md
         ]),
     ]
     if a8 is not None:
-        sections.append(("A8 — cross-asset transfer (vs phase-shuffle control)", [
-            f"- coverage={a8['coverage']:.4f} (control={a8['coverage_control']:.4f})",
-            f"- jaccard={a8['jaccard']:.4f} (control={a8['jaccard_control']:.4f})",
-            f"- spearman={a8['spearman']:.4f} (control={a8['spearman_control']:.4f})",
-            f"- exclude_top_k={a8['exclude_top_k']} | **beats_control={a8['beats_control']}**",
-        ]))
+        a8_lines = [
+            f"- **transfer_bits={a8['transfer_bits']:.4f}** bits/in-band-token (HEADLINE; lower=better) "
+            f"over {a8['n_band_tokens']} band tokens",
+            f"- freq-matched random-codebook null: perm_min={a8['perm_min_bits']:.4f} "
+            f"perm_mean={a8['perm_mean_bits']:.4f} over {a8['n_perm_seeds']} seeds "
+            f"(**beats_random_codebook={a8['beats_random_codebook']}**)",
+        ]
+        for ctl in a8['controls']:
+            pc = a8['per_control'][ctl]
+            a8_lines.append(
+                f"- control[{ctl}]: transfer_bits={pc['transfer_bits']:.4f} "
+                f"coverage={pc['coverage']:.4f} jaccard={pc['jaccard']:.4f} "
+                f"spearman={pc['spearman']:.4f} beats={pc['beats']}")
+        a8_lines.append(
+            f"- mid-freq (reported): coverage={a8['coverage']:.4f} jaccard={a8['jaccard']:.4f} "
+            f"spearman={a8['spearman']:.4f} | band={a8['band']} exclude_top_k={a8['exclude_top_k']}")
+        a8_lines.append(
+            f"- beats_substrate={a8['beats_substrate']} | **beats_all={a8['beats_all']}** "
+            f"(beats_control alias={a8['beats_control']})")
+        sections.append(("A8 — cross-asset transfer (codelength vs random-codebook + substrate controls)",
+                         a8_lines))
     sections.append(("Timing", [f"- wallclock={wall:.1f}s"]))
 
     meta = dict(

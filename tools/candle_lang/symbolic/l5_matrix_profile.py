@@ -20,10 +20,12 @@ Why SAMPLED + TILED (the hard RAM/compute rule):
 Tokenisation for the shared battery: each ANCHOR is assigned the base-alphabet symbol
 (base_alphabet.encode_symbols) of its CENTRE feature bar (config.CHANNELS substrate -> one of 288
 base symbols). That keeps L5 on the SAME rescale-invariant codebook as L1/L2/L3, so A0/A1/A8 are
-comparable across the panel. L5's distinctive contribution is the MOTIF-COVERAGE metric (fraction of
-anchors whose nearest-neighbour distance falls under an adaptive recurrence threshold), surfaced in
-the RESULT meta and reused as the A2 "reconstruction" proxy (a motif anchor reconstructs to its
-neighbour within tol).
+comparable across the panel. L5's distinctive contribution is the MOTIF-COVERAGE metric: the fraction
+of REAL anchors whose nearest-neighbour distance falls below an ABSOLUTE recurrence threshold read
+from a CONTROL (phase-shuffled) NN-distance reservoir (TASK_796). This measures recurrence BEYOND
+CHANCE — the v1 metric thresholded the SAME real distances at the `frac` quantile, so coverage was
+~frac tautologically and carried zero recurrence information. The number is surfaced in the RESULT
+meta under the A2_motif label (NOT A2 — L5 reconstructs nothing, so it is never compared as A2).
 
 CPU / numpy ONLY (no JAX, no GPU). Shares volunit + base_alphabet + db_stream + eval_battery +
 result_writer with the rest of the panel. Honors CLAUDE.md JAX pitfalls vacuously (no JAX here) and
@@ -58,7 +60,7 @@ DEFAULT_SUBSEQ_LEN = 16              # m, length of the motif subsequence (in fe
 DEFAULT_CAND_TILE = 4096             # candidate block size for the tiled distance scan (RAM bound)
 DEFAULT_ANCHOR_TILE = 64             # anchor block size for the tiled distance scan (RAM bound)
 DEFAULT_MAX_WINDOWS = 20000          # cap per asset (most-recent), passed to db_stream
-DEFAULT_MOTIF_FRAC = 0.10            # adaptive recurrence threshold = this quantile of NN distances
+DEFAULT_MOTIF_FRAC = 0.05            # recurrence threshold = this LOW quantile of CONTROL NN dists
 # (trivial-match exclusion zone is computed per call as ~subseq_len//2, see profile_assets)
 
 
@@ -187,13 +189,23 @@ class _OnlineAccum:
         self.nn_sq = 0.0
         self.nn_n = 0
         self.nn_finite_n = 0
-        # bounded reservoir of NN distances (for the recurrence-threshold quantile); RAM-capped.
+        # bounded reservoir of REAL anchor NN distances; RAM-capped.
         self._res_cap = int(reservoir_cap)
         self._res = np.empty(self._res_cap, dtype=np.float32)
         self._res_held = 0
         self._res_seen = 0
+        # TASK_796: a SECOND reservoir of CONTROL (phase-shuffled) anchor NN distances. The motif
+        # threshold is now an ABSOLUTE recurrence cut read from THIS control reservoir (its low
+        # quantile), so motif_coverage measures recurrence-BEYOND-CHANCE, not a self-referential
+        # quantile of the same distances (the v1 tautology where coverage ~= motif_frac).
+        self._ctl_res = np.empty(self._res_cap, dtype=np.float32)
+        self._ctl_res_held = 0
+        self._ctl_res_seen = 0
+        self.ctl_nn_n = 0
+        self.ctl_nn_finite_n = 0
         self._rng = np.random.default_rng(seed)
         self.anchor_total = 0
+        self.ctl_anchor_total = 0
 
     def add(self, nn_dist: np.ndarray, anchor_symbols: np.ndarray):
         nn_dist = np.asarray(nn_dist, dtype=np.float64).ravel()
@@ -210,23 +222,46 @@ class _OnlineAccum:
         if d.size:
             self.nn_sum += float(d.sum())
             self.nn_sq += float(np.dot(d, d))
-            self._reservoir_add(d.astype(np.float32))
+            self._reservoir_add(self._res, "_res_held", "_res_seen", d.astype(np.float32))
 
-    def _reservoir_add(self, d: np.ndarray):
+    def add_control(self, nn_dist: np.ndarray):
+        """Accumulate CONTROL anchor NN distances (from phase-shuffled subsequences) into the
+        control reservoir. The control NN-distance distribution is the recurrence-by-chance
+        baseline; its low quantile becomes the absolute motif threshold (TASK_796)."""
+        nn_dist = np.asarray(nn_dist, dtype=np.float64).ravel()
+        k = int(nn_dist.shape[0])
+        self.ctl_anchor_total += k
+        d = nn_dist[np.isfinite(nn_dist)]
+        self.ctl_nn_n += k
+        self.ctl_nn_finite_n += int(d.shape[0])
+        if d.size:
+            self._reservoir_add(self._ctl_res, "_ctl_res_held", "_ctl_res_seen", d.astype(np.float32))
+
+    def _reservoir_add(self, res: np.ndarray, held_attr: str, seen_attr: str, d: np.ndarray):
         """Classic reservoir sampling so the NN-distance quantile is unbiased without storing the
-        full stream (RAM bounded at reservoir_cap)."""
+        full stream (RAM bounded at reservoir_cap). Shared by the real and control reservoirs."""
+        held = getattr(self, held_attr)
+        seen = getattr(self, seen_attr)
         for v in d:
-            self._res_seen += 1
-            if self._res_held < self._res_cap:
-                self._res[self._res_held] = v
-                self._res_held += 1
+            seen += 1
+            if held < self._res_cap:
+                res[held] = v
+                held += 1
             else:
-                j = int(self._rng.integers(0, self._res_seen))
+                j = int(self._rng.integers(0, seen))
                 if j < self._res_cap:
-                    self._res[j] = v
+                    res[j] = v
+        setattr(self, held_attr, held)
+        setattr(self, seen_attr, seen)
 
     def nn_mean(self) -> float:
         return float(self.nn_sum / self.nn_finite_n) if self.nn_finite_n else float("inf")
+
+    def ctl_nn_mean(self) -> float:
+        """Mean of the CONTROL reservoir (recurrence-by-chance baseline distance)."""
+        if self._ctl_res_held == 0:
+            return float("inf")
+        return float(np.mean(self._ctl_res[: self._ctl_res_held]))
 
     def nn_std(self) -> float:
         if self.nn_finite_n <= 1:
@@ -236,15 +271,24 @@ class _OnlineAccum:
         return float(np.sqrt(var))
 
     def motif_threshold(self, frac: float) -> float:
-        """Adaptive recurrence threshold = `frac` quantile of the (reservoir of) NN distances. A
-        small NN distance => the anchor shape recurs => it's a motif."""
-        if self._res_held == 0:
-            return float("inf")
-        return float(np.quantile(self._res[: self._res_held], float(frac)))
+        """ABSOLUTE recurrence threshold (TASK_796) = the `frac` low quantile of the CONTROL
+        (phase-shuffled) NN-distance reservoir. A real anchor whose NN distance falls below this
+        cut recurs MORE tightly than chance recurrence in structure-destroyed data => it is a
+        genuine motif. (v1 BUG: this was the `frac` quantile of the SAME real distances, so
+        motif_coverage was ~frac tautologically and carried zero recurrence-beyond-chance info.)
+
+        Falls back to the real-reservoir self-quantile only if NO control distances were gathered
+        (degenerate run), so the metric still returns a finite number rather than crashing."""
+        if self._ctl_res_held > 0:
+            return float(np.quantile(self._ctl_res[: self._ctl_res_held], float(frac)))
+        if self._res_held > 0:
+            return float(np.quantile(self._res[: self._res_held], float(frac)))
+        return float("inf")
 
     def motif_coverage(self, threshold: float) -> float:
-        """Fraction of FINITE-NN anchors whose nearest neighbour is within `threshold` (recurring
-        motif coverage). Computed from the reservoir (an unbiased sample of NN distances)."""
+        """Fraction of REAL FINITE-NN anchors whose nearest neighbour is within `threshold`
+        (recurrence-beyond-chance, with `threshold` read from the CONTROL reservoir). Computed from
+        the real reservoir (an unbiased sample of real NN distances)."""
         if self._res_held == 0:
             return 0.0
         return float(np.mean(self._res[: self._res_held] <= float(threshold)))
@@ -278,9 +322,14 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
     for asset_id in assets:
         # Pool this asset's runs into a bounded set of subsequences. To honour max_windows we cap the
         # number of subsequences kept (most-recent), mirroring db_stream.iter_windows' ring policy.
+        # TASK_796: alongside the REAL subsequences we pool a CONTROL set extracted from the SAME runs
+        # after the donor phase-shuffle (mv channel phase-randomised) — the recurrence-by-chance
+        # baseline whose NN distances set the absolute motif threshold.
         sub_blocks = []
         start_blocks = []
         feat_blocks = []
+        ctl_sub_blocks = []
+        ctl_start_blocks = []
         held = 0
         cap = None if max_windows is None else int(max_windows)
         for mv, feats, finite in _run_mv_and_feats(db, asset_id, cfg):
@@ -292,12 +341,22 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
             # centre feature bar of each subsequence -> base symbol later; keep the centre rows only.
             centre = starts + (m // 2)
             feat_blocks.append(feats[centre])
+            # control: phase-shuffle this run's mv channel, then subsequence the surrogate the SAME
+            # way (same finite mask, same m) so its NN distances are directly comparable to the real
+            # ones (same length, same z-norm, same exclusion zone).
+            ctl_feats = _phase_shuffle_run(feats, finite, rng)
+            ctl_subs, ctl_starts = _subsequences(ctl_feats[:, 0].astype(np.float32), finite, m)
+            if ctl_subs is not None:
+                ctl_sub_blocks.append(ctl_subs)
+                ctl_start_blocks.append(ctl_starts)
             held += subs.shape[0]
             if cap is not None:
                 # trim oldest blocks once we exceed cap (keep most-recent subsequences).
                 while sub_blocks and (held - sub_blocks[0].shape[0]) >= cap:
                     held -= sub_blocks[0].shape[0]
                     sub_blocks.pop(0); start_blocks.pop(0); feat_blocks.pop(0)
+                    if ctl_sub_blocks:
+                        ctl_sub_blocks.pop(0); ctl_start_blocks.pop(0)
         if not sub_blocks:
             continue
         subs = np.concatenate(sub_blocks, axis=0)
@@ -323,6 +382,26 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
         )
         anchor_symbols = BA.encode_symbols(centre_feats[anchor_ix], table)
         accum.add(nn, anchor_symbols)
+
+        # CONTROL pass: profile the phase-shuffled subsequence pool the same way (same K anchors
+        # sampled, same tiling) and feed its NN distances to the control reservoir.
+        if ctl_sub_blocks:
+            ctl_subs = np.concatenate(ctl_sub_blocks, axis=0)
+            offs = 0
+            ctl_rebased = []
+            for st in ctl_start_blocks:
+                ctl_rebased.append(st + offs)
+                offs += int(st.max()) + excl_zone + 2 if st.size else excl_zone + 2
+            ctl_starts = np.concatenate(ctl_rebased, axis=0)
+            if cap is not None and ctl_subs.shape[0] > cap:
+                ctl_subs = ctl_subs[-cap:]; ctl_starts = ctl_starts[-cap:]
+            ctl_subs_z = _znorm(ctl_subs)
+            ctl_anchor_ix = _choose_anchors(ctl_subs_z.shape[0], anchors_per_asset, rng)
+            if ctl_anchor_ix.size:
+                ctl_nn = sampled_tiled_matrix_profile(
+                    ctl_subs_z, ctl_starts, ctl_anchor_ix, m, cand_tile, anchor_tile, excl_zone
+                )
+                accum.add_control(ctl_nn)
 
     return accum
 
@@ -455,13 +534,21 @@ def run_eval(db, cfg, table, accum, *, motif_frac, subseq_len, has_holdout, seed
     # reducer runs, but the load-bearing numbers are surfaced directly in meta. ---
     threshold = accum.motif_threshold(motif_frac)
     coverage = accum.motif_coverage(threshold)
+    # null expectation for motif_coverage under the recurrence-by-chance model: by construction the
+    # threshold is the `motif_frac` quantile of CONTROL NN distances, so ~motif_frac of CONTROL
+    # anchors fall below it. coverage MEANINGFULLY ABOVE motif_frac == recurrence beyond chance.
     results["A2_motif"] = dict(
         motif_coverage=float(coverage),
         recurrence_threshold=float(threshold),
+        threshold_source="control_phase_shuffle_low_quantile",
+        control_quantile=float(motif_frac),
+        coverage_excess_over_chance=float(coverage - float(motif_frac)),
         nn_mean=float(accum.nn_mean()),
         nn_std=float(accum.nn_std()),
+        control_nn_mean=float(accum.ctl_nn_mean()),
         finite_frac=float(accum.nn_finite_n / accum.nn_n) if accum.nn_n else 0.0,
         n_anchors=int(accum.anchor_total),
+        n_control_anchors=int(accum.ctl_anchor_total),
     )
 
     # --- A8: cross-asset transfer (only if holdout assets are present). Build the L5 anchor-token
@@ -512,7 +599,7 @@ def _run_a8(db, cfg, table, *, motif_frac, subseq_len, seed):
     return a8_cross_asset_transfer(
         build_vocab_fn, encode_assets_fn,
         build_assets=cfg.build_assets, holdout_assets=cfg.holdout_assets,
-        control="shuffle", exclude_top_k=8,
+        controls=("shuffle", "random_merge"), exclude_top_k=8,
     )
 
 
@@ -586,22 +673,39 @@ def _phase_shuffle_run(feats, finite, rng):
 # verdict
 # --------------------------------------------------------------------------- #
 def _verdict(results) -> str:
-    """L5 verdict: a non-degenerate, rescale-invariant motif language with meaningful recurrence
-    coverage PROCEEDs; a degenerate or non-invariant result KILLs."""
+    """L5 verdict (TASK_796): PROCEED requires (i) A0 rescale-invariance, (ii) A9 non-degeneracy,
+    (iii) recurrence BEYOND CHANCE (motif coverage above the control-quantile chance floor), AND
+    (iv) A8 cross-asset transfer beating its controls (`beats_control` == `beats_all`). The v1
+    verdict NEVER consulted A8, so a language that did not transfer could still PROCEED — fixed
+    here: no A8 win => downgrade to WEAK (or KILL on the hard A0/A9 gates)."""
     a0 = results.get("A0", {})
     a9 = results.get("A9", {})
     a2 = results.get("A2_motif", {})
+    a8 = results.get("A8", None)
     a0_pass = bool(a0.get("pass", a0.get("pass_", False)))
     # fixed-length member: the genuine A9 degeneracy test is `all_len1` / no-anchors (pass_fixed_len),
     # not the raw battery max_token_share gate which always fails a single-length spike.
     a9_pass = bool(a9.get("pass_fixed_len", a9.get("pass", a9.get("pass_", False))))
     coverage = float(a2.get("motif_coverage", 0.0))
+    chance = float(a2.get("control_quantile", 0.0))
+    # recurrence beyond chance: real coverage must clear the control-quantile floor by a margin.
+    recurs_beyond_chance = bool(coverage > chance + 0.01)
+
     if not a0_pass:
         return "KILL (A0 rescale-invariance failed)"
     if not a9_pass:
         return "KILL (A9 length-degenerate)"
     if coverage <= 0.0:
         return "WEAK (no recurring motifs found)"
+    if not recurs_beyond_chance:
+        return ("WEAK (motif coverage %.3f at/below chance floor %.3f — no recurrence beyond chance)"
+                % (coverage, chance))
+    # A8 gate (TASK_796): cross-asset transfer must beat its controls. beats_control == beats_all.
+    if a8 is None:
+        return "WEAK (recurrence beyond chance, but A8 transfer not evaluated — no holdout)"
+    a8_pass = bool(a8.get("beats_control", a8.get("beats_all", False)))
+    if not a8_pass:
+        return "WEAK (motifs recur beyond chance but A8 cross-asset transfer failed its controls)"
     return "PROCEED"
 
 
@@ -628,7 +732,8 @@ def parse_args(argv=None):
     p.add_argument("--anchor-tile", type=int, default=DEFAULT_ANCHOR_TILE,
                    help="Anchor block size for the tiled distance scan (RAM bound).")
     p.add_argument("--motif-frac", type=float, default=DEFAULT_MOTIF_FRAC,
-                   help="Recurrence threshold quantile of NN distances (motif coverage).")
+                   help="Low quantile of the CONTROL (phase-shuffled) NN-distance reservoir used as "
+                        "the absolute recurrence threshold (motif coverage = real anchors below it).")
     p.add_argument("--no-holdout", action="store_true",
                    help="Skip the A8 cross-asset transfer test.")
     p.add_argument("--seed", type=int, default=0)
@@ -717,8 +822,42 @@ def _format_sections(results, args, cfg, n_symbols):
     ]))
     for key in ("A0", "A1", "A2_motif", "A8", "A9"):
         if key in results:
-            sections.append((key, _kv_lines(results[key])))
+            if key == "A8":
+                sections.append((key, _a8_lines(results[key])))
+            else:
+                sections.append((key, _kv_lines(results[key])))
     return sections
+
+
+def _a8_lines(a8: dict):
+    """Render the TASK_796 A8 result. HEADLINE is transfer_bits (non-saturating bits/in-band-token of
+    the holdout under the build unigram); the freq-matched random-codebook rank test and each
+    substrate control are surfaced explicitly. The old saturating coverage_control/jaccard_control/
+    spearman_control keys are GONE — never reference them (KeyError) and never compare these L5
+    coverage/jaccard/spearman numbers as A2."""
+    headline = [
+        "- **transfer_bits** (HEADLINE, bits/in-band-token, lower=better): "
+        f"{float(a8.get('transfer_bits', float('inf'))):.6g}",
+        f"- **n_band_tokens**: {int(a8.get('n_band_tokens', 0))}",
+        f"- **beats_random_codebook**: {bool(a8.get('beats_random_codebook', False))} "
+        f"(perm_min={float(a8.get('perm_min_bits', float('inf'))):.6g}, "
+        f"perm_mean={float(a8.get('perm_mean_bits', float('inf'))):.6g}, "
+        f"n_perm_seeds={int(a8.get('n_perm_seeds', 0))})",
+        f"- **beats_substrate**: {bool(a8.get('beats_substrate', False))}",
+        f"- **beats_control (== beats_all, VERDICT GATE)**: {bool(a8.get('beats_control', False))}",
+        f"- **coverage** (mid-freq, reported): {float(a8.get('coverage', 0.0)):.6g}",
+        f"- **jaccard** (mid-freq, reported): {float(a8.get('jaccard', 0.0)):.6g}",
+        f"- **spearman** (mid-freq, reported): {float(a8.get('spearman', 0.0)):.6g}",
+        f"- **band**: {tuple(a8.get('band', ()))}  exclude_top_k={int(a8.get('exclude_top_k', 0))}  "
+        f"codebook_size={int(a8.get('codebook_size', 0))}",
+    ]
+    for ctl, d in (a8.get("per_control") or {}).items():
+        headline.append(
+            f"- **control[{ctl}]**: transfer_bits={float(d.get('transfer_bits', float('inf'))):.6g} "
+            f"beats={bool(d.get('beats', False))} coverage={float(d.get('coverage', 0.0)):.4g} "
+            f"jaccard={float(d.get('jaccard', 0.0)):.4g} spearman={float(d.get('spearman', 0.0)):.4g}"
+        )
+    return headline
 
 
 def _format_meta(results, args, cfg, n_symbols, accum, verdict):

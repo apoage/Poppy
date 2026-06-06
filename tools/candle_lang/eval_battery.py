@@ -124,7 +124,8 @@ def a0_rescale_invariance(tokenize_window_fn, sample_ohlc_windows, lambdas=(0.01
 # --------------------------------------------------------------------------- #
 # A1 — MDL / description length (online bincount over the FULL stream)
 # --------------------------------------------------------------------------- #
-def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebook_bits) -> dict:
+def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebook_bits,
+           n_bars_covered=None) -> dict:
     """A1: how economically does this language describe the corpus?
 
     token_id_iter   : iterator yielding token-id CHUNKS (1-D arrays) over the whole corpus.
@@ -136,6 +137,13 @@ def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebo
                       (= number of tokens for fixed-length members; segment count for ABBA/BPE).
                       Used to charge a boundary/length cost so trivially-short tokens don't win.
     codebook_bits   : one-time bits to ship the vocabulary itself (model cost in the MDL sense).
+    n_bars_covered  : TASK_796 — the true number of raw candle BARS the token stream covers
+                      (= sum of token unit-lengths in bars). The per-bar null MUST be charged
+                      over covered bars, NOT over token count: a variable-length member that
+                      merges k bars into one token replaces k null-bars with one token, and the
+                      null must reflect those k bars or `compression_ratio` is structurally pinned
+                      below 1 (the v1 accounting artifact). If None, falls back to token count
+                      (correct only for fixed-length-1 members).
 
     Returns the empirical coding cost in bits-per-candle (covered), plus the null and the
     boundary/codebook overheads, so callers can compare languages on a like-for-like MDL.
@@ -154,13 +162,15 @@ def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebo
     covered_bits = float(h_bits_per_token * total_tokens)
     # boundary cost: log2(codebook) per boundary is a generous upper bound; charge the
     # explicit boundary count the member reports (segment starts for variable-length members).
+    # NOTE (TASK_796): boundary_bits is spec-mandated (L(boundaries)) and is RETAINED — the
+    # "drop it" proposal was refuted; the real A1 fix is the per-bar (not per-token) null below.
     boundary_bits = float(int(n_boundaries) * np.log2(max(int(codebook_size), 2)))
-    # the per-bar NULL: bits to describe each covered candle bar without the language.
-    # "covered bars" == total tokens for fixed-length members; for variable-length the caller
-    # folds bar-coverage into n_boundaries semantics — we report per-*token* here for parity.
-    null_bits = float(float(null_bits_per_bar) * total_tokens)
+    # the per-bar NULL: bits to describe each COVERED CANDLE BAR without the language. Charged
+    # over the true bar coverage (TASK_796), so merging bars into longer tokens is rewarded.
+    bars_covered = int(n_bars_covered) if n_bars_covered is not None else total_tokens
+    null_bits = float(float(null_bits_per_bar) * bars_covered)
 
-    denom = max(total_tokens, 1)
+    denom = max(bars_covered, 1)
     bits_per_candle = (covered_bits + boundary_bits + float(codebook_bits)) / float(denom)
 
     return dict(
@@ -171,8 +181,10 @@ def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebo
         codebook_bits=float(codebook_bits),
         entropy_bits_per_token=float(h_bits_per_token),
         n_tokens=int(total_tokens),
+        n_bars_covered=int(bars_covered),
         codebook_size=int(codebook_size),
-        # compression vs null (>1 means the language is cheaper than the per-bar null).
+        # compression vs null (>1 means the language is cheaper than the per-bar null over the
+        # SAME covered bars). Now a like-for-like per-bar comparison (TASK_796).
         compression_ratio=float(null_bits / max(covered_bits + boundary_bits + float(codebook_bits), C.DIV_EPS)),
     )
 
@@ -180,42 +192,71 @@ def a1_mdl(token_id_iter, codebook_size, null_bits_per_bar, n_boundaries, codebo
 # --------------------------------------------------------------------------- #
 # A2 — reconstruction fidelity (streamed online means)
 # --------------------------------------------------------------------------- #
-def a2_reconstruction(recon_pairs_iter, ratio_tol=0.02) -> dict:
+def a2_reconstruction(recon_pairs_iter, ratio_tol=0.02, mode="ratio", abs_tol=0.25) -> dict:
     """A2: can the price path be rebuilt from the token stream?
 
-    recon_pairs_iter : iterator of (recon, true) pairs, each either
-                         - (recon_logret_path(K,), true_logret_path(K,)), OR
-                         - (recon_price(K,), true_price(K,))
-                       streamed one window/run at a time (NEVER all at once).
-    ratio_tol        : per-bar relative tolerance; a bar "passes" if |log(recon/true)| <= tol
-                       i.e. recon within ~tol of true on a multiplicative scale (scale-free).
+    recon_pairs_iter : iterator of (recon, true) pairs, streamed one window/run at a time.
+    mode             : TASK_796 — how to score each bar.
+        "ratio"    (legacy): per-bar |log(|recon|/|true|)| <= ratio_tol. ONLY valid for
+                   strictly-POSITIVE paths (prices). Ill-posed for SIGNED vol-unit move paths:
+                   it explodes near zero-crossings (|true|->0) and is blind to sign flips, which
+                   is what made L1's A2 read 0.071 (a missing-offset artifact, not a serving bug).
+        "additive" (TASK_796 default for signed mv members L1/L2/L3): per-bar
+                   |recon - true| <= abs_tol, computed on the SIGNED per-bar quantity directly
+                   (vol-units, std~1) — well-posed at zero-crossings AND sensitive to sign.
+    ratio_tol        : multiplicative log-tolerance (mode="ratio").
+    abs_tol          : additive vol-unit tolerance (mode="additive").
 
-    Online accumulators (host memory O(1)): bar count, within-tol count, sum of squared
-    log-ratios. Mirrors run_gate.py:194-204 (price path from cumsum recon log-returns) but
-    accepts either price OR logret pairs and reduces them streaming.
+    Online accumulators (host memory O(1)). Use ONE consistent (mode, tol) across the panel so
+    member A2 numbers are comparable.
     """
+    mode = str(mode)
     n_bars = 0
     n_within = 0
-    sum_sq_log_ratio = 0.0
+    sum_sq_err = 0.0
+    sum_abs_err = 0.0
     n_pairs = 0
     for recon_path, true_path in recon_pairs_iter:
-        n, log_ratio, _ = _ratio_logmse_pair(recon_path, true_path)
-        if n == 0:
-            continue
+        if mode == "additive":
+            n, err = _additive_pair(recon_path, true_path)
+            if n == 0:
+                continue
+            within = np.abs(err) <= float(abs_tol)
+        else:
+            n, log_ratio, _ = _ratio_logmse_pair(recon_path, true_path)
+            if n == 0:
+                continue
+            err = log_ratio
+            within = np.abs(log_ratio) <= float(ratio_tol)
         n_pairs += 1
         n_bars += int(n)
-        n_within += int(np.count_nonzero(np.abs(log_ratio) <= float(ratio_tol)))
-        sum_sq_log_ratio += float(np.sum(log_ratio * log_ratio))
+        n_within += int(np.count_nonzero(within))
+        sum_sq_err += float(np.sum(err * err))
+        sum_abs_err += float(np.sum(np.abs(err)))
 
     frac_within = float(n_within) / float(n_bars) if n_bars else 0.0
-    mean_log_ratio_mse = float(sum_sq_log_ratio / n_bars) if n_bars else 0.0
+    mean_sq_err = float(sum_sq_err / n_bars) if n_bars else 0.0
+    mean_abs_err = float(sum_abs_err / n_bars) if n_bars else 0.0
     return dict(
         frac_within_tol=float(frac_within),
-        mean_log_ratio_mse=float(mean_log_ratio_mse),
+        mean_log_ratio_mse=float(mean_sq_err),  # name kept for back-compat; = MSE in mode units
+        mean_abs_err=float(mean_abs_err),
+        mode=mode,
         ratio_tol=float(ratio_tol),
+        abs_tol=float(abs_tol),
         n_bars=int(n_bars),
         n_pairs=int(n_pairs),
     )
+
+
+def _additive_pair(recon, true):
+    """Per-bar signed additive error (recon - true), well-posed for signed vol-unit paths."""
+    recon = np.asarray(recon, dtype=np.float64).reshape(-1)
+    true = np.asarray(true, dtype=np.float64).reshape(-1)
+    n = min(recon.size, true.size)
+    if n == 0:
+        return 0, np.zeros(0, dtype=np.float64)
+    return n, (recon[:n] - true[:n])
 
 
 # --------------------------------------------------------------------------- #
@@ -232,55 +273,193 @@ def _top_k_megatokens(counts: np.ndarray, k: int) -> set:
 
 
 def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, holdout_assets,
-                            control="shuffle", exclude_top_k=8) -> dict:
-    """A8: does a language fit on BUILD assets transfer to UNSEEN HOLDOUT assets?
+                            controls=("shuffle", "random_merge"), exclude_top_k=8,
+                            n_perm_seeds=19, band=(0.10, 0.90), alpha=1.0,
+                            codelen_margin=0.02, control=None) -> dict:
+    """A8 (TASK_796 v2): does a language fit on BUILD assets transfer to UNSEEN HOLDOUT assets?
 
-    build_vocab_fn   : callable () or (assets) -> a frozen vocab object the member understands.
-                       Called twice: once on the real BUILD substrate, once on a
-                       structure-destroyed CONTROL substrate (so the control is a *fair*
-                       same-pipeline null, like run_gate's shuffle).
-    encode_assets_fn : callable (vocab, assets, control:str|None) -> iterator of token-id
-                       chunks for those assets. control=None -> real volunit substrate;
-                       control='shuffle' -> donor phase_shuffle_returns surrogate (data.py:165);
-                       control='random_merge' -> assets' returns randomly merged/permuted.
-    build_assets     : the fit corpus (e.g. cfg.build_assets).
-    holdout_assets   : the unseen test corpus (e.g. cfg.holdout_assets) at extreme price levels.
-    control          : which null to compare transfer against ('shuffle' | 'random_merge').
-    exclude_top_k    : drop this many mega-tokens from both sides before measuring overlap.
+    The v1 gate `bool(cov_real > cov_ctrl)` was a measurement artifact: mass coverage saturates to
+    ~1.0 for both vocab AND any control in the small-codebook/large-corpus regime, so the strict
+    zero-margin `>` decayed to a float-noise coin flip defaulting to False. This v2 gate is built
+    around a NON-SATURATING continuous statistic and a margin'd multi-control verdict.
 
-    We measure, on the HOLDOUT stream, what fraction of holdout token *mass* is explained by the
-    BUILD vocabulary (coverage), the Jaccard of the build-vocab vs holdout-vocab token SETS, and
-    a Spearman rank correlation of token frequencies on shared tokens. Then we repeat the whole
-    transfer under the structure-destroying control; transfer must BEAT the control to pass.
-    All folds are O(codebook) bincount accumulators — the streams are never materialized.
+    HEADLINE  : cross-asset held-out transfer CODELENGTH = bits-per-(in-band)-token of the HOLDOUT
+                stream under the BUILD vocab's Laplace-smoothed unigram distribution, restricted to
+                a MID-FREQUENCY band (drops the universal head AND the singleton tail). Low == the
+                holdout's token mass concentrates where build put its mass == genuine shared
+                structure. Continuous codelength -> cannot saturate.
+    CONTROLS  (real must beat ALL):
+        (1) frequency-matched RANDOM CODEBOOK — keep build's frequency multiset, randomly reassign
+            which id holds which frequency (n_perm_seeds permutations). Real beats it iff its
+            codelength is BELOW every permutation (one-sided rank test, M=1/alpha-1=19 => p<=0.05
+            for 19 seeds). This is the cheap, in-process, marginal-preserving null with teeth.
+        (2..n) each substrate control in `controls` (e.g. 'shuffle' phase-shuffle, 'random_merge'):
+            re-encode build+holdout through the structure-destroying transform and recompute the
+            codelength; real must be lower by `codelen_margin` bits.
+    `beats_control` (kept for member back-compat) == beats_all = (1) AND all of (2..n).
+
+    Secondary, REPORTED (not solely gating): mid-frequency coverage / Jaccard / Spearman — these
+    are de-saturated by the band but kept as supporting evidence, not the headline.
+
+    All folds are O(codebook) bincount accumulators — streams are never materialized.
     """
-    # --- 1) fit the real vocab on BUILD, encode BUILD + HOLDOUT (real substrate) ---
+    # back-compat: a single `control=` kwarg overrides the controls tuple.
+    if control is not None:
+        controls = (control,)
+    controls = tuple(c for c in controls if c)
+
     vocab = build_vocab_fn(build_assets) if _wants_arg(build_vocab_fn) else build_vocab_fn()
     cb = int(_vocab_codebook_size(vocab))
 
+    # --- 1) real substrate: build + holdout counts ---
     build_counts = _fold_counts(encode_assets_fn(vocab, build_assets, None), cb)
     hold_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, None), cb)
 
-    cov_real, jac_real, sp_real = _transfer_stats(build_counts, hold_counts, exclude_top_k)
+    mask = _nonzero_quantile_band(build_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
+    cov_real, jac_real, sp_real = _transfer_stats(build_counts, hold_counts, mask)
+    d_real, n_band = _transfer_codelength(build_counts, hold_counts, mask, alpha=alpha)
 
-    # --- 2) control: same pipeline on structure-destroyed substrate ---
-    ctrl_build = _fold_counts(encode_assets_fn(vocab, build_assets, control), cb)
-    ctrl_hold = _fold_counts(encode_assets_fn(vocab, holdout_assets, control), cb)
-    cov_ctrl, jac_ctrl, sp_ctrl = _transfer_stats(ctrl_build, ctrl_hold, exclude_top_k)
+    # --- 2) freq-matched random-codebook permutation null (19-seed one-sided rank test) ---
+    perm = _codelength_perm_controls(build_counts, hold_counts, mask, n_seeds=n_perm_seeds, alpha=alpha)
+    perm_min = float(perm.min()) if perm.size else float("inf")
+    perm_mean = float(perm.mean()) if perm.size else float("inf")
+    beats_random_codebook = bool(perm.size and np.isfinite(d_real) and d_real < perm_min)
 
-    # transfer beats control if real coverage exceeds control coverage by a margin.
-    beats = bool(cov_real > cov_ctrl)
+    # --- 3) substrate controls: re-encode through each structure-destroying transform ---
+    per_control = {}
+    beats_substrate = True
+    for ctl in controls:
+        cb_counts = _fold_counts(encode_assets_fn(vocab, build_assets, ctl), cb)
+        ch_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, ctl), cb)
+        cmask = _nonzero_quantile_band(cb_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
+        d_ctl, _ = _transfer_codelength(cb_counts, ch_counts, cmask, alpha=alpha)
+        cov_c, jac_c, sp_c = _transfer_stats(cb_counts, ch_counts, cmask)
+        beats_c = bool(np.isfinite(d_real) and np.isfinite(d_ctl) and d_real < d_ctl - float(codelen_margin))
+        beats_substrate = beats_substrate and beats_c
+        per_control[str(ctl)] = dict(
+            transfer_bits=float(d_ctl), coverage=float(cov_c), jaccard=float(jac_c),
+            spearman=float(sp_c), beats=beats_c,
+        )
+
+    beats_all = bool(beats_random_codebook and beats_substrate)
     return dict(
+        # headline (non-saturating)
+        transfer_bits=float(d_real),
+        n_band_tokens=int(n_band),
+        # freq-matched random-codebook rank test
+        perm_min_bits=perm_min,
+        perm_mean_bits=perm_mean,
+        n_perm_seeds=int(n_perm_seeds),
+        beats_random_codebook=beats_random_codebook,
+        # per substrate control
+        controls=list(per_control.keys()),
+        per_control=per_control,
+        beats_substrate=bool(beats_substrate),
+        # secondary de-saturated stats (reported, not the sole gate)
         coverage=float(cov_real),
         jaccard=float(jac_real),
         spearman=float(sp_real),
-        coverage_control=float(cov_ctrl),
-        jaccard_control=float(jac_ctrl),
-        spearman_control=float(sp_ctrl),
-        control=str(control),
+        # band/config
+        band=tuple(float(b) for b in band),
         exclude_top_k=int(exclude_top_k),
         codebook_size=int(cb),
-        beats_control=beats,
+        # verdict (back-compat key: beats_control == beats_all)
+        beats_all=beats_all,
+        beats_control=beats_all,
+    )
+
+
+def _nonzero_quantile_band(build_counts: np.ndarray, lo_q=0.10, hi_q=0.90, exclude_top_k=8) -> np.ndarray:
+    """Mid-frequency band mask: keep tokens whose BUILD count is within [lo_q, hi_q] quantiles of
+    the NONZERO build counts, minus the top-k mega-tokens. De-saturates coverage/codelength by
+    dropping the universal head (every-asset tokens) AND the singleton tail (noise tokens)."""
+    cb = int(build_counts.shape[0])
+    mask = np.zeros(cb, dtype=bool)
+    nz = np.nonzero(build_counts > 0)[0]
+    if nz.size == 0:
+        return mask
+    vals = build_counts[nz].astype(np.float64)
+    lo = float(np.quantile(vals, float(lo_q)))
+    hi = float(np.quantile(vals, float(hi_q)))
+    keep = nz[(vals >= lo) & (vals <= hi)]
+    mask[keep] = True
+    for i in _top_k_megatokens(build_counts, exclude_top_k):
+        mask[i] = False
+    # degenerate guard: if the band emptied (tiny alphabet), fall back to all nonzero minus head.
+    if not mask.any():
+        mask[nz] = True
+        for i in _top_k_megatokens(build_counts, exclude_top_k):
+            mask[i] = False
+    return mask
+
+
+def _transfer_codelength(build_counts: np.ndarray, hold_counts: np.ndarray, mask: np.ndarray,
+                         alpha=1.0):
+    """Bits-per-(in-band)-token of the HOLDOUT stream under the BUILD vocab's Laplace(add-alpha)
+    smoothed unigram distribution, restricted to `mask`. The non-saturating A8 headline."""
+    bc = build_counts[mask].astype(np.float64)
+    hc = hold_counts[mask].astype(np.float64)
+    k = int(bc.size)
+    n = float(hc.sum())
+    if k == 0 or n <= 0.0:
+        return float("inf"), 0.0
+    p = (bc + float(alpha)) / (bc.sum() + float(alpha) * k)
+    bits = -np.log2(p)
+    return float(np.sum(hc * bits) / n), n
+
+
+def _codelength_perm_controls(build_counts: np.ndarray, hold_counts: np.ndarray, mask: np.ndarray,
+                              n_seeds=19, alpha=1.0, seed0=12345) -> np.ndarray:
+    """Frequency-matched random-codebook null: keep build's frequency MULTISET but randomly
+    reassign which in-band id holds which frequency, breaking the build<->hold id alignment while
+    preserving marginals. Returns n_seeds holdout codelengths. Real beating ALL of these (one-sided
+    rank test, 19 seeds => p<=0.05) is genuine shared-id structure, not matched marginals."""
+    bc = build_counts[mask].astype(np.float64)
+    hc = hold_counts[mask].astype(np.float64)
+    k = int(bc.size)
+    n = float(hc.sum())
+    if k == 0 or n <= 0.0:
+        return np.zeros(0, dtype=np.float64)
+    rng = np.random.default_rng(int(seed0))
+    out = np.empty(int(n_seeds), dtype=np.float64)
+    for s in range(int(n_seeds)):
+        bc_perm = bc[rng.permutation(k)]
+        p = (bc_perm + float(alpha)) / (bc_perm.sum() + float(alpha) * k)
+        out[s] = float(np.sum(hc * (-np.log2(p))) / n)
+    return out
+
+
+def a8_power_check(codebook_size=512, n_seeds=19, alpha=1.0, band=(0.10, 0.90),
+                   exclude_top_k=8, rng_seed=0) -> dict:
+    """POSITIVE-CONTROL POWER HARNESS (TASK_796): prove the A8 codelength metric has power BEFORE
+    any real verdict is trusted. Build synthetic count-pairs and assert the metric PASSES a
+    KNOWN-transferable pair (holdout ~ build distribution) and FAILS a KNOWN-non-transferable pair
+    (holdout independent of build). power_ok must be True or every real A8 verdict is meaningless.
+    CPU-only, no DB — runs on the workstation."""
+    rng = np.random.default_rng(int(rng_seed))
+    cb = int(codebook_size)
+    base = rng.random(cb) ** 3 + 1e-3
+    build = (base / base.sum() * 2_000_000.0).astype(np.int64) + 1
+    hold_T = (base / base.sum() * 500_000.0).astype(np.int64) + 1            # shares build's shape
+    other = rng.random(cb) ** 3 + 1e-3
+    hold_N = (other / other.sum() * 500_000.0).astype(np.int64) + 1          # independent shape
+    mask = _nonzero_quantile_band(build, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
+
+    def _beats(hold):
+        d, _ = _transfer_codelength(build, hold, mask, alpha=alpha)
+        perm = _codelength_perm_controls(build, hold, mask, n_seeds=n_seeds, alpha=alpha)
+        beats = bool(perm.size and np.isfinite(d) and d < perm.min())
+        return beats, float(d), (float(perm.min()) if perm.size else None)
+
+    pass_T, dT, mT = _beats(hold_T)
+    pass_N, dN, mN = _beats(hold_N)
+    power_ok = bool(pass_T and not pass_N)
+    return dict(
+        power_ok=power_ok,
+        transferable_pass=pass_T, nontransferable_pass=pass_N,
+        d_transferable=dT, perm_min_transferable=mT,
+        d_nontransferable=dN, perm_min_nontransferable=mN,
+        codebook_size=cb, n_seeds=int(n_seeds), band=tuple(float(b) for b in band),
     )
 
 
@@ -318,16 +497,17 @@ def _fold_counts(token_id_iter, codebook_size) -> np.ndarray:
     return counts
 
 
-def _transfer_stats(build_counts: np.ndarray, hold_counts: np.ndarray, exclude_top_k: int):
+def _transfer_stats(build_counts: np.ndarray, hold_counts: np.ndarray, mask):
     """Coverage (holdout mass explained by build vocab), Jaccard of token sets, Spearman of
-    shared-token frequencies — all from the two O(codebook) counts vectors."""
-    # exclude mega-tokens (computed on the BUILD side, the vocab we are testing transfer of).
-    drop = _top_k_megatokens(build_counts, exclude_top_k)
-    if drop:
-        mask = np.ones(build_counts.shape[0], dtype=bool)
-        mask[list(drop)] = False
-    else:
-        mask = np.ones(build_counts.shape[0], dtype=bool)
+    shared-token frequencies — all from the two O(codebook) counts vectors, restricted to the
+    mid-frequency band `mask` (TASK_796: replaces top-k-only exclusion, which could not
+    de-saturate coverage). `mask` may be a boolean array (band) or an int k (legacy top-k drop)."""
+    if np.isscalar(mask):  # legacy: an int exclude_top_k
+        m = np.ones(build_counts.shape[0], dtype=bool)
+        for i in _top_k_megatokens(build_counts, int(mask)):
+            m[i] = False
+        mask = m
+    mask = np.asarray(mask, dtype=bool)
 
     bc = build_counts * mask
     hc = hold_counts * mask
@@ -481,26 +661,35 @@ if __name__ == "__main__":
     a2 = a2_reconstruction(recon_pairs(), ratio_tol=0.02)
     print("A2:", a2)
 
-    # --- A8: cross-asset transfer with a shuffle control ---
+    # --- A8: POSITIVE-CONTROL POWER HARNESS (TASK_796) — the metric must pass this to be trusted ---
+    power = a8_power_check(codebook_size=512, n_seeds=19)
+    print("A8 power-check:", {k: (round(v, 4) if isinstance(v, float) else v) for k, v in power.items()})
+    assert power["power_ok"], (
+        "A8 metric FAILED its positive-control power check: it must PASS a known-transferable pair "
+        "and FAIL a known-non-transferable pair. Do not trust any real A8 verdict until this holds."
+    )
+
+    # --- A8: end-to-end shape test through the member API (shared-structure build/holdout) ---
+    _shared_p = (rng.random(64) ** 4 + 1e-3)
+    _shared_p = _shared_p / _shared_p.sum()
     class _Vocab:
         codebook_size = 64
     def build_vocab_fn(assets=None):
         return _Vocab()
     def encode_assets_fn(vocab, assets, control):
-        # real substrate: peaked distribution (transfers); control: uniform (doesn't).
-        n = len(assets)
-        for _ in range(n):
+        # real: every asset draws from the SAME shared distribution (shared candle 'language');
+        # control: structure destroyed -> id alignment broken via an independent distribution.
+        for _ in range(len(assets)):
             if control is None:
-                yield rng.choice(64, size=2048, p=_peaked(64, rng))
+                yield rng.choice(64, size=4096, p=_shared_p)
             else:
-                yield rng.integers(0, 64, size=2048)
-    def _peaked(k, r):
-        p = r.random(k) ** 4 + 1e-3
-        return p / p.sum()
+                q = rng.random(64) ** 4 + 1e-3
+                yield rng.choice(64, size=4096, p=q / q.sum())
     a8 = a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn,
                                  build_assets=(1, 2, 3), holdout_assets=(4, 5),
-                                 control="shuffle", exclude_top_k=4)
-    print("A8:", {k: round(v, 4) if isinstance(v, float) else v for k, v in a8.items()})
+                                 controls=("shuffle", "random_merge"), exclude_top_k=4, n_perm_seeds=19)
+    print("A8:", {k: (round(v, 4) if isinstance(v, float) else v)
+                  for k, v in a8.items() if k != "per_control"})
 
     # --- A9: length non-degeneracy (both dict and bincount forms) ---
     a9_dict = a9_length_nondegeneracy({1: 100, 2: 400, 3: 250, 4: 80})

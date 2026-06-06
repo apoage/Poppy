@@ -51,7 +51,12 @@ DIV_EPS = 1e-10                  # generic division guard (CLAUDE.md JAX pitfall
 
 # ---- defaults ----
 DEFAULT_WINDOW = 64
-DEFAULT_FSQ_LEVELS = (8, 8, 8, 5, 5)   # implicit codebook = prod = 12800
+# TASK_796: shrunk from (8,8,8,5,5)=12800 -> (8,8,4)=256 to fix codebook collapse (v1 used
+# only 172/12800 codes). Research (FSQ paper §usage, low-intrinsic-dim regime): a ~256-code grid
+# saturates to ~100% usage on low-intrinsic-dim data, so the smaller grid is the zero-risk first
+# experiment. (8,8,4) passes fsq_core.assert_all_codes_reachable (all-even dims reach all L levels
+# via the reference half-level shift; mixed-radix basis is a bijection onto [0,256)).
+DEFAULT_FSQ_LEVELS = (8, 8, 4)         # implicit codebook = prod = 256
 DEFAULT_EWMA_HALFLIFE = 64             # minutes
 DEFAULT_SIGMA_FLOOR = 1e-4             # floor on per-bar |logret| vol (flat-regime blow-up guard)
 DEFAULT_BATCH = 1024

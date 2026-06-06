@@ -45,7 +45,7 @@ class L4Tokenizer(nn.Module):
         window      : int    window length W (static -> reshape is static-shape safe)
         n_feat      : int=6  vol-unit channel count (config.N_FEAT)
         hidden      : int=128 width of the bottleneck Dense layers
-        fsq_levels  : tuple=(8,8,8,5,5)  implicit codebook = prod(levels) = 12800
+        fsq_levels  : tuple=(8,8,4)  implicit codebook = prod(levels) = 256 (TASK_796 grid-256)
         conv_ch     : tuple=(64,128)     1D-conv channel ladder (encoder; decoder mirrors)
 
     __call__(x (B,W,6)) -> dict(

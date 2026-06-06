@@ -40,6 +40,7 @@ import argparse
 import os
 import sys
 import time
+from collections import Counter
 
 import numpy as np
 
@@ -56,9 +57,18 @@ from ..result_writer import write_result
 # --------------------------------------------------------------------------- #
 # RePair utility floor: a digram must occur at least this many times to earn a rule (the
 # "rule-utility >= 2" viable-token definition from the GrammarViz / Sequitur literature, digest §20).
+# TASK_796: this is the HARD floor (a digram seen once can never earn a rule); the pooled-frequency
+# floor `_MIN_DIGRAM_COUNT` below is the PERFORMANCE floor that stops minting rare rules early.
 _MIN_RULE_UTILITY = 2
+# TASK_796 PERFORMANCE: a digram must occur at least this many times across the POOLED corpus to earn
+# a rule. Mirrors L1's --p-min=50 viable-token floor: stops the RePair loop minting thousands of
+# rare rules (each of which cost a full-corpus pass in v1). The induction stops the moment the top
+# digram count drops below this floor.
+_MIN_DIGRAM_COUNT = 50
 # Cap on the number of grammar non-terminals we ever mint (bounds the codebook + RePair passes).
-_MAX_RULES = 4096
+# TASK_796: lowered 4096 -> 512 (mirror L1 --max-merges=512). 4096 rules x full-corpus rescan was the
+# 134-min v1 pathology; combined with the incremental pair-count and p_min floor this is minutes.
+_MAX_RULES = 512
 # Set-cover target: keep the smallest rule set explaining this fraction of covered (non-terminal) bars.
 _SET_COVER_TARGET = 0.95
 # Numerosity-reduction coarse length-tag buckets (design §2.3 F5 short/med/long). Lengths in [1,2] ->
@@ -114,38 +124,14 @@ def _numerosity_reduce(letters: np.ndarray):
 # --------------------------------------------------------------------------- #
 # RePair grammar induction (frequency-greedy digram replacement)
 # --------------------------------------------------------------------------- #
-def _most_frequent_digram(seq: list, base_card: int):
-    """Return (digram, count) of the most frequent adjacent symbol pair in `seq`, ignoring
-    overlapping occurrences of the SAME pair (classic RePair non-overlap counting). `seq` is a
-    python list of symbol ids. Returns (None, 0) if no pair occurs >= _MIN_RULE_UTILITY times."""
-    n = len(seq)
-    if n < 2:
-        return None, 0
-    counts: dict = {}
-    last_pair = None
-    i = 0
-    while i < n - 1:
-        a = seq[i]
-        b = seq[i + 1]
-        pair = (a, b)
-        if pair == last_pair:
-            # overlapping repeat of the same pair (e.g. aaa) -> count only non-overlapping
-            last_pair = None
-            i += 1
-            continue
-        counts[pair] = counts.get(pair, 0) + 1
-        last_pair = pair
-        i += 1
-    if not counts:
-        return None, 0
-    best_pair = max(counts.items(), key=lambda kv: kv[1])
-    if best_pair[1] < _MIN_RULE_UTILITY:
-        return None, 0
-    return best_pair[0], best_pair[1]
+_SENTINEL = -1  # window-seam separator id (never merged; never a member of a counted pair)
 
 
 def _replace_digram(seq: list, digram, new_sym: int) -> list:
-    """Non-overlapping left-to-right replacement of every `digram` occurrence in `seq` by new_sym."""
+    """Non-overlapping left-to-right replacement of every `digram` occurrence in `seq` by new_sym.
+    Retained for the frozen-vocab encode path (L3Grammar._apply_rules / _apply_rules_static), which
+    is O(rules x window) on SHORT per-window sequences — cheap. The HOT fit-time induction uses the
+    incremental in-place merge in `_induce_grammar` instead (TASK_796)."""
     a, b = digram
     out = []
     i = 0
@@ -160,30 +146,91 @@ def _replace_digram(seq: list, digram, new_sym: int) -> list:
     return out
 
 
-def _induce_grammar(seq: list, base_card: int):
-    """RePair grammar induction over a single reduced symbol sequence.
+def _count_initial_pairs(seq: list) -> Counter:
+    """Initial adjacent-pair counts over the POOLED sequence, skipping any pair that touches a
+    sentinel (a window seam — digrams must never span the seam, design §fit). One linear pass."""
+    cnt = Counter()
+    n = len(seq)
+    for i in range(n - 1):
+        a = seq[i]
+        b = seq[i + 1]
+        if a == _SENTINEL or b == _SENTINEL:
+            continue
+        cnt[(a, b)] += 1
+    return cnt
 
-    Iteratively replace the most frequent adjacent digram (utility >= _MIN_RULE_UTILITY) with a
-    fresh non-terminal, recording the production rule, until no qualifying digram remains or the
-    rule budget (_MAX_RULES) is hit. Non-terminal ids are assigned starting at base_card.
+
+def _induce_grammar(seq: list, base_card: int):
+    """RePair grammar induction over the POOLED reduced-symbol sequence (TASK_796: incremental).
+
+    v1 rescanned the whole corpus per merge (O(rules x corpus) — the 134-min pathology). This port of
+    L1's incremental pair-count idiom maintains a GLOBAL adjacent-pair Counter and updates only the
+    neighbours touched by each merge, so each round is O(occurrences of the merged pair), not a full
+    rescan. Mechanism is otherwise identical: replace the most frequent valid adjacent digram with a
+    fresh non-terminal, record the rule, repeat while the top count >= _MIN_DIGRAM_COUNT (the
+    performance floor) and >= _MIN_RULE_UTILITY (the hard viability floor), until _MAX_RULES.
+
+    Sentinels (_SENTINEL) separate window runs; a pair touching a sentinel is never counted, so
+    digrams never span a seam. Merges are applied IN PLACE on a single working list.
 
     Returns (rules, next_id):
         rules   : dict{non_terminal_id -> (left_sym, right_sym)}  production table (each rule a digram).
         next_id : the first unused symbol id (== base_card + len(rules)).
-    Note: rules built here may reference earlier non-terminals (hierarchical), exactly the
-    Sequitur/RePair "rules for free" property (digest §20)."""
+    Rules may reference earlier non-terminals (hierarchical) — the Sequitur/RePair "rules for free"
+    property (digest §20). LOSSLESS: encode->expand round-trips exactly (verified by A2)."""
     rules: dict = {}
     next_id = base_card
     work = list(seq)
-    while len(rules) < _MAX_RULES:
-        digram, count = _most_frequent_digram(work, base_card)
-        if digram is None:
+    pair_counts = _count_initial_pairs(work)
+    floor = max(int(_MIN_DIGRAM_COUNT), int(_MIN_RULE_UTILITY))
+
+    while len(rules) < _MAX_RULES and pair_counts:
+        best_pair, best_n = max(pair_counts.items(), key=lambda kv: kv[1])
+        if best_n < floor:
             break
         new_sym = next_id
-        rules[new_sym] = (int(digram[0]), int(digram[1]))
+        rules[new_sym] = (int(best_pair[0]), int(best_pair[1]))
         next_id += 1
-        work = _replace_digram(work, digram, new_sym)
+        _apply_merge_inplace(work, best_pair, new_sym, pair_counts)
+
     return rules, next_id
+
+
+def _apply_merge_inplace(work: list, pair, new_sym: int, pair_counts: Counter) -> None:
+    """In-place, non-overlapping left-to-right replacement of every adjacent `pair` in `work` by
+    `new_sym`, incrementally updating `pair_counts` for the left/right neighbours touched (the
+    classic BPE/RePair incremental-count idiom, ported from l1_bpe._apply_merge). Sentinel neighbours
+    are never (de/in)cremented, so seam-spanning pairs stay out of the count. Mutates `work` and
+    `pair_counts` in place; counting stays O(merged-pair occurrences), not a full rescan."""
+    a, b = pair
+    pair_counts.pop(pair, None)
+    out = []
+    i = 0
+    n = len(work)
+    while i < n:
+        if i < n - 1 and work[i] == a and work[i + 1] == b:
+            # left neighbour (from already-emitted output): (left,a) -> (left,new_sym)
+            if out:
+                left = out[-1]
+                if left != _SENTINEL:
+                    pair_counts[(left, a)] -= 1
+                    if pair_counts[(left, a)] <= 0:
+                        pair_counts.pop((left, a), None)
+                    pair_counts[(left, new_sym)] += 1
+            # right neighbour (next symbol after the merged pair): (b,right) -> (new_sym,right)
+            if i + 2 < n:
+                right = work[i + 2]
+                if right != _SENTINEL:
+                    pair_counts[(b, right)] -= 1
+                    if pair_counts[(b, right)] <= 0:
+                        pair_counts.pop((b, right), None)
+                    pair_counts[(new_sym, right)] += 1
+            out.append(new_sym)
+            i += 2
+        else:
+            out.append(work[i])
+            i += 1
+    work[:] = out
 
 
 # --------------------------------------------------------------------------- #
@@ -434,10 +481,9 @@ def fit_grammar(db: str, cfg: "C.CandleConfig", max_windows_per_asset,
     # RePair over the POOLED stream: concatenate with a sentinel separator so digrams never span the
     # seam between two windows (sentinels are negative ids the grammar never merges).
     pooled = []
-    sentinel = -1
     for s in reduced_seqs:
         pooled.extend(s)
-        pooled.append(sentinel)
+        pooled.append(_SENTINEL)
     rules, _next = _induce_grammar(pooled, card)
 
     # encode each window's reduced seq with the FULL rule set (pre-prune) for set-cover bar coverage.
@@ -488,13 +534,14 @@ def _length_counts(grammar: L3Grammar, db: str, assets, cfg, max_windows_per_ass
 
 
 def _recon_pairs(grammar: L3Grammar, db: str, assets, cfg, max_windows_per_asset):
-    """Iterator of (recon_letter_path, true_letter_path) pairs for A2 reconstruction.
+    """Iterator of (recon_letters, true_letters) PER-BAR pairs for A2 reconstruction (TASK_796).
 
-    L3 is a SYMBOLIC member: it reconstructs the SAX-letter sequence (the quantized mv path), not
-    raw prices — the token stream expands back to terminal letters, which we compare to the original
-    numerosity-reduced letter sequence. We shift letters to [1, card] so a0_reconstruction's
-    log-ratio (which guards away from zero) is well-defined and scale-free between the two integer
-    paths. Streamed one window at a time."""
+    L3 is a SYMBOLIC member on the SIGNED SAX-letter axis (the quantized mv channel). The token
+    stream expands back to terminal SAX letters; we compare them PER BAR to the original
+    numerosity-reduced letter sequence with the shared additive battery (mode='additive',
+    abs_tol=0.25). NO base=offset hack — the letters are the signed per-bar quantity directly, and
+    the grammar round-trip (encode -> expand) is LOSSLESS so |recon - true| is ~0 everywhere (any
+    deviation is a real bug, not a zero-crossing artifact). Streamed one window at a time."""
     edges, card = grammar.edges_card
     for feats in _stream_window_feats(db, assets, cfg, max_windows_per_asset):
         red, _ = _window_to_reduced_letters(feats, edges, card)
@@ -504,8 +551,8 @@ def _recon_pairs(grammar: L3Grammar, db: str, assets, cfg, max_windows_per_asset
         recon_letters = []
         for tid in ids:
             recon_letters.extend(grammar.expand(int(tid)))
-        recon = np.asarray(recon_letters, dtype=np.float64) + 1.0   # [1, card]
-        true = red.astype(np.float64) + 1.0
+        recon = np.asarray(recon_letters, dtype=np.float64)   # signed SAX letters, per bar
+        true = red.astype(np.float64)                          # signed SAX letters, per bar
         yield recon, true
 
 
@@ -633,26 +680,33 @@ def main(argv=None) -> int:
     # ---- A1 MDL over the full BUILD stream ----
     null_bits_per_bar = float(np.log2(max(card, 2)))             # base SAX-symbol entropy per bar
     codebook_bits = float(grammar.codebook_size) * float(np.log2(max(grammar.codebook_size, 2)))
-    # boundary count == total tokens emitted (each token is a boundary); fold once.
+    # boundary count == total tokens emitted (each token is a boundary); fold once. TASK_796: also
+    # accumulate the TRUE candle-BAR coverage = sum of each token's bar-length (grammar.token_bar_length),
+    # so the per-bar null is charged over covered BARS not token count (the v1 accounting artifact).
     n_tokens_total = 0
+    n_bars_covered = 0
     for chunk in _token_id_chunks(grammar, cfg.db, build_assets, cfg, mwpa):
-        n_tokens_total += int(np.asarray(chunk).size)
+        ids = np.asarray(chunk, dtype=np.int64)
+        n_tokens_total += int(ids.size)
+        n_bars_covered += int(grammar.token_bar_length[ids].sum())
     a1 = eval_battery.a1_mdl(
         _token_id_chunks(grammar, cfg.db, build_assets, cfg, mwpa),
         codebook_size=grammar.codebook_size,
         null_bits_per_bar=null_bits_per_bar,
         n_boundaries=n_tokens_total,
         codebook_bits=codebook_bits,
+        n_bars_covered=n_bars_covered,
     )
     print(f"[L3] A1: bits/candle={a1['bits_per_candle']:.4f} "
-          f"compression={a1['compression_ratio']:.3f} n_tokens={a1['n_tokens']}", flush=True)
+          f"compression={a1['compression_ratio']:.3f} n_tokens={a1['n_tokens']} "
+          f"bars_covered={a1['n_bars_covered']}", flush=True)
 
-    # ---- A2 reconstruction (SAX-letter path fidelity) ----
+    # ---- A2 reconstruction (SAX-letter path fidelity; TASK_796 additive on signed letters) ----
     a2 = eval_battery.a2_reconstruction(
-        _recon_pairs(grammar, cfg.db, build_assets, cfg, mwpa), ratio_tol=0.02
+        _recon_pairs(grammar, cfg.db, build_assets, cfg, mwpa), mode="additive", abs_tol=0.25
     )
     print(f"[L3] A2: frac_within_tol={a2['frac_within_tol']:.4f} "
-          f"log_ratio_mse={a2['mean_log_ratio_mse']:.5f}", flush=True)
+          f"mean_abs_err={a2['mean_abs_err']:.5f} (mode={a2['mode']})", flush=True)
 
     # ---- A9 length non-degeneracy ----
     a9 = eval_battery.a9_length_nondegeneracy(
@@ -673,10 +727,11 @@ def main(argv=None) -> int:
         a8 = eval_battery.a8_cross_asset_transfer(
             build_vocab_fn, encode_assets_fn,
             build_assets=build_assets, holdout_assets=holdout_assets,
-            control="shuffle", exclude_top_k=8,
+            controls=("shuffle", "random_merge"), exclude_top_k=8,
         )
-        print(f"[L3] A8: coverage={a8['coverage']:.4f} jaccard={a8['jaccard']:.4f} "
-              f"spearman={a8['spearman']:.4f} beats_control={a8['beats_control']}", flush=True)
+        print(f"[L3] A8: transfer_bits={a8['transfer_bits']:.4f} "
+              f"perm_min={a8['perm_min_bits']:.4f} beats_random_codebook={a8['beats_random_codebook']} "
+              f"beats_substrate={a8['beats_substrate']} beats_all={a8['beats_all']}", flush=True)
 
     # ---- verdict (design §6 KILL/PROCEED, A8 + A2 + A1 + A9) ----
     a8_ok = bool(a8 is None or a8["beats_control"])
@@ -716,8 +771,10 @@ def main(argv=None) -> int:
             f"- tokens {a1['n_tokens']} | codebook {a1['codebook_size']}",
         ]),
         ("A2 — reconstruction (SAX-letter path fidelity)", [
-            f"- frac within tol (±2%) {a2['frac_within_tol']:.4f} | mean log-ratio MSE "
-            f"{a2['mean_log_ratio_mse']:.5f}",
+            f"- mode `{a2['mode']}` (signed per-bar SAX letters) | frac within tol "
+            f"(±{a2['abs_tol']}) {a2['frac_within_tol']:.4f} | mean abs err {a2['mean_abs_err']:.5f}",
+            "- grammar round-trip is LOSSLESS -> frac_within_tol should be ~1.0 "
+            "(any miss is a real encode/expand bug, not a zero-crossing artifact).",
             f"- bars compared {a2['n_bars']} over {a2['n_pairs']} windows.",
         ]),
         ("A9 — length non-degeneracy", [
@@ -728,12 +785,25 @@ def main(argv=None) -> int:
         ]),
     ]
     if a8 is not None:
+        ctl_lines = [
+            f"  - `{name}`: transfer_bits {d['transfer_bits']:.4f} | coverage {d['coverage']:.4f} "
+            f"| jaccard {d['jaccard']:.4f} | spearman {d['spearman']:.4f} | beats {d['beats']}"
+            for name, d in a8.get("per_control", {}).items()
+        ]
         sections.append((
-            "A8 — cross-asset transfer (headline; shuffle control)", [
-                f"- coverage {a8['coverage']:.4f} (control {a8['coverage_control']:.4f}) | "
+            "A8 — cross-asset transfer (headline = non-saturating transfer codelength)", [
+                f"- **transfer_bits {a8['transfer_bits']:.4f}** bits/in-band-token (HEADLINE; "
+                f"lower = holdout mass concentrates where build put its mass) over "
+                f"{a8['n_band_tokens']} band tokens",
+                f"- freq-matched random-codebook null: perm_min {a8['perm_min_bits']:.4f} | "
+                f"perm_mean {a8['perm_mean_bits']:.4f} ({a8['n_perm_seeds']} seeds) -> "
+                f"beats_random_codebook {a8['beats_random_codebook']}",
+                f"- substrate controls {a8['controls']} -> beats_substrate {a8['beats_substrate']}",
+                *ctl_lines,
+                f"- secondary (reported, band-desaturated): coverage {a8['coverage']:.4f} | "
                 f"jaccard {a8['jaccard']:.4f} | spearman {a8['spearman']:.4f}",
-                f"- excludes top-{a8['exclude_top_k']} mega-tokens | beats_control "
-                f"{a8['beats_control']}",
+                f"- band {a8['band']} | excludes top-{a8['exclude_top_k']} mega-tokens | "
+                f"**beats_all {a8['beats_all']}**",
             ]))
 
     meta = dict(

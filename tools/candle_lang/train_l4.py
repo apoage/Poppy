@@ -53,6 +53,14 @@ from .result_writer import write_result
 from .volunit import features_for_run
 
 
+# TASK_796 codebook-health floor: A9 FAILS if fewer than this fraction of codes are ever used over
+# the held-out encode. The v1 grid-12800 collapse used 172/12800 = 1.3%; with the grid-256 default
+# (8,8,4) and healthy training, usage should reach ~70-100%. A 0.10 floor (>= ~26/256 codes) is
+# deliberately conservative — it catches a true collapse without flagging an asset set that simply
+# doesn't exercise the long tail. Tighten once grid-256 usage is empirically characterized.
+USED_FRAC_FLOOR = 0.10
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -352,20 +360,38 @@ def main(argv=None):
                                  max_windows_per_asset=max_windows)
         ep_loss = 0.0
         nb = 0
+        # TASK_796 collapse visibility: accumulate a per-epoch O(codebook) id histogram so we can log
+        # effective-code-count (2^entropy of the id distribution) + top1_share EACH epoch. This makes
+        # a codebook collapse visible DURING training (the v1 172/12800 disease was only seen post-hoc
+        # at eval). One extra (read-only) encode forward per batch; the bincount stays O(codebook).
+        ep_id_counts = np.zeros(int(codebook_size), dtype=np.int64)
         try:
             for batch in streamer:
                 xb = jax.device_put(np.ascontiguousarray(batch["X"], dtype=np.float32))
                 valid = jax.device_put(np.ascontiguousarray(batch["valid"], dtype=bool))
+                # encode with CURRENT params BEFORE the donating train step consumes xb (donate_argnums
+                # frees xb in-place); _encode_idx does NOT donate, so this read is safe and cheap.
+                ids_dev = _encode_idx(state.params, xb)
                 state, loss = train_step(state, xb, valid)
                 # (4) host must not run ahead of device -> no un-freed async buffer pileup.
                 jax.block_until_ready(loss)
+                ids = np.asarray(ids_dev)[np.asarray(batch["valid"])]
+                if ids.size:
+                    ids = np.clip(ids.astype(np.int64), 0, int(codebook_size) - 1)
+                    ep_id_counts += np.bincount(ids, minlength=int(codebook_size)).astype(np.int64)
                 ep_loss += float(loss)
                 nb += 1
                 global_step += 1
         finally:
             streamer.close()
         mean_loss = ep_loss / max(nb, 1)
+        # effective-code-count = 2^entropy(id_hist); top1_share = mass of the single most-used id.
+        ep_total = int(ep_id_counts.sum())
+        ep_used = int((ep_id_counts > 0).sum())
+        ep_eff = float(2.0 ** EB._entropy_bits_from_counts(ep_id_counts)) if ep_total else 0.0
+        ep_top1 = float(ep_id_counts.max() / ep_total) if ep_total else 1.0
         print(f"[train] epoch {ep+1}/{args.epochs}  batches={nb}  recon_mse={mean_loss:.6f}  "
+              f"used={ep_used}/{codebook_size}  eff_codes(2^H)={ep_eff:.1f}  top1={ep_top1:.4f}  "
               f"({time.time()-t0:.1f}s)", flush=True)
 
     train_wall = time.time() - t0
@@ -401,8 +427,10 @@ def main(argv=None):
     a1 = _a1_from_counts(counts, codebook_size, n_tokens, cfg.window)
     print(f"[A1] {a1}", flush=True)
 
-    # A2: reconstruction fidelity over the streamed (bounded) pair sample.
-    a2 = EB.a2_reconstruction(iter(a2_pairs), ratio_tol=0.02) if a2_pairs \
+    # A2: reconstruction fidelity over the streamed (bounded) pair sample. L4 reconstructs a
+    # strictly-POSITIVE price path (start * exp(cumsum(recon_lr))), so mode="ratio" is correct
+    # (TASK_796: additive mode is for SIGNED vol-unit move members L1/L2/L3, not L4's price path).
+    a2 = EB.a2_reconstruction(iter(a2_pairs), ratio_tol=0.02, mode="ratio") if a2_pairs \
         else dict(frac_within_tol=float("nan"), mean_log_ratio_mse=float("nan"), n_bars=0)
     print(f"[A2] {a2}", flush=True)
 
@@ -413,7 +441,18 @@ def main(argv=None):
     a9 = dict(a9)
     a9["max_token_id_share"] = top1
     a9["id_collapse"] = bool(top1 >= 0.999)
-    a9["pass"] = bool(a9.get("pass", False) and not a9["id_collapse"])
+    # TASK_796: codebook-USAGE FLOOR so a future codebook collapse (the v1 172/12800 = 1.3% disease)
+    # FAILS A9, not just the degenerate 1-token case. The fixed-length-W stream is non-degenerate by
+    # length, and top1<0.999 only catches a single mega-token; a stream that uses (say) 8/256 codes
+    # passes both yet is collapsed. used_frac = used_codes/codebook_size with a conservative floor.
+    used_frac = float(used) / float(max(int(codebook_size), 1))
+    a9["used_codes"] = int(used)
+    a9["codebook_size"] = int(codebook_size)
+    a9["used_frac"] = used_frac
+    a9["used_frac_floor"] = float(USED_FRAC_FLOOR)
+    a9["codebook_collapse"] = bool(used_frac < USED_FRAC_FLOOR)
+    a9["pass"] = bool(a9.get("pass", False) and not a9["id_collapse"]
+                      and not a9["codebook_collapse"])
     a9["pass_"] = a9["pass"]
     print(f"[A9] {a9}", flush=True)
 
@@ -456,22 +495,35 @@ def _a1_from_counts(counts: np.ndarray, codebook_size: int, n_tokens: int, windo
     Null/boundary semantics match the contract: null_bits_per_bar = log2(codebook) per covered bar;
     a fixed-length member emits one boundary per token (n_boundaries == n_tokens); codebook_bits is
     the one-time vocab ship cost (codebook_size * bits-per-code ~ log2(codebook)).
+
+    TASK_796: the per-bar null MUST be charged over the true number of CANDLE BARS the token stream
+    covers, NOT over token count. L4 is a fixed-length-W member: each emitted token covers exactly
+    `window` raw feature bars, so n_bars_covered = n_tokens * window. Charging the null over token
+    count (the v1 bug) structurally pins compression_ratio below 1 because it ignores that one token
+    replaces `window` null-bars. We thread n_bars_covered into the per-bar null + the bits_per_candle
+    denominator so A1 is a like-for-like per-bar comparison (matching eval_battery.a1_mdl).
     """
     total = int(counts.sum())
     if total <= 0:
         return dict(bits_per_candle=float("nan"), covered_bits=0.0, null_bits=0.0,
                     boundary_bits=0.0, codebook_bits=0.0, entropy_bits_per_token=0.0,
-                    n_tokens=0, codebook_size=int(codebook_size), compression_ratio=float("nan"))
+                    n_tokens=0, n_bars_covered=0, codebook_size=int(codebook_size),
+                    compression_ratio=float("nan"))
+    # fixed-length-W member: every token covers exactly `window` candle bars (TASK_796).
+    n_bars_covered = int(total) * int(window)
     p = counts.astype(np.float64) / float(total)
     nz = p[p > 0.0]
     h_bits_per_token = float(-np.sum(nz * np.log2(nz)))
     covered_bits = float(h_bits_per_token * total)
     null_bits_per_bar = float(np.log2(max(int(codebook_size), 2)))
-    null_bits = float(null_bits_per_bar * total)
+    # per-bar null charged over COVERED BARS, not tokens (TASK_796 fix).
+    null_bits = float(null_bits_per_bar * n_bars_covered)
     n_boundaries = int(total)
     boundary_bits = float(n_boundaries * np.log2(max(int(codebook_size), 2)))
     codebook_bits = float(int(codebook_size) * np.log2(max(int(codebook_size), 2)))
-    denom = max(total, 1)
+    # bits_per_candle denominator is the covered BARS (TASK_796), so a fixed-W member amortizes the
+    # token content + boundary + codebook cost over all `window` bars each token covers.
+    denom = max(n_bars_covered, 1)
     bits_per_candle = (covered_bits + boundary_bits + codebook_bits) / float(denom)
     return dict(
         bits_per_candle=float(bits_per_candle),
@@ -481,6 +533,7 @@ def _a1_from_counts(counts: np.ndarray, codebook_size: int, n_tokens: int, windo
         codebook_bits=float(codebook_bits),
         entropy_bits_per_token=float(h_bits_per_token),
         n_tokens=int(total),
+        n_bars_covered=int(n_bars_covered),
         codebook_size=int(codebook_size),
         compression_ratio=float(null_bits / max(covered_bits + boundary_bits + codebook_bits, C.DIV_EPS)),
     )
@@ -500,26 +553,39 @@ def _a8_transfer(apply_encode, params, cfg, codebook_size) -> dict:
     """
     import jax
 
+    # A class body does NOT close over enclosing-function locals (it has its own scope), so
+    # `codebook_size = int(codebook_size)` inside `class _Vocab` raises NameError. Capture the
+    # value under a DIFFERENT name in the enclosing scope first, then bind it as a class attr.
+    cb = int(codebook_size)
+
     class _Vocab:
-        codebook_size = int(codebook_size)
+        codebook_size = cb
 
     def build_vocab_fn(assets=None):
         return _Vocab()
 
     def _phase_shuffle_window(x_bw6, rng):
-        """Destroy temporal structure within each window by phase-shuffling the FFT of each channel
+        """Destroy TEMPORAL structure within each window by phase-shuffling the FFT of each channel
         (donor phase_shuffle_returns idiom). Preserves the marginal/spectral magnitude, kills the
-        ordered shape -> a fair same-pipeline null. x_bw6: (B,W,6) float32."""
+        ordered shape -> a fair same-pipeline null. x_bw6: (B,W,6) float32. This is the "shuffle"
+        control (substrate-level structure destruction BEFORE encode)."""
         B, W, F = x_bw6.shape
-        out = np.empty_like(x_bw6)
         xf = np.fft.rfft(x_bw6, axis=1)
         mag = np.abs(xf)
         # random phases shared across the batch axis per (freq,channel) but randomized per call.
         ph = rng.uniform(0.0, 2.0 * np.pi, size=(B, xf.shape[1], F))
         ph[:, 0, :] = 0.0  # keep DC real
         xf_shuf = mag * np.exp(1j * ph)
-        out = np.fft.irfft(xf_shuf, n=W, axis=1).astype(np.float32)
-        return out
+        return np.fft.irfft(xf_shuf, n=W, axis=1).astype(np.float32)
+
+    # "random_merge" must be a DISTINCT control from "shuffle" (TASK_796): instead of destroying
+    # temporal structure, it destroys the CODEBOOK ALIGNMENT — encode the real window, then remap
+    # each token id through a FIXED random permutation of [0, codebook). This keeps each member's
+    # per-asset id MARGINAL identical to the real encode but breaks the build<->holdout shared-id
+    # structure (a given shape no longer maps to the same id across assets in a structured way),
+    # so A8's codelength on this control measures "matched marginals, no real id transfer".
+    # The permutation is DETERMINISTIC (fixed seed) so build and holdout are remapped consistently.
+    _merge_perm = np.random.default_rng(99991).permutation(int(codebook_size)).astype(np.int64)
 
     def encode_assets_fn(vocab, assets, control):
         rng = np.random.default_rng(12345)
@@ -529,9 +595,12 @@ def _a8_transfer(apply_encode, params, cfg, codebook_size) -> dict:
             for batch in streamer:
                 xb = np.ascontiguousarray(batch["X"], dtype=np.float32)
                 v = np.asarray(batch["valid"])
-                if control in ("shuffle", "random_merge"):
+                if control == "shuffle":
                     xb = _phase_shuffle_window(xb, rng)
                 idx = np.asarray(apply_encode(params, jax.numpy.asarray(xb)))
+                if control == "random_merge":
+                    # remap real ids through the fixed random codebook permutation (id-alignment kill).
+                    idx = _merge_perm[np.clip(idx, 0, int(codebook_size) - 1)]
                 ids = idx[v]
                 if ids.size:
                     yield ids
@@ -541,7 +610,7 @@ def _a8_transfer(apply_encode, params, cfg, codebook_size) -> dict:
     return EB.a8_cross_asset_transfer(
         build_vocab_fn, encode_assets_fn,
         build_assets=cfg.build_assets, holdout_assets=cfg.holdout_assets,
-        control="shuffle", exclude_top_k=8,
+        controls=("shuffle", "random_merge"), exclude_top_k=8,
     )
 
 
@@ -557,6 +626,38 @@ def _verdict(a0, a1, a2, a9, a8) -> str:
     if a0_ok and a9_ok and a8_ok:
         return "PASS"
     return "FAIL"
+
+
+def _a8_lines(a8) -> list:
+    """Render the TASK_796 v2 A8 dict to readable RESULT lines around the NEW headline keys.
+
+    The repaired a8_cross_asset_transfer returns transfer_bits (non-saturating headline),
+    perm_min_bits / beats_random_codebook (freq-matched random-codebook rank test), and a
+    per_control dict (one entry per substrate control: shuffle / random_merge). The OLD keys
+    (coverage_control / jaccard_control / spearman_control / control) are REMOVED — referencing
+    them would KeyError; this renderer only reads the new schema."""
+    if not a8:
+        return ["(none)"]
+    lines = [
+        f"- transfer_bits (HEADLINE, bits/in-band-token, lower=better): {a8.get('transfer_bits'):.4f}",
+        f"- n_band_tokens: {a8.get('n_band_tokens')}",
+        f"- perm_min_bits / perm_mean_bits ({a8.get('n_perm_seeds')} seeds): "
+        f"{a8.get('perm_min_bits'):.4f} / {a8.get('perm_mean_bits'):.4f}",
+        f"- beats_random_codebook: {a8.get('beats_random_codebook')}",
+        f"- beats_substrate: {a8.get('beats_substrate')}",
+        f"- coverage / jaccard / spearman (mid-band, reported): "
+        f"{a8.get('coverage'):.4f} / {a8.get('jaccard'):.4f} / {a8.get('spearman'):.4f}",
+        f"- codebook_size: {a8.get('codebook_size')}  band: {a8.get('band')}  "
+        f"exclude_top_k: {a8.get('exclude_top_k')}",
+    ]
+    for ctl, d in (a8.get("per_control") or {}).items():
+        lines.append(
+            f"- control[{ctl}]: transfer_bits={d.get('transfer_bits'):.4f} "
+            f"coverage={d.get('coverage'):.4f} jaccard={d.get('jaccard'):.4f} "
+            f"spearman={d.get('spearman'):.4f} beats={d.get('beats')}"
+        )
+    lines.append(f"- **beats_all (== beats_control): {a8.get('beats_all')}**")
+    return lines
 
 
 def _build_sections(a0, a1, a2, a9, a8, used, codebook_size, top1, n_tokens, mean_loss,
@@ -587,7 +688,7 @@ def _build_sections(a0, a1, a2, a9, a8, used, codebook_size, top1, n_tokens, mea
         ("A9 length non-degeneracy", _kv(a9)),
     ]
     if a8 is not None:
-        sections.append(("A8 cross-asset transfer", _kv(a8)))
+        sections.append(("A8 cross-asset transfer", _a8_lines(a8)))
     else:
         sections.append(("A8 cross-asset transfer", ["- skipped (no holdout assets)"]))
     return sections

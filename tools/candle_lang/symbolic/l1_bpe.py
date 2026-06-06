@@ -145,18 +145,21 @@ class BPEVocab:
 # fit: pool reduced unit streams across BUILD, frequency-greedy BPE merge
 # --------------------------------------------------------------------------- #
 def _stream_reduced_units(db, asset, cfg, table, max_windows):
-    """Yield reduced-unit arrays (leaf ids), ONE per window-chunk run, for one asset.
+    """Yield (reduced-unit ids, per-unit raw-bar coverage) pairs, ONE per window-chunk run, for one
+    asset.
 
     A window from db_stream is a (W,6) all-finite vol-unit slice; we encode it to base symbols and
     numerosity-reduce WITHIN the window (windows never straddle a gap -> reduction is run-local).
+    `bars` (the numerosity run-lengths, summing to the window's bar count) is yielded so callers can
+    accumulate the token stream's true raw-bar coverage for the A1 per-bar null (TASK_796).
     """
     for chunk in DS.iter_windows(db, asset, cfg, max_windows=max_windows):
         X = chunk["X"]                              # (n, W, 6) f32
         for w in range(X.shape[0]):
             syms = BA.encode_symbols(X[w], table)   # (W,) base symbols
-            units, _bars = numerosity_reduce(syms)
+            units, bars = numerosity_reduce(syms)
             if units.size >= 1:
-                yield units
+                yield units, bars
 
 
 def fit_bpe(cfg, table, build_assets, max_windows_per_asset, p_min, max_merges, verbose=True):
@@ -175,7 +178,7 @@ def fit_bpe(cfg, table, build_assets, max_windows_per_asset, p_min, max_merges, 
     # pool reduced sequences across build assets (list of np.int64 arrays -> python lists for mutation)
     seqs = []
     for a in build_assets:
-        for units in _stream_reduced_units(cfg.db, a, cfg, table, max_windows_per_asset):
+        for units, _bars in _stream_reduced_units(cfg.db, a, cfg, table, max_windows_per_asset):
             seqs.append(list(int(u) for u in units))
     if verbose:
         n_units = sum(len(s) for s in seqs)
@@ -348,23 +351,23 @@ def fit_move_template(cfg, table, build_assets, max_windows_per_asset):
 
 
 def _recon_pairs(db, asset, cfg, table, mv_mean, max_windows):
-    """Yield (recon_mv_path, true_mv_path) streamed pairs for A2, ONE per window.
+    """Yield PER-BAR (recon_mv, true_mv) increment pairs for A2, ONE per window (TASK_796).
 
-    Reconstruction is scale-free: both paths live in the vol-unit move space (mv = logret/sigma), so
-    feeding them as logret-style pairs to eval_battery.a2_reconstruction is a faithful, rescale-
-    invariant reconstruction check (recon = base-symbol canonical move replayed bar-by-bar). NEVER
-    materializes all windows."""
+    Reconstruction lives in the vol-unit move space (mv = logret/sigma, std ~1). A2 now scores each
+    bar additively (|recon_mv - true_mv| <= abs_tol) — well-posed at zero-crossings and sign-sensitive,
+    unlike the old cumsum path-level log-ratio (which read 0.071 purely as a missing-offset artifact at
+    |true_path|->0). We therefore yield the RAW signed per-bar increments (recon = base-symbol canonical
+    move replayed bar-by-bar, true = the actual mv channel), NOT cumulative paths and NO +offset hack.
+    NEVER materializes all windows."""
     for chunk in DS.iter_windows(db, asset, cfg, max_windows=max_windows):
         X = chunk["X"]
         for w in range(X.shape[0]):
             feats = X[w]
-            true_mv = feats[:, 0].astype(np.float64)
+            true_mv = feats[:, 0].astype(np.float64)         # signed vol-unit move per bar
             syms = BA.encode_symbols(feats, table)
-            recon_mv = mv_mean[syms]
-            # cumulative move path (a logret path in vol-units) for a path-level ratio comparison.
-            true_path = np.cumsum(true_mv)
-            recon_path = np.cumsum(recon_mv)
-            yield recon_path, true_path
+            recon_mv = mv_mean[syms].astype(np.float64)      # canonical per-bar move per base symbol
+            # per-bar signed increments (NOT cumsum) for mode="additive".
+            yield recon_mv, true_mv
 
 
 # --------------------------------------------------------------------------- #
@@ -461,7 +464,10 @@ def parse_args(argv=None):
     p.add_argument("--window", type=int, default=C.DEFAULT_WINDOW)
     p.add_argument("--p-min", type=int, default=50, help="viable-token floor (pooled pair count).")
     p.add_argument("--max-merges", type=int, default=512, help="cap on BPE merges (vocab size).")
-    p.add_argument("--ratio-tol", type=float, default=0.05, help="A2 per-bar log-ratio tolerance.")
+    p.add_argument("--ratio-tol", type=float, default=0.05,
+                   help="A2 per-bar log-ratio tolerance (mode=ratio; unused in additive mode).")
+    p.add_argument("--abs-tol", type=float, default=0.25,
+                   help="A2 additive vol-unit tolerance (TASK_796 mode=additive; shared panel default).")
     return p.parse_args(argv)
 
 
@@ -537,17 +543,26 @@ def main(argv=None):
     n_tokens = 0
     for ids in _build_token_iter():
         n_tokens += int(ids.size)
+    # TASK_796: true raw-bar coverage of the build stream = sum of numerosity-reduction run-lengths
+    # (the `_bars` value currently discarded at every reduce call site). BPE merges group reduced
+    # units but do NOT change bar coverage, so summing run_lens over the reduced stream IS the token
+    # stream's bar coverage. Charged in a1_mdl as n_bars_covered so the per-bar null is like-for-like.
+    n_bars_covered = 0
+    for a in build_assets:
+        for units, bars in _stream_reduced_units(cfg.db, a, cfg, table, mwpa):
+            n_bars_covered += int(bars.sum())
     codebook_bits = float(cb) * float(np.log2(max(cb, 2)))   # crude vocab-shipping cost
     a1 = EB.a1_mdl(_build_token_iter(), codebook_size=cb,
                    null_bits_per_bar=null_bits_per_bar,
-                   n_boundaries=n_tokens, codebook_bits=codebook_bits)
+                   n_boundaries=n_tokens, codebook_bits=codebook_bits,
+                   n_bars_covered=n_bars_covered)
 
-    # A2 — reconstruction (streamed pairs over build)
+    # A2 — reconstruction (streamed PER-BAR signed increment pairs over build; additive mode).
     print("[L1] A2 reconstruction...", flush=True)
     def _recon_iter():
         for a in build_assets:
             yield from _recon_pairs(cfg.db, a, cfg, table, mv_mean, mwpa)
-    a2 = EB.a2_reconstruction(_recon_iter(), ratio_tol=float(args.ratio_tol))
+    a2 = EB.a2_reconstruction(_recon_iter(), mode="additive", abs_tol=float(args.abs_tol))
 
     # A8 — cross-asset transfer (build vocab is already fit; re-encode build/holdout + control)
     print("[L1] A8 cross-asset transfer...", flush=True)
@@ -564,7 +579,7 @@ def main(argv=None):
         a8 = EB.a8_cross_asset_transfer(
             build_vocab_fn, encode_assets_fn,
             build_assets=build_assets, holdout_assets=holdout_assets,
-            control="shuffle", exclude_top_k=8,
+            controls=("shuffle", "random_merge"), exclude_top_k=8,
         )
 
     # A9 — length non-degeneracy (streamed unit-length tally)
@@ -575,7 +590,8 @@ def main(argv=None):
     wall = time.time() - t0
 
     # ----- 5) verdict + write result ----- #
-    a8_ok = bool(a8["beats_control"]) if a8 is not None else False
+    # beats_all == beats_control (back-compat alias); gate on the explicit beats_all (TASK_796).
+    a8_ok = bool(a8["beats_all"]) if a8 is not None else False
     passes = [
         bool(a0["pass"]),
         bool(a1["compression_ratio"] > 1.0),
@@ -610,20 +626,30 @@ def main(argv=None):
             f"- **compression ratio vs null: {a1['compression_ratio']:.4f}** "
             f"(>1 = cheaper than per-bar null)",
         ]),
-        ("A2 — reconstruction fidelity (mv vol-unit path)", [
-            f"- frac within tol (tol {a2['ratio_tol']}): {a2['frac_within_tol']:.4f}",
-            f"- mean log-ratio MSE: {a2['mean_log_ratio_mse']:.6f}",
+        ("A2 — reconstruction fidelity (mv vol-unit, per-bar additive)", [
+            f"- mode: {a2['mode']} | abs_tol (vol-units): {a2['abs_tol']}",
+            f"- frac within tol: {a2['frac_within_tol']:.4f}",
+            f"- mean abs err (vol-units): {a2['mean_abs_err']:.6f} | MSE: {a2['mean_log_ratio_mse']:.6f}",
             f"- bars: {a2['n_bars']} | pairs: {a2['n_pairs']}",
         ]),
         ("A8 — cross-asset transfer (build vocab -> holdout)", (
             [
-                f"- coverage (holdout mass on build vocab): {a8['coverage']:.4f} "
-                f"(control {a8['coverage_control']:.4f})",
-                f"- Jaccard: {a8['jaccard']:.4f} (control {a8['jaccard_control']:.4f})",
-                f"- Spearman freq-rank: {a8['spearman']:.4f} "
-                f"(control {a8['spearman_control']:.4f})",
-                f"- control: {a8['control']} | exclude_top_k {a8['exclude_top_k']}",
-                f"- **beats control: {bool(a8['beats_control'])}**",
+                f"- **transfer codelength (HEADLINE): {a8['transfer_bits']:.4f} bits/in-band-token** "
+                f"over {a8['n_band_tokens']} band tokens (lower = more shared structure)",
+                f"- random-codebook null: min {a8['perm_min_bits']:.4f} | mean "
+                f"{a8['perm_mean_bits']:.4f} bits over {a8['n_perm_seeds']} seeds "
+                f"-> beats_random_codebook: {bool(a8['beats_random_codebook'])}",
+                "- substrate controls ("
+                + ", ".join(
+                    f"{ctl}: {pc['transfer_bits']:.4f} bits (beats {bool(pc['beats'])})"
+                    for ctl, pc in a8['per_control'].items()
+                )
+                + f") -> beats_substrate: {bool(a8['beats_substrate'])}",
+                f"- mid-freq coverage: {a8['coverage']:.4f} | Jaccard: {a8['jaccard']:.4f} | "
+                f"Spearman: {a8['spearman']:.4f} (reported, not the sole gate)",
+                f"- band {a8['band']} | exclude_top_k {a8['exclude_top_k']} | "
+                f"codebook_size {a8['codebook_size']}",
+                f"- **beats all controls: {bool(a8['beats_all'])}**",
             ] if a8 is not None else ["- skipped (no holdout assets configured)."]
         )),
         ("A9 — length non-degeneracy", [
@@ -668,7 +694,9 @@ def main(argv=None):
           flush=True)
     print(f"A2 frac_within {a2['frac_within_tol']:.4f}", flush=True)
     if a8 is not None:
-        print(f"A8 coverage {a8['coverage']:.4f} beats {bool(a8['beats_control'])}", flush=True)
+        print(f"A8 transfer_bits {a8['transfer_bits']:.4f} beats_all {bool(a8['beats_all'])} "
+              f"(rand_cb {bool(a8['beats_random_codebook'])}, substrate {bool(a8['beats_substrate'])})",
+              flush=True)
     print(f"A9 median_len {a9['median_len']:.2f} pass {bool(a9['pass'])}", flush=True)
     print(f"VERDICT {verdict}  wall {wall:.0f}s", flush=True)
     return 0
