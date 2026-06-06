@@ -3,12 +3,14 @@
 **Status**: Stage 1 + Stage 2 BUILT + first result (2026-06-06). CPU-only. Committed `d78b01e`.
 - **Stage 1 DONE** — `tokenizer_api.py` (`CandleTokenizer`, `save_vocab`/`load_vocab`/`encode_asset`);
   round-trip gate byte-identical (frozen == in-process); `l1_bpe.py` untouched.
-- **Stage 2 DONE** — `fingerprint.py`; first N×N over 30 price-stratified assets → `runs/797_fingerprint/`.
-  **corr(unigram-JS, bigram-JS) = 0.57** (bigram carries structure beyond marginals); tight mutual-nearest
-  pairs (1016↔120 0.71, 387↔544 0.71, 997↔1016 0.76) over a ~0.95 background + one dominant cluster.
-  First evidence the tokens carry recognizable real-asset structure, outside the synthetic A8 harness.
-- **Next**: run the shuffle-collapse control; validate tight pairs against asset metadata; rerun on the
-  (denser) server DB with a thicker vocab + more assets; then Stage-3 roadmap (regime clustering / motif mining).
+- **Stage 2 DONE + VALIDATED** — `fingerprint.py`; N×N over 50 price-stratified assets → `runs/797_fingerprint/`.
+  bigram carries structure beyond marginals (independent structure 0.26 at 50 assets); tight small clusters
+  (306↔892, 421↔747, 25↔860 0.76) + one dominant cluster (all same asset class) + outliers (360, 969).
+  **Shuffle-collapse control PASSED** (`collapsed=True`): destroying token order (keep marginals) halves
+  the bigram's independent structure (0.26→0.12) — so it's genuine ORDER-dependent transition structure,
+  not an artifact. First evidence the tokens carry recognizable real-asset structure, outside the A8 harness.
+- **Next**: validate tight pairs against asset metadata (need a symbol map); rerun on the (denser) server DB
+  once the 150/150 finishes; thicker vocab; then Stage-3 roadmap (regime clustering / motif mining) on this N×N.
 
 **Parent**: TASK_789 (candle-language). **Sibling-of, not-blocked-by**: TASK_793/794 (those are GPU +
 trained-model downstream stages; this one is deliberately **unbound to any trained model**).
