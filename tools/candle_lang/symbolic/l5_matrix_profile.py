@@ -176,6 +176,227 @@ def sampled_tiled_matrix_profile(subs_z, starts, anchor_ix, m, cand_tile, anchor
 
 
 # --------------------------------------------------------------------------- #
+# JAX / GPU port of the sampled+tiled matrix profile (TASK_796)
+# --------------------------------------------------------------------------- #
+# The hot loop above is a tiled z-normalised Euclidean distance — matmul-dominated
+# (A @ B.T) with a row-min reduction, the ideal GPU shape. The port below keeps the
+# SAME tiling (anchor_tile x cand_tile) so VRAM stays bounded by ONE tile exactly as
+# the numpy path: the tiles are the memory cap, not the corpus. Only the per-tile
+# distance + min go on device; the running min across tiles is folded host-side.
+#
+# SERVER LAUNCH DISCIPLINE (mirror train_l4.py): on gpu-server this member runs on a
+# SINGLE idle GPU — GPU 1 or 2 (GPU 0 is VirtualBox-reserved; GPU 3 runs L4). Pin it
+# with CUDA_VISIBLE_DEVICES=<1|2> (or safe_run), let safe_run own
+# XLA_PYTHON_CLIENT_MEM_FRACTION (we only setdefault it), and NEVER set
+# XLA_PYTHON_CLIENT_PREALLOCATE (stays default-on). NEVER run this on the
+# workstation's single display-driving 3090 — use --device cpu there.
+#
+# The JAX backend is imported lazily (only when --device gpu is requested) so a bare
+# CPU/numpy run never initialises CUDA. _jax_backend() also sets JAX_PLATFORMS=cpu
+# when device=="cpu", which is how the parity test stays off the GPU.
+_JAX_TILE_CACHE = {}   # (m, anchor_tile, cand_tile) -> jitted per-tile kernel
+
+
+def _jax_backend(device: str):
+    """Lazily import + configure the JAX backend for the requested device.
+
+    device=="cpu" -> force the CPU platform (JAX_PLATFORMS=cpu) BEFORE the first jax
+    import, so this never touches the GPU (the parity check + the workstation rule).
+    device=="gpu" -> only setdefault XLA_PYTHON_CLIENT_MEM_FRACTION (never PREALLOCATE),
+    matching train_l4.py's VRAM discipline; safe_run wins if it already exported it.
+    Returns the imported jax module (and jax.numpy via jax.numpy)."""
+    if device == "cpu":
+        os.environ.setdefault("JAX_PLATFORMS", "cpu")
+    else:
+        # never clobber a safe_run-exported cap; never touch PREALLOCATE.
+        os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
+    import jax  # noqa: WPS433 (deliberate lazy import after env is set)
+    return jax
+
+
+def _make_tile_kernel(jax, m: int, anchor_tile: int, cand_tile: int):
+    """Build (and cache) a jitted per-tile distance+min kernel for a fixed tile shape.
+
+    Static shapes (anchor_tile, cand_tile, m) so the jit never retraces across tiles;
+    the last tile of a run is PADDED up to these shapes host-side, and the padding is
+    masked to +inf via a validity flag so it can never win the candidate min.
+
+    Inputs (all device arrays, padded to static shape):
+        A        (anchor_tile, m) f32   z-normed anchor rows
+        B        (cand_tile,   m) f32   z-normed candidate rows
+        a_starts (anchor_tile,) f32     anchor start indices (float for the |a-c| diff)
+        c_starts (cand_tile,)   f32     candidate start indices
+        a_valid  (anchor_tile,) bool    real (not pad) anchor rows
+        c_valid  (cand_tile,)   bool    real (not pad) candidate rows
+        excl     scalar f32             trivial-match exclusion radius
+    Returns block_min (anchor_tile,) f32: per-anchor min SQUARED z-Euclidean distance to
+    any admissible candidate in this tile (+inf where none). Mirrors the numpy block
+    EXACTLY: d2 = ||a||^2 + ||b||^2 - 2 A.B^T, floored at 0, exclusion-zone -> inf.
+    """
+    import jax.numpy as jnp
+
+    key = (int(m), int(anchor_tile), int(cand_tile))
+    cached = _JAX_TILE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    def _tile(A, B, a_starts, c_starts, a_valid, c_valid, excl):
+        a_sq = jnp.sum(A * A, axis=1)                       # (Ka,) ||a||^2
+        b_sq = jnp.sum(B * B, axis=1)                       # (Kc,) ||b||^2
+        cross = A @ B.T                                     # (Ka, Kc)  the matmul long-pole
+        d2 = a_sq[:, None] + b_sq[None, :] - 2.0 * cross
+        d2 = jnp.maximum(d2, 0.0)                           # numeric floor (CLAUDE.md guard)
+        # trivial-match exclusion: |a_start - c_start| <= excl  -> inf  (no lax.cond in vmap;
+        # straight jnp.where). Padded candidates (c_valid False) are likewise masked to inf so
+        # they never win the min.
+        start_diff = jnp.abs(a_starts[:, None] - c_starts[None, :])
+        too_close = start_diff <= excl
+        admissible = c_valid[None, :] & (~too_close)
+        d2 = jnp.where(admissible, d2, jnp.inf)
+        block_min = jnp.min(d2, axis=1)                     # (Ka,) per-anchor tile min
+        # padded anchor rows are meaningless; leave them (caller slices to the real Ka).
+        return block_min
+
+    fn = jax.jit(_tile)
+    _JAX_TILE_CACHE[key] = fn
+    return fn
+
+
+def sampled_tiled_matrix_profile_jax(subs_z, starts, anchor_ix, m, cand_tile, anchor_tile,
+                                     excl_zone, *, device="gpu", jax=None):
+    """JAX/GPU twin of `sampled_tiled_matrix_profile` — IDENTICAL signature + output.
+
+    Returns nn_dist(K,) f32: min z-normalised Euclidean distance from each sampled anchor
+    to any NON-trivial candidate, computed in the SAME fixed (anchor_tile x cand_tile)
+    tiles (VRAM stays bounded by one tile, never O(n^2)). The matmul A@B.T and the row-min
+    run on device; the running min across tiles is folded host-side, exactly as numpy.
+
+    The per-tile kernel is jitted on STATIC tile shapes, so the last (ragged) tile of each
+    run is zero-padded up to (anchor_tile, cand_tile) and the pad is masked to +inf via a
+    validity flag — no retrace, and padding never affects the result. Parity with the numpy
+    path is asserted to ~1e-4 by the CPU correctness gate (see `_parity_check`).
+
+    `device`: "cpu" (parity / workstation) or "gpu" (server). `jax`: optional pre-imported
+    module (so callers profiling many assets import once)."""
+    import numpy as _np
+    if jax is None:
+        jax = _jax_backend(device)
+    import jax.numpy as jnp
+
+    n = int(subs_z.shape[0])
+    K = int(anchor_ix.shape[0])
+    nn = _np.full(K, _np.inf, dtype=_np.float64)
+    if n <= 1 or K == 0:
+        return nn.astype(_np.float32)
+
+    cand_tile = max(1, int(cand_tile))
+    anchor_tile = max(1, int(anchor_tile))
+    excl_f = _np.float32(int(excl_zone))
+
+    anchor_ix = _np.asarray(anchor_ix, dtype=_np.int64)
+    starts = _np.asarray(starts, dtype=_np.int64)
+    anchor_starts = starts[anchor_ix].astype(_np.float32)   # (K,)
+
+    # Move the full z-normed corpus + starts to device once per run (candidate stream is
+    # re-sliced from it per tile — host->device once, not per tile).
+    subs_dev = jnp.asarray(_np.ascontiguousarray(subs_z, dtype=_np.float32))
+    starts_dev = jnp.asarray(starts.astype(_np.float32))
+    anchor_dev = jnp.asarray(subs_dev[_np.asarray(anchor_ix)])   # (K, m) gather on device
+    anchor_starts_dev = jnp.asarray(anchor_starts)
+
+    tile_fn = _make_tile_kernel(jax, m, anchor_tile, cand_tile)
+    excl_dev = jnp.asarray(excl_f)
+    zero_row = jnp.zeros((1, int(m)), dtype=jnp.float32)
+
+    for a0 in range(0, K, anchor_tile):
+        a1 = min(a0 + anchor_tile, K)
+        ka = a1 - a0
+        # pad the anchor tile up to anchor_tile rows (static shape).
+        A = anchor_dev[a0:a1]
+        a_st = anchor_starts_dev[a0:a1]
+        if ka < anchor_tile:
+            pad = anchor_tile - ka
+            A = jnp.concatenate([A, jnp.zeros((pad, int(m)), dtype=jnp.float32)], axis=0)
+            a_st = jnp.concatenate([a_st, jnp.zeros((pad,), dtype=jnp.float32)], axis=0)
+        a_valid = jnp.concatenate(
+            [jnp.ones((ka,), dtype=bool), jnp.zeros((anchor_tile - ka,), dtype=bool)], axis=0
+        ) if ka < anchor_tile else jnp.ones((anchor_tile,), dtype=bool)
+
+        block_min = jnp.full((anchor_tile,), jnp.inf, dtype=jnp.float32)
+        for c0 in range(0, n, cand_tile):
+            c1 = min(c0 + cand_tile, n)
+            kc = c1 - c0
+            B = subs_dev[c0:c1]
+            c_st = starts_dev[c0:c1]
+            if kc < cand_tile:
+                pad = cand_tile - kc
+                B = jnp.concatenate([B, jnp.zeros((pad, int(m)), dtype=jnp.float32)], axis=0)
+                c_st = jnp.concatenate([c_st, jnp.zeros((pad,), dtype=jnp.float32)], axis=0)
+                c_valid = jnp.concatenate(
+                    [jnp.ones((kc,), dtype=bool), jnp.zeros((pad,), dtype=bool)], axis=0
+                )
+            else:
+                c_valid = jnp.ones((cand_tile,), dtype=bool)
+            tile_min = tile_fn(A, B, a_st, c_st, a_valid, c_valid, excl_dev)
+            block_min = jnp.minimum(block_min, tile_min)
+        # block_until_ready before the device->host transfer (CLAUDE.md guard).
+        jax.block_until_ready(block_min)
+        bm = _np.asarray(block_min)[:ka].astype(_np.float64)
+        nn[a0:a1] = _np.minimum(nn[a0:a1], bm)
+
+    nn = _np.sqrt(_np.maximum(nn, 0.0))
+    return nn.astype(_np.float32)
+
+
+def _parity_check(n=400, m=16, K=64, cand_tile=37, anchor_tile=9, excl_zone=8, seed=0,
+                  atol=1e-4, verbose=True):
+    """CORRECTNESS GATE (CPU only): assert the JAX kernel matches the numpy reference to ~atol.
+
+    Builds `n` random z-normed length-`m` subsequences, samples `K` anchors, runs BOTH
+    `sampled_tiled_matrix_profile` (numpy) and `sampled_tiled_matrix_profile_jax` (device="cpu",
+    forced via JAX_PLATFORMS=cpu) over the SAME inputs, and checks allclose. Deliberately uses
+    ODD tile sizes that don't divide n/K so the ragged-tile padding path is exercised. Returns the
+    max abs diff. This must stay ~1e-4 or better — it is the whole point of the port.
+
+    NOTE: GPU is never touched here (device="cpu" sets JAX_PLATFORMS=cpu). The real GPU run happens
+    on the server; this gate only proves numeric parity on CPU."""
+    rng = np.random.default_rng(seed)
+    subs = rng.standard_normal((n, m)).astype(np.float32)
+    subs_z = _znorm(subs)
+    starts = np.arange(n, dtype=np.int64)
+    anchor_ix = np.sort(rng.choice(n, size=min(K, n), replace=False)).astype(np.int64)
+
+    ref = sampled_tiled_matrix_profile(
+        subs_z, starts, anchor_ix, m, cand_tile, anchor_tile, excl_zone
+    )
+    got = sampled_tiled_matrix_profile_jax(
+        subs_z, starts, anchor_ix, m, cand_tile, anchor_tile, excl_zone, device="cpu"
+    )
+    # both are (K,) f32; finite-mask agreement first (inf == inf where no neighbour).
+    ref_fin = np.isfinite(ref)
+    got_fin = np.isfinite(got)
+    finite_match = bool(np.array_equal(ref_fin, got_fin))
+    if ref_fin.any():
+        max_abs = float(np.max(np.abs(ref[ref_fin] - got[ref_fin])))
+    else:
+        max_abs = 0.0
+    ok = finite_match and np.allclose(ref[ref_fin], got[ref_fin], atol=atol, rtol=0.0)
+    if verbose:
+        print(f"[L5 parity] n={n} m={m} K={anchor_ix.size} tile={anchor_tile}x{cand_tile} "
+              f"excl={excl_zone}")
+        print(f"[L5 parity] finite-mask match: {finite_match} "
+              f"(ref_finite={int(ref_fin.sum())}, jax_finite={int(got_fin.sum())})")
+        print(f"[L5 parity] max abs diff (finite): {max_abs:.3e}  (atol={atol:.1e})")
+        print(f"[L5 parity] {'PASS' if ok else 'FAIL'}")
+    if not ok:
+        raise AssertionError(
+            f"L5 JAX kernel parity FAILED: finite_match={finite_match} max_abs={max_abs:.3e} > "
+            f"atol={atol:.1e}"
+        )
+    return max_abs
+
+
+# --------------------------------------------------------------------------- #
 # per-asset pass: sample anchors, profile them, accumulate ONLINE
 # --------------------------------------------------------------------------- #
 class _OnlineAccum:
@@ -305,13 +526,31 @@ def _choose_anchors(n: int, k: int, rng) -> np.ndarray:
     return np.sort(rng.choice(n, size=k, replace=False)).astype(np.int64)
 
 
+def _profile_kernel(device):
+    """Device-selection switch: return the matrix-profile kernel + (optionally) a pre-imported
+    jax module. device=="gpu" -> JAX/GPU path; anything else -> the numpy CPU reference (also the
+    parity reference + fallback). The numpy path is NEVER removed.
+
+    Returns (kernel_fn, jax_or_None). The JAX kernel is partial-bound with the imported jax module
+    and the device so callers just pass the same positional args as the numpy kernel."""
+    if device == "gpu":
+        import functools
+        jx = _jax_backend("gpu")
+        fn = functools.partial(sampled_tiled_matrix_profile_jax, device="gpu", jax=jx)
+        return fn, jx
+    return sampled_tiled_matrix_profile, None
+
+
 def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, cand_tile,
-                   anchor_tile, max_windows, motif_frac, seed, accum=None):
+                   anchor_tile, max_windows, motif_frac, seed, accum=None, device="cpu"):
     """Run the sampled+tiled matrix profile over `assets`, folding results into an _OnlineAccum.
 
     Returns the populated _OnlineAccum (token counts + NN-distance stats + reservoir). NEVER
     materialises all subsequences across the corpus — works run by run, anchors sampled per run-pool
     per asset, distances reduced in tiles.
+
+    `device`: "cpu" (numpy kernel, default) or "gpu" (the JAX kernel from this module). Both
+    produce IDENTICAL nn_dist to ~1e-4 (see the parity gate), so the verdict is device-independent.
     """
     n_symbols = BA.N_SYMBOLS(table)
     if accum is None:
@@ -319,6 +558,7 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
     rng = np.random.default_rng(seed)
     m = int(subseq_len)
     excl_zone = int(max(m // 2, 1))                        # trivial-match exclusion ~ half subseq
+    mp_kernel, _jx = _profile_kernel(device)               # numpy or JAX/GPU twin
 
     for asset_id in assets:
         # Pool this asset's runs into a bounded set of subsequences. To honour max_windows we cap the
@@ -378,7 +618,7 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
         anchor_ix = _choose_anchors(subs_z.shape[0], anchors_per_asset, rng)
         if anchor_ix.size == 0:
             continue
-        nn = sampled_tiled_matrix_profile(
+        nn = mp_kernel(
             subs_z, starts, anchor_ix, m, cand_tile, anchor_tile, excl_zone
         )
         anchor_symbols = BA.encode_symbols(centre_feats[anchor_ix], table)
@@ -399,7 +639,7 @@ def profile_assets(db, assets, cfg, table, *, anchors_per_asset, subseq_len, can
             ctl_subs_z = _znorm(ctl_subs)
             ctl_anchor_ix = _choose_anchors(ctl_subs_z.shape[0], anchors_per_asset, rng)
             if ctl_anchor_ix.size:
-                ctl_nn = sampled_tiled_matrix_profile(
+                ctl_nn = mp_kernel(
                     ctl_subs_z, ctl_starts, ctl_anchor_ix, m, cand_tile, anchor_tile, excl_zone
                 )
                 accum.add_control(ctl_nn)
@@ -746,12 +986,25 @@ def parse_args(argv=None):
                    help="Explicit HOLDOUT asset ids (default: config.CandleConfig.holdout_assets).")
     p.add_argument("--transfer-matrix", action="store_true",
                    help="Compute the per-asset A8 A-by-B transfer matrix + holdout_transfer_rate.")
+    p.add_argument("--device", type=str, default="cpu", choices=("cpu", "gpu"),
+                   help="Matrix-profile distance backend. 'cpu' = numpy (default, the parity "
+                        "reference). 'gpu' = JAX/GPU twin (sampled_tiled_matrix_profile_jax) — "
+                        "SERVER ONLY, on a single idle GPU (GPU 1 or 2; GPU 0 is VirtualBox-"
+                        "reserved, GPU 3 runs L4). NEVER use 'gpu' on the workstation 3090.")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--parity-check", action="store_true",
+                   help="Run the CPU-only numpy-vs-JAX kernel parity gate and exit (no DB needed). "
+                        "Forces JAX_PLATFORMS=cpu internally; asserts max abs diff <= ~1e-4.")
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.parity_check:
+        # CPU-only correctness gate; no DB / device init beyond CPU JAX.
+        max_abs = _parity_check()
+        print(f"[L5] parity-check OK (max abs diff {max_abs:.3e})")
+        return {"parity_max_abs_diff": float(max_abs)}
     db = args.db if args.db else C.db_path()
     max_windows = None if int(args.max_windows_per_asset) <= 0 else int(args.max_windows_per_asset)
     cfg = C.CandleConfig(db=db)
@@ -771,7 +1024,7 @@ def main(argv=None):
     print(f"[L5] build_assets={cfg.build_assets}  holdout_assets={cfg.holdout_assets}")
     print(f"[L5] m={args.subseq_len}  anchors/asset={args.anchors_per_asset}  "
           f"cand_tile={args.cand_tile}  anchor_tile={args.anchor_tile}  "
-          f"max_windows/asset={max_windows}")
+          f"max_windows/asset={max_windows}  device={args.device}")
 
     # 1) shared base alphabet (fit on a bounded pooled sample of build-asset features).
     print("[L5] fitting shared base alphabet ...")
@@ -790,6 +1043,7 @@ def main(argv=None):
         max_windows=max_windows,
         motif_frac=float(args.motif_frac),
         seed=int(args.seed),
+        device=str(args.device),
     )
     print(f"[L5] profiled {accum.anchor_total} anchors; "
           f"finite-NN frac={accum.nn_finite_n / max(accum.nn_n, 1):.4f}  "

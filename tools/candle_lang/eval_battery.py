@@ -316,45 +316,76 @@ def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, hold
     # report (a) which holdout assets transfer and (b) the A-by-B build-asset x holdout-asset matrix.
     # The pooled aggregates are recovered by summing the per-asset vectors, so the headline metric is
     # identical to the non-matrix path (the real substrate is still encoded exactly once per asset).
+    # bigram transition matrices accumulate alongside the unigram counts (ONE ordered pass each).
+    build_trans = np.zeros((cb, cb), dtype=np.int64) if cb <= _BIGRAM_MAX_K else None
+    hold_trans = np.zeros((cb, cb), dtype=np.int64) if cb <= _BIGRAM_MAX_K else None
     build_by_asset = hold_by_asset = None
     if per_asset_matrix:
-        build_by_asset = {int(a): _fold_counts(encode_assets_fn(vocab, [a], None), cb) for a in build_assets}
-        hold_by_asset = {int(a): _fold_counts(encode_assets_fn(vocab, [a], None), cb) for a in holdout_assets}
+        build_by_asset = {}
+        for a in build_assets:
+            uni, big = _fold_with_bigram(encode_assets_fn(vocab, [a], None), cb)
+            build_by_asset[int(a)] = uni
+            if build_trans is not None and big is not None:
+                build_trans += big
+        hold_by_asset = {}
+        for a in holdout_assets:
+            uni, big = _fold_with_bigram(encode_assets_fn(vocab, [a], None), cb)
+            hold_by_asset[int(a)] = uni
+            if hold_trans is not None and big is not None:
+                hold_trans += big
         build_counts = np.sum(list(build_by_asset.values()), axis=0).astype(np.int64) \
             if build_by_asset else np.zeros(cb, dtype=np.int64)
         hold_counts = np.sum(list(hold_by_asset.values()), axis=0).astype(np.int64) \
             if hold_by_asset else np.zeros(cb, dtype=np.int64)
     else:
-        build_counts = _fold_counts(encode_assets_fn(vocab, build_assets, None), cb)
-        hold_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, None), cb)
+        build_counts, build_trans = _fold_with_bigram(encode_assets_fn(vocab, build_assets, None), cb)
+        hold_counts, hold_trans = _fold_with_bigram(encode_assets_fn(vocab, holdout_assets, None), cb)
 
     mask = _nonzero_quantile_band(build_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
     cov_real, jac_real, sp_real = _transfer_stats(build_counts, hold_counts, mask)
     d_real, n_band = _transfer_codelength(build_counts, hold_counts, mask, alpha=alpha)
 
-    # --- 2) freq-matched random-codebook permutation null (19-seed one-sided rank test) ---
+    # --- 2) freq-matched random-codebook permutation null (unigram, one-sided rank test) ---
     perm = _codelength_perm_controls(build_counts, hold_counts, mask, n_seeds=n_perm_seeds, alpha=alpha)
     perm_min = float(perm.min()) if perm.size else float("inf")
     perm_mean = float(perm.mean()) if perm.size else float("inf")
     beats_random_codebook = bool(perm.size and np.isfinite(d_real) and d_real < perm_min)
 
+    # --- 2b) BIGRAM transition codelength (TASK_796): the metric a phase-shuffle CANNOT preserve ---
+    dbi_real, n_trans = _bigram_codelength(build_trans, hold_trans, alpha=alpha)
+    bperm = _bigram_perm_controls(build_trans, hold_trans, n_seeds=n_perm_seeds, alpha=alpha)
+    bperm_min = float(bperm.min()) if bperm.size else float("inf")
+    beats_random_codebook_bigram = bool(bperm.size and np.isfinite(dbi_real) and dbi_real < bperm_min)
+
     # --- 3) substrate controls: re-encode through each structure-destroying transform ---
+    # Each control is scored on BOTH the unigram codelength (marginals — a phase-shuffle preserves
+    # these, so real rarely wins) AND the bigram codelength (transitions — a phase-shuffle DESTROYS
+    # these, so real beating the control here is the meaningful transfer signal).
     per_control = {}
     beats_substrate = True
+    beats_substrate_bigram = True
     for ctl in controls:
-        cb_counts = _fold_counts(encode_assets_fn(vocab, build_assets, ctl), cb)
-        ch_counts = _fold_counts(encode_assets_fn(vocab, holdout_assets, ctl), cb)
-        cmask = _nonzero_quantile_band(cb_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
-        d_ctl, _ = _transfer_codelength(cb_counts, ch_counts, cmask, alpha=alpha)
-        cov_c, jac_c, sp_c = _transfer_stats(cb_counts, ch_counts, cmask)
+        c_counts, c_trans = _fold_with_bigram(encode_assets_fn(vocab, build_assets, ctl), cb)
+        h_counts, h_trans = _fold_with_bigram(encode_assets_fn(vocab, holdout_assets, ctl), cb)
+        cmask = _nonzero_quantile_band(c_counts, lo_q=band[0], hi_q=band[1], exclude_top_k=exclude_top_k)
+        d_ctl, _ = _transfer_codelength(c_counts, h_counts, cmask, alpha=alpha)
+        cov_c, jac_c, sp_c = _transfer_stats(c_counts, h_counts, cmask)
         beats_c = bool(np.isfinite(d_real) and np.isfinite(d_ctl) and d_real < d_ctl - float(codelen_margin))
         beats_substrate = beats_substrate and beats_c
+        dbi_ctl, _ = _bigram_codelength(c_trans, h_trans, alpha=alpha)
+        beats_c_bi = bool(np.isfinite(dbi_real) and np.isfinite(dbi_ctl) and dbi_real < dbi_ctl - float(codelen_margin))
+        beats_substrate_bigram = beats_substrate_bigram and beats_c_bi
         per_control[str(ctl)] = dict(
             transfer_bits=float(d_ctl), coverage=float(cov_c), jaccard=float(jac_c),
             spearman=float(sp_c), beats=beats_c,
+            transfer_bits_bigram=float(dbi_ctl), beats_bigram=beats_c_bi,
         )
 
+    # unigram verdict (marginal transfer) and the stronger BIGRAM verdict (transition transfer).
     beats_all = bool(beats_random_codebook and beats_substrate)
+    # headline TASK_796 verdict: real transfers if it beats the random-codebook null on marginals AND
+    # beats the structure-destroying substrate controls on TRANSITIONS (the bigram axis they cannot fake).
+    beats_all_bigram = bool(beats_random_codebook_bigram and beats_substrate_bigram and (build_trans is not None))
 
     # --- 4) per-asset breakdown + A-by-B matrix (TASK_796 scale-up) ---
     # per_holdout: each holdout asset's transfer_bits under the POOLED build vocab + whether it beats
@@ -398,6 +429,14 @@ def a8_cross_asset_transfer(build_vocab_fn, encode_assets_fn, build_assets, hold
         controls=list(per_control.keys()),
         per_control=per_control,
         beats_substrate=bool(beats_substrate),
+        # BIGRAM / transition transfer (TASK_796) — the axis a phase-shuffle cannot preserve.
+        transfer_bits_bigram=float(dbi_real),
+        n_transitions=int(n_trans),
+        bigram_perm_min_bits=bperm_min,
+        beats_random_codebook_bigram=beats_random_codebook_bigram,
+        beats_substrate_bigram=bool(beats_substrate_bigram),
+        beats_all_bigram=beats_all_bigram,
+        bigram_available=bool(build_trans is not None),
         # secondary de-saturated stats (reported, not the sole gate)
         coverage=float(cov_real),
         jaccard=float(jac_real),
@@ -475,6 +514,133 @@ def _codelength_perm_controls(build_counts: np.ndarray, hold_counts: np.ndarray,
         p = (bc_perm + float(alpha)) / (bc_perm.sum() + float(alpha) * k)
         out[s] = float(np.sum(hc * (-np.log2(p))) / n)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# BIGRAM / transition codelength (TASK_796 upgrade) — the metric that makes the
+# substrate-control axis meaningful. The unigram codelength depends only on token MARGINALS, which a
+# phase-shuffle PRESERVES (so real can't beat the shuffle control). A bigram model codes each token
+# conditioned on its predecessor, p_A(curr|prev) — i.e. shared TRANSITIONS — which a phase-shuffle
+# DESTROYS. So real beating the shuffle/random-merge controls on bigram codelength is genuine
+# transferable temporal structure, not matched marginals.
+# --------------------------------------------------------------------------- #
+_BIGRAM_MAX_K = 2048   # dense KxK transition matrix; skip bigram above this codebook size (memory).
+
+
+def _fold_with_bigram(token_id_iter, codebook_size, max_k=_BIGRAM_MAX_K):
+    """ONE ordered pass over a token-id stream -> (unigram_counts(K,), bigram_counts(K,K) or None).
+    Counts adjacent (prev,curr) transitions, tracking the last id ACROSS chunk boundaries within this
+    iterator. ONE iterator == ONE contiguous stream: callers fold per-asset (or accept a negligible
+    cross-asset leak on a pooled stream). Returns bigram=None when K>max_k (dense KxK too large)."""
+    K = int(codebook_size)
+    uni = np.zeros(K, dtype=np.int64)
+    big_flat = np.zeros(K * K, dtype=np.int64) if K <= int(max_k) else None
+    prev = -1
+    for chunk in token_id_iter:
+        ids = _as_1d_int(chunk)
+        if ids.size == 0:
+            continue
+        ids = np.clip(ids, 0, K - 1)
+        uni += np.bincount(ids, minlength=K).astype(np.int64)
+        if big_flat is not None:
+            seq = ids if prev < 0 else np.concatenate(([prev], ids))
+            if seq.size >= 2:
+                # O(tokens) scatter-add into the persistent KxK accumulator (no per-chunk O(K^2)
+                # bincount allocation — matters for the K=1376 BPE member).
+                np.add.at(big_flat, seq[:-1] * K + seq[1:], 1)
+            prev = int(ids[-1])
+    big = big_flat.reshape(K, K) if big_flat is not None else None
+    return uni, big
+
+
+def _bigram_codelength(build_trans, hold_trans, alpha=1.0):
+    """bits/transition of the HOLDOUT transitions under the BUILD Laplace-smoothed bigram model
+    p(curr|prev). Low == holdout's transitions follow build's transition structure == shared temporal
+    structure. Non-saturating; this is what a phase-shuffle cannot preserve."""
+    if build_trans is None or hold_trans is None:
+        return float("inf"), 0
+    bt = build_trans.astype(np.float64)
+    ht = hold_trans.astype(np.float64)
+    n = float(ht.sum())
+    if n <= 0.0:
+        return float("inf"), 0
+    K = bt.shape[0]
+    row = bt.sum(axis=1, keepdims=True)
+    P = (bt + float(alpha)) / (row + float(alpha) * K)        # conditional p(curr|prev)
+    bits = -np.log2(P)
+    return float(np.sum(ht * bits) / n), int(n)
+
+
+def _bigram_perm_controls(build_trans, hold_trans, n_seeds=99, alpha=1.0, seed0=4242):
+    """Freq-matched random-codebook null for the BIGRAM: keep build's SET of conditional
+    distributions but randomly REASSIGN which 'prev' owns which conditional (row-permute the per-prev
+    codelength), breaking the prev->curr alignment while preserving the conditional multiset. Real
+    beating ALL perms == the SPECIFIC transition structure transfers (not generic transition density)."""
+    if build_trans is None or hold_trans is None:
+        return np.zeros(0, dtype=np.float64)
+    bt = build_trans.astype(np.float64)
+    ht = hold_trans.astype(np.float64)
+    n = float(ht.sum())
+    if n <= 0.0:
+        return np.zeros(0, dtype=np.float64)
+    K = bt.shape[0]
+    row = bt.sum(axis=1, keepdims=True)
+    bits = -np.log2((bt + float(alpha)) / (row + float(alpha) * K))   # (K,K)
+    rng = np.random.default_rng(int(seed0))
+    out = np.empty(int(n_seeds), dtype=np.float64)
+    for s in range(int(n_seeds)):
+        out[s] = float(np.sum(ht * bits[rng.permutation(K)]) / n)     # code prev under a random prev's dist
+    return out
+
+
+def a8_bigram_power_check(K=32, n=20000, rng_seed=0) -> dict:
+    """POSITIVE CONTROL for the BIGRAM upgrade (TASK_796). A phase-shuffle preserves token marginals
+    but destroys transitions, so the BIGRAM codelength MUST distinguish an ordered Markov stream from
+    its shuffled copy, where the UNIGRAM cannot. Asserts: real (ordered build->ordered holdout) bigram
+    codelength is LOWER than the shuffled control's, AND the unigram codelength is ~unchanged by
+    shuffling. bigram_power_ok must be True or the substrate-control (bigram) verdict is meaningless."""
+    rng = np.random.default_rng(int(rng_seed))
+    M = rng.random((K, K)) ** 5 + 1e-3
+    M /= M.sum(axis=1, keepdims=True)
+
+    def _chain(nn, seed):
+        r = np.random.default_rng(seed)
+        s = np.empty(int(nn), dtype=np.int64)
+        s[0] = int(r.integers(K))
+        for t in range(1, int(nn)):
+            s[t] = int(r.choice(K, p=M[s[t - 1]]))
+        return s
+
+    def _trans(s):
+        t = np.zeros((K, K), dtype=np.int64)
+        np.add.at(t, (s[:-1], s[1:]), 1)
+        return t
+
+    def _uni(s):
+        return np.bincount(s, minlength=K).astype(np.int64)
+
+    b = _chain(n, 1)
+    h = _chain(n, 2)                                   # build + holdout share the SAME chain M
+    bs = b.copy(); rng.shuffle(bs)                     # shuffle: keep marginals, destroy transitions
+    hs = h.copy(); rng.shuffle(hs)
+
+    d_bi_real, _ = _bigram_codelength(_trans(b), _trans(h))
+    d_bi_ctrl, _ = _bigram_codelength(_trans(bs), _trans(hs))
+    # unigram (band-free) cross-entropy: should be ~identical ordered vs shuffled (same marginals).
+    def _uni_cl(bu, hu):
+        p = (bu.astype(np.float64) + 1.0) / (bu.sum() + float(K))
+        return float(np.sum(hu * (-np.log2(p))) / max(hu.sum(), 1))
+    d_uni_real = _uni_cl(_uni(b), _uni(h))
+    d_uni_ctrl = _uni_cl(_uni(bs), _uni(hs))
+
+    bigram_distinguishes = bool(d_bi_real < d_bi_ctrl - 0.05)
+    unigram_blind = bool(abs(d_uni_real - d_uni_ctrl) < 0.05)
+    return dict(
+        bigram_power_ok=bool(bigram_distinguishes and unigram_blind),
+        bigram_distinguishes=bigram_distinguishes, unigram_blind=unigram_blind,
+        d_bigram_real=d_bi_real, d_bigram_shuffled=d_bi_ctrl,
+        d_unigram_real=d_uni_real, d_unigram_shuffled=d_uni_ctrl, K=int(K), n=int(n),
+    )
 
 
 def a8_power_check(codebook_size=512, n_seeds=19, alpha=1.0, band=(0.10, 0.90),
@@ -715,6 +881,13 @@ if __name__ == "__main__":
     assert power["power_ok"], (
         "A8 metric FAILED its positive-control power check: it must PASS a known-transferable pair "
         "and FAIL a known-non-transferable pair. Do not trust any real A8 verdict until this holds."
+    )
+    bipow = a8_bigram_power_check(K=32, n=20000)
+    print("A8 bigram power-check:", {k: (round(v, 4) if isinstance(v, float) else v) for k, v in bipow.items()})
+    assert bipow["bigram_power_ok"], (
+        "BIGRAM metric FAILED its positive control: it must distinguish an ordered Markov stream from "
+        "its phase-shuffled copy (where the unigram is blind). The substrate-control bigram verdict is "
+        "meaningless until this holds."
     )
 
     # --- A8: end-to-end shape test through the member API (shared-structure build/holdout) ---

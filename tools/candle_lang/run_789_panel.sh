@@ -47,6 +47,7 @@ MAX_WPA="20000"             # max-windows-per-asset (RAM/time bound for CPU memb
 MEM="64G"                   # cgroup RAM cap per cell
 GPU_FRAC="0.7"              # VRAM fraction for the L4 GPU cell
 SKIP_L4=0
+SKIP_L5=0                   # TASK_796: skip L5 here so it can run GPU-accelerated in its own cell
 CPU_OVERLAP=1               # L1/L2/L3/L5 may run concurrently (they're independent)
 ASSET_SPLIT=""             # TASK_796: JSON {build:[...],holdout:[...]} for the scaled run (else member defaults)
 TRANSFER_MATRIX=0          # TASK_796: pass --transfer-matrix to every member (A-by-B per-asset matrix)
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --mem) MEM="$2"; shift 2;;
     --gpu-frac) GPU_FRAC="$2"; shift 2;;
     --skip-l4) SKIP_L4=1; shift;;
+    --skip-l5) SKIP_L5=1; shift;;
     --no-cpu-overlap) CPU_OVERLAP=0; shift;;
     --asset-split) ASSET_SPLIT="$2"; shift 2;;
     --transfer-matrix) TRANSFER_MATRIX=1; shift;;
@@ -230,7 +232,8 @@ echo "[789] >>> Cell 2: CPU symbolic members (overlap=$CPU_OVERLAP)"
 launch_cpu L1_bpe            L1_BPE_RESULT.md   tools.candle_lang.symbolic.l1_bpe            "${MEMBER_EXTRA[@]}"
 launch_cpu L2_abba          l2_abba_RESULT.md  tools.candle_lang.symbolic.l2_abba          "${MEMBER_EXTRA[@]}"
 launch_cpu L3_sax_grammar   L3_RESULT.md       tools.candle_lang.symbolic.l3_sax_grammar   "${MEMBER_EXTRA[@]}"
-launch_cpu L5_matrix_profile L5_RESULT.md      tools.candle_lang.symbolic.l5_matrix_profile "${MEMBER_EXTRA[@]}"
+(( SKIP_L5 )) && echo "[789] L5 skipped here (--skip-l5; run GPU-accelerated in its own cell)." \
+  || launch_cpu L5_matrix_profile L5_RESULT.md tools.candle_lang.symbolic.l5_matrix_profile "${MEMBER_EXTRA[@]}"
 
 CPU_FAILED=0
 if (( CPU_OVERLAP )); then
