@@ -49,13 +49,26 @@ def _js(p_counts: np.ndarray, q_counts: np.ndarray) -> float:
     return float(0.5 * _kl(p, m) + 0.5 * _kl(q, m))
 
 
-def asset_fingerprint(tok: CandleTokenizer, db: str, asset_id: int, cfg, max_windows: int):
-    """(unigram(K,), bigram(K,K)) token fingerprint for one asset via the frozen tokenizer."""
-    uni, big = EB._fold_with_bigram(
-        tok.encode_asset(db, int(asset_id), cfg, max_windows_per_asset=int(max_windows)),
-        int(tok.codebook_size),
-    )
-    return uni, big
+def asset_fingerprint(tok: CandleTokenizer, db: str, asset_id: int, cfg, max_windows: int,
+                      shuffle_rng=None):
+    """(unigram(K,), bigram(K,K), bigram_shuffled(K,K)|None) token fingerprint for one asset.
+
+    shuffle_rng (a np.random.Generator): if given, ALSO returns a bigram from a token-order-SHUFFLED
+    copy of the stream — destroys transitions, KEEPS marginals. The validation control: if the real
+    bigram similarity structure is genuine transition structure, the shuffled bigram must collapse to
+    the unigram (its distances should track D_unigram, losing the independent structure)."""
+    K = int(tok.codebook_size)
+    if shuffle_rng is None:
+        uni, big = EB._fold_with_bigram(
+            tok.encode_asset(db, int(asset_id), cfg, max_windows_per_asset=int(max_windows)), K)
+        return uni, big, None
+    chunks = [np.asarray(c, dtype=np.int64) for c in
+              tok.encode_asset(db, int(asset_id), cfg, max_windows_per_asset=int(max_windows))]
+    stream = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int64)
+    uni, big = EB._fold_with_bigram([stream], K)
+    sh = stream.copy(); shuffle_rng.shuffle(sh)
+    _, big_shuf = EB._fold_with_bigram([sh], K)
+    return uni, big, big_shuf
 
 
 def _bigram_self_entropy(big):
@@ -79,6 +92,9 @@ def main(argv=None):
     p.add_argument("--out-dir", type=str, default=None, help="output dir (default runs/797_fingerprint).")
     p.add_argument("--k-clusters", type=int, nargs="+", default=[5, 8], help="flat-cluster cuts to report.")
     p.add_argument("--nearest", type=int, default=3, help="nearest neighbours per asset in the table.")
+    p.add_argument("--shuffle-control", action="store_true",
+                   help="ALSO build a token-order-shuffled bigram per asset (destroys transitions, keeps "
+                        "marginals); the real bigram structure must collapse toward the unigram under it.")
     args = p.parse_args(argv)
 
     db = args.db if args.db else C.db_path()
@@ -114,13 +130,14 @@ def main(argv=None):
     print(f"[797] candidate pool: {len(candidates)} assets (target {args.n_assets} that tokenize)", flush=True)
 
     # --- 3) fingerprint candidates until we have --n-assets that produce tokens ---
-    unis, bigs, kept = {}, {}, []
+    unis, bigs, bigs_shuf, kept = {}, {}, {}, []
+    sh_rng = np.random.default_rng(797) if args.shuffle_control else None
     skipped = 0
     for i, a in enumerate(candidates):
         if len(kept) >= args.n_assets:
             break
         try:
-            uni, big = asset_fingerprint(tok, db, a, cfg, args.max_windows)
+            uni, big, big_shuf = asset_fingerprint(tok, db, a, cfg, args.max_windows, shuffle_rng=sh_rng)
         except Exception as e:
             print(f"[797]   asset {a}: SKIP ({e})", flush=True)
             skipped += 1
@@ -130,6 +147,8 @@ def main(argv=None):
             continue
         unis[a] = uni
         bigs[a] = big
+        if big_shuf is not None:
+            bigs_shuf[a] = big_shuf
         kept.append(a)
         if len(kept) % 10 == 0:
             print(f"[797]   {len(kept)}/{args.n_assets} fingerprinted ({time.time()-t0:.0f}s, {skipped} skipped)", flush=True)
@@ -187,6 +206,29 @@ def main(argv=None):
     spread_bi = float(np.std(D_bi[iu]))
     spread_uni = float(np.std(D_uni[iu]))
 
+    # shuffle-collapse control: with token order destroyed (marginals kept), the bigram distances must
+    # COLLAPSE toward the unigram -> corr(uni, bi_shuffled) jumps toward ~1.0 and the bigram's
+    # INDEPENDENT structure (1 - corr) vanishes. That confirms the real bigram structure is genuine
+    # transition structure, not an artifact.
+    shuffle = None
+    if bigs_shuf and len(bigs_shuf) == n:
+        D_bi_shuf = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = _js(bigs_shuf[kept[i]], bigs_shuf[kept[j]])
+                D_bi_shuf[i, j] = D_bi_shuf[j, i] = d
+        corr_uni_bishuf = float(np.corrcoef(D_uni[iu], D_bi_shuf[iu])[0, 1]) if n > 2 else float("nan")
+        shuffle = dict(
+            corr_unigram_bigram_real=corr_uni_bi,
+            corr_unigram_bigram_shuffled=corr_uni_bishuf,
+            indep_structure_real=float(1.0 - corr_uni_bi),
+            indep_structure_shuffled=float(1.0 - corr_uni_bishuf),
+            spread_bigram_shuffled=float(np.std(D_bi_shuf[iu])),
+            collapsed=bool(corr_uni_bishuf > corr_uni_bi + 0.10),
+        )
+        print(f"[797] shuffle-collapse: corr(uni,bi) real={corr_uni_bi:.3f} -> shuffled="
+              f"{corr_uni_bishuf:.3f}  (collapsed={shuffle['collapsed']})", flush=True)
+
     wall = time.time() - t0
     print(f"[797] done in {wall:.0f}s; D_bi spread={spread_bi:.4f} corr(uni,bi)={corr_uni_bi:.3f}", flush=True)
 
@@ -198,7 +240,7 @@ def main(argv=None):
         D_unigram=D_uni.tolist(), D_bigram=D_bi.tolist(), D_bigram_xe_excess=D_xe.tolist(),
         nearest=nearest, flat_clusters=flat, linkage_average_Dbi=linkage_list,
         corr_unigram_bigram=corr_uni_bi, spread_bigram=spread_bi, spread_unigram=spread_uni,
-        wall_s=wall,
+        shuffle_control=shuffle, wall_s=wall,
     )
     with open(os.path.join(out_dir, "RESULT.json"), "w") as f:
         json.dump(js, f)
@@ -217,6 +259,16 @@ def main(argv=None):
         f"- corr(unigram-JS, bigram-JS) = **{corr_uni_bi:.3f}** — bigram adds structure beyond marginals "
         "when this is well below 1.0.", "",
     ]
+    if shuffle:
+        lines += [
+            "### Shuffle-collapse control (destroy token order, keep marginals)",
+            f"- corr(unigram, bigram): real **{shuffle['corr_unigram_bigram_real']:.3f}** -> "
+            f"shuffled **{shuffle['corr_unigram_bigram_shuffled']:.3f}**",
+            f"- bigram INDEPENDENT structure (1-corr): real **{shuffle['indep_structure_real']:.3f}** -> "
+            f"shuffled **{shuffle['indep_structure_shuffled']:.3f}**",
+            f"- **collapsed = {shuffle['collapsed']}** — if True, the real bigram structure is genuine "
+            "transition structure (it vanishes when order is destroyed), not an artifact.", "",
+        ]
     if flat:
         lines.append("## Flat clusters (agglomerative, average-linkage on bigram-JS)")
         for kc in sorted(flat):
