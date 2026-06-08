@@ -125,11 +125,15 @@ Stage-2 trader-on-tokens, real codebook vs random codebook, ≥3 seeds, BEFORE a
 5. ✅ A1 per-bar null (`n_bars_covered`) + KEEP boundary_bits.
 6. ✅ A2 additive signed metric (L1/L2/L3 per-bar mv, abs_tol=0.25); L5 number labeled non-A2 (motif). (No base-offset hack.)
 7. ✅ L3 incremental RePair (in-place pair-counts) + `_MAX_RULES`→512 + p_min — full fix, not just the cap.
-8. ⏳ L4 collapse remedy: **grid→256 (8,8,4) done** (zero-risk first experiment). DEFERRED if grid-256 insufficient:
-   MAGVIT-v2 entropy loss + strided/multi-token pool + masked-token objective (Phase 1).
+8. ✅ L4 collapse remedy: grid→256 (8,8,4) **insufficient alone** → MAGVIT-v2/LFQ entropy loss + **strided** pool fixed it.
+   150/150 verdict (`runs/l4_entfix/scaled_*`): collapsed 23/150 → best variant `w50` (strided, ent-weight 0.5) **89/150, 3.9× lift**,
+   beats uni+bigram null. Usage de-collapsed to 63–74% (NOT the 9-asset 85%); **higher ent-weight → lower usage but higher transfer**
+   (usage% ≠ the objective). Entropy on the *mean* pool makes collapse worse; entropy+strided is the cure. See lore §190.
 9. ✅ L5 absolute control-reservoir motif threshold + `_verdict` consults A8.
-10. ⏳ **RUNNING** — `796_token_v2` on gpu-server; read transfer_bits + beats_random_codebook + beats_all + power-harness pass.
-11. ☐ Only if beats_all: downstream trader-on-tokens real-vs-random, ≥3 seeds.
+10. ✅ **DONE** — 150/150 scorecard complete (`runs/796_bigram` L1–L5 + `runs/798_scorecard` L6/L7 + `runs/l4_entfix` L4-fix).
+    **All members beat the random-codebook null on unigram AND bigram.** Full table → lore §190 / [[TASK_798]].
+    Ranking (transfer /150): L2 149 · L5 135 · L4-w50 89 · L6 78 · L7 72 · L1 70 · L3 36.
+11. ☐ Only if beats_all: downstream trader-on-tokens real-vs-random, ≥3 seeds. **Unblocked** — multiple members now clear the gate.
 
 ### Deferred to a follow-up (documented, not blocking the v2 verdict)
 - A-by-B per-asset transfer matrix (v2 ships the aggregate B-under-A headline + per-control breakdown).

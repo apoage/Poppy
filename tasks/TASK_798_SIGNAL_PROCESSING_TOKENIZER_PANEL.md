@@ -1,6 +1,22 @@
 # TASK_798 — Signal-processing tokenizer panel (compression + transform columns)
 
-**Status**: SCOPED 2026-06-06. CPU. Extends the candle-language panel ([[TASK_796]]) / [[TASK_797]].
+**Status**: L6+L7 BUILT & SCORED 2026-06-06 — both transfer at 150/150. CPU. Extends the candle-language
+panel ([[TASK_796]]) / [[TASK_797]].
+
+## Result (150/150, `runs/798_scorecard/{L6,L7}`)
+Both new columns clear the §186 gate — beat the frequency-matched random-codebook null on **unigram AND
+bigram**. (Stale JSON verdict strings — L6 "KILL", L7 "PROCEED" — are meaningless; re-derive from
+`beats_random_codebook[_bigram]`.)
+
+| Member | family | transfer /150 | transfer_bits | A0 | uni | bigram |
+|---|---|---|---|---|---|---|
+| **L6 LZW** | compression | 78 (0.52) | 7.72 | 1.0 | ✓ | ✓ |
+| **L7 SFA** | transform | 72 (0.48) | 10.17 | 1.0 byte-exact, 1536/1536 codes | ✓ | ✓ |
+
+Land mid-pack in the full L1–L7 tournament (L2 149 · L5 135 · L4-w50 89 · **L6 78** · **L7 72** · L1 70 ·
+L3 36), ahead of SAX-grammar. **The tournament thesis is demonstrated: cross-asset transfer = cross-asset
+compressibility, across symbolic / motif / VQ / dictionary / compression / transform.** Full scorecard +
+the L4-entropy-fix verdict → lore §190. Next column = wavelet L8 (db4, scale-native coder).
 
 ## The reframe
 
