@@ -11,7 +11,14 @@ bigram**. (Stale JSON verdict strings — L6 "KILL", L7 "PROCEED" — are meanin
 | Member | family | transfer /150 | transfer_bits | A0 | uni | bigram |
 |---|---|---|---|---|---|---|
 | **L6 LZW** | compression | 78 (0.52) | 7.72 | 1.0 | ✓ | ✓ |
-| **L7 SFA** | transform | 72 (0.48) | 10.17 | 1.0 byte-exact, 1536/1536 codes | ✓ | ✓ |
+| **L7 SFA** | transform (Fourier) | 72 (0.48) | 10.17 | 1.0 byte-exact, 1536/1536 codes | ✓ | ✓ |
+| **L8 Haar** | transform (wavelet) | _server pending_ | _pending_ | **1.0 byte-exact** (6/6, no z-norm), 81% codes | _pending_ | _pending_ |
+
+**L8 Haar wavelet** built 2026-06-08 (`l8_wavelet.py`): pure-numpy multilevel Haar DWT (pywt not
+installed/needed; window=64=2⁶ is perfect dyadic), n_levels=4, keep coarse approx + 2 detail bands →
+MCB bins → mixed-radix pack (codebook 1536). Same scale-free discipline as L7 (NO per-window z-norm →
+A0 byte-exact 1.0). The scale-native / "fractal" transform the §189 research + the 1.5D article point at.
+A8 transfer is the server CPU job (99-seed null too slow for a workstation smoke). db4 deferred (needs pywt).
 
 Land mid-pack in the full L1–L7 tournament (L2 149 · L5 135 · L4-w50 89 · **L6 78** · **L7 72** · L1 70 ·
 L3 36), ahead of SAX-grammar. **The tournament thesis is demonstrated: cross-asset transfer = cross-asset
