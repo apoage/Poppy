@@ -1,9 +1,9 @@
 # TASK_798 — Signal-processing tokenizer panel (compression + transform columns)
 
-**Status**: L6+L7 BUILT & SCORED 2026-06-06 — both transfer at 150/150. CPU. Extends the candle-language
+**Status**: L6+L7+L8 BUILT & SCORED — all three transfer at 150/150. CPU. Extends the candle-language
 panel ([[TASK_796]]) / [[TASK_797]].
 
-## Result (150/150, `runs/798_scorecard/{L6,L7}`)
+## Result (150/150, `runs/798_scorecard/{L6,L7,L8}`)
 Both new columns clear the §186 gate — beat the frequency-matched random-codebook null on **unigram AND
 bigram**. (Stale JSON verdict strings — L6 "KILL", L7 "PROCEED" — are meaningless; re-derive from
 `beats_random_codebook[_bigram]`.)
@@ -12,18 +12,21 @@ bigram**. (Stale JSON verdict strings — L6 "KILL", L7 "PROCEED" — are meanin
 |---|---|---|---|---|---|---|
 | **L6 LZW** | compression | 78 (0.52) | 7.72 | 1.0 | ✓ | ✓ |
 | **L7 SFA** | transform (Fourier) | 72 (0.48) | 10.17 | 1.0 byte-exact, 1536/1536 codes | ✓ | ✓ |
-| **L8 Haar** | transform (wavelet) | _server pending_ | _pending_ | **1.0 byte-exact** (6/6, no z-norm), 81% codes | _pending_ | _pending_ |
+| **L8 Haar** | transform (wavelet) | 69 (0.46) | 10.22 | **1.0 byte-exact**, 1536/1536 codes (100%) | ✓ | ✓ |
 
-**L8 Haar wavelet** built 2026-06-08 (`l8_wavelet.py`): pure-numpy multilevel Haar DWT (pywt not
-installed/needed; window=64=2⁶ is perfect dyadic), n_levels=4, keep coarse approx + 2 detail bands →
-MCB bins → mixed-radix pack (codebook 1536). Same scale-free discipline as L7 (NO per-window z-norm →
-A0 byte-exact 1.0). The scale-native / "fractal" transform the §189 research + the 1.5D article point at.
-A8 transfer is the server CPU job (99-seed null too slow for a workstation smoke). db4 deferred (needs pywt).
+**L8 Haar wavelet** built 2026-06-08, scored 2026-06-09 (`l8_wavelet.py`): pure-numpy multilevel Haar
+DWT (pywt not installed/needed; window=64=2⁶ is perfect dyadic), n_levels=4, keep coarse approx + 2
+detail bands → MCB bins → mixed-radix pack (codebook 1536). Same scale-free discipline as L7 (NO
+per-window z-norm → A0 byte-exact 1.0, 1536/1536 codes used at scale). The scale-native / "fractal"
+transform the §189 research + the 1.5D article point at. **Clears the §186 gate** — beats the
+frequency-matched random-codebook null on unigram AND bigram; transfer_bits=10.22, holdout rate 0.46
+(69/150). db4 deferred (needs pywt).
 
-Land mid-pack in the full L1–L7 tournament (L2 149 · L5 135 · L4-w50 89 · **L6 78** · **L7 72** · L1 70 ·
-L3 36), ahead of SAX-grammar. **The tournament thesis is demonstrated: cross-asset transfer = cross-asset
-compressibility, across symbolic / motif / VQ / dictionary / compression / transform.** Full scorecard +
-the L4-entropy-fix verdict → lore §190. Next column = wavelet L8 (db4, scale-native coder).
+Lands mid-pack in the full L1–L8 tournament (**L2 149 · L5 135 · L4-w50 89 · L6 78 · L7 72 · L1 70 ·
+L8 69 · L3 36**), ahead of SAX-grammar; the transform/wavelet column transfers but doesn't beat the
+symbolic (L2) or motif (L5) leaders. **The tournament thesis is demonstrated: cross-asset transfer =
+cross-asset compressibility, across symbolic / motif / VQ / dictionary / compression / transform.** Full
+scorecard + the L4-entropy-fix verdict → lore §190; L8 + grammar-probe verdict → §192.
 
 ## The reframe
 

@@ -1,8 +1,26 @@
 # TASK_799 — Tokenised-model experiment: is there grammar beyond the bigram?
 
-**Status**: BUILT 2026-06-08, CPU-smoke PASS (runs clean). GPU sweep PENDING on gpu-server.
-First model trained *on* the candle tokens. Extends [[TASK_796]]/[[TASK_797]]/[[TASK_798]].
-Code: `tools/candle_lang/token_lm.py` (commit `707bbb2`).
+**Status**: ✅ **PASS 2026-06-09** (L1-BPE, 150/150, GPU 1 gpu-server). First model trained *on* the
+candle tokens shows **grammar beyond the order-1 bigram**. Extends [[TASK_796]]/[[TASK_797]]/[[TASK_798]].
+Code: `tools/candle_lang/token_lm.py` (commit `707bbb2`). Result: `runs/799_grammar/L1_RESULT.{md,json}`.
+
+## Result (L1-BPE, held-out cross-asset, n≈5.0M tokens)
+| signal | bits/token |
+|---|---|
+| **LM (held-out)** | **7.61** |
+| bigram (order-1 null) | 8.19 |
+| unigram (order-0 null) | 8.36 |
+| LM on **shuffled** holdout | 8.99 |
+
+- **LM < bigram by +0.58 bits/tok** → higher-order grammar exists (verdict axis 1 ✓).
+- **shuffled ≈ unigram** (8.99 ≈ 8.36, both ≫ real 7.61) → the gain is genuinely **order-dependent**;
+  destroying token order collapses the LM back to marginals. `order_control_ok=True` (verdict axis 2 ✓).
+- Memory discipline held: VRAM envelope printed (1.16M params, 13.96MB param+opt, MEM_FRACTION=0.7,
+  PREALLOCATE untouched, single device GPU 1), 47s train, no OOM.
+- **Unblocks [[TASK_796]] item-11** (tokenised-trader downstream) — real multi-token structure for a
+  sequence model to exploit. Still real-vs-random gated, ≥3 seeds when built.
+- **Next**: re-run on the tournament champions **L2 ABBA (149/150)** and **L5 matrix-profile (135/150)**
+  + the width/context sweep (does more capacity widen the `bigram−lm` gap, or saturate?).
 
 ## The question
 The whole panel so far measures the tokenizer (A0/A1/A2/A8 + the bigram axis). This is the first
