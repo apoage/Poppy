@@ -138,15 +138,32 @@ def _l8_token_at_bars_from_prefix(feats, finite, vocab, cut_idx):
     return out
 
 
+def _merged_id_threshold(vocab):
+    """The merged-token id threshold: token ids >= this are BPE MERGE (multi-unit) tokens; ids below
+    are leaf (single reduced-unit) tokens. Derived from the tokenizer, NOT hardcoded: l1_bpe.BPEVocab
+    lays out [0, n_base) = leaf region (= N_SYMBOLS(table) * N_LEN_BUCKETS) and [n_base, codebook) =
+    merge tokens (BPEVocab.children keyed at n_base + merge_index). So the threshold IS vocab.n_base.
+    Returns None for non-L1 vocabs (no merge mechanism)."""
+    return int(vocab.n_base) if hasattr(vocab, "n_base") else None
+
+
 def churn_for_asset(db, asset_id, cfg, vocab, language, n_cuts=50, max_k=128,
-                    max_feature_bars=None, seed=0):
-    """Measure churn-lag for ONE asset under ONE language. For n_cuts random cut points t (within a
-    run, with enough lead-in), compare the per-bar token at bars t-k (k=0..max_k) computed from the
-    PREFIX <= t against the FULL-stream value. Returns a dict with the churn-lag samples (the largest
-    k at which a bar t-k still disagrees, per cut) and counts."""
+                    max_feature_bars=None, seed=0, stress_merges=False, merge_thresh=None):
+    """Measure churn-lag for ONE asset under ONE language. For n_cuts cut points t (within a run, with
+    enough lead-in), compare the per-bar token at bars t-k (k=0..max_k) computed from the PREFIX <= t
+    against the FULL-stream value. Returns a dict with the churn-lag samples (the largest k at which a
+    bar t-k still disagrees, per cut) and counts.
+
+    stress_merges (L1 only): instead of sampling cut points uniformly, OVERSAMPLE cut points whose
+    full-stream last-completed token is a MERGE token (id >= merge_thresh), or that sit just before
+    one. Merges span completed units, so a merge firing once its right-hand neighbour completes is the
+    ONLY mechanism that can produce lag>0 for L1 — this aims the audit at exactly that mechanism rather
+    than diluting it across the (overwhelmingly leaf) uniform population. n_stress_eligible reports how
+    many merge-adjacent cut points existed so under-sampling is never silent."""
     runs = _load_runs(db, asset_id, cfg, max_feature_bars=max_feature_bars)
     if not runs:
-        return dict(n_cuts=0, churn_lags=[], n_churned_cuts=0, n_bars_compared=0)
+        return dict(n_cuts=0, churn_lags=[], n_churned_cuts=0, n_bars_compared=0,
+                    n_stress_cuts=0, n_stress_eligible=0)
     rng = np.random.default_rng(seed + int(asset_id))
 
     # full-stream per-run token arrays (computed once per run).
@@ -168,18 +185,46 @@ def churn_for_asset(db, asset_id, cfg, vocab, language, n_cuts=50, max_k=128,
 
     # pick cut points: a run index + a bar index t with at least max_k+W lead-in and not the last bar.
     eligible = []
+    stress_eligible = []   # cut points adjacent to a merge token (L1 stress)
     W = int(getattr(vocab, "win_len", cfg.window))
     lead = max_k + W + 2
+    do_stress = bool(stress_merges and language == "L1_bpe" and merge_thresh is not None)
     for ri, (feats, _ts, _fin) in enumerate(runs):
         F = feats.shape[0]
         if F <= lead + 1:
             continue
+        ft = full_tokens[ri]
         for t in range(lead, F - 1):
             eligible.append((ri, t))
+            if do_stress:
+                # cut at t is "merge-adjacent" if the last-completed token at t (or within a small
+                # forward window that a longer prefix could complete) is a merge token. Aim at bars
+                # whose own annotation, or the next-completing annotation just after t, is a merge.
+                fwd_hi = min(F, t + W + 1)
+                seg = ft[t:fwd_hi]
+                if seg.size and int(seg.max()) >= int(merge_thresh):
+                    stress_eligible.append((ri, t))
+
     if not eligible:
-        return dict(n_cuts=0, churn_lags=[], n_churned_cuts=0, n_bars_compared=0)
-    take = min(int(n_cuts), len(eligible))
-    sel = [eligible[i] for i in rng.choice(len(eligible), size=take, replace=False)]
+        return dict(n_cuts=0, churn_lags=[], n_churned_cuts=0, n_bars_compared=0,
+                    n_stress_cuts=0, n_stress_eligible=len(stress_eligible))
+
+    # build the cut-point selection. When stressing, draw merge-adjacent cuts FIRST (up to n_cuts),
+    # then top up uniformly so n_cuts is always met (the hard floor is enforced by the caller).
+    sel = []
+    n_stress_used = 0
+    if do_stress and stress_eligible:
+        s_take = min(int(n_cuts), len(stress_eligible))
+        s_idx = rng.choice(len(stress_eligible), size=s_take, replace=False)
+        sel.extend(stress_eligible[i] for i in s_idx)
+        n_stress_used = s_take
+    if len(sel) < int(n_cuts):
+        remaining = int(n_cuts) - len(sel)
+        pool = eligible if not sel else [e for e in eligible if e not in set(sel)]
+        u_take = min(remaining, len(pool))
+        u_idx = rng.choice(len(pool), size=u_take, replace=False)
+        sel.extend(pool[i] for i in u_idx)
+    take = len(sel)
 
     churn_lags = []
     n_churned = 0
@@ -207,7 +252,8 @@ def churn_for_asset(db, asset_id, cfg, vocab, language, n_cuts=50, max_k=128,
         else:
             churn_lags.append(0)  # no churn at this cut -> lag 0
     return dict(n_cuts=take, churn_lags=churn_lags, n_churned_cuts=n_churned,
-                n_bars_compared=n_bars_cmp)
+                n_bars_compared=n_bars_cmp, n_stress_cuts=int(n_stress_used),
+                n_stress_eligible=int(len(stress_eligible)))
 
 
 # --------------------------------------------------------------------------- #
@@ -315,15 +361,9 @@ def run_smoke(db, asset_id, cfg, vocabs, n_bars=10000):
 # --------------------------------------------------------------------------- #
 # price-stratified asset sample
 # --------------------------------------------------------------------------- #
-def price_stratified_sample(db, n_total=20, min_rows=50000, seed=0):
-    """Build a price-stratified sample of `n_total` assets from the DB. We split the log-price range
-    into two halves (low-price half ~ the holdout design; high-price half ~ the build design) and draw
-    n_total/2 from each, spread across price quantiles within each half. Returns dict(build_like(list),
-    holdout_like(list), prices(dict)) where build_like = high-price half, holdout_like = low-price.
-
-    NOTE: TASK_800 references runs/796_scaled/asset_split.json (10 build / 10 holdout). That artifact
-    is not present on this checkout; we reconstruct an equivalent price-stratified 10/10 split directly
-    from the DB survey, preserving the spec's intent (both split halves, price-stratified)."""
+def _survey_prices(db, min_rows=50000):
+    """Survey the DB once: return (assets_ascending_by_price, prices_dict) over assets with >= min_rows
+    rows. Shared by both the split-file path and the DB-reconstruction path."""
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         rows = con.execute("SELECT asset_id, COUNT(*) n FROM ohlcv GROUP BY asset_id "
@@ -338,31 +378,129 @@ def price_stratified_sample(db, n_total=20, min_rows=50000, seed=0):
     finally:
         con.close()
     items = sorted(px.items(), key=lambda kv: kv[1])           # ascending price
-    assets = [a for a, _ in items]
-    prices = np.array([p for _, p in items])
-    n = len(assets)
-    half = n // 2
-    low_idx = list(range(0, half))
-    high_idx = list(range(half, n))
-    nh = n_total // 2
+    return [a for a, _ in items], {int(a): float(px[a]) for a in px}
 
-    def _spread(idx_pool, k):
-        if k >= len(idx_pool):
-            return [assets[i] for i in idx_pool]
-        picks = np.linspace(0, len(idx_pool) - 1, k).round().astype(int)
-        picks = sorted(set(int(p) for p in picks))
-        # top up if dedup shrank it
-        j = 0
-        while len(picks) < k and j < len(idx_pool):
-            if j not in picks:
-                picks.append(j)
-            j += 1
-        return [assets[idx_pool[p]] for p in picks[:k]]
 
-    holdout_like = _spread(low_idx, nh)    # low price
-    build_like = _spread(high_idx, n_total - nh)   # high price
-    return dict(build_like=build_like, holdout_like=holdout_like,
-                prices={int(a): float(px[a]) for a in (build_like + holdout_like)})
+def load_split_file(path):
+    """Load a canonical asset_split.json with `build`/`holdout` keys (the runs/796_scaled artifact).
+    Returns (build_ids:list[int], holdout_ids:list[int]) or None if the file is absent/unreadable."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        b = [int(x) for x in (d.get("build") or d.get("build_assets") or [])]
+        h = [int(x) for x in (d.get("holdout") or d.get("holdout_assets") or [])]
+        if not b and not h:
+            return None
+        return b, h
+    except Exception:
+        return None
+
+
+def eligible_run_bars(db, asset_id, cfg, max_feature_bars=None):
+    """Longest contiguous valid (dt==60, all-finite) feature-bar run for ONE asset, in feature bars.
+    An asset is 'eligible' for the audit only if this is >= (window + audit margin) so cut points with
+    enough lead-in exist. Uses the SAME _iter_feature_runs / finite mask as the timeline path."""
+    best = 0
+    for feats, _ts, finite in TT._iter_feature_runs(db, int(asset_id), cfg):
+        # within a run all bars are dt==60; the eligible span is the longest all-finite contiguous
+        # block (finite gates token validity exactly as the timeline does).
+        fin = np.asarray(finite, dtype=bool)
+        if fin.all():
+            run_best = fin.size
+        else:
+            # longest True run
+            run_best = 0
+            cur = 0
+            for v in fin:
+                cur = cur + 1 if v else 0
+                if cur > run_best:
+                    run_best = cur
+        if run_best > best:
+            best = run_best
+        if max_feature_bars is not None and best >= max_feature_bars:
+            return int(min(best, max_feature_bars))
+    return int(best)
+
+
+def price_stratified_pool(db, n_total=20, min_rows=50000, split_file=None):
+    """Build an ORDERED candidate pool, price-stratified across BOTH split halves, that the caller
+    draws from until it has N EFFECTIVE assets (the draw-until loop replaces thin assets rather than
+    silently counting a 0). Returns dict(order(list of (asset, half) in draw priority), prices(dict),
+    split_source(str)) where half in {"build_like","holdout_like"}.
+
+    Split source resolution (recorded in meta.deviations):
+      * split_file present + parseable -> use its build/holdout ids (canonical 796_scaled split);
+        build -> build_like half, holdout -> holdout_like half. Assets are price-sorted within half.
+      * else -> reconstruct a price-stratified split from the DB survey (high-price half = build_like,
+        low-price half = holdout_like), spreading across price quantiles within each half.
+
+    The draw `order` interleaves the two halves and spreads within each half so price-stratification is
+    preserved even as thin assets get skipped and deeper candidates pulled in."""
+    assets_asc, px = _survey_prices(db, min_rows=min_rows)
+    asc_set = set(assets_asc)
+
+    loaded = load_split_file(split_file)
+    if loaded is not None:
+        b_ids, h_ids = loaded
+        # keep only surveyed assets (need >= min_rows + a close price); preserve price order within half
+        def _by_price(ids):
+            ids = [a for a in ids if a in asc_set]
+            return sorted(ids, key=lambda a: px[a])
+        build_like = _by_price(b_ids)
+        holdout_like = _by_price(h_ids)
+        split_source = f"split_file:{split_file}"
+        # carry prices for any split asset missing a close (defensive; usually all present)
+        for a in (build_like + holdout_like):
+            px.setdefault(int(a), float("nan"))
+    else:
+        n = len(assets_asc)
+        half = n // 2
+        holdout_like = assets_asc[:half]            # low price half
+        build_like = assets_asc[half:]              # high price half
+        split_source = "db_survey_reconstructed"
+
+    def _spread_order(pool):
+        """Return pool re-ordered to spread across price quantiles (quantile-stratified draw order):
+        pick the endpoints and midpoints first so early draws span the price range."""
+        pool = list(pool)
+        if len(pool) <= 2:
+            return pool
+        idxs = list(range(len(pool)))
+        order, taken = [], set()
+        # repeatedly halve the unfilled gaps -> quantile-spread draw order
+        frontier = [(0, len(pool) - 1)]
+        for end in (0, len(pool) - 1):
+            if end not in taken:
+                order.append(end); taken.add(end)
+        while len(order) < len(pool):
+            new_frontier = []
+            for lo, hi in frontier:
+                mid = (lo + hi) // 2
+                if mid not in taken and lo < mid < hi:
+                    order.append(mid); taken.add(mid)
+                    new_frontier.append((lo, mid)); new_frontier.append((mid, hi))
+            if not new_frontier:
+                for i in idxs:
+                    if i not in taken:
+                        order.append(i); taken.add(i)
+                break
+            frontier = new_frontier
+        return [pool[i] for i in order]
+
+    b_order = _spread_order(build_like)
+    h_order = _spread_order(holdout_like)
+    # interleave halves so the draw alternates build-like / holdout-like (keeps both halves sampled)
+    order = []
+    bi = hi = 0
+    while bi < len(b_order) or hi < len(h_order):
+        if bi < len(b_order):
+            order.append((int(b_order[bi]), "build_like")); bi += 1
+        if hi < len(h_order):
+            order.append((int(h_order[hi]), "holdout_like")); hi += 1
+    return dict(order=order, prices={int(a): float(px.get(int(a), float("nan"))) for a, _ in order},
+                split_source=split_source)
 
 
 # --------------------------------------------------------------------------- #
@@ -393,14 +531,32 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="TASK_800 token-timeline causality audit (CPU/numpy).")
     ap.add_argument("--db", default=None)
     ap.add_argument("--out", default="/home/lukas/Trader/runs/800_timeline/RESULT.md")
-    ap.add_argument("--n-assets", type=int, default=20)
-    ap.add_argument("--n-cuts", type=int, default=50)
+    ap.add_argument("--n-assets", type=int, default=20,
+                    help="DEPRECATED alias for --max-effective-assets (kept for back-compat).")
+    ap.add_argument("--max-effective-assets", type=int, default=20,
+                    help="target number of EFFECTIVE assets (assets that actually produced cuts). The "
+                         "draw-until loop replaces thin assets until this many effective are reached.")
+    ap.add_argument("--n-cuts", type=int, default=50,
+                    help="cut points per asset per language.")
+    ap.add_argument("--min-cuts", type=int, default=30,
+                    help="HARD FLOOR: every effective asset must yield >= this many cuts or FAIL.")
     ap.add_argument("--max-k", type=int, default=128)
     ap.add_argument("--audit-max-bars", type=int, default=40000,
                     help="cap on feature bars per asset held in RAM during the audit (RAM safety).")
     ap.add_argument("--fit-mwpa", type=int, default=4000)
+    ap.add_argument("--l1-stress-cuts", type=int, default=300,
+                    help="target number of L1 merge-adjacent STRESS cut points (oversample cuts next to "
+                         "merge tokens, aiming the audit at the deep-merge firm-up mechanism).")
+    ap.add_argument("--split-file", default="/home/lukas/Trader/runs/796_scaled/asset_split.json",
+                    help="canonical asset_split.json (build/holdout keys). Falls back to a DB-survey "
+                         "reconstruction if absent; the path taken is recorded in meta.deviations[].")
+    ap.add_argument("--max-draws", type=int, default=0,
+                    help="cap on assets DRAWN while hunting for effective ones (0 = pool size).")
     ap.add_argument("--smoke-only", action="store_true")
     args = ap.parse_args(argv)
+    # --n-assets back-compat: if the user set it but left the new flag at default, honor the old name.
+    if args.n_assets != 20 and args.max_effective_assets == 20:
+        args.max_effective_assets = int(args.n_assets)
 
     db = args.db if args.db else C.db_path()
     cfg = C.CandleConfig(db=db)
@@ -422,15 +578,34 @@ def main(argv=None):
         print("[audit] --smoke-only: stopping after smoke.")
         return smoke
 
-    # ---- price-stratified sample ----
-    samp = price_stratified_sample(db, n_total=int(args.n_assets))
-    sample_assets = list(samp["build_like"]) + list(samp["holdout_like"])
-    print(f"[audit] sampled {len(sample_assets)} assets "
-          f"({len(samp['build_like'])} build-like / {len(samp['holdout_like'])} holdout-like)")
-    print(f"[audit] price span of sample: "
-          f"{min(samp['prices'].values()):.4g} .. {max(samp['prices'].values()):.4g}")
+    # ---- eligibility-aware, price-stratified candidate pool (draw-until N EFFECTIVE) ----
+    merge_thresh = _merged_id_threshold(vocabs["l1_vocab"])
+    print(f"[audit] L1 merged-id threshold (vocab.n_base) = {merge_thresh} "
+          f"(ids >= {merge_thresh} are MERGE tokens; codebook={vocabs['l1_vocab'].codebook_size})")
+    pool = price_stratified_pool(db, n_total=int(args.max_effective_assets),
+                                 split_file=args.split_file)
+    print(f"[audit] split source: {pool['split_source']}  pool size: {len(pool['order'])}")
 
-    # ---- churn audit per language (asset-by-asset; bounded RAM) ----
+    # eligibility margin: a cut needs max_k + window + lead-in bars; require a contiguous valid run
+    # at least this long so we don't draw assets that can only ever yield 0 cuts.
+    W0 = int(cfg.window)
+    elig_margin = int(args.max_k) + W0 + 8
+    target_eff = int(args.max_effective_assets)
+    n_cuts = int(args.n_cuts)
+    min_cuts = int(args.min_cuts)
+    if n_cuts < min_cuts:
+        raise SystemExit(f"[audit] --n-cuts ({n_cuts}) < --min-cuts ({min_cuts}); "
+                         f"raise --n-cuts so the per-asset hard floor is satisfiable.")
+
+    deviations = [
+        dict(name="asset_split_source", value=pool["split_source"],
+             detail=("canonical runs/796_scaled/asset_split.json used"
+                     if pool["split_source"].startswith("split_file")
+                     else "runs/796_scaled/asset_split.json absent on this checkout; "
+                          "price-stratified split reconstructed from the DB survey (both halves, "
+                          "quantile-spread). Point --split-file at the server copy to use the canonical split.")),
+    ]
+
     import subprocess
     def _free_g():
         try:
@@ -440,42 +615,137 @@ def main(argv=None):
             return 999
     avail = _free_g()
     print(f"[audit] free -g available: {avail} GB")
-    if avail < 4:
-        # bail to a smaller sample if RAM is low (workstation memory-fragile).
-        sample_assets = sample_assets[:8]
-        print(f"[audit] LOW RAM ({avail}G) -> shrinking sample to {len(sample_assets)} assets")
+    if avail < 4 and target_eff > 8:
+        target_eff = 8
+        deviations.append(dict(name="low_ram_shrink", value=target_eff,
+                               detail=f"free -g={avail}G < 4G -> target effective assets capped at 8 (RAM safety)."))
+        print(f"[audit] LOW RAM ({avail}G) -> target effective assets -> {target_eff}")
 
-    lang_results = {}
-    for lang, vocab in (("L8_haar", vocabs["l8_vocab"]), ("L1_bpe", vocabs["l1_vocab"])):
-        all_lags = []
-        n_churned = 0
-        n_cuts_tot = 0
-        per_asset = []
-        for a in sample_assets:
-            r = churn_for_asset(db, a, cfg, vocab, lang, n_cuts=int(args.n_cuts),
-                                max_k=int(args.max_k), max_feature_bars=int(args.audit_max_bars),
-                                seed=0)
+    # accumulators per language; we draw assets one at a time, run BOTH languages, and only count an
+    # asset as "effective" if it produced cuts (L1 is the gating language for effectiveness since L8
+    # eligibility is a strict superset). A drawn-but-thin asset is REPORTED, never silently counted.
+    langs = (("L8_haar", vocabs["l8_vocab"]), ("L1_bpe", vocabs["l1_vocab"]))
+    acc = {lang: dict(all_lags=[], n_churned=0, n_cuts_tot=0, per_asset=[],
+                      n_stress_cuts=0, n_stress_eligible=0) for lang, _ in langs}
+    effective_assets = []     # assets that produced cuts (count toward the headline)
+    thin_assets = []          # drawn but ineligible/0-cut (reported, not counted)
+    used_prices = {}
+    used_halves = {"build_like": 0, "holdout_like": 0}
+    max_draws = int(args.max_draws) if int(args.max_draws) > 0 else len(pool["order"])
+    n_drawn = 0
+
+    for (a, half) in pool["order"]:
+        if len(effective_assets) >= target_eff or n_drawn >= max_draws:
+            break
+        n_drawn += 1
+        # pre-filter on contiguous valid run length (cheap eligibility check before the full churn run)
+        elig = eligible_run_bars(db, a, cfg, max_feature_bars=int(args.audit_max_bars))
+        if elig < elig_margin:
             DS.clear_window_cache()
-            all_lags.extend(r["churn_lags"])
-            n_churned += r["n_churned_cuts"]
-            n_cuts_tot += r["n_cuts"]
-            per_asset.append(dict(asset=int(a), **{k: r[k] for k in ("n_cuts", "n_churned_cuts")}))
-        lags = np.asarray(all_lags, dtype=np.int64) if all_lags else np.zeros(0, np.int64)
+            thin_assets.append(dict(asset=int(a), half=half, reason="ineligible",
+                                    eligible_bars=int(elig), need=int(elig_margin)))
+            print(f"[audit] DRAW asset {a} ({half}) INELIGIBLE: longest valid run {elig} < {elig_margin} -> replaced", flush=True)
+            continue
+
+        per_lang_cuts = {}
+        per_lang_r = {}
+        for lang, vocab in langs:
+            stress = (lang == "L1_bpe")
+            r = churn_for_asset(db, a, cfg, vocab, lang, n_cuts=n_cuts,
+                                max_k=int(args.max_k), max_feature_bars=int(args.audit_max_bars),
+                                seed=0, stress_merges=stress, merge_thresh=merge_thresh)
+            DS.clear_window_cache()
+            per_lang_cuts[lang] = int(r["n_cuts"])
+            per_lang_r[lang] = r
+
+        # effectiveness gated on the binding language (L1: the variable-rate / merge mechanism).
+        l1_cuts = per_lang_cuts["L1_bpe"]
+        if l1_cuts <= 0:
+            thin_assets.append(dict(asset=int(a), half=half, reason="zero_cuts",
+                                    eligible_bars=int(elig)))
+            print(f"[audit] DRAW asset {a} ({half}) produced 0 L1 cuts despite eligibility -> replaced", flush=True)
+            continue
+
+        # HARD FLOOR: an effective asset must clear min_cuts in BOTH languages, else FAIL loudly.
+        for lang in ("L8_haar", "L1_bpe"):
+            if per_lang_cuts[lang] < min_cuts:
+                raise SystemExit(
+                    f"[audit] HARD FLOOR FAIL: effective asset {a} yielded {per_lang_cuts[lang]} "
+                    f"{lang} cuts < min_cuts={min_cuts}. The harness refuses to under-sample. "
+                    f"(eligible_bars={elig}; raise --audit-max-bars or lower --min-cuts deliberately.)")
+
+        # commit this effective asset
+        for lang, _v in langs:
+            r = per_lang_r[lang]
+            A = acc[lang]
+            A["all_lags"].extend(r["churn_lags"])
+            A["n_churned"] += r["n_churned_cuts"]
+            A["n_cuts_tot"] += r["n_cuts"]
+            A["n_stress_cuts"] += r.get("n_stress_cuts", 0)
+            A["n_stress_eligible"] += r.get("n_stress_eligible", 0)
+            A["per_asset"].append(dict(asset=int(a), half=half,
+                                       **{k: r[k] for k in ("n_cuts", "n_churned_cuts")},
+                                       n_stress_cuts=int(r.get("n_stress_cuts", 0))))
+        effective_assets.append(int(a))
+        used_prices[int(a)] = float(pool["prices"].get(int(a), float("nan")))
+        used_halves[half] += 1
+        print(f"[audit] EFFECTIVE {len(effective_assets)}/{target_eff}: asset {a} ({half}) "
+              f"L1 cuts={l1_cuts} L1 stress={per_lang_r['L1_bpe'].get('n_stress_cuts',0)} "
+              f"L8 cuts={per_lang_cuts['L8_haar']}", flush=True)
+
+    n_effective = len(effective_assets)
+    print(f"[audit] effective assets: {n_effective}/{target_eff} (drawn {n_drawn}, "
+          f"thin/replaced {len(thin_assets)}; halves {used_halves})", flush=True)
+    if n_effective < target_eff:
+        # loud, machine-readable under-sampling (NOT a silent cap).
+        deviations.append(dict(name="effective_assets_shortfall", value=n_effective,
+                               detail=f"only {n_effective} of {target_eff} target effective assets reached "
+                                      f"after drawing {n_drawn} (pool exhausted or --max-draws hit). "
+                                      f"thin/replaced: {len(thin_assets)}."))
+        print(f"[audit] WARNING: effective-asset shortfall {n_effective}<{target_eff} "
+              f"recorded in deviations[].", flush=True)
+
+    # roll up per-language stats from the effective accumulators.
+    lang_results = {}
+    for lang, _v in langs:
+        A = acc[lang]
+        lags = np.asarray(A["all_lags"], dtype=np.int64) if A["all_lags"] else np.zeros(0, np.int64)
         p50 = int(np.percentile(lags, 50)) if lags.size else 0
         p99 = int(np.percentile(lags, 99)) if lags.size else 0
         pmax = int(lags.max()) if lags.size else 0
         lang_results[lang] = dict(
             p50_lag=p50, p99_lag=p99, max_lag=pmax,
-            n_cuts=int(n_cuts_tot), n_churned_cuts=int(n_churned),
-            churn_rate=float(n_churned / max(n_cuts_tot, 1)),
+            n_cuts=int(A["n_cuts_tot"]), n_churned_cuts=int(A["n_churned"]),
+            churn_rate=float(A["n_churned"] / max(A["n_cuts_tot"], 1)),
+            n_effective_assets=int(n_effective),
+            n_assets_drawn=int(n_drawn),
+            n_stress_cuts=int(A["n_stress_cuts"]),
+            n_stress_eligible=int(A["n_stress_eligible"]),
             lag_histogram={int(k): int(v) for k, v in zip(*np.unique(lags, return_counts=True))} if lags.size else {},
-            per_asset=per_asset,
+            per_asset=A["per_asset"],
         )
-        print(f"[audit] {lang}: cuts={n_cuts_tot} churned={n_churned} "
+        print(f"[audit] {lang}: eff_assets={n_effective} cuts={A['n_cuts_tot']} "
+              f"churned={A['n_churned']} stress_cuts={A['n_stress_cuts']} "
               f"p50_lag={p50} p99_lag={p99} max_lag={pmax}", flush=True)
 
+    # synthesize a `samp`-shaped object for the result writer (effective sample only).
+    half_of = {pa["asset"]: pa["half"] for pa in lang_results["L1_bpe"]["per_asset"]}
+    samp = dict(
+        build_like=[a for a in effective_assets if half_of.get(a) == "build_like"],
+        holdout_like=[a for a in effective_assets if half_of.get(a) == "holdout_like"],
+        prices={int(a): float(used_prices.get(int(a), float("nan"))) for a in effective_assets},
+        thin_assets=thin_assets,
+        split_source=pool["split_source"],
+        n_effective=int(n_effective),
+        n_drawn=int(n_drawn),
+        target_effective=int(target_eff),
+    )
+
+    if not effective_assets:
+        raise SystemExit("[audit] FAIL: zero effective assets — cannot produce a verdict.")
+
     # ---- A0 through the path (one sampled asset, x1000) ----
-    a0_asset = sample_assets[0]
+    a0_asset = effective_assets[0]
     print(f"[audit] A0 rescale x1000 through timeline on asset {a0_asset} ...", flush=True)
     a0 = a0_through_timeline(db, a0_asset, cfg, vocabs, lam=1000.0,
                              max_feature_bars=int(args.audit_max_bars))
@@ -493,7 +763,8 @@ def main(argv=None):
                                          lang_results["L1_bpe"]["n_cuts"], a0.get("l1_identical"))
 
     _write_result(args.out, cfg, vocabs, samp, smoke, lang_results, a0,
-                  dict(L8_haar=(l8_verdict, l8_reason), L1_bpe=(l1_verdict, l1_reason)))
+                  dict(L8_haar=(l8_verdict, l8_reason), L1_bpe=(l1_verdict, l1_reason)),
+                  deviations, merge_thresh)
     print(f"[audit] L8 verdict: {l8_verdict} ({l8_reason})")
     print(f"[audit] L1 verdict: {l1_verdict} ({l1_reason})")
     return dict(smoke=smoke, lang_results=lang_results, a0=a0,
@@ -536,13 +807,28 @@ the variable-rate and window-rate causality archetypes the trader needs.
 """
 
 
-def _write_result(out, cfg, vocabs, samp, smoke, lang_results, a0, verdicts):
+def _write_result(out, cfg, vocabs, samp, smoke, lang_results, a0, verdicts,
+                  deviations=None, merge_thresh=None):
     l8v, l8r = verdicts["L8_haar"]
     l1v, l1r = verdicts["L1_bpe"]
+    deviations = list(deviations or [])
+    n_eff = int(samp.get("n_effective", len(samp["build_like"]) + len(samp["holdout_like"])))
+    n_drawn = int(samp.get("n_drawn", n_eff))
+    thin = samp.get("thin_assets", [])
+    l1lr = lang_results["L1_bpe"]
+    # headline uses the EFFECTIVE asset count x cuts, never the nominal drawn count.
+    headline_cuts = int(l1lr["n_cuts"])
+    prices = [p for p in samp["prices"].values() if p == p]  # drop NaN
+    pspan = (f"{min(prices):.4g}..{max(prices):.4g}" if prices else "n/a")
     sections = [
         ("Summary — per-language SERVABLE verdict (selects the trader language)", [
             f"- **L8 Haar (window-rate)**: **{l8v}** — {l8r}",
             f"- **L1 BPE (variable-rate)**: **{l1v}** — {l1r}",
+            f"- coverage: **{n_eff} EFFECTIVE assets × {headline_cuts} L1 cuts** "
+            f"(drawn {n_drawn}; thin/replaced {len(thin)}). Headline = EFFECTIVE count, not nominal.",
+            f"- L1 merge stress: {l1lr.get('n_stress_cuts', 0)} merge-adjacent cut points "
+            f"(merge-id threshold = {merge_thresh}); these aim the audit at the deep-merge firm-up "
+            f"mechanism — the ONLY path to L1 lag>0.",
             "- Convention: emit the LAST COMPLETED token at or before t; no <PENDING> vocab; "
             "pre-first-token + gap bars get token_id=-1, valid=False.",
         ]),
@@ -552,19 +838,21 @@ def _write_result(out, cfg, vocabs, samp, smoke, lang_results, a0, verdicts):
             f"- L8: {smoke['L8_haar']}",
         ]),
         ("Prefix-stability (causality) churn audit", [
-            f"- sample: {len(samp['build_like'])} build-like + {len(samp['holdout_like'])} "
-            f"holdout-like assets, price-stratified; "
-            f"price span {min(samp['prices'].values()):.4g}..{max(samp['prices'].values()):.4g}",
+            f"- sample: {n_eff} effective assets "
+            f"({len(samp['build_like'])} build-like + {len(samp['holdout_like'])} holdout-like), "
+            f"price-stratified across both split halves; split source: {samp.get('split_source','?')}; "
+            f"price span {pspan}",
             f"- L8 Haar: cuts={lang_results['L8_haar']['n_cuts']} "
             f"churned={lang_results['L8_haar']['n_churned_cuts']} "
             f"p50_lag={lang_results['L8_haar']['p50_lag']} "
             f"**p99_lag={lang_results['L8_haar']['p99_lag']}** "
             f"max_lag={lang_results['L8_haar']['max_lag']} (churn must be 0)",
-            f"- L1 BPE: cuts={lang_results['L1_bpe']['n_cuts']} "
-            f"churned={lang_results['L1_bpe']['n_churned_cuts']} "
-            f"p50_lag={lang_results['L1_bpe']['p50_lag']} "
-            f"**p99_lag={lang_results['L1_bpe']['p99_lag']}** "
-            f"max_lag={lang_results['L1_bpe']['max_lag']}",
+            f"- L1 BPE: cuts={l1lr['n_cuts']} "
+            f"stress_cuts={l1lr.get('n_stress_cuts', 0)} "
+            f"churned={l1lr['n_churned_cuts']} "
+            f"p50_lag={l1lr['p50_lag']} "
+            f"**p99_lag={l1lr['p99_lag']}** "
+            f"max_lag={l1lr['max_lag']}  lag_hist={l1lr.get('lag_histogram', {})}",
             f"- churn(t,k) = [token at bar t-k from prefix<=t] != [same from full stream]; "
             f"lag = greatest k still disagreeing per cut.",
         ]),
@@ -588,12 +876,24 @@ def _write_result(out, cfg, vocabs, samp, smoke, lang_results, a0, verdicts):
             L8_haar=dict(verdict=l8v, reason=l8r, **lang_results["L8_haar"]),
             L1_bpe=dict(verdict=l1v, reason=l1r, **lang_results["L1_bpe"]),
         ),
+        merged_id_threshold=(int(merge_thresh) if merge_thresh is not None else None),
         a0_rescale=a0,
         smoke=smoke,
+        coverage=dict(
+            n_effective_assets=n_eff,
+            n_assets_drawn=n_drawn,
+            target_effective=int(samp.get("target_effective", n_eff)),
+            n_thin_replaced=len(thin),
+            l1_stress_cuts=int(l1lr.get("n_stress_cuts", 0)),
+            l1_stress_eligible=int(l1lr.get("n_stress_eligible", 0)),
+            l1_lag_histogram=l1lr.get("lag_histogram", {}),
+            l8_lag_histogram=lang_results["L8_haar"].get("lag_histogram", {}),
+        ),
         sample=dict(build_like=samp["build_like"], holdout_like=samp["holdout_like"],
-                    prices=samp["prices"]),
-        note_asset_split=("runs/796_scaled/asset_split.json absent on this checkout; "
-                          "price-stratified 10/10 split reconstructed from the DB survey."),
+                    prices=samp["prices"], split_source=samp.get("split_source")),
+        thin_assets=thin,
+        # machine-readable split / coverage deviations (NOT a prose footnote).
+        deviations=deviations,
     )
     RW.write_result(out, "TASK_800 — Token Timeline + Serving-Path Causality Audit",
                     sections, f"L8={l8v} | L1={l1v}", meta)
