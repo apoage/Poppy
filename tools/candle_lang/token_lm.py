@@ -87,6 +87,14 @@ def parse_args(argv=None):
     p.add_argument("--vocab", type=str, default=None,
                    help="path to an EXISTING frozen-vocab JSON to load; if omitted (or missing) a "
                         "fresh L1-BPE vocab is fit on the BUILD assets and saved next to --out.")
+    # ---- member-agnostic dumped streams (skip the L1 tokenizer fit/encode entirely) ----
+    p.add_argument("--streams-file", type=str, default=None,
+                   help="optional .npz of per-asset token-id streams (from dump_streams.py). When set, "
+                        "the L1-BPE fit/encode is SKIPPED and the dumped ids + codebook_size are used "
+                        "directly; everything from the baselines onward is identical. This is how the "
+                        "L2/L5 champion tokenizers are run through the SAME grammar probe.")
+    p.add_argument("--member", type=str, default="L1",
+                   help="member label (L1/L2/L5) for logging + RESULT meta only; default L1.")
     # ---- asset split (same discipline as A8: fit/train on BUILD, eval on HOLDOUT) ----
     p.add_argument("--build-assets", nargs="+", type=int, default=None,
                    help="explicit BUILD asset ids; default None => config.DEFAULT_BUILD_ASSETS.")
@@ -155,6 +163,29 @@ def _encode_streams(tok, db, assets, cfg, max_windows):
         else:
             print(f"[data] asset {a}: EMPTY (skipped)", flush=True)
     return out
+
+
+def _load_streams_file(path: str):
+    """Load a dump_streams.py .npz into (build_streams, hold_streams, codebook_size).
+
+    Keys: `b{asset_id}` (build) / `h{asset_id}` (holdout) per-asset int streams, plus the scalar
+    `codebook_size`. Ids are cast to int64 (the dtype the bigram/unigram fold + packer expect). Empty
+    streams were already dropped at dump time, so every per-asset key is non-empty."""
+    npz = np.load(path, allow_pickle=False)
+    build_streams = {}
+    hold_streams = {}
+    for k in npz.files:
+        if k in ("codebook_size", "build_assets", "holdout_assets", "member"):
+            continue
+        s = np.asarray(npz[k]).ravel().astype(np.int64)
+        if s.size == 0:
+            continue
+        if k.startswith("b"):
+            build_streams[int(k[1:])] = s
+        elif k.startswith("h"):
+            hold_streams[int(k[1:])] = s
+    codebook_size = int(np.asarray(npz["codebook_size"]).reshape(()))
+    return build_streams, hold_streams, codebook_size
 
 
 def _build_packed_examples(streams: dict, context_len: int) -> np.ndarray:
@@ -358,30 +389,46 @@ def main(argv=None):
     print(f"[cfg] db={db} W={cfg.window} build={list(build_assets)} holdout={list(holdout_assets)}",
           flush=True)
 
-    # ---- 1) frozen L1-BPE tokenizer: load existing or fit+save a fresh one on BUILD ----
-    vocab_path = args.vocab
-    if vocab_path and os.path.exists(vocab_path):
-        print(f"[tok] loading frozen vocab {vocab_path}", flush=True)
-        tok = CandleTokenizer.from_path(vocab_path)
-    else:
-        if not vocab_path:
-            base = args.out[:-3] if args.out.endswith(".md") else args.out
-            vocab_path = base + "_vocab.json"
-        print(f"[tok] fitting fresh L1-BPE vocab on BUILD -> {vocab_path}", flush=True)
-        _vocab, vocab_path = fit_and_save(
-            cfg, build_assets, vocab_path,
-            max_windows_per_asset=(max_windows or 20000),
-            p_min=int(args.bpe_p_min), max_merges=int(args.bpe_max_merges), verbose=True,
-        )
-        tok = CandleTokenizer.from_path(vocab_path)
-    codebook_size = int(tok.codebook_size)
-    print(f"[tok] codebook_size={codebook_size}", flush=True)
+    member = str(args.member)
+    streams_file = args.streams_file
 
-    # ---- 2) encode BUILD + HOLDOUT to per-asset flat token streams ----
-    print("[data] encoding BUILD streams ...", flush=True)
-    build_streams = _encode_streams(tok, db, build_assets, tok.cfg, max_windows)
-    print("[data] encoding HOLDOUT streams ...", flush=True)
-    hold_streams = _encode_streams(tok, db, holdout_assets, tok.cfg, max_windows)
+    if streams_file:
+        # ---- 1+2) consume pre-dumped per-asset token streams (member-agnostic; skip L1 fit/encode) ----
+        print(f"[tok] member={member}: loading dumped streams {streams_file} "
+              f"(L1 tokenizer fit/encode SKIPPED)", flush=True)
+        vocab_path = streams_file
+        build_streams, hold_streams, codebook_size = _load_streams_file(streams_file)
+        print(f"[tok] codebook_size={codebook_size}  "
+              f"build_streams={len(build_streams)}  hold_streams={len(hold_streams)}", flush=True)
+        for a, s in build_streams.items():
+            print(f"[data] build asset {a}: {s.size} tokens", flush=True)
+        for a, s in hold_streams.items():
+            print(f"[data] holdout asset {a}: {s.size} tokens", flush=True)
+    else:
+        # ---- 1) frozen L1-BPE tokenizer: load existing or fit+save a fresh one on BUILD ----
+        vocab_path = args.vocab
+        if vocab_path and os.path.exists(vocab_path):
+            print(f"[tok] loading frozen vocab {vocab_path}", flush=True)
+            tok = CandleTokenizer.from_path(vocab_path)
+        else:
+            if not vocab_path:
+                base = args.out[:-3] if args.out.endswith(".md") else args.out
+                vocab_path = base + "_vocab.json"
+            print(f"[tok] fitting fresh L1-BPE vocab on BUILD -> {vocab_path}", flush=True)
+            _vocab, vocab_path = fit_and_save(
+                cfg, build_assets, vocab_path,
+                max_windows_per_asset=(max_windows or 20000),
+                p_min=int(args.bpe_p_min), max_merges=int(args.bpe_max_merges), verbose=True,
+            )
+            tok = CandleTokenizer.from_path(vocab_path)
+        codebook_size = int(tok.codebook_size)
+        print(f"[tok] codebook_size={codebook_size}", flush=True)
+
+        # ---- 2) encode BUILD + HOLDOUT to per-asset flat token streams ----
+        print("[data] encoding BUILD streams ...", flush=True)
+        build_streams = _encode_streams(tok, db, build_assets, tok.cfg, max_windows)
+        print("[data] encoding HOLDOUT streams ...", flush=True)
+        hold_streams = _encode_streams(tok, db, holdout_assets, tok.cfg, max_windows)
     if not build_streams:
         raise RuntimeError("token_lm: no BUILD token streams encoded — check db/assets/window.")
     if not hold_streams:
@@ -539,6 +586,7 @@ def main(argv=None):
     # ---- RESULT.md + json sidecar ----
     sections = [
         ("Setup", [
+            f"- member: {member}   streams_file: {streams_file}",
             f"- db: {db}",
             f"- window: {cfg.window}   codebook_size: {codebook_size}",
             f"- build_assets: {list(build_assets)}",
@@ -572,6 +620,7 @@ def main(argv=None):
         ]),
     ]
     meta = dict(
+        member=member, streams_file=streams_file,
         db=db, window=cfg.window, codebook_size=codebook_size,
         build_assets=list(build_assets), holdout_assets=list(holdout_assets),
         vocab_path=vocab_path, max_windows_per_asset=max_windows,
