@@ -592,10 +592,12 @@ def main(argv=None):
                                  split_file=args.split_file)
     print(f"[audit] split source: {pool['split_source']}  pool size: {len(pool['order'])}")
 
-    # eligibility margin: a cut needs max_k + window + lead-in bars; require a contiguous valid run
-    # at least this long so we don't draw assets that can only ever yield 0 cuts.
+    # eligibility margin: a cut needs max_k lookback + a full window of lead-in, AND we want the run
+    # long enough to actually yield >= min_cuts distinct cut points — otherwise an asset passes
+    # eligibility but falls short of the floor and gets churned-then-discarded. Require that headroom
+    # here so doomed-short assets are skipped cheaply (the run-length pre-check) rather than computed.
     W0 = int(cfg.window)
-    elig_margin = int(args.max_k) + W0 + 8
+    elig_margin = int(args.max_k) + W0 + int(args.min_cuts) + 16
     target_eff = int(args.max_effective_assets)
     n_cuts = int(args.n_cuts)
     min_cuts = int(args.min_cuts)
@@ -672,17 +674,23 @@ def main(argv=None):
             print(f"[audit] DRAW asset {a} ({half}) produced 0 L1 cuts despite eligibility -> replaced", flush=True)
             continue
 
-        # HARD FLOOR: language-aware. L1 (the variable-rate / merge mechanism that can actually churn)
-        # must clear the strict floor; L8 is window-rate — exact by construction and ~64x sparser in
-        # cut supply, so it gets a relaxed floor (coverage there is a formality, the verdict is churn==0).
+        # PER-ASSET FLOOR (language-aware): an asset must clear its language floor to COUNT as
+        # effective. L1 (the variable-rate / merge mechanism that can churn) uses the strict
+        # --min-cuts; L8 is window-rate (exact by construction, sparser cut supply) so it uses the
+        # relaxed --min-cuts-window. An asset that falls short is THIN -> replaced (keep drawing the
+        # next candidate), NOT a fatal abort: aborting mid-draw on one short asset violated the
+        # draw-until-N-effective contract. A genuine inability to reach the target is reported loudly
+        # at the end via the effective_assets_shortfall deviation (the real "harness FAILs" signal).
         lang_floor = {"L1_bpe": min_cuts, "L8_haar": int(args.min_cuts_window)}
-        for lang in ("L8_haar", "L1_bpe"):
-            if per_lang_cuts[lang] < lang_floor[lang]:
-                raise SystemExit(
-                    f"[audit] HARD FLOOR FAIL: effective asset {a} yielded {per_lang_cuts[lang]} "
-                    f"{lang} cuts < floor={lang_floor[lang]}. The harness refuses to under-sample. "
-                    f"(eligible_bars={elig}; raise --audit-max-bars, or lower "
-                    f"{'--min-cuts' if lang=='L1_bpe' else '--min-cuts-window'} deliberately.)")
+        under = [(lang, per_lang_cuts[lang], lang_floor[lang])
+                 for lang in ("L1_bpe", "L8_haar") if per_lang_cuts[lang] < lang_floor[lang]]
+        if under:
+            thin_assets.append(dict(asset=int(a), half=half, reason="below_floor",
+                                    eligible_bars=int(elig),
+                                    cuts={l: int(per_lang_cuts[l]) for l in ("L1_bpe", "L8_haar")}))
+            msg = ", ".join(f"{l} {c}<{f}" for (l, c, f) in under)
+            print(f"[audit] DRAW asset {a} ({half}) BELOW FLOOR ({msg}) -> replaced", flush=True)
+            continue
 
         # commit this effective asset
         for lang, _v in langs:
