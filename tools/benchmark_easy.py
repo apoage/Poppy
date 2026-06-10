@@ -144,7 +144,7 @@ def load_benchmark_prices(
     period: dict,
     db_path: str = "trading_data.db",
     n_assets: int = 64,
-) -> Tuple[np.ndarray, List[str]]:
+) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray, Dict[str, int]]:
     """Load real close prices for a benchmark period from DB.
 
     Uses HistoricalMarket with date filtering + RAM cache.
@@ -152,8 +152,11 @@ def load_benchmark_prices(
     full-database GROUP BY query.
 
     Returns:
+        ohlcv: (T, n_assets, 5) OHLCV, forward-filled
         prices: (T, n_assets) close prices, forward-filled
-        symbols: list of symbol names
+        symbols: list of symbol names (column-aligned)
+        prices_ts: (T,) int64 per-row timestamps (TASK_803 token-gate join axis)
+        symbol_to_id: dict symbol -> DB asset_id (TASK_803 token-gate key)
     """
     print(f"  Loading prices: {period['start_date']} to {period['end_date']}...")
 
@@ -174,6 +177,10 @@ def load_benchmark_prices(
     ohlcv = market.cache_data  # (T, n_assets_actual, 5)
     actual_assets = ohlcv.shape[1]
     symbols = [market.id_to_symbol[aid] for aid in market.asset_ids]
+    # TASK_803: capture the per-row timestamp axis (== cache rows) and the symbol->asset_id map
+    # BEFORE market.close(); the token gate joins its per-bar token timeline onto these timestamps.
+    prices_ts = np.asarray(market.valid_timestamps, dtype=np.int64).copy()
+    symbol_to_id = dict(market.symbol_to_id)
 
     print(f"  Loaded: {ohlcv.shape[0]} timesteps, {actual_assets} assets")
 
@@ -210,7 +217,7 @@ def load_benchmark_prices(
     prices = ohlcv[:, :, 3].copy()  # Close prices for oracle/PnL
 
     market.close()
-    return ohlcv, prices, symbols
+    return ohlcv, prices, symbols, prices_ts, symbol_to_id
 
 
 # =============================================================================
@@ -403,6 +410,75 @@ def generate_bella_prices(
 # Period Evaluation
 # =============================================================================
 
+# =============================================================================
+# TASK_803 Phase 1 — token trade gate (eval-only, default OFF)
+# =============================================================================
+
+@dataclass
+class TokenGateConfig:
+    """Config for the TASK_803 token trade gate. mode='off' (default) => NO-OP, decision path is
+    bit-identical to pre-803 canon: no token code runs, no import side-effects, no actions touched.
+
+    mode='hold': during quiet bars (mega/flat token OR trailing-k mean codelength < theta at the
+    decision bar) force HOLD (=1) for that (window, asset) BEFORE position stepping.
+    """
+    mode: str = 'off'                  # 'off' | 'hold'
+    theta: float = 0.0                 # trailing-k mean codelength threshold (bits)
+    language: str = 'L1'               # 'L1' (lag 2) or 'L8' (lag 0) — short code, never edit lag here
+    k: int = 8                         # trailing-window length (bars) for the codelength mean
+    mega_bars: int = 16                # token persists >= this many bars => mega/flat (quiet)
+    codelen_floor: float = 0.0         # bits; >0 enables the codelength-floor arm of mega/flat
+    tokenizer_path: str = ''           # path to the frozen L1 vocab JSON (CandleTokenizer.from_path)
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != 'off'
+
+
+def _load_token_gate_tokenizer(cfg: TokenGateConfig):
+    """Load the frozen tokenizer for the gate's language. Imports live HERE (inside the enabled
+    branch) so the OFF path never imports candle_lang — keeping mode='off' bit-identical + free of
+    import side-effects (G1)."""
+    lang = str(cfg.language).split('_')[0].upper()
+    if lang == 'L1':
+        from tools.candle_lang.tokenizer_api import CandleTokenizer
+        if not cfg.tokenizer_path:
+            raise ValueError("--token-gate hold with language L1 requires --token-gate-tokenizer "
+                             "(path to the frozen L1 vocab JSON).")
+        return CandleTokenizer.from_path(cfg.tokenizer_path)
+    if lang == 'L8':
+        # L8 HaarVocab is parameter-only; build/load per its own API. Not wired for Phase 1 (the
+        # canonical chain is L1); fail loudly rather than silently serve the wrong language.
+        raise NotImplementedError("L8 token gate not wired for 803-P1 (canonical chain is L1).")
+    raise ValueError(f"Unknown token-gate language {cfg.language!r}")
+
+
+def _build_token_gate(
+    gate_cfg: TokenGateConfig,
+    db_path: str,
+    symbols: List[str],
+    symbol_to_id: Dict[str, int],
+    prices_ts: np.ndarray,
+    n_windows: int,
+    window_size: int,
+):
+    """Build the (n_windows, n_assets) HOLD grid ONCE before the window loop. Returns a TokenGate
+    (with .hold_grid) or None. All tokenization happens here — ZERO inside the loop."""
+    from tools.candle_lang import token_gate as TG
+    tokenizer = _load_token_gate_tokenizer(gate_cfg)
+    gate = TG.build_gate(
+        db=db_path, symbols=symbols, symbol_to_id=symbol_to_id,
+        prices_ts=prices_ts, n_windows=n_windows, window_size=window_size,
+        tokenizer=tokenizer, language=gate_cfg.language, theta=gate_cfg.theta,
+        k=gate_cfg.k, mega_bars=gate_cfg.mega_bars, codelen_floor=gate_cfg.codelen_floor,
+    )
+    print(f"  TASK_803 token gate: lang={gate.language} lag={gate.lag} theta={gate.theta} "
+          f"k={gate.k} mega_bars={gate.mega_bars} codelen_floor={gate.codelen_floor} "
+          f"-> gated {gate.hold_grid.sum()}/{gate.hold_grid.size} "
+          f"({gate.gated_fraction()*100:.2f}%) decisions")
+    return gate
+
+
 def _mcts_decode_actions(
     mcts_actions: np.ndarray,
     policy_probs: np.ndarray,
@@ -441,6 +517,10 @@ def run_period_eval(
     mcts_search=None,
     mcts_decode: str = 'joint',
     disable_limit_orders: bool = False,
+    token_gate_cfg: Optional['TokenGateConfig'] = None,
+    prices_ts: Optional[np.ndarray] = None,
+    symbol_to_id: Optional[Dict[str, int]] = None,
+    db_path: str = 'trading_data.db',
 ) -> PeriodResult:
     """Evaluate model on a single benchmark period.
 
@@ -489,6 +569,19 @@ def run_period_eval(
         raise ValueError(f"Not enough data: {T_prices} prices, need > {window_size}")
 
     print(f"  {n_windows} inference windows (T={T_prices}, ws={window_size})")
+
+    # TASK_803: build the token HOLD grid ONCE, before the window loop. OFF (default) => token_gate
+    # stays None and NO candle_lang code runs (G1 bit-identical). When enabled, hold_grid[i, a] is
+    # True for (window i, asset a) decisions that must be forced to HOLD before position stepping.
+    token_gate = None
+    if token_gate_cfg is not None and token_gate_cfg.enabled:
+        if prices_ts is None or symbol_to_id is None:
+            raise ValueError("token gate enabled but prices_ts / symbol_to_id not provided "
+                             "(synthetic/Bella periods have no token timeline — gate only applies "
+                             "to real DB periods).")
+        token_gate = _build_token_gate(
+            token_gate_cfg, db_path, symbols, symbol_to_id, prices_ts, n_windows, window_size,
+        )
 
     # Return indices that actions apply to
     # obs[i] → action → returns[i + window_size - 1]
@@ -569,6 +662,11 @@ def run_period_eval(
                 )
         model_actions = np.concatenate(all_model_actions, axis=0)
         model_values = np.concatenate(all_model_values, axis=0)
+        # TASK_803: token HOLD gate for the batched (no-state) path. This path has no honest state
+        # tracking, so gating the finalized (n_windows, n_assets) action array is equivalent to
+        # gating per window. No-op when token_gate is None (OFF path).
+        if token_gate is not None:
+            model_actions = np.where(token_gate.hold_grid, 1, model_actions).astype(model_actions.dtype)
     else:
         # 34-channel models: sequential inference with model's own state
         # Pre-encode market channels in batches (27ch — doesn't depend on model state)
@@ -642,6 +740,11 @@ def run_period_eval(
                     np.array(mcts_act), np.array(policy_probs),
                     n_assets, mcts_decode,
                 )[0]  # (n_assets,)
+            # TASK_803: token HOLD gate. Force HOLD (=1) for every gated (window i, asset) BEFORE
+            # position stepping (mutates actions_i in place so the honest state channels also see the
+            # gated action). No-op when token_gate is None (OFF path). Works for both decode modes.
+            if token_gate is not None:
+                actions_i = np.where(token_gate.hold_grid[i], 1, actions_i).astype(actions_i.dtype)
             all_model_actions.append(actions_i)
             all_model_values.append(value_logits_to_scalar(np.array(value_logits))[0])
 
@@ -855,6 +958,7 @@ def run_full_benchmark(
     eval_mcts_sims: int = 0,
     eval_mcts_decode: str = 'joint',
     disable_limit_orders: Optional[bool] = None,
+    token_gate_cfg: Optional['TokenGateConfig'] = None,
 ) -> List[PeriodResult]:
     """Run benchmark on all (or selected) periods.
 
@@ -1020,7 +1124,8 @@ def run_full_benchmark(
         print(f"  {period['start_date']} to {period['end_date']}, BTC: {period['btc_change_pct']:+.1f}%")
 
         t0 = time.time()
-        ohlcv, prices, symbols = load_benchmark_prices(period, db_path, config.n_assets)
+        ohlcv, prices, symbols, prices_ts, symbol_to_id = load_benchmark_prices(
+            period, db_path, config.n_assets)
 
         result = run_period_eval(
             period, ohlcv, prices, symbols,
@@ -1028,6 +1133,10 @@ def run_full_benchmark(
             mcts_search=mcts_search,
             mcts_decode=eval_mcts_decode,
             disable_limit_orders=disable_limit_orders,
+            token_gate_cfg=token_gate_cfg,
+            prices_ts=prices_ts,
+            symbol_to_id=symbol_to_id,
+            db_path=db_path,
         )
         results.append(result)
 
@@ -1222,6 +1331,24 @@ def main():
                         default=None,
                         help='TASK_767: mask LimitSell/LimitBuy in eval-MCTS. '
                              'Default = auto-detect from checkpoint config.')
+    # TASK_803 Phase 1: token trade gate (eval-only, default OFF = bit-identical canon).
+    parser.add_argument('--token-gate', type=str, default='off', choices=['off', 'hold'],
+                        help='TASK_803: token trade gate. off (default)=no-op; '
+                             'hold=force HOLD on quiet bars (mega/flat OR trailing-k codelength<theta).')
+    parser.add_argument('--token-gate-theta', type=float, default=0.0,
+                        help='TASK_803: trailing-k mean codelength threshold (bits). '
+                             'Decisions with mean codelength below theta are HOLD-gated.')
+    parser.add_argument('--token-gate-language', type=str, default='L1',
+                        help='TASK_803: token language short code (L1=lag 2, L8=lag 0). Default L1.')
+    parser.add_argument('--token-gate-k', type=int, default=8,
+                        help='TASK_803: trailing window length (bars) for the codelength mean.')
+    parser.add_argument('--token-gate-mega-bars', type=int, default=16,
+                        help='TASK_803: token persisting >= this many bars => mega/flat (quiet).')
+    parser.add_argument('--token-gate-codelen-floor', type=float, default=0.0,
+                        help='TASK_803: bits; >0 enables the codelength-floor arm of mega/flat.')
+    parser.add_argument('--token-gate-tokenizer', type=str, default='',
+                        help='TASK_803: path to the frozen L1 vocab JSON (CandleTokenizer.from_path). '
+                             'Required when --token-gate hold with language L1.')
 
     args = parser.parse_args()
 
@@ -1241,6 +1368,17 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO)
 
+    # TASK_803: assemble the token-gate config (mode='off' => no-op).
+    token_gate_cfg = TokenGateConfig(
+        mode=args.token_gate,
+        theta=args.token_gate_theta,
+        language=args.token_gate_language,
+        k=args.token_gate_k,
+        mega_bars=args.token_gate_mega_bars,
+        codelen_floor=args.token_gate_codelen_floor,
+        tokenizer_path=args.token_gate_tokenizer,
+    )
+
     # Run benchmark
     results = run_full_benchmark(
         str(ckpt_path),
@@ -1252,6 +1390,7 @@ def main():
         eval_mcts_sims=args.eval_mcts_sims,
         eval_mcts_decode=args.eval_mcts_decode,
         disable_limit_orders=args.disable_limit_orders,
+        token_gate_cfg=token_gate_cfg,
     )
 
     # Save JSON if requested
