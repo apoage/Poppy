@@ -539,7 +539,13 @@ def main(argv=None):
     ap.add_argument("--n-cuts", type=int, default=50,
                     help="cut points per asset per language.")
     ap.add_argument("--min-cuts", type=int, default=30,
-                    help="HARD FLOOR: every effective asset must yield >= this many cuts or FAIL.")
+                    help="HARD FLOOR for the binding (variable-rate) member L1: every effective asset "
+                         "must yield >= this many L1 cuts or FAIL.")
+    ap.add_argument("--min-cuts-window", type=int, default=8,
+                    help="RELAXED hard floor for window-rate members (L8 Haar). L8 emits ~one token per "
+                         "64-bar window, so its cut supply is structurally ~64x sparser than L1's and is "
+                         "exact-by-construction (the verdict is churn==0, not cut count) — a symmetric "
+                         "L1-sized floor would spuriously reject short-run assets. Default 8.")
     ap.add_argument("--max-k", type=int, default=128)
     ap.add_argument("--audit-max-bars", type=int, default=40000,
                     help="cap on feature bars per asset held in RAM during the audit (RAM safety).")
@@ -666,13 +672,17 @@ def main(argv=None):
             print(f"[audit] DRAW asset {a} ({half}) produced 0 L1 cuts despite eligibility -> replaced", flush=True)
             continue
 
-        # HARD FLOOR: an effective asset must clear min_cuts in BOTH languages, else FAIL loudly.
+        # HARD FLOOR: language-aware. L1 (the variable-rate / merge mechanism that can actually churn)
+        # must clear the strict floor; L8 is window-rate — exact by construction and ~64x sparser in
+        # cut supply, so it gets a relaxed floor (coverage there is a formality, the verdict is churn==0).
+        lang_floor = {"L1_bpe": min_cuts, "L8_haar": int(args.min_cuts_window)}
         for lang in ("L8_haar", "L1_bpe"):
-            if per_lang_cuts[lang] < min_cuts:
+            if per_lang_cuts[lang] < lang_floor[lang]:
                 raise SystemExit(
                     f"[audit] HARD FLOOR FAIL: effective asset {a} yielded {per_lang_cuts[lang]} "
-                    f"{lang} cuts < min_cuts={min_cuts}. The harness refuses to under-sample. "
-                    f"(eligible_bars={elig}; raise --audit-max-bars or lower --min-cuts deliberately.)")
+                    f"{lang} cuts < floor={lang_floor[lang]}. The harness refuses to under-sample. "
+                    f"(eligible_bars={elig}; raise --audit-max-bars, or lower "
+                    f"{'--min-cuts' if lang=='L1_bpe' else '--min-cuts-window'} deliberately.)")
 
         # commit this effective asset
         for lang, _v in langs:
