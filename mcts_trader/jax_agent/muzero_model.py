@@ -325,6 +325,12 @@ class MuZeroNetworks(nn.Module):
     xs_channel_count: int = 5               # 5 xs scalars
     cheat_channel_index: int = 32           # cheat scalar channel
 
+    # TASK_801 (Token front-end, control arm): per-timestep token embedding.
+    # token_vocab_size == 0 ⇒ disabled, canon bit-identical. When enabled, the
+    # value must already include the +1 reserved sentinel row for invalid bars.
+    token_vocab_size: int = 0
+    token_embed_dim: int = 16
+
     # TASK_749 (Titans-MAG): Plumbed-through TRM/encoder Titans config.
     use_titans_memory: bool = False
     titans_memory_depth: int = 2
@@ -355,6 +361,9 @@ class MuZeroNetworks(nn.Module):
             embed_dim=self.embed_dim,
             encoder_num_heads=self.encoder_num_heads,
             per_asset_scalar_dims=scalar_dims,
+            # TASK_801 (Token front-end) passthrough
+            token_vocab_size=self.token_vocab_size,
+            token_embed_dim=self.token_embed_dim,
             # TASK_749 (Titans-MAG) passthrough
             use_titans_memory=self.use_titans_memory,
             titans_memory_depth=self.titans_memory_depth,
@@ -511,25 +520,32 @@ class MuZeroNetworks(nn.Module):
             parts.append(cheat[..., None])                          # (B, A, 1)
         return jnp.concatenate(parts, axis=-1) if len(parts) > 1 else parts[0]
 
-    def representation(self, observation: jnp.ndarray) -> jnp.ndarray:
+    def representation(self, observation: jnp.ndarray,
+                       token_ids: jnp.ndarray = None) -> jnp.ndarray:
         """
         Encode observation to latent state.
 
         Args:
             observation: (batch, 27, 64, 64)
+            token_ids: TASK_801 — optional (batch, T, A) int32 token ids. None
+                or token_vocab_size==0 → no-op (canon untouched).
         Returns:
             latent_state: (batch, state_dim)
         """
         scalars = self._extract_per_asset_scalars(observation)
-        return self.trm.encode(observation, per_asset_scalars=scalars)
+        return self.trm.encode(observation, per_asset_scalars=scalars,
+                               token_ids=token_ids)
 
-    def representation_with_features(self, observation: jnp.ndarray):
+    def representation_with_features(self, observation: jnp.ndarray,
+                                     token_ids: jnp.ndarray = None):
         """TASK_729a: return (global_latent, per_asset_feats) or (global, None)
         if encoder version doesn't expose per-asset features.
         TASK_741 (Mint): FiLM-inject per-asset scalars when enabled.
+        TASK_801: thread optional token_ids (default None → no-op).
         """
         scalars = self._extract_per_asset_scalars(observation)
-        return self.trm.encode_with_features(observation, per_asset_scalars=scalars)
+        return self.trm.encode_with_features(observation, per_asset_scalars=scalars,
+                                             token_ids=token_ids)
 
     def prediction(
         self,

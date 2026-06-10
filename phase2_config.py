@@ -311,6 +311,19 @@ class Phase2Config(EasyConfig):
     per_asset_inject_xs: bool = False
     per_asset_inject_cheat: bool = False
 
+    # === TASK_801 (Token front-end, control arm) ===
+    # Per-timestep candle-language token embedding added (via a zero-init
+    # projection) to the encoder's temporal surface. Default OFF ⇒ the encoder
+    # is constructed with token_vocab_size=0, no params created, forward output
+    # byte-identical to canon. When ON, the model's effective vocab is
+    # token_frontend_vocab_size + 1 (the extra row is the reserved sentinel for
+    # invalid bars, token_id == -1). Predicted null on Alpha — exists only as
+    # the real-vs-random control arm (TASK_804). Set the real frozen codebook
+    # size on token_frontend_vocab_size before enabling.
+    use_token_frontend: bool = False
+    token_frontend_vocab_size: int = 0      # real codebook size (sentinel added)
+    token_frontend_embed_dim: int = 16
+
     # === TASK_749 (Titans-MAG) ===
     # Plug a Titans-style neural long-term memory module (MAG variant) into
     # the V3 encoder's temporal compression stage. Memory updates inside the

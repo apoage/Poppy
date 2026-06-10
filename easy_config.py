@@ -137,6 +137,16 @@ class EasyConfig:
     per_asset_inject_xs: bool = False       # cross-sectional scalars (production-safe)
     per_asset_inject_cheat: bool = False    # cheat scalar (diagnostic only)
 
+    # === TASK_801 (Token front-end, control arm) ===
+    # Per-timestep candle-language token embedding into the V3 encoder. Default
+    # OFF ⇒ token_vocab_size=0, byte-identical canon. When ON the effective
+    # model vocab is token_frontend_vocab_size + 1 (reserved sentinel for
+    # invalid bars). Mirrored here so a Phase-1 config round-trips through
+    # Phase-2 load. See tasks/TASK_801_TOKEN_FRONTEND_CHANNELS.md.
+    use_token_frontend: bool = False
+    token_frontend_vocab_size: int = 0      # real codebook size (sentinel added)
+    token_frontend_embed_dim: int = 16
+
     # === TASK_780: Oracle-as-MCTS Distillation (bridge_trainer.py) ===
     # When use_oracle_mcts_distill=True, train_easy.py routes to BridgeTrainer
     # instead of EasyTrainer. BridgeTrainer trains the full MuZero stack

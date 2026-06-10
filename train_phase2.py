@@ -208,6 +208,31 @@ def initialize_missing_aux_heads(model, params, config, rng_key):
             new_params['trm'] = new_trm
             logger.info("Initialized fresh trm/encoder/titans (TASK_749)")
 
+        # TASK_801: deep-merge token_embed + token_proj. These do NOT appear in
+        # the standard `mode='initialize_parameters'` trace because that path
+        # calls representation() WITHOUT token_ids (the encoder's token branch is
+        # only traced when token_ids is not None). So when the flag is ON we run
+        # a separate targeted init of representation() with dummy token_ids to
+        # obtain the fresh zero-init token subtrees, then merge them. Flag OFF ⇒
+        # token_vocab_size==0 ⇒ this block never runs ⇒ canon untouched.
+        if getattr(config, 'use_token_frontend', False) \
+                and getattr(config, 'token_frontend_vocab_size', 0) > 0 \
+                and 'token_proj' not in new_params['trm']['encoder']:
+            dummy_tokens = jnp.zeros(
+                (1, config.window_size, config.n_assets), dtype=jnp.int32)
+            tok_fresh = model.init(
+                rng_key, dummy_obs, dummy_tokens,
+                method=model.representation)['params']
+            tok_enc = tok_fresh.get('trm', {}).get('encoder', {})
+            new_enc = dict(new_params['trm']['encoder'])
+            for sub in ('token_embed', 'token_proj'):
+                if sub in tok_enc and sub not in new_enc:
+                    new_enc[sub] = tok_enc[sub]
+            new_trm = dict(new_params['trm'])
+            new_trm['encoder'] = new_enc
+            new_params['trm'] = new_trm
+            logger.info("Initialized fresh trm/encoder/token_embed + token_proj (TASK_801)")
+
     return new_params
 
 
@@ -411,6 +436,16 @@ def create_model(config: Phase2Config):
         use_per_asset_injection=getattr(config, 'use_per_asset_injection', False),
         per_asset_inject_xs=getattr(config, 'per_asset_inject_xs', False),
         per_asset_inject_cheat=getattr(config, 'per_asset_inject_cheat', False),
+        # TASK_801 (Token front-end, control arm): flag OFF ⇒ token_vocab_size=0
+        # ⇒ no token params, byte-identical canon. ON ⇒ real codebook size + 1
+        # reserved sentinel row for invalid bars (token_id == -1).
+        token_vocab_size=(
+            getattr(config, 'token_frontend_vocab_size', 0) + 1
+            if getattr(config, 'use_token_frontend', False)
+            and getattr(config, 'token_frontend_vocab_size', 0) > 0
+            else 0
+        ),
+        token_embed_dim=getattr(config, 'token_frontend_embed_dim', 16),
         # TASK_749 (Titans-MAG)
         use_titans_memory=getattr(config, 'use_titans_memory', False),
         titans_memory_depth=getattr(config, 'titans_memory_depth', 2),
@@ -918,6 +953,21 @@ def _is_titans_key(path) -> bool:
     return 'titans' in path_str and 'trm' in path_str and 'encoder' in path_str
 
 
+def _is_token_frontend_key(path) -> bool:
+    """TASK_801: check if a param path is the token front-end embed/projection.
+
+    These live at `trm/encoder/token_embed/*` and `trm/encoder/token_proj/*` —
+    a strict subset of the encoder subtree. Stage B freezes the encoder
+    (`_is_encoder_key`), so without peeling these off they would NEVER train and
+    the control arm would silently learn nothing. This check is path-specific
+    (`token_embed`/`token_proj` under trm/encoder) so it touches no other leaf;
+    when the flag is OFF these subtrees do not exist and the check is inert.
+    """
+    path_str = '/'.join(str(p) for p in path)
+    return ('trm' in path_str and 'encoder' in path_str
+            and ('token_embed' in path_str or 'token_proj' in path_str))
+
+
 def make_stage_b_labels(params, encoder_trainable: bool, titans_separate: bool = False):
     """TASK_728: Three-group labels for multi_transform.
 
@@ -938,6 +988,10 @@ def make_stage_b_labels(params, encoder_trainable: bool, titans_separate: bool =
             return 'train'
         if titans_separate and _is_titans_key(path):
             return 'titans'
+        # TASK_801: token front-end embed/proj train even while encoder frozen.
+        # Checked BEFORE _is_encoder_key (which would otherwise freeze them).
+        if _is_token_frontend_key(path):
+            return 'train'
         if _is_encoder_key(path):
             return 'encoder' if encoder_trainable else 'freeze'
         key = str(path[0])

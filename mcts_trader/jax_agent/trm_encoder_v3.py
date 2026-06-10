@@ -59,6 +59,13 @@ class StreamingAssetEncoder(nn.Module):
     # TASK_741 (Mint): post-pool per-asset scalar injection
     per_asset_scalar_dims: int = 0
     film_hidden_dim: int = 64
+    # TASK_801 (Token front-end, control arm): per-timestep token embedding
+    # added to the temporal-projection surface. `token_vocab_size == 0` ⇒
+    # disabled, canon untouched (no params created, no code path entered).
+    # When enabled, the value passed must already include the +1 reserved
+    # sentinel row used for invalid bars (token_id == -1). Static → JIT-static.
+    token_vocab_size: int = 0
+    token_embed_dim: int = 16
     # TASK_749 (Titans-MAG): neural memory module on the temporal axis,
     # gated against the existing minGRU branch. Toggleable so existing
     # Phase-1 checkpoints load unchanged (use_titans_memory=False by default;
@@ -95,6 +102,26 @@ class StreamingAssetEncoder(nn.Module):
                 param_dtype=self.param_dtype,
             )
 
+        # TASK_801 (Token front-end): instantiate token embed + projection only
+        # when enabled. Defined in setup() (NOT @nn.compact) because both
+        # __call__ (windowed) and step() (streaming) share these exact layers —
+        # mirrors temporal_proj. Embed params stay float32 (param_dtype); the
+        # lookup result is cast to compute dtype before token_proj (the in-repo
+        # embed precedent, muzero_model.py:372-378). token_proj has zero-init
+        # kernel AND bias → byte-identical no-op at step 0 (the FiLM trick).
+        if self.token_vocab_size > 0:
+            self.token_embed = nn.Embed(
+                num_embeddings=self.token_vocab_size,
+                features=self.token_embed_dim,
+                param_dtype=self.param_dtype,
+            )
+            self.token_proj = nn.Dense(
+                self.embed_dim,
+                kernel_init=nn.initializers.zeros,
+                bias_init=nn.initializers.zeros,
+                **d,
+            )
+
         # TASK_749 (Titans-MAG): instantiate the gated memory only when enabled.
         # Subtree key on the param dict is 'titans' (see __call__).
         if self.use_titans_memory:
@@ -116,10 +143,40 @@ class StreamingAssetEncoder(nn.Module):
                 param_dtype=self.param_dtype,
             )
 
+    def _embed_token_contrib(self, token_ids: jnp.ndarray) -> jnp.ndarray:
+        """TASK_801: token-id → additive embedding contribution on the
+        temporal-projection surface. Shared by __call__ and step().
+
+        Invalid bars carry token_id == -1 (TASK_800 pre-first-token / gap
+        convention, valid=False). These must NEVER index nn.Embed and must
+        contribute EXACTLY zero:
+          - clamp -1 → reserved sentinel row (last index, token_vocab_size-1),
+          - multiply the row's contribution by a (..., 1) validity mask so the
+            embedding of an invalid bar adds zero.
+        Zero-init token_proj makes step 0 identical regardless; the mask is what
+        keeps invalid bars at exactly zero after training.
+
+        Args:
+            token_ids: int array of shape (..., A), values in {-1, 0..V-2}
+                where V == token_vocab_size (last row is the reserved sentinel).
+        Returns:
+            contrib: (..., A, embed_dim) float in compute dtype, to be added to
+                the temporal-projection surface.
+        """
+        valid = (token_ids >= 0)                       # (..., A) bool
+        sentinel = self.token_vocab_size - 1
+        ids = jnp.where(valid, token_ids, sentinel).astype(jnp.int32)
+        # Embed params are float32; cast lookup to compute dtype before proj.
+        tok_emb = self.token_embed(ids).astype(self.dtype)     # (..., A, E)
+        contrib = self.token_proj(tok_emb)                     # (..., A, D)
+        mask = valid.astype(self.dtype)[..., None]             # (..., A, 1)
+        return contrib * mask
+
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool = True,
                  return_per_asset: bool = False,
-                 per_asset_scalars: Optional[jnp.ndarray] = None):
+                 per_asset_scalars: Optional[jnp.ndarray] = None,
+                 token_ids: Optional[jnp.ndarray] = None):
         """Training mode: parallel over full window via associative_scan.
 
         Args:
@@ -128,6 +185,9 @@ class StreamingAssetEncoder(nn.Module):
                 per-asset features (batch, n_assets, embed_dim). Mirrors V2.
             per_asset_scalars: TASK_741 (Mint) — optional (batch, n_assets, n_s)
                 injected via FiLM after pre_proj_norm. None → no-op.
+            token_ids: TASK_801 — optional (batch, T, A) int32 candle-language
+                token ids added (via zero-init projection) to the temporal
+                surface. None or token_vocab_size==0 → no-op (canon untouched).
         Returns:
             state: (batch, state_dim)
             or (state, per_asset_feats) when return_per_asset=True.
@@ -139,6 +199,12 @@ class StreamingAssetEncoder(nn.Module):
 
         # Per-timestep projection: (B, A, T, C) → (B, A, T, D)
         x = self.temporal_proj(x)
+
+        # TASK_801: add per-timestep token embedding. token_ids: (B, T, A) →
+        # transpose to (B, A, T) to align with x's (B, A, T, D) layout.
+        if self.token_vocab_size > 0 and token_ids is not None:
+            tok_ids_bat = jnp.transpose(token_ids, (0, 2, 1))   # (B, A, T)
+            x = x + self._embed_token_contrib(tok_ids_bat)      # (B, A, T, D)
 
         # Reshape for per-asset temporal processing: (B*A, T, D)
         x = x.reshape(batch * n_assets, window, self.embed_dim)
@@ -177,6 +243,7 @@ class StreamingAssetEncoder(nn.Module):
         x_t: jnp.ndarray,
         h_prev: Optional[jnp.ndarray] = None,
         per_asset_scalars: Optional[jnp.ndarray] = None,
+        token_ids: Optional[jnp.ndarray] = None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """Streaming mode: process single timestep, carry hidden state.
 
@@ -184,6 +251,9 @@ class StreamingAssetEncoder(nn.Module):
             x_t: (batch, channels, n_assets) — single timestep
             h_prev: (batch, n_assets, embed_dim) — previous hidden state, or None
             per_asset_scalars: TASK_741 — optional (batch, n_assets, n_s) FiLM input.
+            token_ids: TASK_801 — optional (batch, n_assets) int32 token ids for
+                this timestep, added (via zero-init projection) to the temporal
+                surface. None or token_vocab_size==0 → no-op (canon untouched).
         Returns:
             state: (batch, state_dim) — current latent state
             h_new: (batch, n_assets, embed_dim) — updated hidden state
@@ -203,6 +273,11 @@ class StreamingAssetEncoder(nn.Module):
 
         # Per-timestep projection: (B, A, C) → (B, A, D)
         x_t = self.temporal_proj(x_t)
+
+        # TASK_801: add per-timestep token embedding. token_ids: (B, A) → contrib
+        # (B, A, D). Same shared layers + invalid-bar mask as the windowed path.
+        if self.token_vocab_size > 0 and token_ids is not None:
+            x_t = x_t + self._embed_token_contrib(token_ids)    # (B, A, D)
 
         # minGRU recurrent step
         z = nn.sigmoid(self.gate(x_t))       # (B, A, D)

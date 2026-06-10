@@ -234,6 +234,10 @@ class TinyRecursiveTradingModel(nn.Module):
     encoder_num_heads: int = 4
     # TASK_741 (Mint): post-pool per-asset scalar injection
     per_asset_scalar_dims: int = 0
+    # TASK_801 (Token front-end): per-timestep token embedding. 0 ⇒ disabled,
+    # canon untouched. Plumbed through to StreamingAssetEncoder.
+    token_vocab_size: int = 0
+    token_embed_dim: int = 16
     # TASK_749 (Titans-MAG): plumbed-through encoder Titans config.
     use_titans_memory: bool = False
     titans_memory_depth: int = 2
@@ -253,6 +257,8 @@ class TinyRecursiveTradingModel(nn.Module):
                 embed_dim=self.embed_dim,
                 num_heads=self.encoder_num_heads,
                 per_asset_scalar_dims=self.per_asset_scalar_dims,
+                token_vocab_size=self.token_vocab_size,
+                token_embed_dim=self.token_embed_dim,
                 use_titans_memory=self.use_titans_memory,
                 titans_memory_depth=self.titans_memory_depth,
                 titans_memory_hidden=self.titans_memory_hidden,
@@ -285,12 +291,14 @@ class TinyRecursiveTradingModel(nn.Module):
         state = self.encoder(x)
         return self.reasoning(state, H_cycles, L_cycles)
 
-    def encode(self, x, per_asset_scalars=None):
-        if self.encoder_version == 3 and per_asset_scalars is not None:
-            return self.encoder(x, per_asset_scalars=per_asset_scalars)
+    def encode(self, x, per_asset_scalars=None, token_ids=None):
+        if self.encoder_version == 3 and (per_asset_scalars is not None
+                                          or token_ids is not None):
+            return self.encoder(x, per_asset_scalars=per_asset_scalars,
+                                token_ids=token_ids)
         return self.encoder(x)
 
-    def encode_with_features(self, x, per_asset_scalars=None):
+    def encode_with_features(self, x, per_asset_scalars=None, token_ids=None):
         """TASK_729a: return (global_state, per_asset_feats).
 
         per_asset_feats is (batch, n_assets, embed_dim) — post-LN, pre-pool.
@@ -303,7 +311,8 @@ class TinyRecursiveTradingModel(nn.Module):
         """
         if self.encoder_version == 3:
             return self.encoder(x, return_per_asset=True,
-                                per_asset_scalars=per_asset_scalars)
+                                per_asset_scalars=per_asset_scalars,
+                                token_ids=token_ids)
         if self.encoder_version == 2:
             return self.encoder(x, return_per_asset=True)
         state = self.encoder(x)
