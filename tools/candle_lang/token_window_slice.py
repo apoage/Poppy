@@ -5,12 +5,19 @@ just consumes `token_ids` of shape (B, T, A). The lag is baked into how a
 per-bar token timeline is sliced into the (window_start .. window_start+win_len)
 window that aligns with the raw-OHLCV window the encoder sees.
 
-Serving-lag convention (LOAD-BEARING, from the TASK_800 verdict):
-  * L1 inputs are DELAYED 2 bars: token_input[t] = token_id[t-2]. At decision
-    time t the annotation of bar t-1 is still provisional (final-only horizon is
-    bars <= t-2). The first 2 bars of the sliced window map to the reserved
-    invalid id (-1). "Use tokens up to t-1" is the WRONG off-by-one.
-  * L8 inputs are UNSHIFTED (LAG-0 exact; churn == 0 over 1000 cuts).
+Serving-lag convention (LOAD-BEARING, p99-firm from the TASK_800 re-cert on the
+frozen 512-merge vocab cb=1376):
+  * L1 inputs are DELAYED 3 bars: token_input[t] = token_id[t-3]. The re-cert on
+    the deeper merge chain firms 99.3% of cuts within 2 bars (p99 lag 2), so the
+    final-only horizon is bars <= t-3. The first 3 bars of the sliced window map
+    to the reserved invalid id (-1). NOTE: the old t-2 came from the 256-merge
+    fit (p99/max lag 1); the empirical max (6 on a single 0.1% cut) is a sample
+    statistic, NOT a bound — strict max+1 is rejected, p99-firm is the convention.
+    The ~0.7% residual against live prefix-causal serving is superseded at ladder
+    gate 3 by the sealed-flag streaming annotator (lag-adaptive, zero skew). Within
+    804 the residual is moot: train and eval both consume full-stream annotations
+    (C3 proves internal skew is exactly zero at any lag).
+  * L8 inputs are UNSHIFTED (LAG-0 exact; churn == 0, unchanged by the re-cert).
   * TARGETS stay UNSHIFTED everywhere — only *inputs* carry the delay. (Target
     slicing is the caller's job; this module only produces input token windows.)
 
@@ -25,8 +32,11 @@ import numpy as np
 INVALID_TOKEN_ID = -1
 
 # Per-language input serving lag (bars). Targets are NEVER shifted.
+# Re-cert 2026-06-11 on frozen vocab runs/799_grammar/L1_RESULT_vocab.json (cb 1376,
+# 512 merges): L1 lag_hist {0:960,1:22,2:11,3:3,4:3,6:1} → p99 lag 2 → input lag 3
+# (p99-firm; max_lag=6 is a single-cut sample stat, not a bound — see module docstring).
 LANGUAGE_INPUT_LAG = {
-    "L1": 2,   # final-only horizon: token_input[t] = token_id[t-2]
+    "L1": 3,   # p99-firm: token_input[t] = token_id[t-3]
     "L8": 0,   # LAG-0 exact
 }
 

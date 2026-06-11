@@ -374,13 +374,18 @@ def audit_lag_strictness(verbose=True):
     lag_l1_long = input_lag_for("L1_bpe")
     lag_l1_short = input_lag_for("L1")
     lag_l8_long = input_lag_for("L8_haar")
-    # expected shift-by-2: out[r] = toks[r-2], out[0]=out[1]=-1.
+    lag = int(lag_l1_long)
+    # expected shift-by-lag (lag-agnostic — tracks LANGUAGE_INPUT_LAG): out[r]=toks[r-lag], out[:lag]=-1.
     expected = np.full(n, -1, dtype=np.int32)
-    expected[2:] = toks[:n - 2]
+    if lag < n:
+        expected[lag:] = toks[:n - lag]
     shift_ok = bool(np.array_equal(out, expected))
-    # explicitly disprove a shift-by-1 (the off-by-one the convention forbids).
-    shift1 = np.full(n, -1, dtype=np.int32); shift1[1:] = toks[:n - 1]
-    not_shift1 = not bool(np.array_equal(out, shift1))
+    # explicitly disprove the off-by-one (shift-by-(lag-1) — serving a still-provisional bar).
+    off = max(lag - 1, 0)
+    shiftm1 = np.full(n, -1, dtype=np.int32)
+    if off < n:
+        shiftm1[off:] = toks[:n - off]
+    not_shift_off = (lag == 0) or (not bool(np.array_equal(out, shiftm1)))
 
     # unknown language must RAISE (hardening).
     raised = False
@@ -391,15 +396,15 @@ def audit_lag_strictness(verbose=True):
 
     res = dict(
         l1_long_lag=int(lag_l1_long), l1_short_lag=int(lag_l1_short), l8_long_lag=int(lag_l8_long),
-        shift_by_2_ok=shift_ok, not_shift_by_1=not_shift1, unknown_raises=raised,
-        out=out.tolist(), expected=expected.tolist(),
+        lag=lag, shift_by_lag_ok=shift_ok, not_shift_by_lag_minus_1=not_shift_off,
+        unknown_raises=raised, out=out.tolist(), expected=expected.tolist(),
     )
-    ok = (lag_l1_long == 2 and lag_l1_short == 2 and lag_l8_long == 0
-          and shift_ok and not_shift1 and raised)
+    ok = (lag_l1_long == lag_l1_short and lag_l1_long >= 1 and lag_l8_long == 0
+          and shift_ok and not_shift_off and raised)
     res["ok"] = bool(ok)
     if verbose:
         print(f"[join-audit](B4) L1_bpe lag={lag_l1_long} (L1={lag_l1_short}) L8_haar lag={lag_l8_long} "
-              f"shift_by_2_ok={shift_ok} not_shift_by_1={not_shift1} unknown_raises={raised} OK={ok}",
+              f"shift_by_lag_ok={shift_ok} not_shift_by_lag-1={not_shift_off} unknown_raises={raised} OK={ok}",
               flush=True)
         print(f"    join out={out.tolist()}  expected={expected.tolist()}", flush=True)
     return res
@@ -444,8 +449,8 @@ def write_result(out_path, cfg, assets, join_results, cross_results, lag_res, l1
             f"- **B3** (synthetic cross-producer agreement curve): see section below; "
             f"agreement reaches ~100% after the cold-sigma head firms (≈ first UTC-day re-anchor).",
             f"- **B4** (strict input_lag_for): **{'PASS' if b4_ok else 'FAIL'}** — "
-            f"L1_bpe lag={lag_res.get('l1_long_lag')}, lagged join shifts by 2 grid rows "
-            f"(not 1: {lag_res.get('not_shift_by_1')}), unknown language raises="
+            f"L1_bpe lag={lag_res.get('l1_long_lag')}, lagged join shifts by {lag_res.get('lag')} grid rows "
+            f"(not lag-1: {lag_res.get('not_shift_by_lag_minus_1')}), unknown language raises="
             f"{lag_res.get('unknown_raises')}.",
             f"- scope: NO hot-path training wiring (that is 801b-ii). CPU-only, no GPU/JAX/server.",
         ]),
@@ -475,8 +480,8 @@ def write_result(out_path, cfg, assets, join_results, cross_results, lag_res, l1
             f"- input_lag_for('L1_bpe') = {lag_res.get('l1_long_lag')} (long-form), "
             f"input_lag_for('L1') = {lag_res.get('l1_short_lag')}, "
             f"input_lag_for('L8_haar') = {lag_res.get('l8_long_lag')}.",
-            f"- lagged join shift-by-2 exact: {lag_res.get('shift_by_2_ok')}; "
-            f"NOT shift-by-1: {lag_res.get('not_shift_by_1')}; unknown language raises: "
+            f"- lagged join shift-by-{lag_res.get('lag')} exact: {lag_res.get('shift_by_lag_ok')}; "
+            f"NOT shift-by-(lag-1): {lag_res.get('not_shift_by_lag_minus_1')}; unknown language raises: "
             f"{lag_res.get('unknown_raises')}.",
             f"- synthetic join out={lag_res.get('out')}  expected={lag_res.get('expected')}",
         ]),
