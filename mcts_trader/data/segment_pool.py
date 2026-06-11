@@ -290,6 +290,12 @@ class SegmentPool:
                 f"{n_bella}/{len(self.slots)} initial slots are Bella-sourced"
             )
 
+        # TASK_801b-ii: after the first build pass, the (asset_id, vocab_sha) RAM cache holds every
+        # unique asset's full-history timeline. Persist it ONCE (opt-in) so later RUNS warm-start
+        # from disk instead of re-annotating (~2h/run saved). No-op if cache_dir off / artifact loaded.
+        if self._use_token_frontend:
+            self._maybe_write_token_artifact()
+
         # Stats
         self._segments_loaded = len(self.slots)
         self._groups_started = n_init
@@ -300,8 +306,15 @@ class SegmentPool:
         The vocab path comes from token_frontend_vocab_file (the pinned 799 codebook at real train
         time, server-only). The tokenizer + its fit-time CandleConfig (window/halflife/sigma_floor)
         are stashed; every slot reuses them. ZERO loading happens when use_token_frontend is OFF.
+
+        Hot-path perf (annotate-once-per-pool): tokenize_grid annotates each unique asset's FULL
+        history ONCE per process via a (asset_id, vocab_sha) RAM cache in token_hotpath (NOT once per
+        slot). An OPTIONAL one-time disk artifact keyed by vocab_sha (token_frontend_cache_dir; default
+        off) is loaded-once-to-RAM here if present, skipping re-annotation ACROSS RUNS — the CLAUDE.md
+        sanctioned load-once-to-RAM pattern, NEVER disk-in-loop. After the first build pass __init__
+        writes the artifact (write_disk_artifact) so later runs warm-start.
         """
-        from tools.candle_lang.token_hotpath import load_tokenizer
+        from tools.candle_lang.token_hotpath import load_tokenizer, vocab_sha_for, load_disk_artifact
         vocab_file = str(self._oracle_config.get('token_frontend_vocab_file', '') or '')
         if not vocab_file:
             raise ValueError(
@@ -311,11 +324,43 @@ class SegmentPool:
         tok = load_tokenizer(vocab_file)
         self._token_tokenizer = tok
         self._token_cfg = tok.cfg
+        self._token_vocab_sha = vocab_sha_for(tok)
+        # Opt-in disk artifact (default '' = off): load-once-to-RAM at pool init if it exists.
+        self._token_cache_dir = str(self._oracle_config.get('token_frontend_cache_dir', '') or '')
+        self._token_artifact_loaded = False
+        if self._token_cache_dir:
+            n_loaded = load_disk_artifact(self._token_cache_dir, self._token_vocab_sha)
+            self._token_artifact_loaded = n_loaded > 0
+            if n_loaded:
+                logger.info(
+                    f"[POOL:TOKEN] Loaded {n_loaded} per-asset timelines from disk artifact "
+                    f"(cache_dir={self._token_cache_dir}, vocab_sha={self._token_vocab_sha[:12]})"
+                )
         logger.info(
             f"[POOL:TOKEN] Token front-end ON: vocab={vocab_file} "
             f"codebook_size={tok.codebook_size} language={self._token_language} "
+            f"vocab_sha={self._token_vocab_sha[:12]} cache_dir={self._token_cache_dir or '(off)'} "
             f"(window={tok.cfg.window} halflife={tok.cfg.ewma_halflife})"
         )
+
+    def _maybe_write_token_artifact(self):
+        """Write the per-asset timeline disk artifact ONCE after the first build pass (opt-in;
+        load-once-to-RAM pattern). No-op if cache_dir off or an artifact was already loaded."""
+        if not self._use_token_frontend:
+            return
+        cache_dir = getattr(self, '_token_cache_dir', '')
+        if not cache_dir or getattr(self, '_token_artifact_loaded', False):
+            return
+        from tools.candle_lang.token_hotpath import write_disk_artifact, _TIMELINE_CACHE
+        vocab_sha = getattr(self, '_token_vocab_sha', '')
+        # asset universe currently warmed in the RAM cache under this vocab.
+        aids = sorted({int(aid) for (aid, vs) in _TIMELINE_CACHE.keys() if vs == vocab_sha})
+        if not aids:
+            return
+        path = write_disk_artifact(cache_dir, vocab_sha, aids)
+        if path:
+            self._token_artifact_loaded = True  # written -> don't rewrite this process
+            logger.info(f"[POOL:TOKEN] Wrote disk artifact for {len(aids)} assets -> {path}")
 
     def _make_slot_with_origin(self, group_key):
         """TASK_753: coin-flip wrapper around _make_slot / _make_bella_slot.

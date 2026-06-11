@@ -332,6 +332,13 @@ class Phase2Config(EasyConfig):
     # serving-lag (input_lag_for): 'L1_bpe' -> lag 2, 'L8_haar' -> lag 0.
     token_frontend_vocab_file: str = ''
     token_frontend_language: str = 'L1_bpe'
+    # TASK_801b-ii hot-path perf: OPTIONAL one-time disk artifact dir for the
+    # per-asset timeline cache (keyed by vocab_sha). Default '' = OFF; the RAM
+    # annotate-once-per-pool cache always applies. When set, the pool loads-once-
+    # to-RAM at init if the artifact exists and writes it after the first build
+    # pass, skipping full-history re-annotation ACROSS RUNS (sanctioned load-once-
+    # to-RAM, NEVER disk-in-loop). Plumbed into SegmentPool via oracle_config.
+    token_frontend_cache_dir: str = ''
 
     # === TASK_749 (Titans-MAG) ===
     # Plug a Titans-style neural long-term memory module (MAG variant) into

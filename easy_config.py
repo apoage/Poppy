@@ -152,6 +152,12 @@ class EasyConfig:
     # token_frontend_language drives the serving lag (input_lag_for).
     token_frontend_vocab_file: str = ''
     token_frontend_language: str = 'L1_bpe'
+    # TASK_801b-ii hot-path perf: OPTIONAL one-time disk artifact dir for the per-asset timeline
+    # cache, keyed by vocab_sha. Default '' = OFF (RAM annotate-once-per-pool still applies). When
+    # set, the pool loads-once-to-RAM at init if an artifact exists and writes it after the first
+    # build pass, skipping full-history re-annotation ACROSS RUNS (sanctioned load-once-to-RAM,
+    # NEVER disk-in-loop). Plumbed into SegmentPool via the oracle_config dict.
+    token_frontend_cache_dir: str = ''
 
     # === TASK_780: Oracle-as-MCTS Distillation (bridge_trainer.py) ===
     # When use_oracle_mcts_distill=True, train_easy.py routes to BridgeTrainer
