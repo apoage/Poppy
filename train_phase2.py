@@ -522,6 +522,13 @@ def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
         'bella_augment_seq_length': getattr(config, 'bella_augment_seq_length', 0),
         'bella_augment_refresh_epochs': getattr(config, 'bella_augment_refresh_epochs', 0),
         'bella_augment_log_every': getattr(config, 'bella_augment_log_every', 100),
+        # TASK_801b-ii (Fork A hot-path wiring): token front-end. OFF (default)
+        # ⇒ SegmentPool runs ZERO tokenization (no annotate_*, no slot['token_ids'])
+        # ⇒ canon bit-identical, zero CPU spent (C1). ON ⇒ each slot is tokenized
+        # ONCE at build into a (T, n_assets) int32 RAM grid (annotate-once, C4).
+        'use_token_frontend': getattr(config, 'use_token_frontend', False),
+        'token_frontend_vocab_file': getattr(config, 'token_frontend_vocab_file', ''),
+        'token_frontend_language': getattr(config, 'token_frontend_language', 'L1_bpe'),
     }
 
     pool = SegmentPool(
@@ -559,6 +566,16 @@ class AsyncBatchPipeline:
             n_channels=_enc_n_channels,
         )
         self._encode_fn = jit_batch_encode_temporal
+        # TASK_801b-ii (Fork A hot-path wiring): token front-end gate. OFF
+        # (default) ⇒ no token slice in _prepare_numpy, no token gather in
+        # _encode_jax, no token args to the train step ⇒ canon bit-identical,
+        # zero CPU spent on tokenization (C1). The slot-build tokenization
+        # (annotate-once) lives in SegmentPool._finalize_slot; here we only
+        # SLICE the slot-resident grid.
+        self._use_token_frontend = (
+            getattr(config, 'use_token_frontend', False)
+            and getattr(config, 'token_frontend_vocab_size', 0) > 0
+        )
         # TASK_738: threshold adapts to cross-sectional toggle
         self.use_state_channels = config.n_channels > _enc_n_channels
         self._rng = np.random.default_rng(config.seed + 3000)
@@ -613,6 +630,7 @@ class AsyncBatchPipeline:
         #    the entire slot to be transferred to GPU. Per-sample windows are compact.
         win_len = ws + nstep  # length of each extracted window
         all_windows = []      # list of (n, win_len, n_assets, 5) numpy per slot
+        all_token_windows = []  # TASK_801b-ii: list of (n, win_len, n_assets) int32 per slot
         all_actions = []
         all_rewards = []
         all_oracle_targets = []
@@ -649,6 +667,21 @@ class AsyncBatchPipeline:
             idx = cursors_arr[:, None] + offsets[None, :]  # (n, win_len)
             windows = cache[idx]  # (n, win_len, n_assets, 5)
             all_windows.append(windows)
+
+            # TASK_801b-ii: slice the slot's lag-applied token grid at the SAME
+            # cursor / win_len as the OHLCV window. OFF ⇒ skipped entirely (C1).
+            # The grid is slot-resident RAM (annotated once at slot build); this
+            # is a pure fancy-index slice — ZERO re-annotation in the loop (C4).
+            if self._use_token_frontend:
+                from tools.candle_lang.token_hotpath import slice_token_windows
+                token_grid = slot.get('token_ids')
+                if token_grid is None:
+                    raise RuntimeError(
+                        "TASK_801b-ii: use_token_frontend ON but slot has no 'token_ids' grid. "
+                        "SegmentPool must tokenize at slot build (check vocab_file / flag wiring)."
+                    )
+                tok_win = slice_token_windows(token_grid, cursors_arr, win_len)  # (n, win_len, A)
+                all_token_windows.append(tok_win)
 
             decision_indices = cursors_arr + ws - 1
 
@@ -820,8 +853,17 @@ class AsyncBatchPipeline:
         # Then flatten to (B*win_len, n_assets, 5) for the encoder
         windows_stacked = np.concatenate(all_windows, axis=0)[:batch_size]  # (B, win_len, n_assets, 5)
 
+        # TASK_801b-ii: stack the per-slot token windows in the SAME slot order
+        # as the OHLCV windows (by_slot iteration order is shared). OFF ⇒ key
+        # absent ⇒ _encode_jax + train step stay on the canon path (C1).
+        token_windows_stacked = None
+        if self._use_token_frontend and all_token_windows:
+            token_windows_stacked = np.concatenate(
+                all_token_windows, axis=0)[:batch_size]  # (B, win_len, n_assets) int32
+
         return {
             'windows': windows_stacked,   # (B, win_len, n_assets, 5) — compact per-sample
+            'token_windows': token_windows_stacked,  # (B, win_len, n_assets) int32 or None
             'actions': np.concatenate(all_actions)[:batch_size],
             'rewards': np.concatenate(all_rewards)[:batch_size],
             'oracle_targets': np.concatenate(all_oracle_targets)[:batch_size],
@@ -869,6 +911,20 @@ class AsyncBatchPipeline:
         obs_t1 = self._encode_fn(prices_flat, starts_t1, self.encoder_config)
         obs_tN = self._encode_fn(prices_flat, starts_tN, self.encoder_config)
 
+        # TASK_801b-ii: gather the ws-bar token window at the SAME start offset
+        # as each obs encode. The obs encoder gathers prices[base+off : base+off+ws];
+        # the token window must gather the SAME ws bars at the SAME offset so the
+        # token_ids align bar-for-bar with the obs they ride with (obs_t @ +0,
+        # obs_t1 @ +1, obs_tN @ +nstep). Returns (B, ws, n_assets) per call.
+        # OFF ⇒ token_windows is None ⇒ tokens_* stay None ⇒ canon path (C1).
+        tokens_t = tokens_t1 = tokens_tN = None
+        tw = np_batch.get('token_windows')
+        if self._use_token_frontend and tw is not None:
+            from tools.candle_lang.token_hotpath import gather_obs_token_window
+            tokens_t = jnp.asarray(gather_obs_token_window(tw, 0, ws))       # obs_t @ +0
+            tokens_t1 = jnp.asarray(gather_obs_token_window(tw, 1, ws))      # obs_t1 @ +1
+            tokens_tN = jnp.asarray(gather_obs_token_window(tw, nstep, ws))  # obs_tN @ +nstep
+
         # State channels (if enabled)
         if self.use_state_channels:
             state_t = jnp.array(np.concatenate(np_batch['state_t'])[:batch_size])
@@ -887,6 +943,10 @@ class AsyncBatchPipeline:
             'obs_t': obs_t[:batch_size],
             'obs_t1': obs_t1[:batch_size],
             'obs_tN': obs_tN[:batch_size],
+            # TASK_801b-ii: per-obs ws-bar token windows (None on canon path).
+            'tokens_t': (tokens_t[:batch_size] if tokens_t is not None else None),
+            'tokens_t1': (tokens_t1[:batch_size] if tokens_t1 is not None else None),
+            'tokens_tN': (tokens_tN[:batch_size] if tokens_tN is not None else None),
             'actions': jnp.array(np_batch['actions']),
             'rewards': jnp.array(np_batch['rewards']),
             'oracle_targets': jnp.array(np_batch['oracle_targets']),
@@ -1127,6 +1187,15 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     # re-JIT once per cell. Default mirrors canon; the pre_popart branch is
     # bit-identical to pre-769 behavior.
     value_clip_mode = getattr(config, 'value_clip_mode', 'pre_popart')
+    # TASK_801b-ii (Fork A hot-path wiring): token front-end gate, captured at
+    # JIT-trace time. OFF (default) ⇒ the token_* args stay None ⇒ the three
+    # initial_inference calls below pass token_ids=None ⇒ representation is
+    # byte-identical to canon (C1). ON ⇒ the gathered ws-bar token windows are
+    # threaded to the matching obs encode.
+    use_token_frontend = (
+        getattr(config, 'use_token_frontend', False)
+        and getattr(config, 'token_frontend_vocab_size', 0) > 0
+    )
     # TASK_777: mixture value-target alpha. Captured at JIT-trace time so the
     # constant is baked into the compiled HLO; changing α re-JITs the step
     # (same pattern as value_target_mode / value_clip_mode). Ignored unless
@@ -1242,7 +1311,8 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                            rewards_dynamics, mcts_visits, mcts_value,
                            oracle_targets, bc_weight, popart_mean, popart_std,
                            oracle_values, nstep_rewards, future_cum_returns,
-                           future_log_returns, bella_preds, bella_shape):
+                           future_log_returns, bella_preds, bella_shape,
+                           tokens_t=None, tokens_t1=None, tokens_tN=None):
         """Single Stage B training step.
 
         Args:
@@ -1267,7 +1337,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
         """
         def loss_fn(params):
             # === Root inference: policy + value from current obs ===
-            root_out = model.apply({'params': params}, observation=obs, mode='initial_inference')
+            # TASK_801b-ii: thread the ws-bar token window aligned to obs. Canon
+            # path (use_token_frontend False) passes token_ids=None → no-op.
+            root_tokens = tokens_t if use_token_frontend else None
+            root_out = model.apply({'params': params}, observation=obs,
+                                   mode='initial_inference', token_ids=root_tokens)
             policy_logits = root_out['policy_logits']  # (B, 320)
             value_logits = root_out['value']            # (B, 401)
             latent_t = root_out['latent_state']         # (B, 128)
@@ -1371,8 +1445,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
 
             # === Shared: encode obs_t1 with stopped params (no gradients to encoder/reasoning) ===
             stopped_params = jax.lax.stop_gradient(params)
+            # TASK_801b-ii: obs_t1 rides the +1-offset token window.
+            t1_tokens = tokens_t1 if use_token_frontend else None
             out_t1 = model.apply({'params': stopped_params},
-                                 observation=obs_t1, mode='initial_inference')
+                                 observation=obs_t1, mode='initial_inference',
+                                 token_ids=t1_tokens)
 
             # === Value loss ===
             if value_target_mode == "oracle":
@@ -1392,8 +1469,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # TASK_719b: N-step TD — Σγ^k r_k + γ^N V(s_{t+N})
                 # nstep_rewards = pre-computed discounted reward sum (from generator)
                 # Bootstrap with V(s_{t+N}) from stopped params (reuse from dynamics)
+                # TASK_801b-ii: obs_tN rides the +nstep-offset token window.
+                tN_tokens = tokens_tN if use_token_frontend else None
                 out_tN = model.apply({'params': stopped_params},
-                                     observation=obs_tN, mode='initial_inference')
+                                     observation=obs_tN, mode='initial_inference',
+                                     token_ids=tN_tokens)
                 support = get_value_support()
                 v_tN = jnp.sum(jax.nn.softmax(out_tN['value'], axis=-1) * support, axis=-1)
                 # Denormalize V(s_{t+N}) if PopArt active (value head outputs normalized)
@@ -1429,8 +1509,11 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 # Nstep leg — mirrors the "nstep" branch above (re-running
                 # `out_tN` here is unavoidable: this branch is reachable
                 # independently of the nstep branch).
+                # TASK_801b-ii: obs_tN rides the +nstep-offset token window.
+                tN_tokens = tokens_tN if use_token_frontend else None
                 out_tN = model.apply({'params': stopped_params},
-                                     observation=obs_tN, mode='initial_inference')
+                                     observation=obs_tN, mode='initial_inference',
+                                     token_ids=tN_tokens)
                 support = get_value_support()
                 v_tN = jnp.sum(jax.nn.softmax(out_tN['value'], axis=-1) * support, axis=-1)
                 v_tN_raw = v_tN * popart_std + popart_mean
@@ -2178,6 +2261,19 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                 pa_std = jnp.float32(1.0)
 
             # 5. Train step
+            # TASK_801b-ii: pass the per-obs token windows ONLY when the flag is
+            # ON. Canon path leaves the trailing token kwargs at their None
+            # defaults ⇒ the jitted step traces with token_ids=None ⇒
+            # bit-identical to pre-801b-ii (C1). When ON, the gathered ws-bar
+            # windows (or None placeholders if a batch lacked them) are passed.
+            _tok_kwargs = {}
+            if getattr(config, 'use_token_frontend', False) \
+                    and getattr(config, 'token_frontend_vocab_size', 0) > 0:
+                _tok_kwargs = dict(
+                    tokens_t=batch.get('tokens_t'),
+                    tokens_t1=batch.get('tokens_t1'),
+                    tokens_tN=batch.get('tokens_tN'),
+                )
             params, opt_state, metrics = train_step_fn(
                 params, opt_state,
                 obs, obs_t1, obs_tN, actions_dyn, rewards_dyn,
@@ -2189,6 +2285,7 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                 future_log_returns,
                 bella_preds,
                 bella_shape,
+                **_tok_kwargs,
             )
             # Fence: ensure GPU compute finishes before next batch's CPU→GPU transfers.
             # Without this, jnp.array() in _encode_jax can collide with the async
@@ -2857,6 +2954,27 @@ def main():
     logger.info(f"Encoder layers: {info['encoder_zero']} zero (trained)"
                 if info['encoder_zero'] == 0
                 else f"Encoder layers: {info['encoder_zero']}/{info['encoder_total']} zero (WARNING: partially untrained)")
+
+    # --- TASK_801b-ii: derive token_frontend_vocab_size from the frozen codebook ---
+    # When the token front-end is ON, the model's token_vocab_size = codebook + 1
+    # (reserved sentinel). The codebook size comes from the vocab FILE, never an
+    # operator guess. Derive it ONCE here so create_model + the pool agree. OFF ⇒
+    # this block is skipped ⇒ token_frontend_vocab_size stays 0 ⇒ canon.
+    if getattr(config, 'use_token_frontend', False):
+        _vf = str(getattr(config, 'token_frontend_vocab_file', '') or '')
+        if not _vf:
+            raise ValueError(
+                "use_token_frontend=True but token_frontend_vocab_file is empty. "
+                "Set it to a frozen L1 codebook JSON (e.g. runs/799_grammar/L1_RESULT_vocab.json)."
+            )
+        from tools.candle_lang.token_hotpath import load_tokenizer
+        _tok = load_tokenizer(_vf)
+        config.token_frontend_vocab_size = int(_tok.codebook_size)
+        logger.info(
+            f"[TASK_801b-ii] Token front-end ON: codebook={config.token_frontend_vocab_size} "
+            f"(model token_vocab_size={config.token_frontend_vocab_size + 1}, +1 sentinel) "
+            f"vocab={_vf} language={getattr(config, 'token_frontend_language', 'L1_bpe')}"
+        )
 
     # --- Create model (verify architecture matches checkpoint) ---
     model = create_model(config)

@@ -225,9 +225,14 @@ def load_benchmark_prices(
 # =============================================================================
 
 @partial(jax.jit, static_argnames=['model'])
-def _jit_model_forward(params, observations, model):
-    """JIT-compiled model forward pass."""
-    return model.apply({'params': params}, observations)
+def _jit_model_forward(params, observations, model, token_ids=None):
+    """JIT-compiled model forward pass.
+
+    TASK_801b-ii: optional `token_ids` (batch, ws, n_assets) int32 threaded into the
+    representation (mode='initial_inference'). None ⇒ canon (byte-identical no-op).
+    """
+    return model.apply({'params': params}, observation=observations,
+                       mode='initial_inference', token_ids=token_ids)
 
 
 def value_logits_to_scalar(value_logits: np.ndarray) -> np.ndarray:
@@ -479,6 +484,78 @@ def _build_token_gate(
     return gate
 
 
+# =============================================================================
+# TASK_801b-ii Phase A — token FRONT-END eval wiring (encoder token_ids, default OFF)
+# =============================================================================
+
+@dataclass
+class TokenFrontendConfig:
+    """Config for the TASK_801b-ii token FRONT-END at eval (distinct from the 803 token GATE).
+
+    enabled=False (default) ⇒ NO token code runs, _jit_model_forward receives token_ids=None ⇒
+    the eval decision path is byte-identical to canon. enabled=True ⇒ the period's assets are
+    tokenized ONCE onto the eval price grid (token_hotpath.tokenize_grid) and the ws-bar token
+    window for each inference window is fed into the encoder — the SAME producer + window slice as
+    the training path, so the same (asset, window_start) yields an identical token window (C3).
+    """
+    enabled: bool = False
+    vocab_file: str = ''               # frozen L1 codebook JSON (CandleTokenizer.from_path)
+    language: str = 'L1_bpe'           # serving lag via input_lag_for ('L1_bpe' -> 2)
+
+
+def _build_token_frontend_grid(
+    cfg: TokenFrontendConfig,
+    db_path: str,
+    symbols: List[str],
+    symbol_to_id: Dict[str, int],
+    prices_ts: np.ndarray,
+    ohlcv: np.ndarray,
+):
+    """Tokenize the period's assets ONCE onto the eval price grid -> (T, n_assets) int32.
+
+    Mirrors the training slot tokenization EXACTLY (token_hotpath.tokenize_grid via a tiny
+    hm-shaped shim carrying cache_data / valid_timestamps / asset_ids), so the train and eval
+    producers are the same code on the same inputs. Real DB periods only (synthetic/Bella eval
+    periods have no symbol_to_id). Returns (token_grid, codebook_size).
+    """
+    from tools.candle_lang.token_hotpath import load_tokenizer, tokenize_grid
+
+    tok = load_tokenizer(cfg.vocab_file)
+    # column a -> DB asset_id (sentinel -1 for unresolved symbols, left ungated/invalid).
+    col_aids = [int(symbol_to_id.get(sym, -1)) for sym in symbols]
+
+    class _GridHM:  # hm-shaped shim: tokenize_grid reads cache_data / valid_timestamps / asset_ids
+        pass
+    hm = _GridHM()
+    hm.cache_data = np.asarray(ohlcv)
+    hm.valid_timestamps = np.asarray(prices_ts, dtype=np.int64)
+    hm.asset_ids = col_aids   # identity column map (no cyclic wrap at eval — one id per column)
+
+    token_grid = tokenize_grid(
+        hm, source='historical', tokenizer=tok, cfg=tok.cfg,
+        db_path=db_path, language=cfg.language,
+    )
+    return token_grid, int(tok.codebook_size)
+
+
+def _eval_token_window(token_grid: np.ndarray, batch_starts, window_size: int):
+    """Gather the ws-bar token window for a batch of inference windows -> (B, ws, n_assets) int32.
+
+    obs[i] covers prices[i:i+ws]; the token window for window i is token_grid[i:i+ws] — the SAME
+    (asset, window_start) slice the training path uses (C3). batch_starts are the window_start
+    indices (== the same indices passed to jit_batch_encode_temporal).
+    """
+    starts = np.asarray(batch_starts, dtype=np.int64)
+    T = token_grid.shape[0]
+    offs = np.arange(window_size, dtype=np.int64)
+    idx = starts[:, None] + offs[None, :]            # (B, ws)
+    valid = idx < T
+    idx_c = np.minimum(idx, T - 1)
+    win = token_grid[idx_c]                            # (B, ws, n_assets)
+    win = np.where(valid[:, :, None], win, -1)
+    return win.astype(np.int32)
+
+
 def _mcts_decode_actions(
     mcts_actions: np.ndarray,
     policy_probs: np.ndarray,
@@ -521,6 +598,7 @@ def run_period_eval(
     prices_ts: Optional[np.ndarray] = None,
     symbol_to_id: Optional[Dict[str, int]] = None,
     db_path: str = 'trading_data.db',
+    token_frontend_cfg: Optional['TokenFrontendConfig'] = None,
 ) -> PeriodResult:
     """Evaluate model on a single benchmark period.
 
@@ -583,6 +661,21 @@ def run_period_eval(
             token_gate_cfg, db_path, symbols, symbol_to_id, prices_ts, n_windows, window_size,
         )
 
+    # TASK_801b-ii: build the token FRONT-END grid ONCE before the window loop. OFF (default) =>
+    # token_frontend_grid stays None and NO candle_lang code runs => _jit_model_forward receives
+    # token_ids=None => decision path byte-identical to canon. Real DB periods only.
+    token_frontend_grid = None
+    if token_frontend_cfg is not None and token_frontend_cfg.enabled:
+        if prices_ts is None or symbol_to_id is None:
+            raise ValueError("token front-end enabled but prices_ts / symbol_to_id not provided "
+                             "(synthetic/Bella periods have no token timeline).")
+        token_frontend_grid, _cb = _build_token_frontend_grid(
+            token_frontend_cfg, db_path, symbols, symbol_to_id, prices_ts, ohlcv,
+        )
+        print(f"  TASK_801b-ii token front-end: lang={token_frontend_cfg.language} "
+              f"codebook={_cb} grid={token_frontend_grid.shape} "
+              f"valid={int(np.count_nonzero(token_frontend_grid >= 0))}/{token_frontend_grid.size}")
+
     # Return indices that actions apply to
     # obs[i] → action → returns[i + window_size - 1]
     action_return_indices = np.arange(window_size - 1, window_size - 1 + n_windows)
@@ -632,7 +725,12 @@ def run_period_eval(
             end = min(start + BATCH, n_windows)
             batch_starts = window_starts[start:end]
             obs = jit_batch_encode_temporal(prices_jax, batch_starts, encoder_config)
-            output = _jit_model_forward(params, obs, model)
+            # TASK_801b-ii: feed the ws-bar token window for this batch (None ⇒ canon no-op).
+            tok_obs = None
+            if token_frontend_grid is not None:
+                tok_obs = jnp.asarray(_eval_token_window(
+                    token_frontend_grid, np.asarray(batch_starts), window_size))
+            output = _jit_model_forward(params, obs, model, token_ids=tok_obs)
             logits_per_asset = output['policy_logits'].reshape(-1, n_assets, 5)
             if mcts_search is None:
                 # TASK_767: _argmax_logit_mask is all-zeros unless limits are
@@ -721,7 +819,13 @@ def run_period_eval(
             ))[None]  # (1, 34, ws, n_assets)
 
             # 4. Model forward
-            output = _jit_model_forward(params, obs_full, model)
+            # TASK_801b-ii: window i covers prices[i:i+ws]; feed token_grid[i:i+ws]
+            # as a (1, ws, n_assets) token window (None ⇒ canon no-op).
+            tok_obs = None
+            if token_frontend_grid is not None:
+                tok_obs = jnp.asarray(_eval_token_window(
+                    token_frontend_grid, np.asarray([i]), window_size))
+            output = _jit_model_forward(params, obs_full, model, token_ids=tok_obs)
             logits = output['policy_logits']  # (1, 320)
             value_logits = output['value']  # (1, 401)
 

@@ -323,6 +323,15 @@ class Phase2Config(EasyConfig):
     use_token_frontend: bool = False
     token_frontend_vocab_size: int = 0      # real codebook size (sentinel added)
     token_frontend_embed_dim: int = 16
+    # TASK_801b-ii (Fork A hot-path wiring): codebook + language source. When
+    # use_token_frontend is ON, the vocab is loaded from this JSON path
+    # (CandleTokenizer.from_path) — e.g. the pinned runs/799_grammar/
+    # L1_RESULT_vocab.json (cb 1376, server-only). token_frontend_vocab_size is
+    # set from the loaded codebook at runtime (no operator guess). Empty path +
+    # flag ON is a config error caught at slot-build. Language drives the
+    # serving-lag (input_lag_for): 'L1_bpe' -> lag 2, 'L8_haar' -> lag 0.
+    token_frontend_vocab_file: str = ''
+    token_frontend_language: str = 'L1_bpe'
 
     # === TASK_749 (Titans-MAG) ===
     # Plug a Titans-style neural long-term memory module (MAG variant) into

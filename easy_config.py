@@ -146,6 +146,12 @@ class EasyConfig:
     use_token_frontend: bool = False
     token_frontend_vocab_size: int = 0      # real codebook size (sentinel added)
     token_frontend_embed_dim: int = 16
+    # TASK_801b-ii (Fork A hot-path wiring): codebook + language source.
+    # Mirrored from phase2_config so a Phase-1 config round-trips through
+    # Phase-2 load. token_frontend_vocab_file -> CandleTokenizer.from_path;
+    # token_frontend_language drives the serving lag (input_lag_for).
+    token_frontend_vocab_file: str = ''
+    token_frontend_language: str = 'L1_bpe'
 
     # === TASK_780: Oracle-as-MCTS Distillation (bridge_trainer.py) ===
     # When use_oracle_mcts_distill=True, train_easy.py routes to BridgeTrainer

@@ -628,7 +628,8 @@ class MuZeroNetworks(nn.Module):
     def initial_inference(
         self,
         observation: jnp.ndarray,
-        return_intermediates: bool = False
+        return_intermediates: bool = False,
+        token_ids: jnp.ndarray = None,
     ) -> Dict[str, jnp.ndarray]:
         """
         Initial inference for root node (Representation + Prediction).
@@ -636,6 +637,9 @@ class MuZeroNetworks(nn.Module):
         Args:
             observation: (batch, 27, 64, 64)
             return_intermediates: If True, include TRM cycle intermediates for DS24
+            token_ids: TASK_801b-ii — optional (batch, T, A) int32 candle-language
+                token ids threaded to representation. None or token_vocab_size==0
+                → no-op (canon untouched, byte-identical).
         Returns:
             dict with keys: latent_state, policy_logits, value, reward
             If return_intermediates, also includes 'trm_intermediates'
@@ -647,9 +651,10 @@ class MuZeroNetworks(nn.Module):
             or self.use_rank_head
         )
         if needs_per_asset:
-            latent_state, per_asset_feats = self.representation_with_features(observation)
+            latent_state, per_asset_feats = self.representation_with_features(
+                observation, token_ids=token_ids)
         else:
-            latent_state = self.representation(observation)
+            latent_state = self.representation(observation, token_ids=token_ids)
             per_asset_feats = None
 
         if return_intermediates:
@@ -980,7 +985,8 @@ class MuZeroNetworks(nn.Module):
         action=None,
         latent_state=None,
         mode: str = 'initial_inference',
-        return_intermediates: bool = False
+        return_intermediates: bool = False,
+        token_ids=None,
     ) -> Dict[str, jnp.ndarray]:
         """
         Dispatch to specific inference method.
@@ -991,6 +997,8 @@ class MuZeroNetworks(nn.Module):
             latent_state: Latent state (for recurrent_inference)
             mode: 'initial_inference', 'recurrent_inference', or 'initialize_parameters'
             return_intermediates: If True, return TRM cycle intermediates for DS24 dashboard
+            token_ids: TASK_801b-ii — optional (batch, T, A) int32 candle-language
+                token ids for initial_inference. None → canon (byte-identical no-op).
         """
         if mode == 'initialize_parameters':
             # Run both paths to initialize all parameters
@@ -1043,7 +1051,8 @@ class MuZeroNetworks(nn.Module):
             return out_init
 
         if mode == 'initial_inference':
-            return self.initial_inference(observation, return_intermediates=return_intermediates)
+            return self.initial_inference(observation, return_intermediates=return_intermediates,
+                                          token_ids=token_ids)
         elif mode == 'recurrent_inference':
             # When called from mctx, the first positional arg (mapped to 'observation')
             # is actually the embedding/latent_state

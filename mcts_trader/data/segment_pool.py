@@ -254,6 +254,18 @@ class SegmentPool:
         self._bella_canonical_assets = None
         self._bella_slot_counter = 0
 
+        # TASK_801b-ii (Fork A hot-path wiring): token front-end. OFF (default)
+        # ⇒ self._token_tokenizer stays None, _finalize_slot never tokenizes,
+        # slot dicts carry no 'token_ids' ⇒ canon bit-identical, zero CPU (C1).
+        # ON ⇒ lazy-load the frozen vocab ONCE here; every slot (init + rotation)
+        # is tokenized ONCE in _finalize_slot into a (T, n_assets) int32 RAM grid.
+        self._use_token_frontend = bool(self._oracle_config.get('use_token_frontend', False))
+        self._token_language = str(self._oracle_config.get('token_frontend_language', 'L1_bpe'))
+        self._token_tokenizer = None
+        self._token_cfg = None
+        if self._use_token_frontend:
+            self._init_token_frontend()
+
         n_init = min(n_slots, n_groups)
         for i in range(n_init):
             group_key = self._available_groups.pop(0)
@@ -281,6 +293,29 @@ class SegmentPool:
         # Stats
         self._segments_loaded = len(self.slots)
         self._groups_started = n_init
+
+    def _init_token_frontend(self):
+        """TASK_801b-ii: lazy-load the frozen L1 vocab ONCE for the whole pool.
+
+        The vocab path comes from token_frontend_vocab_file (the pinned 799 codebook at real train
+        time, server-only). The tokenizer + its fit-time CandleConfig (window/halflife/sigma_floor)
+        are stashed; every slot reuses them. ZERO loading happens when use_token_frontend is OFF.
+        """
+        from tools.candle_lang.token_hotpath import load_tokenizer
+        vocab_file = str(self._oracle_config.get('token_frontend_vocab_file', '') or '')
+        if not vocab_file:
+            raise ValueError(
+                "TASK_801b-ii: use_token_frontend=True but token_frontend_vocab_file is empty. "
+                "Set it to a frozen L1 codebook JSON (e.g. runs/799_grammar/L1_RESULT_vocab.json)."
+            )
+        tok = load_tokenizer(vocab_file)
+        self._token_tokenizer = tok
+        self._token_cfg = tok.cfg
+        logger.info(
+            f"[POOL:TOKEN] Token front-end ON: vocab={vocab_file} "
+            f"codebook_size={tok.codebook_size} language={self._token_language} "
+            f"(window={tok.cfg.window} halflife={tok.cfg.ewma_halflife})"
+        )
 
     def _make_slot_with_origin(self, group_key):
         """TASK_753: coin-flip wrapper around _make_slot / _make_bella_slot.
@@ -527,6 +562,29 @@ class SegmentPool:
         }
         if bella_meta is not None:
             slot['bella_meta'] = bella_meta
+
+        # TASK_801b-ii (Fork A hot-path wiring): tokenize this slot ONCE into a
+        # (T, n_assets) int32 token grid on the slot's price grid. OFF ⇒ this
+        # block never runs ⇒ slot carries no 'token_ids' ⇒ canon bit-identical.
+        # ON ⇒ annotate-once-cache-to-RAM (C4); the batch loop only SLICES it.
+        # The grid is POST serving-lag (join_timeline_to_grid applies it); the
+        # batch slice must NOT re-apply lag.
+        if self._use_token_frontend and self._token_tokenizer is not None:
+            import time as _time
+            from tools.candle_lang.token_hotpath import tokenize_grid
+            t_tok = _time.time()
+            token_grid = tokenize_grid(
+                hm, source, self._token_tokenizer, self._token_cfg,
+                db_path=self.db_path, language=self._token_language,
+            )
+            t_tok = _time.time() - t_tok
+            slot['token_ids'] = token_grid     # (T, n_assets) int32 — lag-applied
+            n_valid = int(np.count_nonzero(token_grid >= 0))
+            logger.info(
+                f"[POOL:TOKEN] Tokenized {label}: grid={token_grid.shape} "
+                f"valid={n_valid}/{token_grid.size} ({100.0*n_valid/max(token_grid.size,1):.1f}%) "
+                f"src={source} in {t_tok:.2f}s"
+            )
         return slot
 
     def _ensure_bella_generator(self):
