@@ -45,21 +45,69 @@ from . import result_writer as RW
 # --------------------------------------------------------------------------- #
 # vocab + codelength fitting (BUILD assets)
 # --------------------------------------------------------------------------- #
-def fit_vocabs(cfg, build_assets, max_windows_per_asset=4000, p_min=50, max_merges=256, verbose=True):
+def load_l1_vocab_frozen(path, runtime_cfg, verbose=True):
+    """Load a FROZEN, pre-fit L1 BPE vocab from disk (the canonical runs/799_grammar artifact) instead
+    of fitting one in-process. Returns (l1_vocab:BPEVocab, l1_cfg:CandleConfig).
+
+    The returned `l1_vocab` is the genuine reconstructed BPEVocab (CandleTokenizer.from_path(...).vocab),
+    so EVERY existing call site that reads .table / .n_base / .merges / .codebook_size / .unit_length off
+    `vocabs['l1_vocab']` keeps working byte-identically — only the SOURCE of the vocab changes.
+
+    The substrate cfg (window / ewma_halflife / sigma_floor) MUST come from the loaded tokenizer's
+    embedded cfg so the vol-unit substrate matches the fit — we do NOT silently fall back to a default
+    cfg. We carry that substrate onto the audit's RUNTIME cfg (which holds the real db / build_assets /
+    batching) via dataclasses.replace, so L1 encoding uses the frozen substrate while DB access and
+    streaming stay on the runtime config."""
+    import dataclasses
+    tok = TK.CandleTokenizer.from_path(path)          # genuine load_vocab round-trip (803-P1 path)
+    l1_vocab = tok.vocab                               # the reconstructed BPEVocab
+    tcfg = tok.cfg                                     # substrate the vocab was frozen under
+    l1_cfg = dataclasses.replace(runtime_cfg,
+                                 window=int(tcfg.window),
+                                 ewma_halflife=int(tcfg.ewma_halflife),
+                                 sigma_floor=float(tcfg.sigma_floor))
+    if verbose:
+        print(f"[audit] LOADED frozen L1 vocab <- {path}  codebook_size={l1_vocab.codebook_size} "
+              f"(n_base={l1_vocab.n_base} merges={len(l1_vocab.merges)})  "
+              f"substrate window={l1_cfg.window} halflife={l1_cfg.ewma_halflife} "
+              f"sigma_floor={l1_cfg.sigma_floor}", flush=True)
+        if (int(l1_cfg.window) != int(runtime_cfg.window)
+                or int(l1_cfg.ewma_halflife) != int(runtime_cfg.ewma_halflife)
+                or float(l1_cfg.sigma_floor) != float(runtime_cfg.sigma_floor)):
+            print(f"[audit] NOTE: loaded substrate differs from runtime cfg "
+                  f"(runtime window={runtime_cfg.window} halflife={runtime_cfg.ewma_halflife} "
+                  f"sigma_floor={runtime_cfg.sigma_floor}); using the LOADED substrate for L1.", flush=True)
+    return l1_vocab, l1_cfg
+
+
+def fit_vocabs(cfg, build_assets, max_windows_per_asset=4000, p_min=50, max_merges=256, verbose=True,
+               l1_vocab_loaded=None):
     """Fit a frozen L1 BPE vocab + L8 Haar vocab on the BUILD assets (bounded per-asset windows), and
     fit a BUILD unigram codelength model for each language by folding the per-bar token streams.
-    Returns dict(l1_vocab, l8_vocab, l1_code, l8_code)."""
+    Returns dict(l1_vocab, l8_vocab, l1_code, l8_code).
+
+    l1_vocab_loaded : if not None, a pre-loaded BPEVocab (from load_l1_vocab_frozen) is used VERBATIM
+    for L1 instead of fitting one in-process — the TASK_800 re-cert path on the frozen canonical vocab.
+    `cfg` MUST already be the frozen substrate cfg in that case (the caller passes the loaded l1_cfg).
+    The L8 path is UNCHANGED (still fit): L8 is window-rate, churn==0, lag-invariant to BPE merge depth,
+    so the re-cert is about L1 only."""
     t0 = time.time()
-    # ---- L1 BPE vocab (in-process fit; no save/load round-trip needed for the audit) ----
-    if verbose:
-        print(f"[audit] fitting L1 BPE vocab on {len(build_assets)} build assets "
-              f"(mwpa={max_windows_per_asset}, p_min={p_min}, max_merges={max_merges}) ...", flush=True)
-    # fit_and_save writes a json; we only need the in-process vocab, so call its pieces via fit_and_save
-    # to a temp path (it returns the vocab). Keeps us on the exact frozen-vocab path.
-    tmp = "/tmp/800_l1_vocab.json"
-    l1_vocab, _ = TK.fit_and_save(cfg, build_assets, tmp,
-                                  max_windows_per_asset=max_windows_per_asset,
-                                  p_min=p_min, max_merges=max_merges, verbose=verbose)
+    # ---- L1 BPE vocab: load a frozen one if provided, else in-process fit (default, unchanged) ----
+    if l1_vocab_loaded is not None:
+        l1_vocab = l1_vocab_loaded
+        if verbose:
+            print(f"[audit] using LOADED frozen L1 vocab (codebook_size={l1_vocab.codebook_size}); "
+                  f"skipping in-process L1 fit.", flush=True)
+    else:
+        if verbose:
+            print(f"[audit] fitting L1 BPE vocab on {len(build_assets)} build assets "
+                  f"(mwpa={max_windows_per_asset}, p_min={p_min}, max_merges={max_merges}) ...", flush=True)
+        # fit_and_save writes a json; we only need the in-process vocab, so call its pieces via fit_and_save
+        # to a temp path (it returns the vocab). Keeps us on the exact frozen-vocab path.
+        tmp = "/tmp/800_l1_vocab.json"
+        l1_vocab, _ = TK.fit_and_save(cfg, build_assets, tmp,
+                                      max_windows_per_asset=max_windows_per_asset,
+                                      p_min=p_min, max_merges=max_merges, verbose=verbose)
 
     # ---- L8 Haar vocab ----
     if verbose:
@@ -556,6 +604,12 @@ def main(argv=None):
     ap.add_argument("--split-file", default="/home/lukas/Trader/runs/796_scaled/asset_split.json",
                     help="canonical asset_split.json (build/holdout keys). Falls back to a DB-survey "
                          "reconstruction if absent; the path taken is recorded in meta.deviations[].")
+    ap.add_argument("--vocab-file", default=None,
+                    help="OPTIONAL: load a FROZEN, pre-fit L1 BPE vocab JSON from disk (e.g. the "
+                         "canonical runs/799_grammar/L1_RESULT_vocab.json, codebook 1376) instead of "
+                         "fitting L1 in-process. The L1 substrate cfg (window/halflife/sigma_floor) is "
+                         "taken from the loaded tokenizer's embedded cfg so it matches the fit. L8 is "
+                         "still fit (window-rate, lag-invariant). Default None = current in-process fit.")
     ap.add_argument("--max-draws", type=int, default=0,
                     help="cap on assets DRAWN while hunting for effective ones (0 = pool size).")
     ap.add_argument("--smoke-only", action="store_true")
@@ -570,7 +624,26 @@ def main(argv=None):
 
     print(f"[audit] db={db}")
     print(f"[audit] build_assets={build_assets}")
-    vocabs = fit_vocabs(cfg, build_assets, max_windows_per_asset=int(args.fit_mwpa))
+
+    # ---- L1 vocab source: load a FROZEN pre-fit vocab from disk (--vocab-file) or fit in-process ----
+    # When loading, the substrate cfg (window/halflife/sigma_floor) comes from the loaded tokenizer's
+    # embedded cfg (NOT the default) so the vol-unit substrate matches the fit; cfg below is replaced by
+    # that frozen substrate cfg (db / build_assets / batching preserved). L8 is always fit (window-rate,
+    # lag-invariant to merge depth) — the re-cert targets L1.
+    l1_vocab_loaded = None
+    if args.vocab_file:
+        l1_vocab_loaded, cfg = load_l1_vocab_frozen(args.vocab_file, cfg, verbose=True)
+        build_assets = list(cfg.build_assets)
+        print(f"[audit] L1 vocab SOURCE: frozen file {args.vocab_file} "
+              f"(codebook_size={l1_vocab_loaded.codebook_size})")
+    else:
+        print(f"[audit] L1 vocab SOURCE: in-process fit (no --vocab-file)")
+
+    vocabs = fit_vocabs(cfg, build_assets, max_windows_per_asset=int(args.fit_mwpa),
+                        l1_vocab_loaded=l1_vocab_loaded)
+    print(f"[audit] L1 vocab IN USE: codebook_size={vocabs['l1_vocab'].codebook_size} "
+          f"(operator: confirm 1376 on the server when --vocab-file points at "
+          f"runs/799_grammar/L1_RESULT_vocab.json)")
 
     # ---- smoke (must pass before the full audit) ----
     smoke_asset = build_assets[0]
@@ -613,6 +686,22 @@ def main(argv=None):
                           "price-stratified split reconstructed from the DB survey (both halves, "
                           "quantile-spread). Point --split-file at the server copy to use the canonical split.")),
     ]
+    # record the L1 vocab source (frozen-file load vs in-process fit) so the re-cert provenance is
+    # machine-readable in meta.deviations[] — the operator confirms codebook 1376 here.
+    if args.vocab_file:
+        deviations.append(dict(
+            name="l1_vocab_source", value=f"frozen_file:{args.vocab_file}",
+            detail=(f"L1 vocab LOADED from {args.vocab_file} (codebook_size="
+                    f"{vocabs['l1_vocab'].codebook_size}, n_base={vocabs['l1_vocab'].n_base}, "
+                    f"merges={len(vocabs['l1_vocab'].merges)}); substrate cfg taken from the loaded "
+                    f"tokenizer (window={cfg.window}, halflife={cfg.ewma_halflife}, "
+                    f"sigma_floor={cfg.sigma_floor}). L8 still fit in-process (window-rate, "
+                    f"lag-invariant to BPE merge depth).")))
+    else:
+        deviations.append(dict(
+            name="l1_vocab_source", value="in_process_fit",
+            detail=(f"L1 vocab fit in-process (codebook_size={vocabs['l1_vocab'].codebook_size}); "
+                    f"no --vocab-file given. NOTE: this is NOT the canonical 799_grammar vocab.")))
 
     import subprocess
     def _free_g():
