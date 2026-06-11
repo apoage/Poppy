@@ -34,11 +34,22 @@ LANGUAGE_INPUT_LAG = {
 def input_lag_for(language: str) -> int:
     """Return the input serving lag (in bars) for a language code.
 
-    Unknown languages default to 0 (no shift) — callers should pass an explicit
-    known code; the default exists only so an unconfigured language degrades to
-    the safe unshifted behavior rather than raising in the hot path.
+    Accepts the short code ('L1', 'L8') or the audit-style long form
+    ('L1_bpe', 'L8_haar') — normalized to the prefix before the first '_'.
+
+    Unknown languages RAISE (801-audit hardening). Defaulting to lag 0 is NOT
+    safe: for any lagged language a silent 0 serves provisional tokens —
+    exactly the train/serve skew the TASK_800 convention exists to prevent.
+    Lag is resolved once at timeline-prep time, never per-bar, so raising here
+    is not a hot-path concern.
     """
-    return int(LANGUAGE_INPUT_LAG.get(str(language), 0))
+    key = str(language).split("_")[0].upper()
+    if key not in LANGUAGE_INPUT_LAG:
+        raise ValueError(
+            f"Unknown token language {language!r} (normalized {key!r}); "
+            f"known: {sorted(LANGUAGE_INPUT_LAG)}. Refusing to default to "
+            f"lag 0 — that silently serves provisional tokens.")
+    return int(LANGUAGE_INPUT_LAG[key])
 
 
 def lag_shift_per_bar(token_id_per_bar: np.ndarray, lag: int) -> np.ndarray:

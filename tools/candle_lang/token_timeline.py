@@ -55,6 +55,7 @@ from . import db_stream as DS
 from . import eval_battery as EB
 from .volunit import features_for_run
 from .symbolic import l1_bpe as L1
+from .token_window_slice import input_lag_for, lag_shift_per_bar, INVALID_TOKEN_ID
 
 
 # --------------------------------------------------------------------------- #
@@ -166,10 +167,53 @@ def _iter_feature_runs(db, asset_id, cfg, max_windows=None):
         yield feats, ts_out, finite
 
 
+def _split_inmem_runs(ts, n):
+    """Split an in-memory (ts,) int64 timestamp grid of length n into the (start,end) bar-index
+    spans of its maximal dt==C.BAR_SECONDS contiguous runs, mirroring db_stream.iter_runs' run rule
+    (a run breaks at any dt!=60, including non-monotone/duplicate timestamps). Returns a list of
+    (s, e) half-open raw-bar index spans with e-s >= 2 (a run needs >=2 raw bars to yield >=1 feature
+    bar). Bar-validity of OHLC is the CALLER's contract (synthetic slots are dense + finite); the
+    db path's _bar_valid guard does not apply to in-memory OHLCV."""
+    ts = np.asarray(ts, dtype=np.int64)
+    if n < 2:
+        return []
+    dt = ts[1:] - ts[:-1]
+    # break points: a new run starts at index i+1 whenever dt[i] != BAR_SECONDS.
+    breaks = np.flatnonzero(dt != C.BAR_SECONDS) + 1   # indices where a new run begins
+    bounds = np.concatenate([[0], breaks, [n]]).astype(np.int64)
+    spans = []
+    for k in range(bounds.shape[0] - 1):
+        s, e = int(bounds[k]), int(bounds[k + 1])
+        if e - s >= 2:                                 # need >=2 raw bars for >=1 feature bar
+            spans.append((s, e))
+    return spans
+
+
+def _iter_feature_runs_inmem(ohlcv, ts, cfg):
+    """In-memory mirror of `_iter_feature_runs`: yield (feats(F,N_FEAT)f32, ts_out(F,)i64, finite(F,))
+    per maximal dt==C.BAR_SECONDS run of an in-RAM OHLCV slot, calling the SAME features_for_run per
+    run as the DB path. This is the ONLY substrate difference between annotate_asset (DB rows via
+    db_stream.iter_runs) and annotate_ohlcv (in-memory rows split here) — the per-run tokenization core
+    downstream is byte-identical.
+
+    ohlcv : (T, >=4) float — columns 0:4 = O,H,L,C (col 4 = volume, ignored by volunit).
+    ts    : (T,)     int64 — per-bar timestamps. Runs break at any dt!=60 (gaps -> valid=False, R2).
+    """
+    ohlcv = np.asarray(ohlcv, dtype=np.float64)
+    ts = np.asarray(ts, dtype=np.int64)
+    T = ohlcv.shape[0]
+    o = ohlcv[:, 0]; h = ohlcv[:, 1]; l = ohlcv[:, 2]; c = ohlcv[:, 3]
+    for (s, e) in _split_inmem_runs(ts, T):
+        feats, _close, ts_out, finite = features_for_run(ts[s:e], o[s:e], h[s:e], l[s:e], c[s:e], cfg)
+        if feats.shape[0] == 0:
+            continue
+        yield feats, ts_out, finite
+
+
 # --------------------------------------------------------------------------- #
 # L8 Haar window-rate timeline (the trivial case — build this first)
 # --------------------------------------------------------------------------- #
-def _annotate_l8(db, asset_id, l8_vocab, cfg, code_model: Optional[_CodelengthModel] = None,
+def _annotate_l8(run_iter, l8_vocab, cfg, asset_id, code_model: Optional[_CodelengthModel] = None,
                  max_feature_bars: Optional[int] = None) -> TimelineResult:
     """Per-bar L8 timeline. L8 mints ONE token per trailing window of W feature bars; the token is
     timestamped at the window END bar (db_stream end_ts / the last bar of the window). For a per-bar
@@ -179,6 +223,10 @@ def _annotate_l8(db, asset_id, l8_vocab, cfg, code_model: Optional[_CodelengthMo
 
     L8 churn must be EXACTLY 0 (the window ending at t never changes when bar t+1 arrives — t+1's
     window is a NEW token timestamped at t+1; t's token is final the moment bar t exists).
+
+    `run_iter` yields (feats(F,N_FEAT), ts_out(F,), finite(F,)) per maximal dt==60 run — supplied by
+    `_iter_feature_runs` (DB / annotate_asset) or `_iter_feature_runs_inmem` (annotate_ohlcv). The
+    per-run tokenization below is IDENTICAL for both substrates (the R3 cross-producer invariant).
     """
     from .symbolic import l8_wavelet as L8
     W = int(l8_vocab.win_len)
@@ -186,7 +234,7 @@ def _annotate_l8(db, asset_id, l8_vocab, cfg, code_model: Optional[_CodelengthMo
     ts_chunks, id_chunks, valid_chunks = [], [], []
     prev_run_last_ts = None
 
-    for feats, ts_out, finite in _iter_feature_runs(db, asset_id, cfg):
+    for feats, ts_out, finite in run_iter:
         F = feats.shape[0]
         mv = feats[:, 0].astype(np.float64)               # vol-unit move channel (L8 substrate)
         ids = np.full(F, -1, dtype=np.int64)
@@ -275,16 +323,20 @@ def _bpe_prefix_token_per_bar(syms: np.ndarray, vocab) -> np.ndarray:
     return out
 
 
-def _annotate_l1(db, asset_id, l1_vocab, cfg, code_model: Optional[_CodelengthModel] = None,
+def _annotate_l1(run_iter, l1_vocab, cfg, asset_id, code_model: Optional[_CodelengthModel] = None,
                  max_feature_bars: Optional[int] = None) -> TimelineResult:
     """Per-bar L1 BPE timeline. Encode each contiguous dt==60 run ONCE (NOT per-window): base symbols
     over the whole run -> numerosity reduce -> BPE -> walk the tokens' raw-bar coverage -> emit the
     last-completed token per bar (_bpe_prefix_token_per_bar). Pre-first-token bars and gaps are
-    valid=False."""
+    valid=False.
+
+    `run_iter` yields (feats(F,N_FEAT), ts_out(F,), finite(F,)) per maximal dt==60 run — supplied by
+    `_iter_feature_runs` (DB / annotate_asset) or `_iter_feature_runs_inmem` (annotate_ohlcv). The
+    per-run tokenization below is IDENTICAL for both substrates (the R3 cross-producer invariant)."""
     table = l1_vocab.table
     ts_chunks, id_chunks, valid_chunks = [], [], []
 
-    for feats, ts_out, finite in _iter_feature_runs(db, asset_id, cfg):
+    for feats, ts_out, finite in run_iter:
         F = feats.shape[0]
         # encode the WHOLE run's base symbols once (run is gap-free dt==60 by construction).
         syms = BA.encode_symbols(feats.astype(np.float64), table)   # (F,) base symbols
@@ -371,13 +423,69 @@ def annotate_asset(db, asset_id, tokenizer, cfg, *, code_model=None,
     """
     cfg = cfg if cfg is not None else getattr(tokenizer, "cfg", None) or C.CandleConfig()
     lang = _language_of(tokenizer)
+    aid = int(asset_id)
+    # the DB run-iterator: identical (feats, ts_out, finite) tuples that annotate_ohlcv builds in-mem.
+    run_iter = _iter_feature_runs(db, aid, cfg)
     if lang == "L8_haar":
-        return _annotate_l8(db, int(asset_id), tokenizer, cfg, code_model, max_feature_bars)
+        return _annotate_l8(run_iter, tokenizer, cfg, aid, code_model, max_feature_bars)
     if lang == "L1_bpe":
         vocab = getattr(tokenizer, "vocab", tokenizer)  # CandleTokenizer.vocab or a raw BPEVocab
         # carry the table onto the vocab if the caller passed a bare BPEVocab (it already has .table)
-        return _annotate_l1(db, int(asset_id), vocab, cfg, code_model, max_feature_bars)
+        return _annotate_l1(run_iter, vocab, cfg, aid, code_model, max_feature_bars)
     raise TypeError(f"annotate_asset: unrecognized tokenizer type {type(tokenizer)!r}")
+
+
+# --------------------------------------------------------------------------- #
+# public entry point — in-memory OHLCV (synthetic / Bella slots; TASK_801b-i Fork A)
+# --------------------------------------------------------------------------- #
+def annotate_ohlcv(ohlcv, ts, tokenizer, cfg, *, code_model=None,
+                   max_feature_bars=None) -> TimelineResult:
+    """Per-bar causal token annotation for ONE in-memory OHLCV slot under ONE language.
+
+    The in-memory twin of `annotate_asset`: instead of reading DB rows via db_stream.iter_runs, it
+    splits the provided (ts, OHLC) into maximal dt==C.BAR_SECONDS runs (`_iter_feature_runs_inmem`)
+    and feeds the SAME L1/L8 per-run tokenization core. So real (DB) and synthetic (Bella) slots are
+    byte-identical token producers up to substrate + head warm-up; the R3 audit isolates exactly that.
+
+    ohlcv  : (T, >=4) array — columns 0:4 = O,H,L,C (col 4 = volume, IGNORED by volunit).
+    ts     : (T,) int64 timestamps, OR None.
+             R1 (FROZEN synthetic-slot convention): ts=None -> ts = arange(T) * C.BAR_SECONDS.
+             That gives dt==60 throughout (one contiguous run, no gaps) and, with t0=0, the volunit
+             UTC-day sigma re-anchor (ts//86400) flips every 86400/60 = 1440 bars, anchored at bar 0.
+             This is the canonical convention for Bella / synthetic slots that carry no real wall-clock
+             timestamps; pass a real ts array for real-bar-derived slots.
+    tokenizer : same dispatch as annotate_asset (HaarVocab -> L8; CandleTokenizer/BPEVocab -> L1).
+    cfg    : CandleConfig (window/halflife/sigma_floor MUST match the vocab's fit substrate).
+    code_model : optional _CodelengthModel (BUILD unigram). If None, codelength is zeros.
+    max_feature_bars : optional tail cap on retained feature bars (mirrors annotate_asset).
+
+    Returns a TimelineResult on the FEATURE-bar grid (volunit drops the first raw bar of each run),
+    identical structure to annotate_asset. R2: dt!=60 breaks a run -> boundary feature bars valid=False,
+    NO forward-fill ever.
+    """
+    ohlcv = np.asarray(ohlcv, dtype=np.float64)
+    if ohlcv.ndim != 2 or ohlcv.shape[1] < 4:
+        raise ValueError(f"annotate_ohlcv: ohlcv must be (T,>=4) [O,H,L,C,...]; got {ohlcv.shape}")
+    T = ohlcv.shape[0]
+    if ts is None:
+        # R1 FROZEN convention: synthetic minute grid anchored at t0=0 (dt==60; day re-anchor / 1440).
+        ts = np.arange(T, dtype=np.int64) * C.BAR_SECONDS
+    else:
+        ts = np.asarray(ts, dtype=np.int64)
+        if ts.shape[0] != T:
+            raise ValueError(f"annotate_ohlcv: ts length {ts.shape[0]} != ohlcv rows {T}")
+
+    cfg = cfg if cfg is not None else getattr(tokenizer, "cfg", None) or C.CandleConfig()
+    lang = _language_of(tokenizer)
+    # asset_id is bookkeeping only for an in-memory slot; -1 marks "synthetic / no DB id".
+    aid = -1
+    run_iter = _iter_feature_runs_inmem(ohlcv, ts, cfg)
+    if lang == "L8_haar":
+        return _annotate_l8(run_iter, tokenizer, cfg, aid, code_model, max_feature_bars)
+    if lang == "L1_bpe":
+        vocab = getattr(tokenizer, "vocab", tokenizer)
+        return _annotate_l1(run_iter, vocab, cfg, aid, code_model, max_feature_bars)
+    raise TypeError(f"annotate_ohlcv: unrecognized tokenizer type {type(tokenizer)!r}")
 
 
 def _language_of(tokenizer) -> str:
@@ -390,3 +498,58 @@ def _language_of(tokenizer) -> str:
     if hasattr(v, "merges") and hasattr(v, "unit_length") and hasattr(v, "table"):
         return "L1_bpe"
     raise TypeError(f"_language_of: cannot classify tokenizer {type(tokenizer)!r}")
+
+
+# --------------------------------------------------------------------------- #
+# timestamp-join onto a slot grid (TASK_801b-i Fork A, Deliverable 2)
+# --------------------------------------------------------------------------- #
+def join_timeline_to_grid(timeline: "TimelineResult", grid_ts, language):
+    """Timestamp-join a per-bar token TIMELINE onto a slot's `valid_timestamps` GRID.
+
+    The slot's grid (`grid_ts`, == HistoricalMarket.valid_timestamps for a real slot, or the synthetic
+    slot's own dt==60 grid) is a DENSE union grid whose per-asset gaps are FORWARD-FILLED upstream
+    (~476k fills/period). Forward-filled rows carry NO real-bar timestamp, so they have no entry in the
+    timeline's {ts -> token} map and land -1/invalid here — this AUTO-SOLVES the no-forward-fill rule
+    (R2): we never serve a token for a filled (non-real) bar.
+
+    Steps:
+      1. Build {ts -> (token_id, is_valid)} from the timeline's VALID entries only (invalid timeline
+         bars — gaps / pre-first-token — are excluded so they cannot match a grid row).
+      2. For each grid row r: grid_ts[r] in the map AND valid -> its token_id; else -> -1, invalid.
+         This masks BOTH forward-filled grid rows (no real bar) AND timeline gaps.
+      3. Apply the serving lag ON THE GRID (R4): an INDEX-shift by `input_lag_for(language)` over the
+         grid index axis (the grid index IS the model's window_start space), leading `lag` rows -> -1.
+         `input_lag_for` is the ONLY lag source (long-form 'L1_bpe'/'L8_haar' accepted). Targets are
+         NOT this function's concern.
+
+    Args:
+        timeline : TimelineResult (ts, token_id, valid) from annotate_asset / annotate_ohlcv.
+        grid_ts  : (G,) int — the slot grid timestamps (valid_timestamps).
+        language : 'L1_bpe' / 'L8_haar' (long-form) or 'L1' / 'L8' — resolved via input_lag_for.
+    Returns:
+        token_ids : (G,) int32 — lag-applied grid token ids, -1 at filled/gap/leading-lag rows.
+        valid     : (G,) bool  — True only where a real, lag-firmed token landed.
+    """
+    grid_ts = np.asarray(grid_ts, dtype=np.int64)
+    G = grid_ts.shape[0]
+
+    # 1) {ts -> token_id} over VALID timeline entries only. A real-bar grid ts matches exactly one
+    #    timeline ts (both are real-bar timestamps on the same minute grid); duplicates in the timeline
+    #    cannot occur (a feature-bar grid is strictly increasing within a run, runs are disjoint in ts).
+    t_ts = np.asarray(timeline.ts, dtype=np.int64)
+    t_tok = np.asarray(timeline.token_id, dtype=np.int64)
+    t_val = np.asarray(timeline.valid, dtype=bool)
+    ts_to_tok = {int(ts): int(tok) for ts, tok, v in zip(t_ts, t_tok, t_val) if v}
+
+    # 2) per-grid-row lookup (pre-lag). Filled rows (ts not a real bar) + any non-valid -> -1.
+    grid_tok_raw = np.full(G, INVALID_TOKEN_ID, dtype=np.int32)
+    for r in range(G):
+        tok = ts_to_tok.get(int(grid_ts[r]))
+        if tok is not None:
+            grid_tok_raw[r] = tok
+
+    # 3) serving lag as a grid-index shift (R4). input_lag_for is the SINGLE lag source.
+    lag = input_lag_for(language)
+    token_ids = lag_shift_per_bar(grid_tok_raw, lag).astype(np.int32)
+    valid = token_ids >= 0
+    return token_ids, valid
