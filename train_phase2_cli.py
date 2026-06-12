@@ -98,6 +98,33 @@ def parse_args():
                              '(default: 0.0 = canon, term not traced). Grounds the '
                              'policy in executed next-step return. Sweep ∈ {0.05, 0.1, '
                              '0.2, 0.5} per tasks/TASK_790_REALIZED_PNL_VALUE.md.')
+    # TASK_804-B1: token front-end config as CLI overrides (arms 2-3).
+    # Each defaults to None so absence = inherit the Phase2Config / checkpoint
+    # default (canon: use_token_frontend=False, vocab_file='', language='L1_bpe',
+    # cache_dir=''). The bool mirrors --disable-limit-orders' three-state
+    # BooleanOptionalAction (None=inherit, True=force ON, False=force OFF) so a
+    # resumed ckpt carrying use_token_frontend=True can be forced OFF.
+    parser.add_argument('--use-token-frontend',
+                        action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help='TASK_804: enable the candle-language token '
+                             'front-end (per-timestep token embedding added to '
+                             'the encoder temporal surface). Default = None = '
+                             'inherit from checkpoint config (canon = False). '
+                             'Use --no-use-token-frontend to force OFF on resume.')
+    parser.add_argument('--token-frontend-vocab-file', type=str, default=None,
+                        help='TASK_804: path to the frozen codebook JSON loaded '
+                             'when --use-token-frontend is ON (e.g. runs/799_'
+                             'grammar/L1_RESULT_vocab.json). Default = None = '
+                             'inherit (canon = "").')
+    parser.add_argument('--token-frontend-language', type=str, default=None,
+                        help='TASK_804: candle language driving the serving-lag '
+                             '(L1_bpe -> lag 2, L8_haar -> lag 0). Default = None '
+                             '= inherit (canon = "L1_bpe").')
+    parser.add_argument('--token-frontend-cache-dir', type=str, default=None,
+                        help='TASK_804: OPTIONAL per-asset timeline cache dir '
+                             '(load-once-to-RAM across runs, keyed by vocab_sha). '
+                             'Default = None = inherit (canon = "").')
     # TASK_767: Action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): switched to BooleanOptionalAction so --no-disable-limit-orders
     # can force the flag OFF even when the resumed checkpoint config carries

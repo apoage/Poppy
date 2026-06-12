@@ -2669,6 +2669,18 @@ def main():
     # TASK_790 (experiment A2): realized-PnL value override
     if args.realized_value_weight is not None:
         config.realized_value_weight = args.realized_value_weight
+    # TASK_804-B1: token front-end overrides (arms 2-3). Each guarded by
+    # `is not None` so absence leaves the inherited Phase2Config default
+    # untouched (canon byte-identical). The bool uses BooleanOptionalAction
+    # three-state semantics — None = inherit, True/False = force.
+    if args.use_token_frontend is not None:
+        config.use_token_frontend = bool(args.use_token_frontend)
+    if args.token_frontend_vocab_file is not None:
+        config.token_frontend_vocab_file = args.token_frontend_vocab_file
+    if args.token_frontend_language is not None:
+        config.token_frontend_language = args.token_frontend_language
+    if args.token_frontend_cache_dir is not None:
+        config.token_frontend_cache_dir = args.token_frontend_cache_dir
     # TASK_767: action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): BooleanOptionalAction three-state semantics — None =
     # inherit, True = force ON, False = force OFF.
