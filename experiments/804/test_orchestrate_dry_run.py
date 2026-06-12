@@ -41,14 +41,14 @@ def _run(tmp_path, monkeypatch, extra_args):
 
 # --------------------------------------------------------------------------- #
 def test_seed_major_queue_order():
-    """Behavior 1a: queue is seed-major (raw_s7, real_s7, rand_s7, then s13...)."""
+    """Behavior 1a: queue is seed-major (raw_s7, real_s7, shift_s7, then s13...)."""
     o = orch.Orchestrator(orch.parse_args(["--dry-run"]))
     q = o.build_queue([7, 13, 23])
     tags = [r.tag for r in q]
     assert tags == [
-        "raw_seed7", "real_fe_seed7", "rand_fe_seed7",
-        "raw_seed13", "real_fe_seed13", "rand_fe_seed13",
-        "raw_seed23", "real_fe_seed23", "rand_fe_seed23",
+        "raw_seed7", "real_fe_seed7", "shift_fe_seed7",
+        "raw_seed13", "real_fe_seed13", "shift_fe_seed13",
+        "raw_seed23", "real_fe_seed23", "shift_fe_seed23",
     ]
 
 
@@ -70,7 +70,7 @@ def test_two_wide_and_eval_on_land(tmp_path, monkeypatch, capsys):
 
     # all 9 train run dirs + 9 eval dirs exist.
     for seed in (7, 13, 23):
-        for arm in ("raw", "real_fe", "rand_fe"):
+        for arm in ("raw", "real_fe", "shift_fe"):
             assert (root / f"{arm}_seed{seed}" / "phase2_stageB_best.pkl").exists()
             assert (root / f"eval_{arm}_seed{seed}" / "benchmark.json").exists()
 
@@ -117,10 +117,10 @@ def test_watchdog_fires_and_recovers(tmp_path, monkeypatch, capsys):
 
 def test_per_run_archival(tmp_path, monkeypatch):
     """Behavior 4: each run dir has resolved_config.json + DEPLOY_HASH;
-    token arms carry VOCAB_SHA256; rand_fe carries PERM_SEED."""
+    token arms carry VOCAB_SHA256; shift_fe carries SHIFT_SEED."""
     root = _run(tmp_path, monkeypatch, ["--scenario", "neutral"])
     for seed in (7, 13, 23):
-        for arm in ("raw", "real_fe", "rand_fe"):
+        for arm in ("raw", "real_fe", "shift_fe"):
             rd = root / f"{arm}_seed{seed}"
             cfg = json.loads((rd / "resolved_config.json").read_text())
             assert cfg["deploy_hash"] == "57d05ac"
@@ -129,16 +129,16 @@ def test_per_run_archival(tmp_path, monkeypatch):
             if arm == "raw":
                 assert cfg["vocab_file"] is None
                 assert not (rd / "VOCAB_SHA256").exists()
-                assert not (rd / "PERM_SEED").exists()
+                assert not (rd / "SHIFT_SEED").exists()
             else:
                 assert cfg["vocab_file"] is not None
                 assert (rd / "VOCAB_SHA256").exists()
                 # vocab files don't exist in this isolated dir -> MISSING sha,
                 # but the sha field is still recorded (audit-traceable).
                 assert cfg["vocab_sha256"] is not None
-            if arm == "rand_fe":
-                assert cfg["perm_seed"] == 804
-                assert (rd / "PERM_SEED").read_text().strip() == "804"
+            if arm == "shift_fe":
+                assert cfg["shift_seed"] == 804
+                assert (rd / "SHIFT_SEED").read_text().strip() == "804"
 
 
 def test_stop_path_kill(tmp_path, monkeypatch, capsys):
@@ -156,12 +156,12 @@ def test_stop_path_kill(tmp_path, monkeypatch, capsys):
     assert "CAMPAIGN KILLED" in (root / "RESULT.md").read_text()
 
 
-def test_stop_path_rand_ge_real(tmp_path, monkeypatch, capsys):
-    """Behavior 5a (variant): random >= real consistently -> KILL."""
-    _run(tmp_path, monkeypatch, ["--scenario", "rand_ge_real"])
+def test_stop_path_null_ge_real(tmp_path, monkeypatch, capsys):
+    """Behavior 5a (variant): null (shift) >= real consistently -> KILL."""
+    _run(tmp_path, monkeypatch, ["--scenario", "null_ge_real"])
     out = capsys.readouterr().out
     assert "STOP/KILL" in out
-    assert "random arm >= real arm" in out
+    assert "null (shift) arm >= real arm" in out
 
 
 def test_extend_path(tmp_path, monkeypatch, capsys):
