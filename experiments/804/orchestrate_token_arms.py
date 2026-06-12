@@ -6,8 +6,16 @@ Drives the 9-run campaign described in the TASK_804-B4 brief:
 
   3 arms   : raw  (canon, no token flags)
              real_fe (--use-token-frontend ... L1 vocab)
-             rand_fe (same flags, random-permutation vocab)
+             shift_fe (same flags, CYCLIC-SHIFT NULL spec — TASK_804-B2.5)
   3 seeds  : 7, 13, 23
+
+The null arm is `shift_fe` (TASK_804-B2.5): the corrected real-vs-null control.
+Its "vocab file" is a cyclic-shift null SPEC (experiments/804/shift_null_spec.json,
+built by build_shift_null.py) that names the REAL base vocab + per-asset roll
+offsets; the hot-path rolls the real timeline per asset PRE-JOIN so the token<->bar
+alignment is decoupled while the token marginal multiset is preserved. (This
+REPLACES the dead-end π-permutation null `rand_fe` — a relabel of ids that left the
+token sequence intact, "the control that couldn't fail".)
 
 Hard orchestration contract (encoded here, NOT left to the operator):
 
@@ -22,12 +30,12 @@ Hard orchestration contract (encoded here, NOT left to the operator):
     mtime is frozen AND its GPU is ~0% for > threshold, KILL it and flag
     (the `project_seed7_stageb_wedge` failure mode).
   * Per-run archival: each run dir gets the resolved config JSON, the
-    deploy hash, the vocab sha, and (rand_fe) the perm seed.
+    deploy hash, the vocab sha, and (shift_fe) the shift seed.
   * Pairing/readout: after a seed's eval lands, compute Delta-alpha =
     arm-N - arm-1 *same-seed* (never vs historical 760), with trade-rate
     + Bal.Acc per arm; write incremental RESULT.md.
   * Stop/extend: KILL the campaign if a real arm hits mean Delta-alpha
-    < -3pp OR random >= real consistently; EXTEND to seeds 31/42 iff
+    < -3pp OR null (shift) >= real consistently; EXTEND to seeds 31/42 iff
     3-seed mean Delta-alpha >= +1pp AND no seed < -3pp.
 
 DRY-RUN MODE (`--dry-run`) is the audit gate.  The FULL queue executes
@@ -58,13 +66,13 @@ from typing import Callable, Optional
 # Campaign constants (pinned by the brief)
 # --------------------------------------------------------------------------- #
 DEPLOY_HASH = "57d05ac"               # pinned in TASK_804-B4 brief
-ARMS = ("raw", "real_fe", "rand_fe")  # arm-1, arm-2, arm-3
+ARMS = ("raw", "real_fe", "shift_fe")  # arm-1, arm-2, arm-3
 REAL_ARMS = ("raw", "real_fe")        # "real" arms for the KILL rule
-RAND_ARM = "rand_fe"
+SHIFT_ARM = "shift_fe"                # the cyclic-shift NULL arm (TASK_804-B2.5)
 BASELINE_ARM = "raw"                  # arm-1: Delta-alpha is computed vs this
 SEEDS_PRIMARY = (7, 13, 23)
 SEEDS_EXTEND = (31, 42)               # QUEUE ladder
-PERM_SEED = 804                       # rand_perm_s804_vocab.json
+SHIFT_SEED = 804                      # shift_null_spec.json per-asset offset seed
 WARM_CKPT = "jax_ckpt_easy_phase1_xs32/easy_medium/phase1_best.pkl"
 
 # GPU contract
@@ -84,7 +92,9 @@ WATCHDOG_POLL_SEC_DEFAULT = 30        # how often the watchdog checks
 # Token-frontend flags (arm-2 / arm-3).  Literal bodies are finalized by the
 # operator at launch (B1 lands in parallel); these are the brief's values.
 VOCAB_REAL = "experiments/804/L1_RESULT_vocab.json"
-VOCAB_RAND = "experiments/804/rand_perm_s804_vocab.json"
+# shift_fe arm: the cyclic-shift null SPEC (build_shift_null.py), NOT a vocab — names the real base
+# vocab + per-asset roll offsets; the hot-path rolls the real timeline pre-join (TASK_804-B2.5).
+SHIFT_NULL_SPEC = "experiments/804/shift_null_spec.json"
 TOKEN_LANGUAGE = "L1_bpe"
 TOKEN_CACHE_DIR = "experiments/804/token_cache"
 
@@ -129,10 +139,12 @@ def _arm_train_flags(arm: str) -> list[str]:
             "--token-frontend-language", TOKEN_LANGUAGE,
             "--token-frontend-cache-dir", TOKEN_CACHE_DIR,
         ]
-    if arm == "rand_fe":
+    if arm == "shift_fe":
         return [
             "--use-token-frontend",
-            "--token-frontend-vocab-file", VOCAB_RAND,
+            # the cyclic-shift null spec is passed via the SAME vocab-file flag; the hot-path detects
+            # null_type=="cyclic_shift" and rolls the real timeline (TASK_804-B2.5). Zero new flags.
+            "--token-frontend-vocab-file", SHIFT_NULL_SPEC,
             "--token-frontend-language", TOKEN_LANGUAGE,
             "--token-frontend-cache-dir", TOKEN_CACHE_DIR,
         ]
@@ -227,12 +239,12 @@ def archive_run(run: Run, dry_run: bool) -> None:
     rd.mkdir(parents=True, exist_ok=True)
 
     vocab_file = None
-    perm_seed = None
+    shift_seed = None
     if run.arm == "real_fe":
         vocab_file = VOCAB_REAL
-    elif run.arm == "rand_fe":
-        vocab_file = VOCAB_RAND
-        perm_seed = PERM_SEED
+    elif run.arm == "shift_fe":
+        vocab_file = SHIFT_NULL_SPEC
+        shift_seed = SHIFT_SEED
 
     vocab_sha = _sha256_file(Path(vocab_file)) if vocab_file else None
 
@@ -246,7 +258,7 @@ def archive_run(run: Run, dry_run: bool) -> None:
         "warm_checkpoint": WARM_CKPT,
         "vocab_file": vocab_file,
         "vocab_sha256": vocab_sha,
-        "perm_seed": perm_seed,
+        "shift_seed": shift_seed,
         "token_language": TOKEN_LANGUAGE if run.arm != "raw" else None,
         "train_cmd": build_train_cmd(run.arm, run.seed, rd, run.gpu or 0),
         "eval_cmd": build_eval_cmd(run.arm, run.seed, rd, rd / "phase2_stageB_best.pkl"),
@@ -258,8 +270,8 @@ def archive_run(run: Run, dry_run: bool) -> None:
     (rd / "DEPLOY_HASH").write_text(DEPLOY_HASH + "\n")
     if vocab_sha is not None:
         (rd / "VOCAB_SHA256").write_text(f"{vocab_sha}  {vocab_file}\n")
-    if perm_seed is not None:
-        (rd / "PERM_SEED").write_text(f"{perm_seed}\n")
+    if shift_seed is not None:
+        (rd / "SHIFT_SEED").write_text(f"{shift_seed}\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -378,7 +390,7 @@ class Orchestrator:
     # ---- build the seed-major queue --------------------------------------- #
     def build_queue(self, seeds: list[int]) -> list[Run]:
         """SEED-MAJOR: all 3 arms for seed s, then next seed.  Within a seed,
-        arms are emitted in ARMS order (raw, real_fe, rand_fe) so raw_s7 and
+        arms are emitted in ARMS order (raw, real_fe, shift_fe) so raw_s7 and
         real_s7 start together 2-wide and rand_s7 follows as a slot frees."""
         q: list[Run] = []
         for s in seeds:
@@ -469,21 +481,21 @@ class Orchestrator:
             # real_fe clearly positive, all seeds >= +1, none < -3 -> EXTEND.
             da = {"raw": 0.0,
                   "real_fe": {7: 2.5, 13: 3.0, 23: 2.0, 31: 2.2, 42: 2.8}[seed],
-                  "rand_fe": {7: -0.5, 13: 0.2, 23: -1.0, 31: 0.0, 42: 0.3}[seed]}
+                  "shift_fe": {7: -0.5, 13: 0.2, 23: -1.0, 31: 0.0, 42: 0.3}[seed]}
         elif self.scenario == "kill":
             # real_fe collapses (mean << -3pp) -> campaign KILL.
             da = {"raw": 0.0,
                   "real_fe": {7: -4.0, 13: -5.0, 23: -3.5, 31: -4.0, 42: -4.0}[seed],
-                  "rand_fe": {7: -1.0, 13: -0.5, 23: -1.5, 31: -1.0, 42: -1.0}[seed]}
-        elif self.scenario == "rand_ge_real":
-            # random >= real consistently -> campaign KILL (token signal noise).
+                  "shift_fe": {7: -1.0, 13: -0.5, 23: -1.5, 31: -1.0, 42: -1.0}[seed]}
+        elif self.scenario == "null_ge_real":
+            # null (shift) >= real consistently -> campaign KILL (token signal noise).
             da = {"raw": 0.0,
                   "real_fe": {7: 0.5, 13: 0.3, 23: 0.4, 31: 0.4, 42: 0.4}[seed],
-                  "rand_fe": {7: 1.5, 13: 1.4, 23: 1.6, 31: 1.5, 42: 1.5}[seed]}
+                  "shift_fe": {7: 1.5, 13: 1.4, 23: 1.6, 31: 1.5, 42: 1.5}[seed]}
         else:  # "neutral" — finishes 3 seeds, no kill, no extend
             da = {"raw": 0.0,
                   "real_fe": {7: 0.5, 13: -0.5, 23: 0.2, 31: 0.0, 42: 0.0}[seed],
-                  "rand_fe": {7: -0.3, 13: 0.1, 23: -0.4, 31: 0.0, 42: 0.0}[seed]}
+                  "shift_fe": {7: -0.3, 13: 0.1, 23: -0.4, 31: 0.0, 42: 0.0}[seed]}
         alpha = base_alpha + da[arm]
         return {
             "arm": arm,
@@ -575,18 +587,18 @@ class Orchestrator:
             f"Delta-alpha = arm - raw (same-seed)"
             + ("  |  **DRY-RUN (synthetic)**" if self.dry_run else ""),
             "",
-            "| seed | raw alpha | real_fe alpha (Da) | rand_fe alpha (Da) | "
-            "real_fe trade | rand_fe trade |",
+            "| seed | raw alpha | real_fe alpha (Da) | shift_fe alpha (Da) | "
+            "real_fe trade | shift_fe trade |",
             "|---:|---:|---:|---:|---:|---:|",
         ]
         for p in rows:
             lines.append(
                 f"| {p['seed']} | {p['raw_alpha']:.2f} | "
                 f"{p['real_fe']['alpha']:.2f} ({p['real_fe']['da']:+.2f}) | "
-                f"{p['rand_fe']['alpha']:.2f} ({p['rand_fe']['da']:+.2f}) | "
-                f"{p['real_fe']['trade_rate']} | {p['rand_fe']['trade_rate']} |"
+                f"{p['shift_fe']['alpha']:.2f} ({p['shift_fe']['da']:+.2f}) | "
+                f"{p['real_fe']['trade_rate']} | {p['shift_fe']['trade_rate']} |"
             )
-        for arm in ("real_fe", "rand_fe"):
+        for arm in ("real_fe", "shift_fe"):
             das = [p[arm]["da"] for p in rows]
             if das:
                 lines.append("")
@@ -622,12 +634,12 @@ class Orchestrator:
                 )
                 self.log(f"STOP/KILL: {self.campaign_kill_reason}")
                 return
-        # KILL: random >= real consistently (all completed seeds, >=2).
-        rand_ge = [p[RAND_ARM]["da"] >= p["real_fe"]["da"] for p in paired]
-        if len(paired) >= 2 and all(rand_ge):
+        # KILL: null (shift) >= real consistently (all completed seeds, >=2).
+        null_ge = [p[SHIFT_ARM]["da"] >= p["real_fe"]["da"] for p in paired]
+        if len(paired) >= 2 and all(null_ge):
             self.campaign_killed = True
             self.campaign_kill_reason = (
-                f"random arm >= real arm on all {len(paired)} seeds "
+                f"null (shift) arm >= real arm on all {len(paired)} seeds "
                 f"(token signal is noise)"
             )
             self.log(f"STOP/KILL: {self.campaign_kill_reason}")
@@ -778,7 +790,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="watchdog poll interval (sec)")
     # Dry-run knobs.
     p.add_argument("--scenario",
-                   choices=("neutral", "extend", "kill", "rand_ge_real"),
+                   choices=("neutral", "extend", "kill", "null_ge_real"),
                    default="neutral",
                    help="dry-run synthetic Delta-alpha scenario")
     p.add_argument("--train-stub-sec", type=float, default=3.0,

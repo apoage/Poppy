@@ -90,6 +90,11 @@ def load_tokenizer(vocab_file: str, cfg: Optional["C.CandleConfig"] = None):
 
     vocab_file : path to a frozen vocab JSON (tokenizer_api.save_vocab format), e.g. the pinned
                  runs/799_grammar/L1_RESULT_vocab.json (cb 1376, server-only at real train time).
+                 ALSO accepts a TASK_804-B2.5 CYCLIC-SHIFT NULL SPEC (a JSON with
+                 null_type=="cyclic_shift"): the real BASE vocab named in the spec is loaded and the
+                 spec's per-asset roll offsets + derived vocab_sha are STAMPED onto the tokenizer
+                 (`tok._shift_null`). tokenize_grid then rolls the real per-bar timeline pre-join (the
+                 corrected real-vs-null control for arm shift_fe — see build_shift_null.py).
     cfg        : optional CandleConfig; if None the cfg recorded in the frozen vocab is used (the
                  window/halflife/sigma_floor the vocab was fit under — MUST match).
 
@@ -98,11 +103,130 @@ def load_tokenizer(vocab_file: str, cfg: Optional["C.CandleConfig"] = None):
     A stable `tok.vocab_sha` (content-canonical sha256 of the frozen vocab — merges + table + cfg) is
     stamped ONCE here so the per-asset timeline cache can key on (asset_id, vocab_sha) and never
     collide across vocabs (and so the file-loaded eval tokenizer shares the cache with the in-process
-    train tokenizer of the same content).
+    train tokenizer of the same content). For a shift-null spec the SERVED vocab_sha (`tok.vocab_sha`)
+    is the spec's DERIVED sha (so the shifted grid never collides with the real cache), while the BASE
+    annotate still reuses the real (base) cache entry.
     """
+    spec = _maybe_load_shift_null_spec(vocab_file)
+    if spec is not None:
+        return _load_shift_null_tokenizer(spec, cfg)
     tok = TK.CandleTokenizer.from_path(vocab_file)
     _attach_vocab_sha(tok)
     return tok
+
+
+# --------------------------------------------------------------------------- #
+# TASK_804-B2.5 — cyclic-shift null detection + tokenizer stamping
+# --------------------------------------------------------------------------- #
+# The shift_fe arm's "vocab file" is a CYCLIC-SHIFT NULL SPEC (build_shift_null.py): a JSON naming the
+# REAL base vocab + per-asset roll offsets. load_tokenizer detects it, loads the real base tokenizer,
+# and stamps `tok._shift_null`. tokenize_grid then annotates the REAL timeline (reusing the real cache)
+# and ROLLS it per asset PRE-JOIN — so token[t] comes from a different bar (the token<->bar alignment
+# is decoupled) while the token marginal multiset is preserved. The rolled timeline flows through the
+# IDENTICAL join_timeline_to_grid + serving lag as the real arm; nothing in token_window_slice.py or
+# join_timeline_to_grid is touched.
+def _maybe_load_shift_null_spec(vocab_file: str) -> Optional[dict]:
+    """Return the parsed cyclic-shift null spec iff `vocab_file` is a JSON with
+    null_type=="cyclic_shift"; else None. A real frozen vocab JSON has NO null_type field, so this is
+    a clean, zero-false-positive discriminator (a real vocab parses fine but returns None)."""
+    try:
+        with open(vocab_file) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(doc, dict) and doc.get("null_type") == "cyclic_shift":
+        return doc
+    return None
+
+
+def _load_shift_null_tokenizer(spec: dict, cfg: Optional["C.CandleConfig"] = None):
+    """Load the BASE vocab named in a cyclic-shift null spec and stamp the shift-null metadata onto
+    the returned CandleTokenizer.
+
+    The tokenizer is the REAL base tokenizer (so annotate_asset produces the real timeline, reusing
+    the real cache). We stamp:
+      * tok._shift_null = {"offsets": {aid: off}, "base_vocab_sha": ..., "derived_vocab_sha": ...,
+                           "seed": ...}
+      * tok.vocab_sha  := the spec's DERIVED sha (the SERVED sha for the shifted grid / pool cache).
+    The base sha (for the base annotate cache) is preserved on tok._shift_null["base_vocab_sha"].
+    """
+    base_path = str(spec["base_vocab"])
+    base_tok = TK.CandleTokenizer.from_path(base_path)
+    _attach_vocab_sha(base_tok)                       # stamps the REAL (base) content-canonical sha
+    base_sha = str(base_tok.vocab_sha)
+    spec_base_sha = str(spec.get("base_vocab_sha", base_sha))
+    if spec_base_sha != base_sha:
+        raise ValueError(
+            f"shift-null spec base_vocab_sha {spec_base_sha[:12]} != loaded base vocab sha "
+            f"{base_sha[:12]} (base vocab content changed since the spec was minted; re-run "
+            f"build_shift_null.py against the current base vocab).")
+    offsets = {int(a): int(o) for a, o in spec["per_asset_offsets"].items()}
+    derived_sha = str(spec["derived_vocab_sha"])
+    base_tok._shift_null = {
+        "offsets": offsets,
+        "base_vocab_sha": base_sha,
+        "derived_vocab_sha": derived_sha,
+        "seed": int(spec.get("seed", -1)),
+        "spec_sha256": str(spec.get("sha256", "")),
+    }
+    # SERVE the derived sha so the shifted grid is cached distinctly from the real grid; the base
+    # annotate path resolves the BASE sha explicitly from _shift_null["base_vocab_sha"].
+    base_tok.vocab_sha = derived_sha
+    return base_tok
+
+
+def roll_timeline(tl: "TT.TimelineResult", offset: int) -> "TT.TimelineResult":
+    """Return a NEW TimelineResult with token_id + valid CYCLICALLY ROLLED by `offset` bars (pre-join).
+
+    This is the cyclic-shift null's only timeline transform (TASK_804-B2.5): np.roll the per-bar
+    (token_id, valid) PAIR together so token[t] now comes from bar t-offset — decoupling the token
+    SEQUENCE from the bars while preserving each asset's token MARGINAL multiset exactly (a roll is a
+    pure permutation of positions). `ts` and `codelength` are NOT rolled (ts must stay the real-bar
+    time axis so the SAME join_timeline_to_grid lands the rolled token on a real bar; codelength is a
+    per-bar informativeness float not consumed by the grid join). offset is taken mod T so any
+    persisted absolute offset stays a valid cyclic roll even if T differs slightly.
+    """
+    ids = np.asarray(tl.token_id, dtype=np.int32)
+    valid = np.asarray(tl.valid, dtype=bool)
+    T = ids.shape[0]
+    off = int(offset) % T if T > 0 else 0
+    rolled_ids = np.roll(ids, off).copy()
+    rolled_valid = np.roll(valid, off)
+    # invalid bars must carry -1 (the grid join keys on valid entries only; keep the invariant tight).
+    rolled_ids[~rolled_valid] = INVALID_TOKEN_ID
+    return TT.TimelineResult(
+        ts=np.asarray(tl.ts, dtype=np.int64),
+        token_id=rolled_ids.astype(np.int32),
+        codelength=np.asarray(tl.codelength, dtype=np.float32),
+        valid=rolled_valid,
+        asset_id=tl.asset_id,
+        language=tl.language,
+    )
+
+
+def _get_shifted_timeline(asset_id: int, tokenizer, db_path: str,
+                          cfg: "C.CandleConfig") -> "TT.TimelineResult":
+    """Return the SHIFTED full-history timeline for one asset under a shift-null tokenizer.
+
+    Annotates the BASE timeline through the real cache (keyed by the BASE vocab sha — no re-annotate,
+    SHARES the real arm's cache entry), then rolls it by the asset's persisted offset and caches the
+    rolled timeline under the DERIVED vocab sha (distinct from real, reproducible). Subsequent slots
+    hit the rolled-RAM entry."""
+    sn = tokenizer._shift_null
+    base_sha = sn["base_vocab_sha"]
+    derived_sha = sn["derived_vocab_sha"]
+    key = (int(asset_id), str(derived_sha))
+    cached = _TIMELINE_CACHE.get(key)
+    if cached is not None:
+        _TIMELINE_CACHE_STATS["hits"] += 1
+        return cached
+    # base annotate (reuses the REAL cache entry keyed by base_sha; counts as a base hit/miss there).
+    base_tl = _get_cached_timeline(asset_id, base_sha, db_path, tokenizer, cfg)
+    off = int(sn["offsets"].get(int(asset_id), 0))
+    rolled = roll_timeline(base_tl, off)
+    _TIMELINE_CACHE[key] = rolled
+    _TIMELINE_CACHE_STATS["misses"] += 1
+    return rolled
 
 
 def fit_local_tokenizer(cfg: "C.CandleConfig", build_assets: Sequence[int],
@@ -296,6 +420,10 @@ def tokenize_grid(hm, source: str, tokenizer, cfg: "C.CandleConfig", db_path: st
     if source == "historical":
         col_aids = _column_asset_ids(hm, n_assets)
         vocab_sha = vocab_sha_for(tokenizer)
+        # TASK_804-B2.5 shift_fe: a shift-null tokenizer rolls the REAL timeline per asset PRE-JOIN.
+        # The rolled timeline then flows through the IDENTICAL join_timeline_to_grid + lag below — the
+        # ONLY difference from the real arm is _get_shifted_timeline (roll) vs _get_cached_timeline.
+        is_shift_null = getattr(tokenizer, "_shift_null", None) is not None
         # Per-slot join cache keyed by asset_id so cyclic-padded duplicate COLUMNS within THIS slot
         # reuse one join. The expensive full-history annotate_asset goes through the POOL-LEVEL
         # (asset_id, vocab_sha) RAM cache (_get_cached_timeline): annotate ONCE per unique asset per
@@ -307,7 +435,10 @@ def tokenize_grid(hm, source: str, tokenizer, cfg: "C.CandleConfig", db_path: st
             if aid < 0:
                 continue
             if aid not in join_cache:
-                tl = _get_cached_timeline(aid, vocab_sha, db_path, tokenizer, cfg)
+                if is_shift_null:
+                    tl = _get_shifted_timeline(aid, tokenizer, db_path, cfg)
+                else:
+                    tl = _get_cached_timeline(aid, vocab_sha, db_path, tokenizer, cfg)
                 tok_col, _valid = TT.join_timeline_to_grid(tl, grid_ts, language)
                 join_cache[aid] = tok_col
             out[:, a] = join_cache[aid]

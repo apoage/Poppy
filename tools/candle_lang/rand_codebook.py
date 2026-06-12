@@ -1,6 +1,12 @@
 """
 rand_codebook.py — frequency-matched random-codebook helper for TASK_804 arm `rand_fe`.
 
+ARCHIVED DEAD-END (TASK_804-B2.5): the π-permutation null is a NON-null (relabelling ids with a fresh
+embedding preserves the token SEQUENCE, so the model just relearns id->embedding — "the control that
+couldn't fail"). SUPERSEDED by the cyclic-shift null (experiments/804/build_shift_null.py + arm
+`shift_fe`), which decouples the token sequence from the bars by rolling the timeline per asset. This
+module is KEPT only as the archived dead-end record; it now drives NOTHING.
+
 WHAT rand_fe IS (TASK_804 arm 3, the capacity/embedding placebo)
 ---------------------------------------------------------------
 A frequency-matched random codebook keeps the EXACT token-shapes / frequencies of the real L1
