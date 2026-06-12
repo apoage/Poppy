@@ -43,10 +43,11 @@ with stub commands (sleep + synthetic result JSON/.pkl) so the
 scheduler, watchdog, eval-on-land, archival, pairing and stop/extend
 logic all run against real inputs without a GPU, server, or tmux.
 
-NOTHING in this script touches the GPU, the server, tmux, or deploy.sh.
-Real-mode launch only *prints/emits* the tmux + safe_run command lines
-(via `build_train_cmd` / `build_eval_cmd`); the operator finalizes the
-literal train/eval command bodies against the 760 lineage before launch.
+Real-mode SELF-ADVANCES: each safe_run job is spawned as a tracked child of the
+one orchestrator tmux (Popen, venv-sourced, log tee'd) and the watchdog/poll loop
+advances the queue (TASK_804-B4 emit->spawn fix). The 760 a1b1 canonical COMMON_BASE
+train literals are finalized in `build_train_cmd` (SPEC.md:163-174, no --mcts-sims =>
+default 32); eval is the eval-MCTS sims=16 joint scorecard.
 """
 from __future__ import annotations
 
@@ -162,10 +163,20 @@ def build_train_cmd(arm: str, seed: int, run_dir: Path, gpu: int) -> list[str]:
     """
     common = [
         "python", "-u", "train_phase2.py",
-        # --- 760 COMMON_BASE placeholder (operator finalizes literals) -----
-        "--stage", "B",                      # Stage-A->Stage-B sequence entry
-        "--checkpoint", WARM_CKPT,           # warm-start (pinned)
-        # ... remaining 760 COMMON_BASE flags inserted here at launch ...
+        # --- 760 a1b1 canonical COMMON_BASE (experiments/760_train_mcts_sims/SPEC.md:163-174;
+        #     matches 741/746/734/757/758 + the 760 baseline). NO --mcts-sims => default 32 = a1b1.
+        "--stage", "B", "--epochs", "200",
+        "--periods-file", "config/foxglove_periods.json",
+        "--n-slots", "17", "--max-runs-per-group", "10",
+        "--factored", "--factored-temperature", "0.1",
+        "--no-reset-value-head",
+        "--value-target-mode", "nstep", "--td-discount", "0.95", "--value-weight", "0.5",
+        "--bc-weight-min", "0.05", "--bc-max-trade-weight", "4.0",
+        "--direction-weight", "0.5",
+        "--encoder-lr", "3e-5", "--encoder-version", "3", "--embed-dim", "64", "--encoder-heads", "8",
+        "--checkpoint", WARM_CKPT,           # warm-start (pinned a1b1 Phase-1 imprint)
+        "--rank-loss", "mse", "--rank-weight", "1.0",
+        "--aux-price-weight", "0.1",
         # -------------------------------------------------------------------
         "--seed", str(seed),
         "--output-dir", str(run_dir),
