@@ -104,7 +104,7 @@ def slice_token_window(token_id_per_bar: np.ndarray,
         token_id_per_bar: (T,) int per-bar token ids for ONE asset.
         window_start: first bar index of the window (same index used for OHLCV).
         win_len: window length (ws + nstep).
-        language: 'L1' (lag 2) or 'L8' (lag 0).
+        language: 'L1' (lag 3, p99-firm) or 'L8' (lag 0).
     Returns:
         (win_len,) int32 token ids for this asset's window, lag-applied,
         -1 at any bar that has no final-only annotation.
