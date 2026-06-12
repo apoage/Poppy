@@ -403,14 +403,20 @@ class Orchestrator:
             self.log(f"LAUNCH train {run.tag} on GPU{gpu} "
                      f"[stub {sleep_sec:.0f}s]{tag}")
         else:
+            # Self-advancing: spawn the safe_run job as a tracked child of THIS
+            # orchestrator (which itself runs in one tmux session per
+            # feedback_server_launches_in_tmux). bash -c sources the venv + tees the
+            # per-run log (the watchdog reads its mtime); the existing poll()/watchdog
+            # machinery tracks completion + advances the queue.
+            run.run_dir.mkdir(parents=True, exist_ok=True)
             argv = build_train_cmd(run.arm, run.seed, run.run_dir, gpu)
             wrapped = wrap_safe_run(run.name, gpu, self.mem_cap, argv)
-            line = tmux_launch_line(run.name, wrapped, run.log_path)
-            self.log(f"REAL launch (emit only) train {run.tag} GPU{gpu}:")
-            self.log("  " + line)
-            # Real mode: the operator/main-agent executes the tmux line.
-            # This script does NOT spawn GPU jobs itself.
-            run.proc = None
+            inner = " ".join(shlex.quote(a) for a in wrapped)
+            bash_cmd = (f"source trader_env/bin/activate && {inner} "
+                        f"2>&1 | tee {shlex.quote(str(run.log_path))} >/dev/null")
+            run.proc = subprocess.Popen(["bash", "-c", bash_cmd])
+            self.log(f"LAUNCH train {run.tag} on GPU{gpu} (pid {run.proc.pid})")
+            self.log("  cmd: " + inner)
         self.train_slots[gpu] = run
         n = sum(1 for s in self.train_slots.values() if s is not None)
         self.max_concurrent_trains = max(self.max_concurrent_trains, n)
@@ -433,10 +439,12 @@ class Orchestrator:
             ckpt = train_run.run_dir / "phase2_stageB_best.pkl"
             argv = build_eval_cmd(ev.arm, ev.seed, ev.run_dir, ckpt)
             wrapped = wrap_safe_run(ev.name, EVAL_GPU, self.mem_cap, argv)
-            line = tmux_launch_line(ev.name, wrapped, ev.log_path)
-            self.log(f"REAL launch (emit only) eval {ev.tag} GPU{EVAL_GPU}:")
-            self.log("  " + line)
-            ev.proc = None
+            inner = " ".join(shlex.quote(a) for a in wrapped)
+            bash_cmd = (f"source trader_env/bin/activate && {inner} "
+                        f"2>&1 | tee {shlex.quote(str(ev.log_path))} >/dev/null")
+            ev.proc = subprocess.Popen(["bash", "-c", bash_cmd])
+            self.log(f"EVAL-ON-LAND dispatch {ev.tag} on GPU{EVAL_GPU} (pid {ev.proc.pid})")
+            self.log("  cmd: " + inner)
         self.eval_slot = ev
 
     # ---- dry-run timing / synthetic data ---------------------------------- #
