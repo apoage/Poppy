@@ -116,6 +116,8 @@ class Run:
     finished_at: float = 0.0
     killed: bool = False
     kill_reason: str = ""
+    failed: bool = False              # train exited non-zero / produced no best-ckpt
+    fail_reason: str = ""
 
     @property
     def tag(self) -> str:
@@ -371,6 +373,7 @@ class Orchestrator:
         self.completed_evals: dict[str, dict] = {}  # tag -> benchmark dict
         self.train_done: set[str] = set()
         self.killed_runs: list[Run] = []
+        self.failed_runs: list[Run] = []   # trains that exited bad / wrote no ckpt
         self.campaign_killed = False
         self.campaign_kill_reason = ""
         self.extend_triggered = False
@@ -637,7 +640,9 @@ class Orchestrator:
                 continue
             das = [p[arm]["da"] for p in paired]
             mean_da = sum(das) / len(das)
-            if mean_da < KILL_REAL_MEAN_DA:
+            # QA1-[1]: never KILL on a single seed — one noisy seed-7 draw must not end
+            # the campaign (the >=3-seed-noise contract; matches the null_ge kill below).
+            if len(paired) >= 2 and mean_da < KILL_REAL_MEAN_DA:
                 self.campaign_killed = True
                 self.campaign_kill_reason = (
                     f"real arm {arm} mean Delta-alpha {mean_da:+.2f}pp "
@@ -735,6 +740,21 @@ class Orchestrator:
             self.train_slots[gpu] = None
             if run.killed:
                 self.log(f"SLOT FREED (killed) GPU{gpu}: {run.tag}")
+                continue
+            # QA1-[2]: a crashed / OOM-killed train must NOT be evaluated as success.
+            # safe_run's cgroup OOM-killer reaps the scope with a non-zero exit; trusting
+            # poll()!=None alone would dispatch an eval against a missing/stale best-ckpt
+            # and poison the paired Delta-alpha. Require a clean exit AND the best-ckpt on
+            # disk before queueing eval (ckpt check is real-mode only; dry-run stubs write none).
+            rc = run.proc.returncode if run.proc is not None else 1
+            ckpt_ok = self.dry_run or (run.run_dir / "phase2_stageB_best.pkl").exists()
+            if rc != 0 or not ckpt_ok:
+                run.failed = True
+                run.fail_reason = (f"exit={rc}, best-ckpt="
+                                   f"{'ok' if ckpt_ok else 'MISSING'}")
+                self.failed_runs.append(run)
+                self.log(f"TRAIN FAILED {run.tag} (GPU{gpu}): {run.fail_reason} "
+                         f"-> NOT evaluated (flagged for operator)")
                 continue
             self.train_done.add(run.tag)
             self.log(f"TRAIN DONE {run.tag} (GPU{gpu}) -> queue eval-on-land")
