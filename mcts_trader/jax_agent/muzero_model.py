@@ -179,6 +179,61 @@ class AuxBellaShapeHead(nn.Module):
         return out.astype(jnp.float32)
 
 
+class NextTokenHead(nn.Module):
+    """TASK_802: Token-grounded dynamics — next-token shape-class head.
+
+    Consumes the MuZero dynamics output ``next_state`` (B, state_dim) and
+    predicts the per-asset next-token shape-class DISTRIBUTION (logits over the
+    candle-language vocabulary). It is a GROUNDING loss on the latent transition
+    ONLY — it never feeds policy, value, or the trade decision. Deleting the
+    head at eval leaves the agent's actions unchanged (the spec's Not-C0 guard).
+
+    Factorized to keep params sane (spec §Design.1):
+      Dense(state_dim → A·E') → reshape (B, A, E') → shared Dense(E' → V).
+    E'=16, V=vocab_size ⇒ ≈ state_dim·(A·E') + (E'·V) params
+    (e.g. 64·(64·16) + 16·1376 ≈ 87 K vs a naive 5.6 M).
+
+    Zero-init final Dense so step-0 logits are uniform-zero — a fresh checkpoint
+    with this head present-but-untrained is byte-identical at step 0 (E2).
+
+    Pattern mirrors AuxBellaShapeHead / AuxPriceHead: Dense → GELU → LayerNorm
+    on the projection, zero-init final layer.
+    """
+    n_assets: int = 64
+    vocab_size: int = 1376
+    factor_dim: int = 16  # E' — per-asset bottleneck before the shared vocab Dense
+    hidden_dim: int = 256
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, next_state: jnp.ndarray) -> jnp.ndarray:
+        # next_state: (B, state_dim) — the dynamics transition output.
+        batch = next_state.shape[0]
+        x = nn.Dense(features=self.hidden_dim, dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='next_token_1')(
+            next_state.astype(self.dtype))
+        x = nn.gelu(x)
+        x = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype,
+                         param_dtype=self.param_dtype, name='next_token_ln')(x)
+        # Factorized projection: (B, hidden) → (B, A·E') → (B, A, E').
+        # Zero-init so step-0 per-asset embeddings are 0.
+        x = nn.Dense(features=self.n_assets * self.factor_dim,
+                     kernel_init=nn.initializers.zeros,
+                     bias_init=nn.initializers.zeros,
+                     dtype=self.dtype,
+                     param_dtype=self.param_dtype, name='next_token_factor')(x)
+        x = x.reshape(batch, self.n_assets, self.factor_dim)  # (B, A, E')
+        # Shared per-asset Dense(E' → V). Zero-init final layer ⇒ step-0 logits
+        # are all zero ⇒ uniform predicted distribution ⇒ byte-identical load.
+        logits = nn.Dense(features=self.vocab_size,
+                          kernel_init=nn.initializers.zeros,
+                          bias_init=nn.initializers.zeros,
+                          dtype=self.dtype,
+                          param_dtype=self.param_dtype, name='next_token_out')(x)
+        return logits.astype(jnp.float32)  # (B, A, V)
+
+
 class PerAssetPolicyHead(nn.Module):
     """TASK_729a: Per-asset policy residual head.
 
@@ -330,6 +385,14 @@ class MuZeroNetworks(nn.Module):
     # value must already include the +1 reserved sentinel row for invalid bars.
     token_vocab_size: int = 0
     token_embed_dim: int = 16
+
+    # TASK_802 (Token-grounded dynamics): next-token shape-class head on the
+    # dynamics transition output. Default OFF ⇒ no params created, canon
+    # byte-identical. Grounding loss ONLY — never feeds policy/value/decision.
+    use_token_dynamics: bool = False
+    token_dynamics_vocab_size: int = 0   # candle-language vocab (V); 0 ⇒ head off
+    token_dynamics_factor_dim: int = 16  # E' — factorized per-asset bottleneck
+    token_dynamics_hidden_dim: int = 256
 
     # TASK_749 (Titans-MAG): Plumbed-through TRM/encoder Titans config.
     use_titans_memory: bool = False
@@ -491,6 +554,17 @@ class MuZeroNetworks(nn.Module):
             self.aux_bella_shape_head = AuxBellaShapeHead(
                 descriptor_dim=self.bella_shape_descriptor_dim,
                 hidden_dim=self.bella_shape_hidden_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
+        # TASK_802: Token-grounded dynamics — next-token shape-class head.
+        if self.use_token_dynamics and self.token_dynamics_vocab_size > 0:
+            self.next_token_head = NextTokenHead(
+                n_assets=self.n_assets,
+                vocab_size=self.token_dynamics_vocab_size,
+                factor_dim=self.token_dynamics_factor_dim,
+                hidden_dim=self.token_dynamics_hidden_dim,
                 dtype=self.dtype,
                 param_dtype=self.param_dtype,
             )
@@ -741,12 +815,26 @@ class MuZeroNetworks(nn.Module):
         # Note: We still return the non-stopped latent_state for MCTS tree expansion.
         policy_logits, value = self.prediction(jax.lax.stop_gradient(next_latent_state))
 
-        return {
+        result = {
             'latent_state': next_latent_state,
             'policy_logits': policy_logits,
             'value': value,
             'reward': reward
         }
+
+        # TASK_802: token-grounded dynamics. Predict the next-token shape-class
+        # distribution from the (non-stopped) dynamics output so the CE gradient
+        # flows into dynamics (and, per the stage's freeze map, the encoder) —
+        # no new stop-gradient exception (BUG-017 untouched; the existing
+        # stop_gradient above guards only the policy/value path). Grounding loss
+        # ONLY: this key is never read by policy/value/the trade decision, and
+        # mctx never sees it (recurrent_inference returns to mctx via a wrapper
+        # that selects embedding/reward/value/policy only). OFF ⇒ no head, key
+        # absent, canon byte-identical.
+        if self.use_token_dynamics and self.token_dynamics_vocab_size > 0:
+            result['next_token_logits'] = self.next_token_head(next_latent_state)
+
+        return result
 
     # =========================================================================
     # Prediction Head Methods (Phase 2)

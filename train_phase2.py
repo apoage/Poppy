@@ -446,6 +446,20 @@ def create_model(config: Phase2Config):
             else 0
         ),
         token_embed_dim=getattr(config, 'token_frontend_embed_dim', 16),
+        # TASK_802 (Token-grounded dynamics): next-token shape-class head on the
+        # dynamics output. OFF ⇒ token_dynamics_vocab_size=0 ⇒ no params, canon
+        # byte-identical. ON ⇒ vocab = the loaded codebook size (the real vocab,
+        # NO sentinel +1 — the head predicts over real shape classes only; the
+        # invalid-bar sentinel target is masked out in the loss, never a class).
+        use_token_dynamics=getattr(config, 'use_token_dynamics', False),
+        token_dynamics_vocab_size=(
+            getattr(config, 'token_frontend_vocab_size', 0)
+            if getattr(config, 'use_token_dynamics', False)
+            and getattr(config, 'token_frontend_vocab_size', 0) > 0
+            else 0
+        ),
+        token_dynamics_factor_dim=getattr(config, 'token_dynamics_factor_dim', 16),
+        token_dynamics_hidden_dim=getattr(config, 'token_dynamics_hidden_dim', 256),
         # TASK_749 (Titans-MAG)
         use_titans_memory=getattr(config, 'use_titans_memory', False),
         titans_memory_depth=getattr(config, 'titans_memory_depth', 2),
@@ -576,6 +590,14 @@ class AsyncBatchPipeline:
             getattr(config, 'use_token_frontend', False)
             and getattr(config, 'token_frontend_vocab_size', 0) > 0
         )
+        # TASK_802: token-grounded dynamics gate. The next-token target is sliced
+        # from the SAME in-batch token window the front-end already produces, so
+        # this only fires when the front-end is ON (no separate annotation pass).
+        # OFF ⇒ no target slice, key absent from the batch ⇒ canon bit-identical.
+        self._use_token_dynamics = (
+            getattr(config, 'use_token_dynamics', False)
+            and self._use_token_frontend
+        )
         # TASK_738: threshold adapts to cross-sectional toggle
         self.use_state_channels = config.n_channels > _enc_n_channels
         self._rng = np.random.default_rng(config.seed + 3000)
@@ -631,6 +653,7 @@ class AsyncBatchPipeline:
         win_len = ws + nstep  # length of each extracted window
         all_windows = []      # list of (n, win_len, n_assets, 5) numpy per slot
         all_token_windows = []  # TASK_801b-ii: list of (n, win_len, n_assets) int32 per slot
+        all_next_token_targets = []  # TASK_802: list of (n, n_assets) int32 — token id at bar ws
         all_actions = []
         all_rewards = []
         all_oracle_targets = []
@@ -682,6 +705,16 @@ class AsyncBatchPipeline:
                     )
                 tok_win = slice_token_windows(token_grid, cursors_arr, win_len)  # (n, win_len, A)
                 all_token_windows.append(tok_win)
+
+                # TASK_802: next-token target = per-asset token id at the FIRST
+                # bar after the obs window end. The obs_t encoder gathers bars
+                # [0 : ws] within the win_len block (window end = bar ws-1), so
+                # the first bar after is offset `ws`. win_len = ws + nstep >= ws+1
+                # (nstep >= 1) ⇒ always in-batch. Invalid bars carry -1 and are
+                # masked in the CE. Unshifted hindsight label (TASK_800 verdict);
+                # the serving lag lives only in the INPUT grid, not the target.
+                if self._use_token_dynamics:
+                    all_next_token_targets.append(tok_win[:, ws, :])  # (n, A) int32
 
             decision_indices = cursors_arr + ws - 1
 
@@ -861,9 +894,17 @@ class AsyncBatchPipeline:
             token_windows_stacked = np.concatenate(
                 all_token_windows, axis=0)[:batch_size]  # (B, win_len, n_assets) int32
 
+        # TASK_802: stack the next-token targets in the SAME slot order. OFF ⇒
+        # key None ⇒ train step receives next_token_targets=None ⇒ canon path.
+        next_token_targets_stacked = None
+        if self._use_token_dynamics and all_next_token_targets:
+            next_token_targets_stacked = np.concatenate(
+                all_next_token_targets, axis=0)[:batch_size]  # (B, n_assets) int32
+
         return {
             'windows': windows_stacked,   # (B, win_len, n_assets, 5) — compact per-sample
             'token_windows': token_windows_stacked,  # (B, win_len, n_assets) int32 or None
+            'next_token_targets': next_token_targets_stacked,  # (B, n_assets) int32 or None (TASK_802)
             'actions': np.concatenate(all_actions)[:batch_size],
             'rewards': np.concatenate(all_rewards)[:batch_size],
             'oracle_targets': np.concatenate(all_oracle_targets)[:batch_size],
@@ -947,6 +988,10 @@ class AsyncBatchPipeline:
             'tokens_t': (tokens_t[:batch_size] if tokens_t is not None else None),
             'tokens_t1': (tokens_t1[:batch_size] if tokens_t1 is not None else None),
             'tokens_tN': (tokens_tN[:batch_size] if tokens_tN is not None else None),
+            # TASK_802: per-asset next-token target (None on canon path).
+            'next_token_targets': (
+                jnp.asarray(np_batch['next_token_targets'])[:batch_size]
+                if np_batch.get('next_token_targets') is not None else None),
             'actions': jnp.array(np_batch['actions']),
             'rewards': jnp.array(np_batch['rewards']),
             'oracle_targets': jnp.array(np_batch['oracle_targets']),
@@ -1283,6 +1328,18 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
     use_bella_shape = getattr(config, 'use_bella_shape_head', False)
     bella_shape_w = getattr(config, 'bella_shape_loss_weight', 0.1)
     bella_shape_dim = int(getattr(config, 'bella_shape_descriptor_dim', 14))
+    # TASK_802: token-grounded dynamics. Gate captured at JIT-trace time. OFF
+    # (default) ⇒ the next_token_targets arg stays None ⇒ the head branch below
+    # is never traced ⇒ total_loss/grads bit-identical to canon. The head only
+    # has a target stream when the TASK_801 front-end is ON (the target is sliced
+    # from the in-batch token window), so the effective gate also requires the
+    # front-end vocab. Loss weight baked into the HLO at trace time.
+    use_token_dynamics = (
+        getattr(config, 'use_token_dynamics', False)
+        and getattr(config, 'token_frontend_vocab_size', 0) > 0
+        and use_token_frontend
+    )
+    token_dynamics_w = float(getattr(config, 'token_dynamics_loss_weight', 0.1))
     # Expand the 6-tuple (mean, std, skew, kurt, s1, s1_ratio) into a 14-vector
     # aligned with SHAPE_DESCRIPTOR_DIM layout:
     #   0-3 cross moments, 4-7 h1 moments, 8-11 hlast moments, 12 s1, 13 s1_ratio.
@@ -1312,7 +1369,8 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                            oracle_targets, bc_weight, popart_mean, popart_std,
                            oracle_values, nstep_rewards, future_cum_returns,
                            future_log_returns, bella_preds, bella_shape,
-                           tokens_t=None, tokens_t1=None, tokens_tN=None):
+                           tokens_t=None, tokens_t1=None, tokens_tN=None,
+                           next_token_targets=None):
         """Single Stage B training step.
 
         Args:
@@ -1737,6 +1795,38 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 bella_shape_mean_resid = jnp.array(0.0)
                 bella_shape_std_resid = jnp.array(0.0)
 
+            # === Token-grounded dynamics head (TASK_802) ===
+            # Grounding CE on the FIRST dynamics step only (v1, single-step):
+            # the next_token_head reads dyn_out['next_token_logits'] (B, A, V),
+            # produced from the dynamics output next_state. The target is the
+            # per-asset token id at the first bar after the obs window end,
+            # sliced in-batch (next_token_targets, (B, A) int32). Masked by
+            # `valid` (token_id != INVALID_TOKEN_ID == -1). Hindsight labels —
+            # the targets are unshifted (TASK_800 verdict), only inputs carry
+            # the serving lag. NOTE: this CE NEVER enters policy/value/decision
+            # (Not-C0 guard) — it only contributes to total_loss as a grounding
+            # term on the latent transition, and its gradient flows into the
+            # dynamics (and, per the freeze map, the encoder).
+            # Compile-time gate: when use_token_dynamics is False the branch is
+            # not traced and total_loss/grads are bit-identical to canon.
+            if use_token_dynamics and 'next_token_logits' in dyn_out \
+                    and next_token_targets is not None:
+                ntok_logits = dyn_out['next_token_logits']        # (B, A, V)
+                ntok_tgt = next_token_targets                      # (B, A) int32
+                # Mask: only supervise bars with a real (non-sentinel) token id.
+                ntok_valid = (ntok_tgt >= 0).astype(jnp.float32)   # (B, A)
+                # Clamp invalid (-1) targets to 0 so one_hot is well-defined;
+                # the mask zeroes their contribution anyway.
+                ntok_tgt_safe = jnp.maximum(ntok_tgt, 0)
+                ntok_onehot = jax.nn.one_hot(ntok_tgt_safe, ntok_logits.shape[-1])
+                ntok_ce = optax.softmax_cross_entropy(ntok_logits, ntok_onehot)  # (B, A)
+                token_dynamics_loss = (jnp.sum(ntok_ce * ntok_valid) /
+                                       jnp.maximum(jnp.sum(ntok_valid), 1.0))
+                token_dynamics_valid_frac = jnp.mean(ntok_valid)
+            else:
+                token_dynamics_loss = jnp.array(0.0)
+                token_dynamics_valid_frac = jnp.array(0.0)
+
             # === TASK_767: action-distribution diagnostics ===
             # mcts_visits is (B, 320). Reshape to (B, 64, 5) and sum over the
             # 64-asset axis to get the action-type marginal (idx 1 = Hold,
@@ -1780,6 +1870,13 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                           aux_price_w * aux_price_loss +
                           bella_distill_w * bella_distill_loss +
                           bella_shape_w * bella_shape_loss)
+
+            # TASK_802: add the token-grounding term ONLY when the head is on.
+            # Compile-time gate (use_token_dynamics is a Python bool captured at
+            # JIT-trace time) ⇒ when OFF this `+` is never emitted into the HLO
+            # ⇒ total_loss/grads are bit-identical to pre-802 canon.
+            if use_token_dynamics:
+                total_loss = total_loss + token_dynamics_w * token_dynamics_loss
 
             # TASK_787 (experiment A): over-trade penalty. Per-asset L2 on the
             # network's trade probability (1 - hold_prob). HOLD is action index 1
@@ -1855,6 +1952,9 @@ def make_stage_b_train_step(model, config: Phase2Config, optimizer):
                 'overtrade_penalty': overtrade_penalty,
                 # TASK_790 (experiment A2): realized-PnL value diagnostic
                 'realized_value': realized_value,
+                # TASK_802: token-grounded dynamics diagnostics
+                'token_dynamics_loss': token_dynamics_loss,
+                'token_dynamics_valid_frac': token_dynamics_valid_frac,
                 'td_target_mean': jnp.mean(td_target_raw),
                 'td_target_std': jnp.std(td_target_raw),
                 'td_targets_raw': td_target_raw,  # (B,) for PopArt update outside JIT
@@ -2274,6 +2374,12 @@ def train_stage_b(model, params, config: Phase2Config, pool, args):
                     tokens_t1=batch.get('tokens_t1'),
                     tokens_tN=batch.get('tokens_tN'),
                 )
+                # TASK_802: pass the next-token target ONLY when the dynamics
+                # head is ON (and a target is present in the batch). Absent ⇒
+                # next_token_targets defaults to None ⇒ canon-bit-identical step.
+                if getattr(config, 'use_token_dynamics', False) \
+                        and batch.get('next_token_targets') is not None:
+                    _tok_kwargs['next_token_targets'] = batch.get('next_token_targets')
             params, opt_state, metrics = train_step_fn(
                 params, opt_state,
                 obs, obs_t1, obs_tN, actions_dyn, rewards_dyn,
@@ -2681,6 +2787,25 @@ def main():
         config.token_frontend_language = args.token_frontend_language
     if args.token_frontend_cache_dir is not None:
         config.token_frontend_cache_dir = args.token_frontend_cache_dir
+    # TASK_802: token-grounded dynamics head overrides. None = inherit (canon
+    # = OFF). When ON it requires the token front-end ON (validated below).
+    if getattr(args, 'use_token_dynamics', None) is not None:
+        config.use_token_dynamics = bool(args.use_token_dynamics)
+    if getattr(args, 'token_dynamics_weight', None) is not None:
+        config.token_dynamics_loss_weight = args.token_dynamics_weight
+    if getattr(config, 'use_token_dynamics', False):
+        if not getattr(config, 'use_token_frontend', False):
+            raise ValueError(
+                "TASK_802: --use-token-dynamics requires the token front-end ON "
+                "(--use-token-frontend). The next-token target is sliced from the "
+                "in-batch candle-language token window; without the front-end there "
+                "is no token stream to ground against."
+            )
+        logger.info(
+            f"Token-grounded dynamics head ON "
+            f"(weight={config.token_dynamics_loss_weight}, "
+            f"factor_dim={getattr(config, 'token_dynamics_factor_dim', 16)})"
+        )
     # TASK_767: action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): BooleanOptionalAction three-state semantics — None =
     # inherit, True = force ON, False = force OFF.
@@ -3052,7 +3177,14 @@ def main():
         else:
             logger.info("Reset titans requested but no existing subtree (fresh init via aux-head init)")
 
-    # TASK_727/728/729a/730/735/740/749/754: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
+    # TASK_802: Optionally drop next_token_head on load (mirrors the other
+    # reset hooks; required only if a prior 802 run's head must be re-init).
+    if getattr(args, 'reset_token_dynamics_head', False):
+        if 'next_token_head' in params:
+            del params['next_token_head']
+            logger.info("Reset next_token_head (will fresh-init)")
+
+    # TASK_727/728/729a/730/735/740/749/754/802: If enabled aux heads are missing from the loaded checkpoint, init them fresh.
     if (config.use_direction_head or
             getattr(config, 'use_direction_policy_bias', False) or
             getattr(config, 'use_per_asset_policy_head', False) or
@@ -3061,7 +3193,8 @@ def main():
             getattr(config, 'use_aux_price_head', False) or
             getattr(config, 'use_bella_distill_head', False) or
             getattr(config, 'use_bella_shape_head', False) or
-            getattr(config, 'use_titans_memory', False)):
+            getattr(config, 'use_titans_memory', False) or
+            getattr(config, 'use_token_dynamics', False)):
         aux_rng = jax.random.PRNGKey(config.seed + 9999)
         params = initialize_missing_aux_heads(model, params, config, aux_rng)
 

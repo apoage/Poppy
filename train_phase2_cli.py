@@ -125,6 +125,25 @@ def parse_args():
                         help='TASK_804: OPTIONAL per-asset timeline cache dir '
                              '(load-once-to-RAM across runs, keyed by vocab_sha). '
                              'Default = None = inherit (canon = "").')
+    # TASK_802: token-grounded dynamics head. Next-token shape-class CE on the
+    # MuZero dynamics output — a GROUNDING loss only (never feeds policy/value/
+    # decision). Needs the TASK_801 front-end ON for a target stream. Three-state
+    # BooleanOptionalAction (None=inherit, True=force ON, False=force OFF).
+    parser.add_argument('--use-token-dynamics',
+                        action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help='TASK_802: enable the token-grounded dynamics head '
+                             '(next-token shape-class CE on the dynamics output). '
+                             'Grounding loss only — never feeds policy/value. '
+                             'Requires --use-token-frontend ON (target sliced from '
+                             'the in-batch token window). Default = None = inherit '
+                             'from checkpoint config (canon = False).')
+    parser.add_argument('--token-dynamics-weight', type=float, default=None,
+                        help='TASK_802: token-grounding CE loss weight (default '
+                             '= inherit, canon = 0.1).')
+    parser.add_argument('--reset-token-dynamics-head', action='store_true',
+                        help='TASK_802: drop next_token_head from checkpoint; '
+                             'fresh-init (zero-init final layer).')
     # TASK_767: Action-space restructure (drop limit orders).
     # TASK_771/F4 (P2): switched to BooleanOptionalAction so --no-disable-limit-orders
     # can force the flag OFF even when the resumed checkpoint config carries

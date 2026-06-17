@@ -340,6 +340,23 @@ class Phase2Config(EasyConfig):
     # to-RAM, NEVER disk-in-loop). Plumbed into SegmentPool via oracle_config.
     token_frontend_cache_dir: str = ''
 
+    # === TASK_802 (Token-grounded dynamics) ===
+    # Next-token shape-class head on the MuZero dynamics transition output.
+    # GROUNDING loss ONLY — predicts the per-asset next-token shape-class
+    # distribution as a self-supervision signal on the latent transition; it
+    # never feeds policy, value, or the trade decision (Not-C0 guard). Default
+    # OFF ⇒ no head params created, training path byte-identical to canon.
+    # The next-token TARGET is sliced from the in-batch candle-language token
+    # window (the first bar after the obs window end), so the head requires the
+    # TASK_801 token front-end to be ON to have a target stream — in TASK_804 it
+    # is evaluated on top of the front-end arm (arms 4-5). The vocab size is
+    # taken from the loaded codebook at runtime (mirrors token_frontend_vocab_
+    # size); the loss weight starts at 0.1 (sweep later).
+    use_token_dynamics: bool = False
+    token_dynamics_factor_dim: int = 16   # E' — factorized per-asset bottleneck
+    token_dynamics_hidden_dim: int = 256
+    token_dynamics_loss_weight: float = 0.1
+
     # === TASK_749 (Titans-MAG) ===
     # Plug a Titans-style neural long-term memory module (MAG variant) into
     # the V3 encoder's temporal compression stage. Memory updates inside the
