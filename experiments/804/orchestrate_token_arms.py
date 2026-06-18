@@ -552,10 +552,32 @@ class Orchestrator:
                 run.proc.kill()
             except Exception:
                 pass
+            # run.proc is only the bash wrapper; the `systemd-run --scope` python survives
+            # it as an orphan, holding its GPU and OOM-failing the NEXT launch on that device
+            # (the 2026-06-18 cascade). Reap the scope so the slot's GPU is actually freed.
+            self._reap_scope(run)
             self.killed_runs.append(run)
             self.log(f"WATCHDOG KILL {run.tag} on GPU{run.gpu}: {run.kill_reason}")
             self.log(f"WATCHDOG FLAG: {run.tag} flagged "
                      f"(project_seed7_stageb_wedge); slot freed, queue recovers")
+
+    def _reap_scope(self, run: Run) -> None:
+        """Stop the safe_run systemd --user scope backing `run`. run.proc.kill() reaps only
+        the bash wrapper; safe_run launches the trainer in `systemd-run --user --scope
+        --unit=<NAME>_<pid>` which outlives the wrapper. Stop it by the run.name glob so the
+        scoped python (and its GPU memory) is actually released before the slot is re-used."""
+        if self.dry_run:
+            return
+        try:
+            subprocess.run(
+                ["bash", "-c",
+                 f"systemctl --user list-units --all --no-legend '{run.name}_*.scope' 2>/dev/null "
+                 f"| awk '{{print $1}}' | grep -E '[.]scope$' | xargs -r -n1 systemctl --user stop 2>/dev/null; "
+                 f"systemctl --user reset-failed '{run.name}_*.scope' 2>/dev/null || true"],
+                timeout=25, check=False)
+            self.log(f"  scope reaped for {run.tag} ({run.name}_*.scope)")
+        except Exception as e:  # never let scope-reap failure crash the watchdog
+            self.log(f"  scope-reap WARN for {run.tag}: {e}")
 
     # ---- pairing / readout ------------------------------------------------ #
     def _record_eval(self, ev: Run) -> None:
