@@ -543,6 +543,10 @@ def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
         'use_token_frontend': getattr(config, 'use_token_frontend', False),
         'token_frontend_vocab_file': getattr(config, 'token_frontend_vocab_file', ''),
         'token_frontend_language': getattr(config, 'token_frontend_language', 'L1_bpe'),
+        # TASK_804: thread the token disk-artifact cache dir through to SegmentPool. Without
+        # it the pool sees cache_dir=(off) and load_disk_artifact/write_disk_artifact never
+        # fire, so every run cold-annotates (the 2026-06-18 47-min slot-1 pool-build wall).
+        'token_frontend_cache_dir': getattr(config, 'token_frontend_cache_dir', ''),
     }
 
     pool = SegmentPool(
