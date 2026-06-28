@@ -2,6 +2,71 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 import jax.numpy as jnp
 
+
+@dataclass
+class PhysicsConfig:
+    """
+    Configuration for physics-based market model parameters.
+
+    These were previously hardcoded "magic numbers" that directly influence
+    the agent's behavior. Different asset classes may need different values:
+    - Crypto: Higher volatility (sigma_target ~0.02-0.05)
+    - Forex: Lower volatility (sigma_target ~0.005)
+    - Trending markets: Higher alpha_target
+    - Mean-reverting: Higher beta_target
+    """
+    # Reward scaling for categorical value representation
+    # Maps symlog rewards to [-10, +10] support range
+    reward_scale: float = 100.0
+
+    # Physics regularization targets (what the model is pulled toward)
+    alpha_target: float = 0.05    # Momentum bias (5% default)
+    beta_target: float = 0.03     # Mean reversion strength (3% default)
+    sigma_target: float = 0.01    # Volatility level (1% daily default)
+
+    # GARCH persistence bounds (volatility clustering)
+    garch_floor: float = 0.85     # Minimum persistence
+    garch_ceiling: float = 1.0    # Maximum persistence
+    garch_penalty_weight: float = 2.0
+
+    # Categorical distribution smoothing
+    label_smoothing: float = 0.1  # 10% uniform, 90% target
+
+    # Entropy thresholds for policy collapse detection
+    min_entropy: float = 3.0      # Danger zone (log(320) ≈ 5.77)
+    entropy_boost_multiplier: float = 5.0  # Adaptive entropy penalty multiplier
+
+    # Self-play constraints
+    max_positions: int = 16       # Maximum simultaneous positions
+    min_cash_threshold: float = 100.0  # Minimum cash to allow buying
+    confidence_threshold: float = 0.0  # Force HOLD if max_prob < threshold
+
+    # Batch transfer settings (GPU->CPU)
+    batch_steps: int = 50         # Transfer every N steps
+
+    def for_crypto(self) -> 'PhysicsConfig':
+        """Preset for high-volatility crypto markets."""
+        return PhysicsConfig(
+            reward_scale=100.0,
+            alpha_target=0.03,      # Less momentum (noisy)
+            beta_target=0.02,       # Less reversion (trending)
+            sigma_target=0.03,      # Higher volatility (3%)
+            garch_floor=0.80,
+            min_entropy=2.5,        # Lower threshold (more concentrated)
+        )
+
+    def for_forex(self) -> 'PhysicsConfig':
+        """Preset for low-volatility forex markets."""
+        return PhysicsConfig(
+            reward_scale=200.0,     # Smaller moves need more scaling
+            alpha_target=0.02,
+            beta_target=0.05,       # More mean reversion
+            sigma_target=0.005,     # Lower volatility (0.5%)
+            garch_floor=0.90,
+            min_entropy=3.5,
+        )
+
+
 @dataclass
 class TrainingConfig:
     """Central configuration for MuZero training."""
@@ -23,15 +88,41 @@ class TrainingConfig:
     
     # Data settings
     synthetic_level: Optional[int] = None
+    weighted_synthetic: bool = False  # Use weighted random level selection (L0-L14)
     synthetic_steps: int = 10000
+    synthetic_noise: float = 0.0  # Price noise for anti-memorization (0.0 = clean, 1.0 = full noise)
+    noise_schedule: bool = False  # Ramp noise from 0 to synthetic_noise over epochs
+    regenerate_data_every: int = 0  # Regenerate synthetic data every N epochs (0=disabled)
+    unique_data_per_env: bool = False  # Generate unique prices for each parallel env
+    data_gen_workers: int = 8  # Threads for parallel data generation
     db_path: Optional[str] = None
     cache_path: Optional[str] = None
     assets_file: Optional[str] = None
     periods_file: Optional[str] = None
+    periods: Optional[str] = None
+    periods_assets_file: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    schedule_path: Optional[str] = None
     config_file: Optional[str] = None
-    
+
+    # TASK_110: Adversarial curriculum
+    adversarial_data_dir: Optional[str] = None
+    adversarial_ratio: float = 0.3
+    # On-the-fly VRAM generation (fast conv-based generator)
+    # Uses O(n) dilated causal convolutions for memory efficiency
+    adversarial_on_the_fly: bool = False
+    adversarial_hidden_dim: int = 1536  # 1536=302M params (5GB), 1024=101M, 512=17M
+    adversarial_num_layers: int = 16    # 16=deep receptive field, 12=balanced, 8=fast
+    adversarial_regime_bias: Optional[str] = None  # 'crash', 'rally', etc.
+    # TASK_111: Load trained generator checkpoint
+    adversarial_checkpoint: Optional[str] = None  # Path to trained diff_teacher checkpoint
+
+    # TASK_111: Bella (trained CNN diffusion) as data source
+    bella: bool = False  # Use Bella for market generation
+    bella_checkpoint: str = 'checkpoints/diff_teacher/final/generator'
+    bella_samples_per_epoch: int = 1  # Fresh samples per epoch
+
     # Model architecture
     model_size: str = "small"
     state_dim: int = 64
@@ -57,6 +148,8 @@ class TrainingConfig:
     lr_schedule: str = "constant"
     lr_min: float = 1e-6
     lr_warmup_epochs: int = 10
+    weight_decay: float = 1e-4  # BUG-011: AdamW weight decay (L2 regularization)
+    global_grad_clip: float = 5.0  # BUG-013: Global gradient clip (was 10.0, too permissive)
     discount: float = 0.997
     entropy_coef: float = 0.01
     per_head_clipping: bool = False
@@ -83,17 +176,48 @@ class TrainingConfig:
     redo: bool = False
     redo_interval: int = 10
     redo_threshold: float = 0.01
+    redo_init_scale: float = 0.01
     atc_loss: bool = False
     atc_weight: float = 0.1
     atc_k_step: int = 5
     atc_temperature: float = 0.1
     atc_num_negatives: int = 32
-    
+
+    # Cycle Balance (TASK_110)
+    cycle_balance: bool = False
+    cycle_balance_weight: float = 0.1
+    cycle_balance_target_cv: float = 0.3
+    cycle_atc: bool = False
+    cycle_atc_weight: float = 0.05
+    cycle_atc_temperature: float = 0.1
+
+    # Reward shaping
+    differential_reward: bool = False
+    differential_baseline: str = "market"
+    differential_weight: float = 1.0
+    # TASK_818 Tier B: action-attributable realized-PnL-on-close env reward (default OFF = canon)
+    reward_attributable: bool = False
+    # TASK_818-freq: resample historical 1-min closes to K-minute bars (1 = canon 1-min)
+    bar_minutes: int = 1
+    burning_money: bool = False
+    burn_market_linked: bool = True
+    burn_base_rate: float = 0.00005
+    burn_random: bool = True
+    burn_random_prob: float = 0.03
+    burn_random_max: float = 500.0  # Max random burn amount
+    burn_random_limit: int = 10  # Max burns per episode
+    adaptive_burn: bool = False
+    burn_hold_threshold: float = 0.60
+    burn_patience: int = 5
+
     # Training interventions
     adaptive_noise: bool = False
     target_reward_low: float = 10.0
     target_reward_high: float = 20.0
     noise_adjustment_rate: float = 0.05
+    max_temporal_jitter: int = 5
+    max_time_dilation: float = 0.3
+    max_phase_shift: float = 0.5
     adaptive_fees: bool = False
     fee_reward_threshold: float = 2.5
     fee_upgrade_epochs: int = 10
@@ -105,11 +229,25 @@ class TrainingConfig:
     entropy_boost_low: float = 0.15
     entropy_boost_high: float = 0.30
     sac_entropy: bool = False
-    
+    sac_target_entropy_ratio: float = 0.5
+    sac_init_alpha: float = 0.01
+    sac_alpha_lr: float = 3e-4
+
     # Checkpointing & Logging
     load_checkpoint: Optional[str] = None
     no_checkpoint: bool = False
+    reset_optimizer: bool = False
+    clear_buffer: bool = False
     safe_checkpoints: bool = False
+    snapshot_every: int = 0
+    rollback_patience: int = 50
+    rollback_threshold: float = 0.5
+
+    # Generalization evaluation
+    eval_every: int = 0
+    eval_level: int = 4
+    eval_steps: int = 200
+
     ds24_logging: bool = False
     ds24_level: int = 0
     ds24_save_tensors: bool = False
@@ -117,6 +255,80 @@ class TrainingConfig:
     ds24_intermediates_every: int = 10
     ds24_boost_every: int = 10
     ds24_snapshot_every: int = 50
+
+    # Physics configuration (TASK_066: extracted magic numbers)
+    reward_scale: float = 100.0
+    alpha_target: float = 0.05
+    beta_target: float = 0.03
+    sigma_target: float = 0.01
+    label_smoothing: float = 0.1
+    min_entropy: float = 3.0
+    max_positions: int = 16
+    min_cash_threshold: float = 100.0
+    confidence_threshold: float = 0.0
+
+    # Tree Search (H1 - Phase 3)
+    use_tree_search: bool = False
+    tree_depth: int = 5
+    tree_branches: int = 3
+    risk_lambda: float = 0.1
+
+    # Flow Matching (H2 - TASK_041)
+    flow_matching: bool = False
+    flow_velocity_weight: float = 0.1
+
+    # Adaptive Calibration (H3)
+    adaptive_calibration: bool = False
+
+    # Early Graduation (H4)
+    early_graduation: int = 0
+
+    # Value Loss Type (H5)
+    value_loss_type: str = 'mse'
+    value_huber_delta: float = 1.0
+
+    # Prediction Loss Type
+    pred_loss_type: str = 'mse'
+    pred_huber_delta: float = 1.0
+
+    # TASK_116: Student-t output for fat-tailed returns
+    use_student_t: bool = False      # Enable Student-t loss for prediction
+    student_t_weight: float = 0.8    # Weight for Student-t NLL component
+    student_t_mse_weight: float = 0.2  # Weight for MSE component (stability)
+    student_t_df_min: float = 2.1    # Min degrees of freedom (>2 for finite variance)
+    student_t_df_max: float = 100.0  # Max df (large = nearly Gaussian)
+
+    # Additional prediction config (L1)
+    prediction_loss_initial: float = 0.01
+    prediction_anneal_steps: int = 10000
+    multi_step_k: int = 5
+    physics_reg_weight: float = 0.01
+
+    # TASK_118: Alpha-relative reward normalization
+    alpha_relative_reward: bool = False  # Enable alpha-relative reward
+    alpha_reward_blend: float = 0.5      # Blend factor (0=raw, 1=pure alpha-relative)
+    alpha_top_k: int = 4                 # Top-k assets for max alpha calc
+
+    # TASK_119: Optimal hindsight path computation
+    amax: Optional[str] = None           # 'greedy', 'soft', 'sinkhorn', or None
+    amax_regret_weight: float = 0.0      # Regret penalty weight (0=disabled, 0.01-0.1=auxiliary)
+    amax_imprint_weight: float = 0.0     # Optimal action imprint weight (0=disabled, 0.01-0.02=stabilization)
+    amax_imprint_temp: float = 1.0       # Temperature for imprint targets (lower=more peaked)
+
+    # TASK_125: Causal Expert Imprinting
+    imprint: bool = False                # Enable causal expert imprinting
+    bc_weight_initial: float = 0.1       # Initial BC loss weight
+    bc_weight_final: float = 0.01        # Final BC loss weight after decay
+    bc_weight_decay_steps: int = 50000   # Steps to decay BC weight
+    expert_demo_capacity: int = 50000    # Max expert demos to store
+    expert_confidence_threshold: float = 0.001  # Min alpha capture ratio to store as demo (0.1% of optimal)
+    bc_use_q_filter: bool = True         # Apply BC loss only when Q(demo) > Q(policy)
+    bc_use_large_margin: bool = True     # Use DQfD-style large margin loss
+
+    # Safe checkpoint config (L1)
+    max_rollbacks: int = 3
+    keep_best_n: int = 3
+    lr_decay_on_rollback: float = 0.5
     
     def __post_init__(self):
         """Handle derivative configuration."""

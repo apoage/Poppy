@@ -130,6 +130,9 @@ class MuZeroTrainer:
         cycle_atc_temperature: float = 0.1,
         # TASK_066: Physics configuration (extracted magic numbers)
         reward_scale: float = 100.0,
+        # --reward-hybrid: mirror the value head's recipe for the reward head
+        # (PopArt-normalized target + hybrid Huber/categorical loss). Default OFF.
+        reward_hybrid: bool = False,
         alpha_target: float = 0.05,
         beta_target: float = 0.03,
         sigma_target: float = 0.01,
@@ -212,6 +215,16 @@ class MuZeroTrainer:
             self.popart = PopArtNormalizer(beta=popart_beta)
         else:
             self.popart = None
+
+        # --reward-hybrid (default OFF): mirror the value PopArt normalizer above
+        # (same beta) for the reward head. When OFF, reward_popart=None and the
+        # reward path below stays bit-identical to canon.
+        self.reward_hybrid = reward_hybrid
+        if reward_hybrid:
+            from .popart import PopArtNormalizer
+            self.reward_popart = PopArtNormalizer(beta=popart_beta)
+        else:
+            self.reward_popart = None
         self.batch_size = batch_size
         self.unroll_steps = unroll_steps
         self.td_steps = td_steps
@@ -788,6 +801,11 @@ class MuZeroTrainer:
         observations = batch['observations']  # (batch, unroll_steps, 27, 64, 64)
         actions = batch['actions']  # (batch, unroll_steps)
         rewards = batch['rewards']  # (batch, unroll_steps)
+        # --reward-hybrid (default OFF): host-side PopArt-normalized reward target,
+        # stashed in batch['rewards_norm'] before the jit step (see training loop).
+        # Static guard → key only present/read when the flag is ON; OFF is untouched.
+        if self.reward_hybrid:
+            rewards_norm = batch['rewards_norm']  # (batch, unroll_steps)
         target_values = batch['values']  # (batch, unroll_steps)
         target_policies = batch['policy_probs']  # (batch, unroll_steps, 192)
 
@@ -917,11 +935,34 @@ class MuZeroTrainer:
             # TASK_034 FIX: Scale rewards before categorical binning
             # Raw symlog rewards (~0.001) would collapse to 1-2 bins without scaling
             # TASK_066: Use configurable reward scale
-            scaled_rewards = rewards[:, t - 1] * self.reward_scale
-            per_sample_reward = optax.softmax_cross_entropy(
-                recurrent_output['reward'],
-                self._scalar_to_categorical(scaled_rewards)
-            )
+            # --reward-hybrid (default OFF): give the reward head the value head's
+            # recipe — PopArt-normalized (unit-variance) target + hybrid
+            # Huber/categorical loss — so a near-zero noisy reward target produces a
+            # rankable signal instead of collapsing to the marginal under pure CE.
+            # When OFF, both branches below take the ORIGINAL path (×reward_scale
+            # target + pure-CE loss), bit-identical to canon.
+            if self.reward_hybrid:
+                # Host-side PopArt-normalized target (running unit-variance); the
+                # in-jit normalize froze stats, so read the pre-normalized value.
+                scaled_rewards = rewards_norm[:, t - 1]
+            else:
+                scaled_rewards = rewards[:, t - 1] * self.reward_scale
+            if self.reward_hybrid:
+                pred_reward = self._logits_to_scalar(recurrent_output['reward'])
+                per_sample_reward = (
+                    0.8 * optax.huber_loss(
+                        pred_reward, scaled_rewards, delta=self.value_huber_delta
+                    )
+                    + 0.2 * optax.softmax_cross_entropy(
+                        recurrent_output['reward'],
+                        self._scalar_to_categorical(scaled_rewards),
+                    )
+                )
+            else:
+                per_sample_reward = optax.softmax_cross_entropy(
+                    recurrent_output['reward'],
+                    self._scalar_to_categorical(scaled_rewards)
+                )
             reward_loss += jnp.sum(per_sample_reward * valid_mask_float) / num_valid
 
             # Accumulate entropy (masked)
@@ -1411,6 +1452,36 @@ class MuZeroTrainer:
                     norm_values = self.popart.normalize(raw_values)
 
                 batch = {**batch, 'values': norm_values.reshape(batch['values'].shape)}
+
+            # --reward-hybrid (default OFF): mirror the value PopArt block above for
+            # the reward target. In-jit normalize would freeze stats (state captured
+            # at trace time), so — exactly like the value targets — we normalize on the
+            # HOST here and stash the result in a parallel batch['rewards_norm'] key,
+            # updating running stats from VALID raw rewards (normalize-only; same
+            # weight-correction skip the value path uses). _loss_fn's --reward-hybrid
+            # branch reads batch['rewards_norm']; batch['rewards'] is left untouched so
+            # the OFF path stays bit-identical and the alpha-relative path is unaffected.
+            if self.reward_hybrid:
+                raw_rewards = batch['rewards'].flatten()
+
+                # Only use VALID samples for statistics update (mirror HIGH-010 fix)
+                reward_valid_mask = batch.get('valid', jnp.ones(batch['rewards'].shape[0], dtype=jnp.bool_))
+                reward_valid_mask_flat = jnp.repeat(reward_valid_mask, batch['rewards'].shape[1])
+
+                # Update statistics less frequently (amortizes sync cost)
+                if iteration % 10 == 0:
+                    valid_rewards = raw_rewards[reward_valid_mask_flat]
+                    if valid_rewards.shape[0] > 0:
+                        # Only update stats, skip weight correction (categorical head)
+                        from .popart import update_statistics
+                        self.reward_popart.state = update_statistics(
+                            self.reward_popart.state, valid_rewards, self.reward_popart.beta
+                        )
+                    norm_rewards = self.reward_popart.normalize(raw_rewards)
+                else:
+                    norm_rewards = self.reward_popart.normalize(raw_rewards)
+
+                batch = {**batch, 'rewards_norm': norm_rewards.reshape(batch['rewards'].shape)}
 
             # TASK_125: Sample from expert buffer and add to batch for BC loss
             # TASK_136d: Reduce BC frequency - encoding is expensive (~2.5s per call)

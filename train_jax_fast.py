@@ -235,10 +235,32 @@ def main():
                 burn_random_prob=getattr(config, 'burn_random_prob', 0.02),
                 burn_random_max=getattr(config, 'burn_random_max', 500.0),
                 burn_random_limit=getattr(config, 'burn_random_limit', 10),
+                reward_attributable=getattr(config, 'reward_attributable', False),
+                bar_minutes=getattr(config, 'bar_minutes', 1),
             )
             n_assets = jax_env_config.n_assets
             use_jax_env = True
             print(f"   JAX historical env: {jax_prices.shape[0]} steps, {n_assets} assets")
+
+            # TASK_812: pre-launch post-cost / leak-free / oracle-off asserts (requirement #1:
+            # "verify it's overridden, don't assume" — the zero-cost default IS 810's turnover trap).
+            if getattr(config, 'assert_postcost', False):
+                _amax = getattr(config, 'amax', None)
+                _imprint = getattr(config, 'imprint', False)
+                _predloss = getattr(config, 'use_prediction_loss', False)
+                print("=" * 72)
+                print("[TASK_812] PRE-LAUNCH ASSERTS (post-cost genuine-RL probe)")
+                print(f"  fee_bps            = {jax_env_config.fee_bps}  (require > 0; 810-trap default is 0)")
+                print(f"  slippage_bps       = {jax_env_config.slippage_bps}  (require > 0)")
+                print(f"  use_prediction_loss= {_predloss}  (require False — the 97%-of-loss trap)")
+                print(f"  amax / imprint     = {_amax} / {_imprint}  (require None / False — oracle OFF)")
+                print(f"  value target       = compute_returns (GAE/MC over env rewards); NOT path_solver/oracle")
+                print(f"  leak guard         = obs window [t-window, t-1], execute at t (TASK_124, no look-ahead)")
+                print("=" * 72)
+                assert jax_env_config.fee_bps > 0.0, "TASK_812: POST-COST fee not active (fee_bps=0 is 810's gross trap)"
+                assert jax_env_config.slippage_bps > 0.0, "TASK_812: POST-COST slippage not active (slippage_bps=0)"
+                assert not _predloss, "TASK_812: prediction loss must be OFF (the 97%-of-loss trap)"
+                assert _amax is None and not _imprint, "TASK_812: oracle (amax/imprint) must be OFF — value must come from compute_returns"
         else:
             logging.warning("--jax-env requires --synthetic-level or --db-path. Falling back to Python env.")
             use_jax_env = False
@@ -694,7 +716,7 @@ def main():
         'self_play_time', 'train_time',
         'total_loss', 'value_loss', 'policy_loss', 'reward_loss',
         'pred_loss', 'loss_decoder', 'physics_reg', 'lambda_pred',
-        'policy_entropy', 'avg_value', 'value_std', 'value_mse',
+        'policy_entropy', 'mcts_visit_entropy', 'avg_value', 'value_std', 'value_mse',
         'epsilon_greedy', 'synthetic_level', 'synthetic_noise', 'model_size', 'run_id',
         # Adaptive difficulty metrics (TASK_058)
         'difficulty_level', 'reward_ema',
@@ -731,6 +753,20 @@ def main():
     print(f"Logging training metrics to: {csv_path}")
     if ds24_level > 0:
         print(f"DS24 Level {ds24_level}: {ds24_logger.LEVEL_DESCRIPTIONS.get(ds24_level, 'Unknown')}")
+
+    # TASK_812: decaying epsilon-greedy target-mix schedule (death-spiral mitigation, from step 0).
+    # Mixing is applied in-loop to the policy TARGETS (not the search), so no per-epoch XLA recompile.
+    eps_schedule = None
+    if getattr(config, 'epsilon_schedule', False):
+        from mcts_trader.jax_agent.exploration.epsilon_greedy import EpsilonSchedule
+        _decay = getattr(config, 'epsilon_decay_epochs', 0) or max(1, config.epochs // 2)
+        eps_schedule = EpsilonSchedule(
+            initial=getattr(config, 'epsilon_init', 0.25),
+            final=getattr(config, 'epsilon_final', 0.05),
+            decay_epochs=_decay,
+        )
+        print(f"  [TASK_812] e-greedy target-mix schedule: {eps_schedule.initial}->{eps_schedule.final} "
+              f"over {_decay} epochs (death-spiral mitigation, applied to policy targets)")
 
     try:
         pbar = tqdm(range(config.epochs), desc="Training", unit="ep",
@@ -878,7 +914,8 @@ def main():
                 if bella_generator is not None:
                     gen_rng, search_rng = jax.random.split(search_rng)
                     prices_for_play = generate_bella_prices_on_device(
-                        bella_generator, gen_rng, n_envs=config.parallel_envs
+                        bella_generator, gen_rng, n_envs=config.parallel_envs,
+                        ohlcv=False,  # TASK_703: Poppy uses close-only
                     )
                     # TASK_135: Clear expert buffer every epoch (Bella generates fresh prices)
                     if expert_buffer:
@@ -1005,6 +1042,25 @@ def main():
                         diff_weight = getattr(config, 'differential_weight', 1.0)
                         original_rewards = np.array(traj['rewards'])
                         traj['rewards'] = list(original_rewards - diff_weight * market_returns[:len(original_rewards)])
+
+            # TASK_812: death-spiral diagnostic + epsilon-greedy target mixing.
+            # (1) mcts_visit_entropy = entropy of the RAW MCTS visit distribution (policy targets),
+            #     computed BEFORE any mixing so the diagnostic sees true search collapse.
+            # (2) if an epsilon schedule is active, mix uniform into the policy TARGETS
+            #     pi_train = (1-eps)*pi_mcts + eps*uniform — severs MCTS-sharpening -> policy-sharpening.
+            eps_now = float(eps_schedule(epoch)) if eps_schedule is not None else float(getattr(config, 'epsilon_greedy', 0.0))
+            _vis_ent = []
+            for traj in trajectories:
+                _pp = np.asarray(traj['policy_probs'], dtype=np.float32)  # (n_steps, n_actions)
+                if _pp.ndim == 2 and _pp.shape[0] > 0:
+                    _p = np.clip(_pp, 1e-12, 1.0)
+                    _vis_ent.append(float(np.mean(-np.sum(_p * np.log(_p), axis=-1))))
+                    if eps_now > 0.0:
+                        _n = _pp.shape[-1]
+                        _mixed = (1.0 - eps_now) * _pp + eps_now * (1.0 / _n)
+                        _mixed = _mixed / np.maximum(_mixed.sum(axis=-1, keepdims=True), 1e-12)
+                        traj['policy_probs'] = _mixed.astype(_pp.dtype)
+            mcts_visit_entropy = float(np.mean(_vis_ent)) if _vis_ent else 0.0
 
             # Buffer update
             for traj in trajectories:
@@ -1269,10 +1325,11 @@ def main():
                 'physics_reg': physics_reg,
                 'lambda_pred': lambda_pred,
                 'policy_entropy': policy_entropy,
+                'mcts_visit_entropy': mcts_visit_entropy,  # TASK_812: raw MCTS visit-distribution entropy (death-spiral triad)
                 'avg_value': avg_value,
                 'value_std': value_std,
                 'value_mse': value_mse,
-                'epsilon_greedy': getattr(config, 'epsilon_greedy', 0.0),
+                'epsilon_greedy': eps_now,  # TASK_812: actual epsilon used this epoch (scheduled if --epsilon-schedule)
                 'synthetic_level': getattr(config, 'synthetic_level', None),
                 'synthetic_noise': getattr(config, 'synthetic_noise', 0.0),
                 'model_size': getattr(config, 'model_size', 'small'),

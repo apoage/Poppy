@@ -123,6 +123,8 @@ class EnvConfig:
     burn_random_prob: float = 0.02  # 2% chance per step
     burn_random_max: float = 500.0  # Max random burn amount
     burn_random_limit: int = 10  # Max burns per episode
+    # TASK_818 Tier B: action-attributable realized-PnL-on-close reward (default OFF = canon)
+    reward_attributable: bool = False
 
 
 # =============================================================================
@@ -1152,6 +1154,14 @@ def step(state: TradingState, action: chex.Array,
     asset_idx = action // 5
     action_type = action % 5
 
+    # TASK_818 Tier B: snapshot pre-action position state for realized-PnL attribution.
+    # Pure name-bindings to existing tracers — emit ZERO XLA ops, so they are harmless
+    # even when the flag is OFF (they only feed the guarded branch below, which is not
+    # traced when reward_attributable=False → dead, absent from the jaxpr).
+    prev_active_attr = state.pos_active   # (n_assets,) bool   — post limit/tp_sl/margin, pre-action
+    prev_side_attr   = state.pos_side     # (n_assets,) int 0/1/2
+    prev_entry_attr  = state.pos_entry    # (n_assets,) float
+
     new_state = jax.lax.switch(
         action_type,
         [
@@ -1202,6 +1212,22 @@ def step(state: TradingState, action: chex.Array,
     log_return = jnp.log(safe_new / safe_prev) * 100.0
     reward = jnp.where(is_liquidated, symlog(-50.0), symlog(log_return))
 
+    # TASK_818 Tier B (flag --reward-attributable, default OFF → canon bit-identical):
+    # credit realized log-PnL on a True->False position flip (a CLOSE) caused by THIS step.
+    # Long  realized = log(exit/entry);  Short = mirror = -log(exit/entry) = log(entry/exit).
+    # This is the multi-step holding-period return, attributed to the CLOSE action.
+    if config.reward_attributable:
+        closed     = prev_active_attr & (~new_state.pos_active)          # (n_assets,) bool
+        safe_exit  = jnp.maximum(current_prices, 1e-8)                   # close exec ≈ current (== at cost=0)
+        safe_entry = jnp.maximum(prev_entry_attr, 1e-8)
+        long_log   = jnp.log(safe_exit / safe_entry)                    # log(exit/entry)
+        realized   = jnp.where(prev_side_attr == 1, long_log,
+                      jnp.where(prev_side_attr == 2, -long_log, 0.0))    # short = mirror
+        realized   = jnp.where(closed, realized, 0.0)                   # zero where no close
+        realized_sum = jnp.sum(realized)                                # scalar; ~1 close/step
+        # Don't stack the realized spike onto the liquidation sentinel (symlog(-50)).
+        reward = reward + jnp.where(is_liquidated, 0.0, symlog(realized_sum * 100.0))
+
     # TASK_051: Burning money (cash opportunity cost) - wife with debit card simulation
     if config.burning_money:
         # Cash ratio (fraction uninvested)
@@ -1223,7 +1249,10 @@ def step(state: TradingState, action: chex.Array,
             market_return = jnp.mean(returns)
 
             # Cash "missed" this return (positive market = penalty for holding cash)
-            market_burn = market_return * cash_ratio
+            # BUG-035 FIX: Clamp to non-negative - in bear market, holding cash is correct
+            # (no opportunity cost), so we shouldn't reward OR penalize. Previously,
+            # negative market_return led to negative burn which became a reward via symlog.
+            market_burn = jnp.maximum(market_return * cash_ratio, 0.0)
             burn = burn + market_burn
 
         # Base decay (constant pressure to deploy capital)
@@ -1262,6 +1291,10 @@ def step(state: TradingState, action: chex.Array,
         # Add burn penalty to reward (proportional to portfolio, symlog scaled)
         burn_pct = actual_burn / jnp.maximum(new_portfolio_value, 1e-8) * 100.0
         reward = reward - symlog(burn_pct)
+
+        # TASK_126: Update portfolio value to reflect cash burn
+        # This ensures cumulative_return and prev_portfolio_value are consistent
+        new_portfolio_value = new_portfolio_value - actual_burn
 
     # Update tracking
     new_cumulative_return = (new_portfolio_value / state.initial_portfolio_value - 1.0) * 100.0
