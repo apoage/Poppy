@@ -38,3 +38,22 @@ checkpoints/
 logs/
 wandb/
 output/
+
+# 2026-07-05 reorg sweep
+docs/Hindsight-optimal/
+docs/research/
+*.bak
+*.old
+nohup.out
+hang_debug.log
+out_*/
+.jax_cache/
+.xla_cache/
+.antigravitycli/
+jax_ckpt_easy*/
+jax_ckpt_fast/
+trading_data.db.zst*
+last_run_metrics.json
+training_schedule_old.json
+bloom/output/**/*.mp4
+*.log

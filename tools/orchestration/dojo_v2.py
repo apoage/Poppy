@@ -3,17 +3,31 @@
 Dojo v2: Full Curriculum Training Manager
 
 TASK_045: Complete curriculum from Level 0 to 14 with:
-- Three-phase training per level (Basic -> Noise -> Fees)
+- Three-phase training per level (Basic -> Challenge -> Fees)
+- TASK_058: Adaptive difficulty keeps model in "zone of proximal development"
 - Multi-period benchmark after each level (Bull/Bear/Sideways)
 - Kitchen Sink v2 production configuration
 - Auto-graduation with performance thresholds
 
 Training Structure per Level:
-  Phase A: 300 epochs (basic, no noise, no fees)
-  Phase B: 250 epochs (+ synthetic-noise 0.3)
-  Phase C: 250 epochs (+ noise + fees 16bps + slip 5bps)
+  Phase A: 300 epochs (basic, adaptive noise auto-adjusts)
+  Phase B: 250 epochs (continued adaptive difficulty)
+  Phase C: 250 epochs (+ fees 16bps + slip 5bps)
   Benchmark: 21 epochs real data (7 bull + 7 bear + 7 sideways)
+
+Adaptive Noise (TASK_058):
+  - Target reward range: 10-20
+  - Multi-modal: price noise + temporal jitter + time dilation + phase shift
+  - Keeps H1/H2 TRM cycles engaged (forces reasoning, not shortcuts)
 """
+
+# ============================================================================
+# MODEL NAMING
+# ============================================================================
+# Poppy v2: With TASK_058 adaptive difficulty (multi-modal noise)
+# v1 was trained without adaptive noise, killed at L5
+MODEL_NAME = "poppy"
+MODEL_VERSION = "2"
 
 import argparse
 import json
@@ -76,26 +90,26 @@ PHASES = [
     {
         'name': 'Phase A (Basic)',
         'epochs': 300,
-        'synthetic_noise': 0.0,
+        'synthetic_noise': 0.0,  # Ignored when --adaptive-noise is enabled
         'fee': 0,
         'slippage': 0,
-        'description': 'Learn basic pattern recognition without friction',
+        'description': 'Learn basic pattern (adaptive noise auto-adjusts difficulty)',
     },
     {
-        'name': 'Phase B (Noise)',
+        'name': 'Phase B (Challenge)',
         'epochs': 250,
-        'synthetic_noise': 0.3,
+        'synthetic_noise': 0.0,  # Ignored when --adaptive-noise is enabled
         'fee': 0,
         'slippage': 0,
-        'description': 'Build robustness to price perturbations',
+        'description': 'Continue with adaptive difficulty (noise grows as needed)',
     },
     {
         'name': 'Phase C (Fees)',
         'epochs': 250,
-        'synthetic_noise': 0.3,
+        'synthetic_noise': 0.0,  # Ignored when --adaptive-noise is enabled
         'fee': 16,
         'slippage': 5,
-        'description': 'Learn to overcome transaction costs',
+        'description': 'Add transaction costs while adaptive noise continues',
     },
 ]
 
@@ -112,8 +126,8 @@ KITCHEN_SINK_V2_FLAGS = [
     '--bf16',
     '--synthetic-steps', '10000',
 
-    # PopArt + GAE
-    '--use-popart', '--popart-beta', '0.0001',
+    # PopArt + GAE (PopArt is default=True now)
+    '--popart-beta', '0.0001',
     '--use-gae', '--gae-lambda', '0.95',
 
     # MCTS
@@ -123,8 +137,14 @@ KITCHEN_SINK_V2_FLAGS = [
 
     # Prediction
     '--use-prediction-loss',
+    '--use-student-t',  # TASK_116: Fat-tailed output distribution
     '--prediction-loss-weight', '0.5',
     '--physics-warmup-steps', '10000',
+
+    # TASK_119: Optimal hindsight comparison
+    '--amax', 'greedy',
+    '--amax-regret-weight', '0.05',  # Safe hindsight feedback
+    '--amax-imprint-weight', '0.01',  # Soft policy guidance toward optimal patterns
 
     # Entropy control
     '--adaptive-entropy',
@@ -160,9 +180,32 @@ KITCHEN_SINK_V2_FLAGS = [
     '--atc-loss',
     '--atc-weight', '0.1',
 
+    # TASK_110: Cycle Balance (prevent H0 dominance)
+    '--cycle-balance',
+    '--cycle-balance-weight', '0.1',
+    '--cycle-atc',
+    '--cycle-atc-weight', '0.05',
+
+    # TASK_058: Adaptive difficulty with multi-modal noise
+    # Keeps model in "zone of proximal development" (reward 10-20)
+    '--adaptive-noise',
+    '--target-reward-low', '10',
+    '--target-reward-high', '20',
+    '--noise-adjustment-rate', '0.1',   # Faster adjustment
+    '--max-temporal-jitter', '10',      # Was 5, now 10 steps
+    '--max-time-dilation', '0.5',       # Was 0.3, now 50% stretch/compress
+    '--max-phase-shift', '0.8',         # Was 0.5, now 80% probability
+
     # DS24 monitoring
     '--ds24-level', '3',
     '--ds24-intermediates-every', '10',
+
+    # Accelerated progression: graduate when difficulty saturates
+    '--early-graduation', '20',  # Graduate after 20 epochs at max difficulty
+
+    # Physics regularization (prevent prediction loss domination)
+    '--physics-reg-weight', '0.5',
+    '--prediction-loss-weight', '0.1',
 ]
 
 # Graduation thresholds per level
@@ -198,10 +241,14 @@ class DojoV2:
         checkpoint_dir: str = 'jax_ckpt_fast',
         model_size: str = 'small',
         db_path: str = 'trading_data.db',
+        model_name: str = MODEL_NAME,
+        model_version: str = MODEL_VERSION,
     ):
         self.checkpoint_dir = checkpoint_dir
         self.model_size = model_size
         self.db_path = db_path
+        self.model_name = model_name
+        self.model_version = model_version
         self.benchmark_config = self._load_benchmark_config()
 
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -228,12 +275,27 @@ class DojoV2:
         logging.info("=" * 70)
         logging.info("DOJO V2 - FULL CURRICULUM TRAINING")
         logging.info("=" * 70)
+        logging.info(f"Model: {self.model_name} v{self.model_version}")
         logging.info(f"Levels: {start_level} -> {end_level}")
         logging.info(f"Phases per level: {len(PHASES)}")
         logging.info(f"Model size: {self.model_size}")
         logging.info("=" * 70)
 
-        checkpoint = None  # Start fresh
+        # Find checkpoint from previous level if resuming
+        checkpoint = None
+        if start_level > 0:
+            # Look for previous level's last phase checkpoint
+            prev_level = start_level - 1
+            prev_checkpoint = os.path.join(
+                self.checkpoint_dir,
+                f'{self.model_name}_v{self.model_version}_L{prev_level}_phase_C'
+            )
+            if os.path.exists(prev_checkpoint):
+                checkpoint = prev_checkpoint
+                logging.info(f"Resuming from: {checkpoint}")
+            else:
+                logging.warning(f"Previous checkpoint not found: {prev_checkpoint}")
+                logging.warning("Starting from scratch (no checkpoint)")
 
         for level_idx in range(start_level, end_level + 1):
             level_info = CURRICULUM[level_idx]
@@ -308,7 +370,7 @@ class DojoV2:
             Path to checkpoint after training, or None on failure
         """
         phase_char = chr(ord('A') + phase_idx)  # A, B, C
-        experiment_name = f'dojo_v2_L{level}_phase_{phase_char}'
+        experiment_name = f'{self.model_name}_v{self.model_version}_L{level}_phase_{phase_char}'
 
         # Build command
         cmd = [
@@ -396,6 +458,7 @@ class DojoV2:
             logging.info(f"    Benchmark: {period_name} ({start_date} to {end_date})")
 
             # Run evaluation (no training, no checkpoint save)
+            # IMPORTANT: Must include inference-critical flags that match training config
             cmd = [
                 'python', 'train_jax_fast.py',
                 '--db-path', self.db_path,
@@ -409,7 +472,18 @@ class DojoV2:
                 '--jax-env',
                 '--bf16',
                 '--model-size', self.model_size,
-                '--name', f'benchmark_L{level}_{period_name}',
+                '--name', f'{self.model_name}_benchmark_L{level}_{period_name}',
+                # Inference-critical flags (must match training, PopArt is default=True now)
+                '--popart-beta', '0.0001',
+                '--use-gae', '--gae-lambda', '0.95',
+                '--sims', '24',
+                # Prediction head - essential for full model evaluation
+                '--use-prediction-loss', '--use-student-t',
+                '--prediction-loss-weight', '0.5',
+                # Entropy settings for consistent behavior
+                '--adaptive-entropy',
+                '--entropy-coef', '0.2',
+                '--entropy-hold-threshold', '0.55',
             ]
 
             try:
@@ -538,7 +612,7 @@ class DojoV2:
 
     def _save_benchmark_results(self, level: int, results: Dict[str, Dict]):
         """Save comprehensive benchmark results to CSV."""
-        csv_path = f'logs/benchmarks/level_{level:02d}_benchmark.csv'
+        csv_path = f'logs/benchmarks/{self.model_name}_v{self.model_version}_L{level:02d}_benchmark.csv'
 
         # Define all columns
         columns = [
@@ -563,9 +637,11 @@ class DojoV2:
         logging.info(f"    Benchmark results saved to {csv_path}")
 
         # Also save a JSON with full details for analytics tool
-        json_path = f'logs/benchmarks/level_{level:02d}_benchmark.json'
+        json_path = f'logs/benchmarks/{self.model_name}_v{self.model_version}_L{level:02d}_benchmark.json'
         with open(json_path, 'w') as f:
             json.dump({
+                'model_name': self.model_name,
+                'model_version': self.model_version,
                 'level': level,
                 'timestamp': datetime.now().isoformat(),
                 'results': results,
@@ -580,7 +656,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Full curriculum from scratch
+  # Full curriculum from scratch (default model: poppy v1)
   python dojo_v2.py
 
   # Start from level 5
@@ -591,6 +667,9 @@ Examples:
 
   # Large model
   python dojo_v2.py --model-size large
+
+  # Custom model name
+  python dojo_v2.py --model-name lotus --model-version 1
 """
     )
 
@@ -601,6 +680,10 @@ Examples:
     parser.add_argument('--model-size', default='small',
                         choices=['small', 'medium', 'large'],
                         help='Model size (default: small)')
+    parser.add_argument('--model-name', default=MODEL_NAME,
+                        help=f'Model name for checkpoints (default: {MODEL_NAME})')
+    parser.add_argument('--model-version', default=MODEL_VERSION,
+                        help=f'Model version (default: {MODEL_VERSION})')
     parser.add_argument('--checkpoint-dir', default='jax_ckpt_fast',
                         help='Checkpoint directory (default: jax_ckpt_fast)')
     parser.add_argument('--db-path', default='trading_data.db',
@@ -621,6 +704,8 @@ Examples:
         checkpoint_dir=args.checkpoint_dir,
         model_size=args.model_size,
         db_path=args.db_path,
+        model_name=args.model_name,
+        model_version=args.model_version,
     )
 
     success = dojo.run_curriculum(

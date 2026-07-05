@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 from typing import Dict, Any, Tuple, Optional
+import numpy as np
 import pickle
 from pathlib import Path
 
@@ -298,10 +299,25 @@ def extract_fisher_from_optimizer(opt_state: Any) -> Any:
 # Checkpoint I/O
 # =============================================================================
 
-def load_checkpoint(path: str) -> Dict[str, Any]:
-    """Load checkpoint from pickle file."""
+def load_checkpoint(path: str, cpu: bool = False) -> Dict[str, Any]:
+    """Load checkpoint from pickle file.
+
+    Args:
+        path: Path to checkpoint pickle file.
+        cpu: If True, move params/opt_state to numpy arrays (avoids GPU allocation).
+             Use this when loading for merge comparison in the orchestrator.
+    """
     with open(path, 'rb') as f:
-        return pickle.load(f)
+        ckpt = pickle.load(f)
+    if cpu:
+        def _to_numpy(x):
+            if hasattr(x, 'shape'):
+                return np.asarray(x)
+            return x
+        for key in ('params', 'opt_state'):
+            if key in ckpt:
+                ckpt[key] = jax.tree.map(_to_numpy, ckpt[key])
+    return ckpt
 
 
 def save_checkpoint(checkpoint: Dict[str, Any], path: str):
