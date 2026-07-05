@@ -14,6 +14,13 @@ def parse_args() -> TrainingConfig:
                         help='Episode length variance (±N steps). Prevents end-of-episode exploits')
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--parallel-envs', type=int, default=4)
+    # TASK_821: RNG seed override, same semantics/precedent as train_phase2_cli.py's
+    # --seed (added 2026-05 for Foxglove multi-seed validation). Default None = current
+    # time-seeded behavior (bit-identical code path). When set: seeds Python `random`,
+    # numpy's global RNG, and derives the model-init + env-factory PRNGKeys from it.
+    parser.add_argument('--seed', type=int, default=None,
+                        help='RNG seed override for deterministic/multi-seed training runs. '
+                             'None (default) = time-seeded (current behavior).')
     
     # Environment settings
     parser.add_argument('--fee', type=int, default=0)

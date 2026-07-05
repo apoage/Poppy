@@ -77,6 +77,13 @@ class TrainingConfig:
     steps: int = 400
     batch_size: int = 256
     parallel_envs: int = 4
+
+    # TASK_821: RNG seed override for reproducible/multi-seed training runs.
+    # None (default) = EXACTLY current behavior (time-seeded model init + time-seeded
+    # historical-env RNG in mcts_trader/training/env_factory.py). When set, seeds
+    # Python `random`, numpy's global RNG, and derives the model-init PRNGKey +
+    # env-factory rng_key deterministically from it (see train_jax_fast.py::main).
+    seed: Optional[int] = None
     
     # Environment settings
     fee: int = 0

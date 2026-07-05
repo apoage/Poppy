@@ -2,6 +2,7 @@ import os
 import sys
 import warnings
 import time
+import random
 import logging
 import csv
 from tqdm import tqdm
@@ -111,6 +112,22 @@ def main():
     # 1. Parse configuration
     config = parse_args()
 
+    # TASK_821: --seed opt-in deterministic mode.
+    # `cli_seed` is None (default) unless --seed was passed, which is EXACTLY current
+    # behavior: model init and the historical-env RNG (env_factory.py) stay time-seeded,
+    # and every `+ _seed_offset` below is a no-op (_seed_offset == 0).
+    # When --seed IS given: seed Python `random` + numpy's global RNG (covers
+    # random.choices in the --weighted-synthetic path and the np.random.* global-state
+    # sampling in jax_agent/expert_buffer.py's demo replay), and derive the model-init
+    # PRNGKey + env-factory rng_key deterministically from cli_seed (see call sites below).
+    cli_seed = getattr(config, 'seed', None)
+    _seed_offset = cli_seed if cli_seed is not None else 0
+    if cli_seed is not None:
+        random.seed(cli_seed)
+        np.random.seed(cli_seed)
+        print(f"[Config] --seed {cli_seed}: deterministic mode "
+              f"(numpy/random seeded; model-init + env-factory RNG derived from seed)")
+
     # Apply dirichlet_aggressive override (increases exploration noise)
     if getattr(config, 'dirichlet_aggressive', False):
         config.noise = 0.5
@@ -155,7 +172,7 @@ def main():
     use_weighted = getattr(config, 'weighted_synthetic', False)
     if use_weighted:
         print("[Config] Weighted synthetic mode: pre-generating all 15 levels...")
-        import random
+        # (random is imported at module level — TASK_821 needs it seedable from main())
         from tqdm import tqdm as tqdm_init
         from concurrent.futures import ThreadPoolExecutor
         import threading
@@ -169,7 +186,8 @@ def main():
             # Create a copy of config for this thread
             cfg_copy.synthetic_level = level
             # TASK_124: Use epoch-based seed to prevent memorization
-            seed = epoch * 1000 + level
+            # TASK_821: + _seed_offset (0 unless --seed given) for multi-seed variation
+            seed = epoch * 1000 + level + _seed_offset
             states, prices, env_cfg = setup_jax_environment(cfg_copy, seed=seed)
             return level, (states, prices, env_cfg)
 
@@ -177,7 +195,8 @@ def main():
         for level in tqdm_init(range(15), desc="   Pre-generating levels", ncols=80):
             config.synthetic_level = level
             # TASK_124: Use level-based seed for initial pre-generation
-            states, prices, env_cfg = setup_jax_environment(config, seed=level * 1000)
+            # TASK_821: + _seed_offset (0 unless --seed given)
+            states, prices, env_cfg = setup_jax_environment(config, seed=level * 1000 + _seed_offset)
             pregenerated_levels[level] = (states, prices, env_cfg)
 
         # Pick initial level with weights
@@ -237,6 +256,10 @@ def main():
                 burn_random_limit=getattr(config, 'burn_random_limit', 10),
                 reward_attributable=getattr(config, 'reward_attributable', False),
                 bar_minutes=getattr(config, 'bar_minutes', 1),
+                # TASK_821: explicit rng_key when --seed given (deterministic episode-start
+                # sampling in jit_batch_reset). None (default) preserves the existing
+                # time-seeded fallback in env_factory.py::create_jax_env_historical.
+                rng_key=jax.random.PRNGKey(cli_seed) if cli_seed is not None else None,
             )
             n_assets = jax_env_config.n_assets
             use_jax_env = True
@@ -269,7 +292,8 @@ def main():
         if use_jax_env and config.synthetic_level is not None:
             print("   Initializing JAX-vectorized environment...")
             # TASK_124: Use seed=0 for initial epoch
-            jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=0)
+            # TASK_821: + _seed_offset (0 unless --seed given)
+            jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=0 + _seed_offset)
             n_assets = jax_env_config.n_assets
 
     if not use_jax_env:
@@ -314,7 +338,9 @@ def main():
 
             # Mix adversarial data into JAX prices if available
             if jax_prices is not None:
-                mix_rng = jax.random.PRNGKey(int(time.time()) % 2**31)
+                # TASK_821: derive from --seed when given; else unchanged time-seed.
+                mix_rng = (jax.random.PRNGKey(cli_seed) if cli_seed is not None
+                           else jax.random.PRNGKey(int(time.time()) % 2**31))
                 jax_prices = mix_adversarial_prices(
                     jax_prices, adversarial_prices,
                     config.adversarial_ratio, mix_rng
@@ -368,8 +394,16 @@ def main():
     # 6. Initialize parameters
     # TASK_124: Use time-based seed for model initialization to prevent
     # "lucky" random weights that accidentally exploit patterns
-    import time
-    model_seed = int(time.time() * 1000) % (2**31)
+    # TASK_821: --seed overrides this for deterministic multi-seed validation runs.
+    # `rng` below is the single master key threaded (via jax.random.split/fold_in)
+    # through the ENTIRE run: self-play, MCTS noise, ReDo, eval — so fixing model_seed
+    # here is sufficient to make everything downstream of it deterministic too.
+    # (time is imported at module level; a local `import time` here would shadow it
+    # for ALL of main() and crash later uses when the else branch is skipped)
+    if cli_seed is not None:
+        model_seed = cli_seed
+    else:
+        model_seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(model_seed)
     rng, init_rng = jax.random.split(rng)
     print(f"   Model seed: {model_seed}")
@@ -810,7 +844,8 @@ def main():
                         # Update config temporarily for setup_jax_environment
                         config.synthetic_noise = noise_cfg.price_noise
                         # TASK_124: Use epoch-based seed to prevent memorization
-                        jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000)
+                        # TASK_821: + _seed_offset (0 unless --seed given)
+                        jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000 + _seed_offset)
                         # TASK_135: Clear expert buffer (prices are stale after noise change)
                         if expert_buffer:
                             expert_buffer.clear()
@@ -834,7 +869,7 @@ def main():
                 if (epoch + 1) % regenerate_interval == 0:
                     # Weighted synthetic: pick random level and use pre-generated data (instant swap)
                     if use_weighted and pregenerated_levels:
-                        import random
+                        # (random is imported at module level — TASK_821 needs it seedable from main())
                         import copy
                         levels = list(WEIGHTED_SYNTHETIC_LEVELS.keys())
                         weights = list(WEIGHTED_SYNTHETIC_LEVELS.values())
@@ -849,7 +884,8 @@ def main():
                             cfg_copy = copy.copy(config)
                             cfg_copy.synthetic_level = old_level
                             # TASK_124: Use epoch-based seed to prevent memorization
-                            regen_seed = (epoch + 1) * 1000 + old_level
+                            # TASK_821: + _seed_offset (0 unless --seed given)
+                            regen_seed = (epoch + 1) * 1000 + old_level + _seed_offset
                             future = async_regenerator.submit(
                                 lambda lvl=old_level, cfg=cfg_copy, s=regen_seed: (lvl, setup_jax_environment(cfg, seed=s))
                             )
@@ -865,7 +901,8 @@ def main():
                         print(f"  [DATA] Regenerating synthetic data (epoch {epoch + 1})")
                         # Re-initialize JAX env with current adaptive noise
                         # TASK_124: Use epoch-based seed to prevent memorization
-                        jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000)
+                        # TASK_821: + _seed_offset (0 unless --seed given)
+                        jax_env_states, jax_prices, jax_env_config = setup_jax_environment(config, seed=epoch * 1000 + _seed_offset)
                         # TASK_122: Clear JIT cache to prevent stale price references
                         jax.clear_caches()
                         # TASK_135: Clear expert buffer (prices are stale after regeneration)
@@ -890,7 +927,8 @@ def main():
                     n_steps=config.steps,
                     epoch=epoch,
                     jitter_minutes=config.jitter_minutes,
-                    seed=epoch
+                    # TASK_821: + _seed_offset (0 unless --seed given)
+                    seed=epoch + _seed_offset
                 )
 
                 # Check for period switch
