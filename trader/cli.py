@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""TASK_820 CLI — `python -m trader {selftest|backtest|parity|update-data|paper-step|report}`."""
+
+import argparse
+import sys
+
+import numpy as np
+
+from . import config
+from . import backtest as bt
+from . import data as datamod
+from . import paper as papermod
+from . import selftest as selftestmod
+
+
+# =============================================================================
+# helpers
+# =============================================================================
+
+def _npz_frozen_logc():
+    """Load the cached 819 broad panel, apply the liquidity filter, return (logc, ts_d, syms)."""
+    close_d, ts_d, syms = datamod.load_npz_panel()
+    close_d, syms, dropped, keep = datamod.apply_liquidity_filter(close_d, syms)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logc = np.log(np.where(close_d > 0, close_d, np.nan))
+    return logc, ts_d, syms, dropped
+
+
+def _fmt(v, p=2, sign=True):
+    if v is None or not np.isfinite(v):
+        return "  -"
+    return f"{v:+.{p}f}" if sign else f"{v:.{p}f}"
+
+
+# =============================================================================
+# commands
+# =============================================================================
+
+def cmd_selftest(args):
+    msgs = selftestmod.self_tests()
+    for m in msgs:
+        print("  " + m)
+    print(f"\n[selftest] {len(msgs)}/6 checks PASS (numpy float64 determinism reference)")
+    return 0
+
+
+def cmd_parity(args):
+    """Gate 1a: reproduce the 819 Phase-2 best cell (broad/equal/single30 H=1d, overlay OFF)."""
+    config.set_backend("numpy")   # determinism reference
+    logc, ts_d, syms, dropped = _npz_frozen_logc()
+    print(f"[parity] npz panel: {logc.shape[0]} daily rows x {logc.shape[1]} assets "
+          f"(dropped by liquidity: {dropped or 'none'})")
+    cell = bt.compute_full_cell(logc, ts_d, config.STRATEGY)
+    f = cell["reg"]["FULL"]
+    b = cell["reg"]["BEAR22"]
+
+    def get(reg_key, key):
+        d = cell["reg"].get(reg_key)
+        return d.get(key) if d else None
+
+    print("\n  metric                    expected      got        tol      PASS")
+    print("  " + "-" * 62)
+    all_pass = True
+    for label, (reg, key), exp, tol in bt.PARITY_TARGETS:
+        got = get(reg, key)
+        ok = got is not None and np.isfinite(got) and abs(got - exp) <= tol
+        all_pass &= ok
+        print(f"  {label:24s}  {exp:+9.4f}   {got:+9.4f}   {tol:6.3f}   {'PASS' if ok else 'FAIL'}")
+    print("  " + "-" * 62)
+    print(f"  CI(net@8) [{f['ci8_lo']:+.2f},{f['ci8_hi']:+.2f}]  "
+          f"CI(net@21) [{f['ci21_lo']:+.2f},{f['ci21_hi']:+.2f}]  "
+          f"ann_turn {f['ann_turn']:.1f}x  years {f['years']:.2f}")
+    print(f"\n[parity] GATE 1a: {'PASS' if all_pass else 'FAIL'}")
+    return 0 if all_pass else 1
+
+
+def cmd_backtest(args):
+    config.set_backend(args.backend)
+    net_bps = args.net_bps
+    if args.source == "npz":
+        logc, ts_d, syms, dropped = _npz_frozen_logc()
+    else:
+        day_ts, close_d, ids = datamod.read_ohlcv_daily()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logc = np.log(np.where(close_d > 0, close_d, np.nan))
+        ts_d = day_ts
+    print(f"[backtest] source={args.source} backend={config.backend_name()} "
+          f"panel {logc.shape[0]}x{logc.shape[1]} overlay={'ON' if args.overlay else 'OFF'} "
+          f"net-bps={net_bps}")
+
+    if not args.overlay:
+        cell = bt.compute_full_cell(logc, ts_d, config.STRATEGY)
+        f = cell["reg"]["FULL"]
+        print(f"\n  FULL  net@{net_bps} Sharpe {_fmt(f.get(f'net{net_bps}'))}  "
+              f"gross {_fmt(f['gross'])}  B&H {_fmt(f['bh'])}  turnover/day {f['turn']:.4f}")
+        for c in config.STRATEGY.costs_bp:
+            print(f"    net@{c:<2d}: Sharpe {_fmt(f[f'net{c}'])}")
+        print(f"  equity x@{net_bps if net_bps in (8,21) else 8}bp "
+              f"{f.get('mult8' if net_bps<=8 else 'mult21', f['mult8']):.2f}  "
+              f"maxDD {f['maxdd8']*100:+.1f}%  ann_turn {f['ann_turn']:.1f}x")
+        print(f"  per-regime net@8: " + "  ".join(
+            f"{n}={_fmt(cell['reg'][n]['net8']) if cell['reg'].get(n) else ' -'}"
+            for n in config.REG_NAMES if n != "FULL"))
+    else:
+        rcfg = config.RiskConfig(enabled=True)
+        r = bt.run_overlay_backtest(logc, ts_d, config.STRATEGY, rcfg, equity_cost_bp=float(net_bps))
+        period = config.STRATEGY.H_rebal * config.K
+        g, tu, bh = r["gross"], r["turn"], r["bh"]
+        nh = bt.net_series(g, tu, net_bps)
+        sh = bt._sharpe(nh, period)
+        ci = bt._block_bootstrap_sharpe_ci(nh, period, period, config.STRATEGY.n_boot, config.STRATEGY.seed)
+        eq = np.exp(np.cumsum(nh))
+        peak = np.maximum.accumulate(eq)
+        maxdd = float(np.min(eq / peak - 1.0))
+        print(f"\n  FULL (overlay ON)  net@{net_bps} Sharpe {_fmt(sh)} CI[{ci[0]:+.2f},{ci[1]:+.2f}]  "
+              f"gross {_fmt(bt._sharpe(g, period))}  B&H {_fmt(bt._sharpe(bh, period))}")
+        for c in config.STRATEGY.costs_bp:
+            print(f"    net@{c:<2d}: Sharpe {_fmt(bt._sharpe(bt.net_series(g, tu, c), period))}")
+        print(f"  turnover/day {np.mean(tu):.4f}  equity x{eq[-1]:.2f}  maxDD {maxdd*100:+.1f}%")
+        print(f"  overlay activity: steps={r['n']} capped_steps={r['n_capped']} "
+              f"halt_steps={r['n_halt']} stale_steps={r['n_stale']}")
+    return 0
+
+
+def cmd_update_data(args):
+    if not args.asset_ids and not args.universe:
+        print("[update-data] refusing blind full run: pass --asset-ids 1091,359,... or --universe",
+              file=sys.stderr)
+        return 2
+    if args.universe:
+        univ = datamod.build_pit_universe(min_bars=args.min_bars)
+        ids = [a for a, s in univ]
+        print(f"[update-data] PIT universe: {len(ids)} USD-crypto assets")
+    else:
+        ids = [int(x) for x in args.asset_ids.split(",")]
+    start = bt._to_epoch(args.start) if args.start else None
+    end = bt._to_epoch(args.end) if args.end else None
+    written = datamod.update_data(args.db, ids, start, end, source="agg1m")
+    total = sum(written.values())
+    print(f"[update-data] wrote {total} daily bars across {len(ids)} assets -> ohlcv_daily "
+          f"(db={args.db})")
+    for aid, n in list(written.items())[:20]:
+        print(f"    asset {aid}: {n} days")
+    return 0
+
+
+def cmd_paper_step(args):
+    now_ts = int(args.now_ts) if args.now_ts else None
+    if args.dry_run and args.source == "npz" and now_ts is None:
+        # fake "today" = last cached day so the staleness guard does not fire
+        close_d, ts_d, syms = datamod.load_npz_panel()
+        now_ts = int(ts_d[-1])
+    kw = {}
+    if args.state_dir:
+        from pathlib import Path
+        d = Path(args.state_dir)
+        kw["state_path"] = d / "state.json"
+        kw["ledger_path"] = d / "ledger.csv"
+    res = papermod.paper_step(source=args.source, now_ts=now_ts, **kw)
+    return 0
+
+
+def cmd_report(args):
+    kw = {}
+    if args.state_dir:
+        from pathlib import Path
+        d = Path(args.state_dir)
+        kw["state_path"] = d / "state.json"
+        kw["ledger_path"] = d / "ledger.csv"
+    papermod.report(**kw)
+    return 0
+
+
+# =============================================================================
+# parser
+# =============================================================================
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="trader", description="TASK_820 trend CTA")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("selftest", help="run ST1-ST6 construction self-tests")
+
+    pb = sub.add_parser("backtest", help="frozen strategy backtest")
+    pb.add_argument("--net-bps", type=int, default=8, help="report/equity cost bp/side (default 8)")
+    pb.add_argument("--overlay", action="store_true", help="risk overlay ON (else 819 parity math)")
+    pb.add_argument("--backend", choices=["numpy", "jax"], default="numpy")
+    pb.add_argument("--source", choices=["npz", "db"], default="npz")
+
+    sub.add_parser("parity", help="gate 1a: reproduce the 819 Phase-2 best cell")
+
+    pu = sub.add_parser("update-data", help="aggregate 1-min -> ohlcv_daily (streaming)")
+    pu.add_argument("--asset-ids", type=str, default="", help="comma-separated asset ids")
+    pu.add_argument("--universe", action="store_true", help="use the discovered PIT USD-crypto universe")
+    pu.add_argument("--min-bars", type=int, default=0, help="universe coverage floor (1-min bars)")
+    pu.add_argument("--start", type=str, default=None, help="YYYY-MM-DD start (optional)")
+    pu.add_argument("--end", type=str, default=None, help="YYYY-MM-DD end exclusive (optional)")
+    pu.add_argument("--db", type=str, default=config.DB_PATH, help="sqlite db path")
+
+    pp = sub.add_parser("paper-step", help="one daily paper step (overlay ON)")
+    pp.add_argument("--source", choices=["npz", "db"], default="db")
+    pp.add_argument("--dry-run", action="store_true", help="fake today=last cached day (npz)")
+    pp.add_argument("--now-ts", type=str, default=None, help="override wallclock (epoch sec)")
+    pp.add_argument("--state-dir", type=str, default=None, help="state/ledger dir override")
+
+    pr = sub.add_parser("report", help="paper state + ledger tail")
+    pr.add_argument("--state-dir", type=str, default=None)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    return {
+        "selftest": cmd_selftest, "parity": cmd_parity, "backtest": cmd_backtest,
+        "update-data": cmd_update_data, "paper-step": cmd_paper_step, "report": cmd_report,
+    }[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
