@@ -42,7 +42,7 @@ from easy_config import EasyConfig, get_large_config, get_medium_config, get_sma
 from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE, get_value_support_np
 from mcts_trader.jax_agent.path_solver import greedy_lookahead_path
-from mcts_trader.jax_agent.mctx_search import create_mctx_search
+from mcts_trader.jax_agent.mctx_search import create_mctx_search, MuZeroMCTXSearch
 from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_temporal
 from mcts_trader.data.history import HistoricalMarket
 
@@ -1052,6 +1052,36 @@ def run_period_eval(
 # Full Benchmark
 # =============================================================================
 
+class _NoRewardMCTXSearch(MuZeroMCTXSearch):
+    """eval-only MCTS variant that ZEROES the reward term in the tree backup.
+
+    Diagnostic for the --q-no-reward flag. The 2026-07-05 audit
+    (project_stageb_reward_head_diseased) showed the Stage-B reward head is
+    action-blind: it was trained with pure CE on an action-invariant oracle
+    mark-to-market target, on the oracle argmax action only, so across-action
+    reward STD (5.3e-03) is 60x smaller than across-latent and 32x smaller than
+    the value head's action sensitivity on the SAME trunk. That makes
+    Q = reward + gamma*value ranking lean on prior+value with a near-constant
+    (state-only) reward bias. Overriding _reward_to_scalar to return zeros drops
+    the reward term entirely so the MCTS backup is value+policy-only
+    (Q = 0 + gamma*value bootstrap).
+
+    Default eval NEVER constructs this class (create_mctx_search is used), so the
+    canonical scorecard stays bit-identical. Only reachable via --q-no-reward.
+    """
+
+    def _reward_to_scalar(self, logits: jnp.ndarray) -> jnp.ndarray:
+        # Same output shape/dtype as the parent (reduction over the support axis),
+        # but a constant zero — the reward head is bypassed in the backup.
+        return jnp.zeros(logits.shape[:-1], dtype=logits.dtype)
+
+
+def create_mctx_search_q_no_reward(model, **kwargs):
+    """create_mctx_search twin whose MCTS backup ignores the (action-blind)
+    reward head (--q-no-reward). Same kwargs as create_mctx_search."""
+    return _NoRewardMCTXSearch(model_apply_fn=model.apply, **kwargs)
+
+
 def run_full_benchmark(
     checkpoint_path: str,
     db_path: str = "trading_data.db",
@@ -1061,6 +1091,7 @@ def run_full_benchmark(
     bella_episodes: int = 10,
     eval_mcts_sims: int = 0,
     eval_mcts_decode: str = 'joint',
+    eval_q_no_reward: bool = False,
     disable_limit_orders: Optional[bool] = None,
     token_gate_cfg: Optional['TokenGateConfig'] = None,
 ) -> List[PeriodResult]:
@@ -1206,7 +1237,15 @@ def run_full_benchmark(
         value_shift = float(popart_state['mean'])
         print(f"\nEval MCTS: sims={eval_mcts_sims}, decode={eval_mcts_decode}, "
               f"discount=0.95, value_scale={value_scale:.4f}, value_shift={value_shift:.4f}")
-        mcts_search = create_mctx_search(
+        # --q-no-reward: swap in the reward-zeroing factory. When the flag is OFF
+        # (default) this is exactly create_mctx_search — canon bit-identical.
+        _mk_search = (
+            create_mctx_search_q_no_reward if eval_q_no_reward else create_mctx_search
+        )
+        if eval_q_no_reward:
+            print("  --q-no-reward: MCTS backup rewards ZEROED "
+                  "(value+policy-only ranking; bypasses action-blind reward head)")
+        mcts_search = _mk_search(
             model,
             num_simulations=eval_mcts_sims,
             max_num_considered_actions=min(16, config.action_space_size),
@@ -1427,7 +1466,15 @@ def main():
                         help='If >0, replace argmax with MCTS using N sims (default: 0 = argmax)')
     parser.add_argument('--eval-mcts-decode', type=str, default='joint',
                         choices=['joint', 'per_asset'],
-                        help='How to decode MCTS output to per-asset actions (default: joint)')
+                        help='How to decode MCTS output to per-asset actions. '
+                             'joint (default): one action per step, other 63 assets '
+                             'forced HOLD (structural 1/64 trade cap). per_asset: '
+                             'argmax each asset\'s 5-action block of the MCTS improved '
+                             'policy (each asset gets its own trade/hold decision).')
+    parser.add_argument('--q-no-reward', action='store_true',
+                        help='Zero the reward term in the MCTS backup so Q ranking is '
+                             'value+policy-only (bypasses the action-blind Stage-B reward '
+                             'head). Default OFF = canon. Only affects --eval-mcts-sims>0.')
     # TASK_767: action-space restructure. Default (flag absent) = auto-detect
     # from checkpoint config. --disable-limit-orders / --no-disable-limit-orders
     # force the eval-MCTS mask on/off regardless of checkpoint metadata.
@@ -1493,6 +1540,7 @@ def main():
         bella_episodes=args.bella_episodes,
         eval_mcts_sims=args.eval_mcts_sims,
         eval_mcts_decode=args.eval_mcts_decode,
+        eval_q_no_reward=args.q_no_reward,
         disable_limit_orders=args.disable_limit_orders,
         token_gate_cfg=token_gate_cfg,
     )
