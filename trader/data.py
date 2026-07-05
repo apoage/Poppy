@@ -292,19 +292,26 @@ def read_ohlcv_daily(db_path=DB_PATH, asset_ids=None, start_ts=None, end_ts=None
 
 
 def load_db_backtest_panel(db_path=DB_PATH, start_ts=None, end_ts=None,
-                           source_filter="kraken_rest"):
+                           source_filter="kraken_rest", include_dead=False):
     """Backtest/gate-2 panel from `ohlcv_daily`.
 
     UNIVERSE = assets that `source_filter` covers (default 'kraken_rest' — assets present
-    only via 'agg1m', e.g. the aggregation smokes or REST-delisted pairs, are skipped
-    cleanly and counted), then filtered to USD-quoted non-stablecoin/fiat via `assets`.
+    only via 'agg1m', e.g. dead/REST-delisted pairs, are skipped cleanly and counted),
+    then filtered to USD-quoted non-stablecoin/fiat via `assets`.
+
+    include_dead=True (survivorship control for historical windows): ALSO include the
+    `source_filter`-uncovered assets — dead/delisted coins whose bars simply stop at their
+    last stored day. Their post-delisting tail is ffilled constant, so the present-mask
+    (trailing vol > floor) drops them ~vol_window days after the last real bar, exactly the
+    819 LUNA handling; they contribute point-in-time history and then leave the book.
+
     ROWS are read unfiltered: the store is canonical — the (asset_id,timestamp) PK holds
     exactly one bar per (asset, day) regardless of which source wrote it last, and the
     fetch contract cross-checks agg1m vs kraken_rest closes on overlap.
 
     Returns (day_ts, close (T,A), asset_ids, syms, info) where info counts what was
-    skipped. Columns with no rows in [start_ts, end_ts) are trimmed. PIT membership
-    (listing/delisting) is handled downstream by the present-mask."""
+    skipped/included. Columns with no rows in [start_ts, end_ts) are trimmed. PIT
+    membership (listing/delisting) is handled downstream by the present-mask."""
     if not ohlcv_daily_exists(db_path):
         raise RuntimeError(
             "ohlcv_daily table does not exist yet — run `python -m trader update-data "
@@ -314,11 +321,17 @@ def load_db_backtest_panel(db_path=DB_PATH, start_ts=None, end_ts=None,
     cur = con.cursor()
     all_ids = {r[0] for r in cur.execute("SELECT DISTINCT asset_id FROM ohlcv_daily")}
     if source_filter:
-        src_ids = [r[0] for r in cur.execute(
+        covered = [r[0] for r in cur.execute(
             "SELECT DISTINCT asset_id FROM ohlcv_daily WHERE source=?", (source_filter,))]
     else:
+        covered = sorted(all_ids)
+    n_uncovered = len(all_ids) - len(covered)
+    if include_dead:
         src_ids = sorted(all_ids)
-    n_skipped_source = len(all_ids) - len(src_ids)
+        n_skipped_source, n_dead_included = 0, n_uncovered
+    else:
+        src_ids = covered
+        n_skipped_source, n_dead_included = n_uncovered, 0
     sym_map = {i: s for (i, s) in cur.execute("SELECT id, symbol FROM assets")}
     con.close()
 
@@ -347,7 +360,8 @@ def load_db_backtest_panel(db_path=DB_PATH, start_ts=None, end_ts=None,
     keep_ids = [i for i, h in zip(keep_ids, has) if h]
     keep_syms = [s for s, h in zip(keep_syms, has) if h]
     info = {"n_skipped_source": n_skipped_source, "n_skipped_nonusd": n_skipped_nonusd,
-            "n_skipped_empty": n_skipped_empty, "source_filter": source_filter}
+            "n_skipped_empty": n_skipped_empty, "source_filter": source_filter,
+            "n_dead_included": n_dead_included, "include_dead": include_dead}
     return day_ts, close, keep_ids, keep_syms, info
 
 

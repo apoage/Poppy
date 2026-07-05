@@ -87,19 +87,27 @@ def cmd_backtest(args):
     if args.source == "npz":
         logc, ts_d, syms, dropped = _npz_frozen_logc()
         skip_note = ""
+        if args.include_dead:
+            print("[backtest] note: --include-dead only affects --source db (npz universe is fixed)")
     else:
         # panel loads warmup history BEFORE score-start so signals/masks are live at the
         # first scored decision; universe = kraken_rest-covered USD-crypto (agg1m-only
-        # assets skipped cleanly).
+        # assets skipped cleanly), or ALL stored assets incl. dead/delisted coins with
+        # --include-dead (survivorship control; present-mask retires their constant tails).
         load_start = (score_start - bt.warmup_days() * config.SEC_PER_DAY
                       if score_start is not None else None)
         ts_d, close_d, ids, syms, dinfo = datamod.load_db_backtest_panel(
-            start_ts=load_start, end_ts=score_end)
+            start_ts=load_start, end_ts=score_end, include_dead=args.include_dead)
         with np.errstate(divide="ignore", invalid="ignore"):
             logc = np.log(np.where(close_d > 0, close_d, np.nan))
-        skip_note = (f" skipped: {dinfo['n_skipped_source']} no-{dinfo['source_filter']}, "
-                     f"{dinfo['n_skipped_nonusd']} non-USD/stable, "
-                     f"{dinfo['n_skipped_empty']} empty-in-window")
+        if args.include_dead:
+            skip_note = (f" dead-included: {dinfo['n_dead_included']} no-{dinfo['source_filter']}; "
+                         f"skipped: {dinfo['n_skipped_nonusd']} non-USD/stable, "
+                         f"{dinfo['n_skipped_empty']} empty-in-window")
+        else:
+            skip_note = (f" skipped: {dinfo['n_skipped_source']} no-{dinfo['source_filter']}, "
+                         f"{dinfo['n_skipped_nonusd']} non-USD/stable, "
+                         f"{dinfo['n_skipped_empty']} empty-in-window")
 
     win_lo = args.score_start or "panel-start"
     win_hi = args.score_end or "latest"
@@ -234,6 +242,10 @@ def build_parser():
                     help="score decisions only from this UTC date (panel warms up before it)")
     pb.add_argument("--score-end", type=str, default=None, metavar="YYYY-MM-DD",
                     help="score decisions only before this UTC date (exclusive)")
+    pb.add_argument("--include-dead", action="store_true",
+                    help="db source: include dead/delisted assets (agg1m-only, no kraken_rest "
+                         "rows) for survivorship-honest historical windows; present-mask "
+                         "retires their constant post-delisting tails")
 
     sub.add_parser("parity", help="gate 1a: reproduce the 819 Phase-2 best cell")
 
