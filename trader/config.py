@@ -109,11 +109,22 @@ class StrategyConfig:
 class RiskConfig:
     """Execution-level risk overlay (the 'with risk management' fork of TASK_819).
     NOT signal shaping — it caps, throttles, bands, and staleness-guards the frozen
-    signal's positions. Defaults OFF so the backtest reproduces 819 exactly; paper ON."""
+    signal's positions. Defaults OFF so the backtest reproduces 819 exactly; paper ON.
+
+    DD throttle modes (coordinator directive 2026-07-05):
+      'shadow_scale' (default): throttle driven by a SHADOW equity curve — the uncapped
+        frozen strategy's own overlay-OFF net equity. shadow dd > dd_halve -> scale 1.0;
+        dd_halve >= dd > dd_flat -> 0.5; dd <= dd_flat -> dd_deep_scale (0.25, NOT flat).
+        The shadow book keeps trading, so it recovers and the throttle re-raises itself.
+      'realized_flat' (legacy): throttle driven by the throttled book's realized equity;
+        dd <= dd_flat -> FLAT + halt. Provably a dead state: once flat, realized equity
+        freezes, dd never recovers, the book never re-enters."""
     enabled: bool = False                  # OFF for backtest parity, ON for paper
     per_asset_cap: float = 0.05            # |pos_i| <= 5% of book
+    dd_mode: str = "shadow_scale"          # 'shadow_scale' (default) | 'realized_flat'
     dd_halve: float = -0.20                # drawdown from HWM at which gross -> half
-    dd_flat: float = -0.35                 # drawdown at which flat + halt flag
+    dd_flat: float = -0.35                 # deep-dd: scale->dd_deep_scale (shadow) / flat+halt (legacy)
+    dd_deep_scale: float = 0.25            # shadow_scale gross scale below dd_flat (never 0)
     rebalance_band: float = 0.002          # skip |Delta pos_i| < 0.2% of book
     staleness_days: int = 2                # newest bar older than this -> no new positions
 

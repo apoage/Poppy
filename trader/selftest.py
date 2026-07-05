@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""TASK_820 self-tests — ST1-ST6, ported verbatim from runs/819_single_asset/portfolio.self_tests
-(construction validated before trusting any result). Forced onto the numpy backend: these are the
-determinism reference, and the planted-panel magnitudes match the 819 RESULT.md values.
+"""TASK_820 self-tests — ST1-ST6 ported verbatim from runs/819_single_asset/portfolio.self_tests
+(construction validated before trusting any result), plus ST7 for the risk overlay. Forced onto
+the numpy backend: these are the determinism reference, and the planted-panel magnitudes match
+the 819 RESULT.md values.
 
   ST1 annualization identity (_sharpe == mean/std*sqrt(525600/period))
   ST2 planted trend: downtrend book shorts the crash (gross+, long-only B&H dies)
@@ -9,6 +10,7 @@ determinism reference, and the planted-panel magnitudes match the 819 RESULT.md 
   ST4 inverse-vol risk parity: quiet asset overweighted, equal risk contribution
   ST5 sub-cost wiggle: random walk -> gross~0, net@21 mean<0, cost-monotone
   ST6 leak-free: wrecking close>t leaves positions<=t byte-identical
+  ST7 shadow-DD throttle: V-shaped dd recovers -> scale re-raises; legacy mode dead-states
 """
 
 import numpy as np
@@ -123,4 +125,47 @@ def self_tests():
     lab2 = logc2[t0 + 1] - logc2[t0]
     assert not np.allclose(lab1, lab2), "label must use the future (sanity)"
     msgs.append("[ST6] leak-free: wrecking close>t leaves positions<=t byte-identical; the forward label moves OK")
+
+    # 7. SHADOW-DD THROTTLE (dead-state fix, coordinator directive 2026-07-05): a planted
+    #    V-shaped underlying drawdown-then-recovery. shadow_scale mode must throttle DOWN
+    #    (1.0 -> 0.5 -> 0.25, never flat) and RE-RAISE to 1.0 after the shadow curve
+    #    recovers; the legacy realized_flat mode provably reaches the dead state (flat at
+    #    dd <= -35%, realized equity freezes, NEVER re-enters). Assert the difference.
+    from . import risk as riskmod
+    from .config import RiskConfig
+    raw_net = np.concatenate([np.full(40, -0.02), np.full(80, +0.02)])  # V: -55% dd, full recovery
+    target = np.array([0.05])
+    # (a) shadow_scale: drive with the shadow (underlying overlay-OFF) curve
+    rc_sh = RiskConfig(enabled=True, dd_mode="shadow_scale")
+    sh_eq = sh_hwm = 1.0
+    prev = np.zeros(1)
+    scales = []
+    for r in raw_net:
+        sh_eq *= float(np.exp(r))
+        sh_hwm = max(sh_hwm, sh_eq)
+        prev, info = riskmod.apply_overlay(target, prev, sh_eq, sh_hwm, 0, 0, rc_sh)
+        scales.append(info["dd_scale"])
+    assert min(scales) == rc_sh.dd_deep_scale, f"deep throttle must reach {rc_sh.dd_deep_scale}, got {min(scales)}"
+    assert 0.5 in scales, "throttle must pass through the 0.5 level"
+    assert 0.0 not in scales, "shadow_scale must NEVER go fully flat"
+    assert scales[-1] == 1.0, f"scale must re-raise to 1.0 after recovery, got {scales[-1]}"
+    assert abs(prev[0] - target[0]) < 1e-12, "positions must be fully restored after recovery"
+    # (b) realized_flat (legacy): the throttled book's own equity drives it -> dead state
+    rc_rf = RiskConfig(enabled=True, dd_mode="realized_flat")
+    eq = hwm = 1.0
+    prev2 = np.zeros(1)
+    scales2 = []
+    for r in raw_net:
+        held_frac = prev2[0] / target[0]              # realized book participates at held fraction
+        eq *= float(np.exp(r * held_frac))
+        hwm = max(hwm, eq)
+        prev2, info2 = riskmod.apply_overlay(target, prev2, eq, hwm, 0, 0, rc_rf)
+        scales2.append(info2["dd_scale"])
+    assert 0.0 in scales2, "realized_flat must go flat in the planted crash"
+    assert scales2[-1] == 0.0 and prev2[0] == 0.0, \
+        "realized_flat dead state: must STAY flat through the recovery (equity frozen)"
+    assert scales[-1] != scales2[-1], "modes must differ after recovery (the fix)"
+    msgs.append(f"[ST7] shadow-DD throttle: V-shaped dd -55%->recovery; shadow_scale walks "
+                f"1.0->0.5->{rc_sh.dd_deep_scale} and RE-RAISES to {scales[-1]:.1f} (pos restored); "
+                f"legacy realized_flat dead-states at scale {scales2[-1]:.1f} — difference asserted")
     return msgs

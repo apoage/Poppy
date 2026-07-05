@@ -4,8 +4,15 @@ signal shaping: it caps, throttles, bands, and staleness-guards the frozen signa
 
 Overlay (spec §Risk overlay):
   1. Per-asset position cap: |pos_i| <= per_asset_cap of book.
-  2. Drawdown throttle vs equity high-water-mark: dd <= -20% -> halve gross; dd <= -35% ->
-     flat + halt flag.
+  2. Drawdown throttle vs a high-water-mark. TWO MODES (RiskConfig.dd_mode):
+     - 'shadow_scale' (default): the drawdown that drives the throttle is the SHADOW
+       equity curve — the uncapped frozen strategy's own overlay-OFF net equity, which the
+       caller tracks and passes as (equity, hwm). Levels: dd > dd_halve -> 1.0;
+       dd_halve >= dd > dd_flat -> 0.5; dd <= dd_flat -> dd_deep_scale (0.25, never flat).
+       The shadow book keeps trading, recovers, and the throttle re-raises automatically.
+     - 'realized_flat' (legacy): (equity, hwm) = the throttled book's realized curve;
+       dd <= dd_flat -> flat + halt flag. Dead-state hazard: once flat, realized equity
+       freezes so dd never recovers and the book never re-enters (kept for comparison).
   3. Rebalance band: skip trades with |Delta pos_i| < rebalance_band of book (hold prev).
   4. Staleness guard: newest daily bar older than staleness_days -> no NEW positions (hold
      current book), log alert.
@@ -26,13 +33,27 @@ def apply_position_cap(pos, cap):
 
 def dd_scale(equity, hwm, rcfg=RISK):
     """Overlay 2: drawdown throttle. dd = equity/hwm - 1 (<= 0). Returns (scale, halt, dd).
+
+    dd_mode='shadow_scale' (default; equity/hwm = the SHADOW overlay-OFF curve):
+      dd <= dd_flat  -> scale dd_deep_scale (0.25), halt False   (never flat -> no dead state)
+      dd <= dd_halve -> scale 0.5, halt False
+      else           -> scale 1.0, halt False
+    dd_mode='realized_flat' (legacy; equity/hwm = the throttled book's realized curve):
       dd <= dd_flat  -> scale 0.0, halt True
       dd <= dd_halve -> scale 0.5, halt False
       else           -> scale 1.0, halt False"""
     hwm = max(hwm, 1e-12)
     dd = equity / hwm - 1.0
+    if rcfg.dd_mode == "realized_flat":
+        if dd <= rcfg.dd_flat:
+            return 0.0, True, dd
+        if dd <= rcfg.dd_halve:
+            return 0.5, False, dd
+        return 1.0, False, dd
+    if rcfg.dd_mode != "shadow_scale":
+        raise ValueError(f"unknown dd_mode {rcfg.dd_mode!r}")
     if dd <= rcfg.dd_flat:
-        return 0.0, True, dd
+        return rcfg.dd_deep_scale, False, dd
     if dd <= rcfg.dd_halve:
         return 0.5, False, dd
     return 1.0, False, dd
@@ -57,6 +78,10 @@ def is_stale(latest_ts, now_ts, rcfg=RISK):
 
 def apply_overlay(raw_target, prev_pos, equity, hwm, latest_ts, now_ts, rcfg=RISK):
     """Apply overlays 1-4 to a single decision's target position vector.
+
+    (equity, hwm) is the curve DRIVING the DD throttle: in dd_mode='shadow_scale' the caller
+    passes the SHADOW (uncapped overlay-OFF) equity/HWM; in 'realized_flat' the throttled
+    book's realized equity/HWM (legacy).
 
     Returns (final_pos, info). If the overlay is disabled, returns raw_target unchanged with
     info['enabled']=False (backtest parity path). Ordering: staleness guard first (data problem

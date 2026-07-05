@@ -14,11 +14,15 @@ Idempotent per calendar day: re-running a day whose bar was already processed is
 
 Panel source: 'db' (read ohlcv_daily) for production; 'npz' (cached 819 panel) for dry-runs.
 Equity compounds in log space (equity *= exp(pnl_net)) to match the 819/backtest convention.
+
+DD throttle: dd_mode='shadow_scale' (default) — the state also tracks a SHADOW book (the
+uncapped overlay-OFF frozen strategy, net of the same cost); the shadow drawdown drives the
+throttle scale (1.0 / 0.5 / 0.25), so after the underlying strategy recovers the paper book
+automatically re-scales up (no realized-equity dead state).
 """
 
 import csv
 import json
-import sqlite3
 import time
 
 import numpy as np
@@ -41,7 +45,10 @@ PAPER_RISK = RiskConfig(enabled=True)
 
 def _default_state():
     return {"last_ts": None, "positions": {}, "equity": 1.0, "hwm": 1.0,
-            "halted": False, "n_steps": 0}
+            "halted": False, "n_steps": 0,
+            # shadow book: the uncapped overlay-OFF frozen strategy, net of the same cost —
+            # its dd drives the throttle in dd_mode='shadow_scale' (no dead state).
+            "shadow_positions": {}, "shadow_equity": 1.0, "shadow_hwm": 1.0}
 
 
 def load_state(state_path=PAPER_STATE):
@@ -80,22 +87,14 @@ def _append_ledger(rows, ledger_path=PAPER_LEDGER):
 # panel loading
 # =============================================================================
 
-def _symbols_for_ids(db_path, ids):
-    con = sqlite3.connect(db_path)
-    m = {i: s for (i, s) in con.execute("SELECT id, symbol FROM assets")}
-    con.close()
-    return [m.get(i, f"id{i}") for i in ids]
-
-
 def _load_panel(source, db_path, npz_path, history_days):
-    """Return (close_d (T,A), ts_d (T,), syms). db -> ohlcv_daily; npz -> cached 819 panel."""
+    """Return (close_d (T,A), ts_d (T,), syms). db -> ohlcv_daily (kraken_rest-covered
+    USD-crypto universe, base symbols); npz -> cached 819 panel (base symbols match)."""
     if source == "npz":
         close_d, ts_d, syms = datamod.load_npz_panel(npz_path)
         close_d, syms, _dropped, _keep = datamod.apply_liquidity_filter(close_d, syms)
     elif source == "db":
-        day_ts, close_d, ids = datamod.read_ohlcv_daily(db_path)
-        syms = _symbols_for_ids(db_path, ids)
-        ts_d = day_ts
+        ts_d, close_d, _ids, syms, _info = datamod.load_db_backtest_panel(db_path)
     else:
         raise ValueError(f"unknown source {source!r}")
     if history_days and close_d.shape[0] > history_days:
@@ -140,14 +139,30 @@ def paper_step(source="db", now_ts=None, db_path=DB_PATH, npz_path=NPZ_CACHE,
     ret = np.where(np.isfinite(ret), ret, 0.0)
     pnl_gross_vec = prev_pos * ret
 
-    # risk overlay -> today's new target
+    cost_rate = pcfg.cost_bp_per_side / 1e4
+
+    # SHADOW book update FIRST (leak-free: uses today's realized return, known at today's
+    # close, which is exactly when this decision executes). The shadow book holds the raw
+    # uncapped overlay-OFF positions net of the same cost; its dd drives the throttle in
+    # dd_mode='shadow_scale' and keeps recovering because it never stops trading.
+    shadow_prev = np.asarray([state.get("shadow_positions", {}).get(s, 0.0) for s in syms],
+                             dtype=np.float64)
+    s_dpos = np.abs(raw_target - shadow_prev)
+    s_pnl = float(np.sum(shadow_prev * ret)) - float(np.sum(s_dpos)) * cost_rate
+    shadow_eq = float(state.get("shadow_equity", 1.0)) * float(np.exp(s_pnl))
+    shadow_hwm = max(float(state.get("shadow_hwm", 1.0)), shadow_eq)
+
+    # risk overlay -> today's new target (throttle driven per dd_mode)
     equity0, hwm0 = float(state["equity"]), float(state["hwm"])
-    new_pos, info = riskmod.apply_overlay(raw_target, prev_pos, equity0, hwm0,
+    if rcfg.dd_mode == "shadow_scale":
+        drive_eq, drive_hwm = shadow_eq, shadow_hwm
+    else:
+        drive_eq, drive_hwm = equity0, hwm0
+    new_pos, info = riskmod.apply_overlay(raw_target, prev_pos, drive_eq, drive_hwm,
                                           latest_ts=today_ts, now_ts=now_ts, rcfg=rcfg)
 
     # costs at 21 bp/side on |Delta pos|
     dpos = np.abs(new_pos - prev_pos)
-    cost_rate = pcfg.cost_bp_per_side / 1e4
     cost_vec = dpos * cost_rate
     pnl_vec = pnl_gross_vec - cost_vec
     pnl_net = float(np.sum(pnl_vec))
@@ -173,21 +188,28 @@ def paper_step(source="db", now_ts=None, db_path=DB_PATH, npz_path=NPZ_CACHE,
     state["equity"] = equity1
     state["hwm"] = hwm1
     state["halted"] = bool(info["halt"])
+    state["shadow_positions"] = {s: float(raw_target[i]) for i, s in enumerate(syms)
+                                 if abs(raw_target[i]) > 1e-12}
+    state["shadow_equity"] = shadow_eq
+    state["shadow_hwm"] = shadow_hwm
     state["n_steps"] = int(state.get("n_steps", 0)) + 1
     save_state(state, state_path)
 
+    shadow_dd = shadow_eq / max(shadow_hwm, 1e-12) - 1.0
     result = {"status": "stepped", "date": date, "last_ts": today_ts,
               "n_assets": int(np.sum(np.abs(new_pos) > 1e-12)), "gross": float(np.sum(np.abs(new_pos))),
               "turnover": turnover, "pnl_net": pnl_net, "cost": float(np.sum(cost_vec)),
               "equity": equity1, "hwm": hwm1, "drawdown": equity1 / hwm1 - 1.0,
+              "shadow_equity": shadow_eq, "shadow_dd": shadow_dd,
               "halted": bool(info["halt"]), "stale": bool(info["stale"]),
-              "dd_scale": info["dd_scale"], "n_ledger_rows": len(rows)}
+              "dd_scale": info["dd_scale"], "dd_mode": rcfg.dd_mode, "n_ledger_rows": len(rows)}
     if verbose:
         alert = " STALE-ALERT" if info["stale"] else ""
         halt = " HALTED" if info["halt"] else ""
         print(f"[paper] {date}: stepped n_assets={result['n_assets']} gross={result['gross']:.3f} "
               f"turnover={turnover:.4f} pnl_net={pnl_net:+.5f} equity={equity1:.4f} "
-              f"dd={result['drawdown']*100:+.1f}%{alert}{halt}")
+              f"dd={result['drawdown']*100:+.1f}% shadow_dd={shadow_dd*100:+.1f}% "
+              f"scale={info['dd_scale']:.2f}{alert}{halt}")
     return result
 
 
@@ -204,6 +226,10 @@ def report(state_path=PAPER_STATE, ledger_path=PAPER_LEDGER, tail=10):
           f"equity={state.get('equity',1.0):.4f}  hwm={state.get('hwm',1.0):.4f}  "
           f"drawdown={ (state.get('equity',1.0)/max(state.get('hwm',1.0),1e-12)-1.0)*100:+.2f}%  "
           f"halted={state.get('halted',False)}")
+    print(f"  shadow: equity={state.get('shadow_equity',1.0):.4f}  "
+          f"hwm={state.get('shadow_hwm',1.0):.4f}  "
+          f"dd={(state.get('shadow_equity',1.0)/max(state.get('shadow_hwm',1.0),1e-12)-1.0)*100:+.2f}%"
+          f"  (drives the throttle in shadow_scale mode)")
     npos = len(state.get("positions", {}))
     print(f"  open positions: {npos}")
     p = str(ledger_path)

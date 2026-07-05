@@ -24,6 +24,19 @@ import numpy as np
 
 from .config import DB_PATH, NPZ_CACHE, SEC_PER_DAY, STABLE_FIAT
 
+# The daily fetcher (tools/fetch_daily_kraken.py) may hold write transactions on the DB while
+# we read; give every connection a generous busy timeout instead of failing on a brief lock.
+SQLITE_TIMEOUT_S = 60
+
+
+def _connect(db_path, read_only=False):
+    """sqlite connection with busy-timeout resilience (fetcher may be mid-insert)."""
+    if read_only:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=SQLITE_TIMEOUT_S)
+    else:
+        con = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_S)
+    return con
+
 
 # =============================================================================
 # (a) cached npz panel — gate 1a
@@ -161,7 +174,7 @@ def build_daily_panel_from_db(db_path=DB_PATH, asset_ids=None, start_ts=None, en
     and ffill/bfill'd per the 819 convention. Only the daily arrays live in RAM."""
     if asset_ids is None:
         raise ValueError("asset_ids required (use build_pit_universe to discover)")
-    con = sqlite3.connect(db_path)
+    con = _connect(db_path)
     per_asset = []
     gmin, gmax = None, None
     for aid in asset_ids:
@@ -211,7 +224,7 @@ CREATE TABLE IF NOT EXISTS ohlcv_daily (
 
 
 def ohlcv_daily_exists(db_path=DB_PATH):
-    con = sqlite3.connect(db_path)
+    con = _connect(db_path)
     try:
         r = con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv_daily'"
@@ -235,7 +248,7 @@ def read_ohlcv_daily(db_path=DB_PATH, asset_ids=None, start_ts=None, end_ts=None
             "ohlcv_daily table does not exist yet — run `python -m trader update-data "
             "--asset-ids ...` or wait for tools/fetch_daily_kraken.py to populate it."
         )
-    con = sqlite3.connect(db_path)
+    con = _connect(db_path)
     cur = con.cursor()
     if asset_ids is None:
         asset_ids = [r[0] for r in cur.execute(
@@ -278,13 +291,73 @@ def read_ohlcv_daily(db_path=DB_PATH, asset_ids=None, start_ts=None, end_ts=None
     return day_ts, close, list(asset_ids)
 
 
+def load_db_backtest_panel(db_path=DB_PATH, start_ts=None, end_ts=None,
+                           source_filter="kraken_rest"):
+    """Backtest/gate-2 panel from `ohlcv_daily`.
+
+    UNIVERSE = assets that `source_filter` covers (default 'kraken_rest' — assets present
+    only via 'agg1m', e.g. the aggregation smokes or REST-delisted pairs, are skipped
+    cleanly and counted), then filtered to USD-quoted non-stablecoin/fiat via `assets`.
+    ROWS are read unfiltered: the store is canonical — the (asset_id,timestamp) PK holds
+    exactly one bar per (asset, day) regardless of which source wrote it last, and the
+    fetch contract cross-checks agg1m vs kraken_rest closes on overlap.
+
+    Returns (day_ts, close (T,A), asset_ids, syms, info) where info counts what was
+    skipped. Columns with no rows in [start_ts, end_ts) are trimmed. PIT membership
+    (listing/delisting) is handled downstream by the present-mask."""
+    if not ohlcv_daily_exists(db_path):
+        raise RuntimeError(
+            "ohlcv_daily table does not exist yet — run `python -m trader update-data "
+            "--asset-ids ...` or wait for tools/fetch_daily_kraken.py to populate it."
+        )
+    con = _connect(db_path, read_only=True)
+    cur = con.cursor()
+    all_ids = {r[0] for r in cur.execute("SELECT DISTINCT asset_id FROM ohlcv_daily")}
+    if source_filter:
+        src_ids = [r[0] for r in cur.execute(
+            "SELECT DISTINCT asset_id FROM ohlcv_daily WHERE source=?", (source_filter,))]
+    else:
+        src_ids = sorted(all_ids)
+    n_skipped_source = len(all_ids) - len(src_ids)
+    sym_map = {i: s for (i, s) in cur.execute("SELECT id, symbol FROM assets")}
+    con.close()
+
+    keep_ids, keep_syms = [], []
+    n_skipped_nonusd = 0
+    for aid in sorted(src_ids):
+        sym = sym_map.get(aid, "")
+        if not sym or "/" not in sym:
+            n_skipped_nonusd += 1
+            continue
+        base, quote = sym.split("/", 1)
+        if quote.upper() != "USD" or base.upper() in STABLE_FIAT:
+            n_skipped_nonusd += 1
+            continue
+        keep_ids.append(aid)
+        keep_syms.append(base)
+
+    day_ts, close, _ids = read_ohlcv_daily(db_path, keep_ids, start_ts, end_ts)
+    # trim assets with zero rows in the window (all-NaN columns after fill)
+    if close.size:
+        has = np.isfinite(close).any(axis=0)
+    else:
+        has = np.zeros(len(keep_ids), dtype=bool)
+    n_skipped_empty = int((~has).sum())
+    close = np.ascontiguousarray(close[:, has])
+    keep_ids = [i for i, h in zip(keep_ids, has) if h]
+    keep_syms = [s for s, h in zip(keep_syms, has) if h]
+    info = {"n_skipped_source": n_skipped_source, "n_skipped_nonusd": n_skipped_nonusd,
+            "n_skipped_empty": n_skipped_empty, "source_filter": source_filter}
+    return day_ts, close, keep_ids, keep_syms, info
+
+
 def update_data(db_path=DB_PATH, asset_ids=None, start_ts=None, end_ts=None, source="agg1m"):
     """Aggregate 1-min -> UTC-midnight daily bars and write them to `ohlcv_daily` (streaming;
     INSERT OR REPLACE, idempotent). Returns {asset_id: n_days_written}. Requires an explicit
     asset_ids list (never a blind full-DB run)."""
     if not asset_ids:
         raise ValueError("update_data requires an explicit asset_ids list (no blind full run)")
-    con = sqlite3.connect(db_path)
+    con = _connect(db_path)
     create_ohlcv_daily(con)
     written = {}
     # separate read/write connections would be cleaner, but INSERT after fully consuming each
@@ -316,7 +389,7 @@ def build_pit_universe(db_path=DB_PATH, min_bars=0):
     Returns [(asset_id, symbol)] sorted by asset_id. If min_bars>0, keep only assets with at
     least that many 1-min bars (a coverage floor). PIT membership (listing/delisting) is handled
     downstream by the present-mask, not here."""
-    con = sqlite3.connect(db_path)
+    con = _connect(db_path)
     cur = con.cursor()
     out = []
     for aid, sym in cur.execute("SELECT id, symbol FROM assets"):

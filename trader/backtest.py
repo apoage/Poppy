@@ -310,12 +310,79 @@ def compute_full_cell(logc, ts_sub, scfg=None, xp=None):
     return cell_metrics(logc, pos, pres, ts_sub, scfg.H_rebal, warm, scfg=scfg)
 
 
-def run_overlay_backtest(logc, ts_sub, scfg=None, rcfg=None, equity_cost_bp=21.0):
-    """Sequential backtest WITH the risk overlay ON (overlays 1-4 are stateful — DD throttle
-    tracks running equity/HWM, rebalance band holds the prior applied position). Replays each
-    historical bar as if fresh (now_ts == bar_ts, so the staleness guard never fires in-sample).
-    Returns the applied per-decision (gross, turn, bh) FULL series + overlay activity counters.
-    NOT a parity path — the overlay deliberately perturbs the 819 positions."""
+# Panel warmup for score-windowed runs: signal/mask need max(lookback, vol_window) active bars
+# before the first scored decision, plus slack for listing quirks / short leading gaps.
+WARMUP_BUFFER_DAYS = 30
+
+
+def warmup_days(scfg=None):
+    """Daily bars of pre-history a score-windowed panel must load before score-start."""
+    if scfg is None:
+        scfg = config.STRATEGY
+    return max(max(scfg.lookbacks), scfg.vol_window) + WARMUP_BUFFER_DAYS
+
+
+def window_metrics(logc, ts_sub, start_ts=None, end_ts=None, scfg=None, xp=None):
+    """Gate-2 style scorer: frozen-strategy positions built on the WHOLE loaded panel (which
+    must include >= warmup_days of pre-history), but metrics/equity/turnover computed ONLY on
+    decisions with ts in [start_ts, end_ts). Same accounting as cell_metrics' FULL branch
+    (net-of-cost Sharpe per cost, bootstrap CI + equity + maxDD at gate costs, ann turnover).
+    Returns the metrics dict (plus n = decision count) or None if the window is too thin.
+
+    The parity path (compute_full_cell -> cell_metrics) is deliberately NOT routed through
+    this function — gate 1a stays byte-identical to the 819 research code."""
+    if scfg is None:
+        scfg = config.STRATEGY
+    pos, pres, w, warm = strategy.positions_from_config(logc, scfg, xp=xp)
+    logc = config.to_numpy(logc)
+    pos = config.to_numpy(pos)
+    pres = np.asarray(pres)
+    ts_sub = np.asarray(ts_sub)
+    T = ts_sub.size
+    r_lo = int(np.searchsorted(ts_sub, start_ts)) if start_ts is not None else 0
+    r_hi = int(np.searchsorted(ts_sub, end_ts)) if end_ts is not None else T
+    H = scfg.H_rebal
+    res = regime_series(logc, pos, pres, r_lo, r_hi, H, warm, xp=np)
+    if res is None:
+        return None
+    gross, turn, bh = res
+    period = H * K
+    d = {"n": int(gross.size), "turn": float(np.mean(turn)),
+         "gross": _sharpe(gross, period), "bh": _sharpe(bh, period)}
+    for c in scfg.costs_bp:
+        d[f"net{c}"] = _sharpe(net_series(gross, turn, c), period)
+    for c in scfg.gate_costs:
+        nh = net_series(gross, turn, c)
+        ci = _block_bootstrap_sharpe_ci(nh, period, period, scfg.n_boot, scfg.seed)
+        eq = np.exp(np.cumsum(nh))
+        peak = np.maximum.accumulate(eq)
+        d[f"ci{c}_lo"], d[f"ci{c}_hi"] = float(ci[0]), float(ci[1])
+        d[f"cum{c}"] = float(np.sum(nh))
+        d[f"mult{c}"] = float(eq[-1])
+        d[f"maxdd{c}"] = float(np.min(eq / peak - 1.0))
+    d["cum_bh"] = float(np.sum(bh))
+    d["mult_bh"] = float(np.exp(np.sum(bh)))
+    years = (d["n"] * H * K) / MINUTES_PER_YEAR
+    d["years"] = float(years)
+    d["ann_turn"] = float(np.sum(turn) / years) if years > 0 else float("nan")
+    return d
+
+
+def run_overlay_backtest(logc, ts_sub, scfg=None, rcfg=None, equity_cost_bp=21.0,
+                         lo_ts=None, hi_ts=None):
+    """Sequential backtest WITH the risk overlay ON (overlays 1-4 are stateful — the DD
+    throttle tracks a running curve, the rebalance band holds the prior applied position).
+    Replays each historical bar as if fresh (now_ts == bar_ts, so the staleness guard never
+    fires in-sample).
+
+    dd_mode='shadow_scale' (default): a SHADOW book — the uncapped overlay-OFF frozen
+    strategy, net of the same cost — runs alongside; its equity/HWM drive the throttle.
+    At decision t the shadow curve includes returns realized THROUGH t only (leak-free).
+    dd_mode='realized_flat' (legacy): the throttled book's own realized curve drives it.
+
+    Window: scores the FULL regime by default; [lo_ts, hi_ts) epoch bounds override it
+    (gate-2 style). Returns per-decision (gross, turn, bh) + overlay activity counters +
+    the shadow equity multiple. NOT a parity path."""
     if scfg is None:
         scfg = config.STRATEGY
     if rcfg is None:
@@ -328,18 +395,29 @@ def run_overlay_backtest(logc, ts_sub, scfg=None, rcfg=None, equity_cost_bp=21.0
     A = logc.shape[1]
     H = scfg.H_rebal
     T = logc.shape[0]
-    r0, r1 = regime_rows(ts_sub)["FULL"]
+    if lo_ts is None and hi_ts is None:
+        r0, r1 = regime_rows(ts_sub)["FULL"]
+    else:
+        r0 = int(np.searchsorted(ts_sub, lo_ts)) if lo_ts is not None else 0
+        r1 = int(np.searchsorted(ts_sub, hi_ts)) if hi_ts is not None else T
     lo = max(warm, r0)
     hi = min(r1 - H, T - 1 - H)
     t = np.arange(lo, hi + 1, H)
-    equity, hwm = 1.0, 1.0
+    equity, hwm = 1.0, 1.0            # realized (throttled) book
+    sh_eq, sh_hwm = 1.0, 1.0          # shadow (uncapped overlay-OFF) book
     applied_prev = np.zeros(A)
+    shadow_prev = np.zeros(A)
     cost_rate = equity_cost_bp / 1e4
     G, TU, BH = [], [], []
-    n_stale = n_halt = n_capped = 0
+    n_stale = n_halt = n_capped = n_half = n_deep = 0
     for ti in t:
+        raw = pos[ti]
+        if rcfg.dd_mode == "shadow_scale":
+            drive_eq, drive_hwm = sh_eq, sh_hwm
+        else:
+            drive_eq, drive_hwm = equity, hwm
         new, info = riskmod.apply_overlay(
-            pos[ti], applied_prev, equity, hwm,
+            raw, applied_prev, drive_eq, drive_hwm,
             latest_ts=int(ts_sub[ti]), now_ts=int(ts_sub[ti]), rcfg=rcfg,
         )
         fwd = logc[ti + H] - logc[ti]
@@ -352,12 +430,22 @@ def run_overlay_backtest(logc, ts_sub, scfg=None, rcfg=None, equity_cost_bp=21.0
         net = g - turn * cost_rate
         equity *= float(np.exp(net))
         hwm = max(hwm, equity)
+        # shadow book: the raw (uncapped) frozen positions, same cost model. Updated AFTER
+        # the decision, so the next decision sees shadow equity realized through its own t.
+        s_turn = float(np.sum(np.abs(raw - shadow_prev)))
+        s_net = float(np.sum(raw * fwd)) - s_turn * cost_rate
+        sh_eq *= float(np.exp(s_net))
+        sh_hwm = max(sh_hwm, sh_eq)
+        shadow_prev = raw
         G.append(g); TU.append(turn); BH.append(bh)
         n_stale += int(info["stale"]); n_halt += int(info["halt"]); n_capped += int(info["n_capped"] > 0)
+        n_half += int(info["dd_scale"] == 0.5)
+        n_deep += int(0.0 < info["dd_scale"] <= rcfg.dd_deep_scale)
         applied_prev = new
     return {"t": t, "gross": np.asarray(G), "turn": np.asarray(TU), "bh": np.asarray(BH),
             "warm": warm, "n_stale": n_stale, "n_halt": n_halt, "n_capped": n_capped,
-            "equity_cost_bp": equity_cost_bp, "n": len(t)}
+            "n_half": n_half, "n_deep": n_deep, "dd_mode": rcfg.dd_mode,
+            "shadow_mult": sh_eq, "equity_cost_bp": equity_cost_bp, "n": len(t)}
 
 
 # Gate-1a parity targets (819 Phase-2 broad/equal/single30 H=1d, overlay OFF) with tolerances.
