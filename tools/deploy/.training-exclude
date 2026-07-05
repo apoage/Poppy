@@ -1,0 +1,95 @@
+# rsync exclude list — paths NOT to push to server's training branch.
+# Used by tools/deploy/deploy.sh when staging the working tree into the
+# training-branch worktree. Anchored patterns (leading /) match repo root.
+# The deploy script always also excludes .git itself.
+
+# Workstation-only context (Trader-side notes, plans, side projects)
+/lore/
+/tasks/
+/bloom/
+/yarrow/
+/docs/
+/_old/
+
+# Heavy artifacts — server-resident or pulled separately
+/checkpoints/
+/runs/
+/logs/
+/wandb/
+/output/
+/trader_env/
+/data/
+*.db
+*.sqlite
+
+# Markdown noise that isn't agent context
+/GEMINI.md
+/GLM.md
+/KIMI.md
+/pingping.md
+/ablation_*.md
+/task_*_result.md
+
+# Caches / scratch
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.jax_cache/
+.xla_cache/
+*.swp
+*.swo
+.DS_Store
+
+# Workstation-only checkpoint symlinks (point to /mnt/scratch/...)
+/jax_ckpt_easy
+/jax_ckpt_fast
+
+# Training output dirs (workstation-side runs)
+/jax_ckpt_*/
+/out_*/
+/tensor_snapshots/
+
+# Workstation-only context dirs that aren't training
+/prompt-lib/
+/research/
+
+# Backups / .bak files
+*.bak
+*.backup
+*.backup.*
+
+# Root-level workstation scratch
+/START_AFTER_REBOOT.txt
+/cleanup.sh
+/merge_checkpoints.py
+/nohup.out
+/trading_data.db.zst
+/trading_data.db.zst.sha256
+
+# Root-level logs (in-tree, not in /logs/)
+/*.log
+/*.log.failed*
+
+# Root-level run-state JSON (workstation artifacts)
+/benchmark_results.json
+/last_run_metrics.json
+/training_schedule.json
+/training_schedule_old.json
+
+# Claude project local config (not the memory — that flows via --memory flag)
+/.claude/settings.local.json
+/.claude/scheduled_tasks.lock
+/.claude/worktrees/
+/.claude/agents/
+
+# Deploy plumbing
+/.git-training-worktree/
+/.env-workstation
+.env
+
+# Tool-side scratch we don't want on server
+/tools/_old/
+/tools/run_*/

@@ -1,0 +1,9 @@
+[Unit]
+Description=TASK_820 trend CTA daily paper step (fetch bars + rebalance paper book)
+
+[Service]
+Type=oneshot
+MemoryMax=4G
+MemorySwapMax=0
+TimeoutStartSec=45min
+ExecStart=/home/lukas/Trader/tools/paper_daily.sh
