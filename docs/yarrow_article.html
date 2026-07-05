@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Your AI Agent Swarm Is a Mob. Mine Is an Apothecary.</title>
+</head>
+<body>
+
+<h1>Your AI Agent Swarm Is a Mob. Mine Is an Apothecary.</h1>
+<h2>Why constraints — not capabilities — make multi-agent AI systems work</h2>
+
+<p>Everyone is building multi-agent AI systems right now. Claude Code Swarms. OpenClaw. AutoGPT descendants. The pitch is always the same: <em>throw more agents at the problem</em>. More parallelism. More throughput. More <em>swarm</em>.</p>
+
+<p>I went the other direction. I built an apothecary.</p>
+
+<h2>The Problem With Swarms</h2>
+
+<p>A swarm is a mob with good intentions. Every agent can do everything. Every agent talks to every other agent. The lead agent is just another agent with a fancier prompt. Nothing stops the researcher from editing code. Nothing stops the implementer from deciding scope. Nothing stops any of them from confirming each other's hallucinations.</p>
+
+<p>Claude Code Swarms — Anthropic's new multi-agent feature — is impressive engineering. Multiple Claude instances coordinate through a shared task list, direct messaging, and a lead agent that delegates work. But architecturally, it's the same model talking to itself in parallel. You get parallelism, not diversity. Speed, not reliability.</p>
+
+<p>OpenClaw takes a different approach — general-purpose life automation through messaging apps. It can manage your email, calendar, and shell commands. But its "multi-agent" mode is really multiple isolated instances with routing rules. They don't collaborate; they coexist.</p>
+
+<p>Neither system addresses the fundamental question: <strong>how do you make reliable decisions when your agents are powerful but unpredictable?</strong></p>
+
+<h2>Dangerous Materials Require Protocol</h2>
+
+<p>An apothecary works with belladonna, which dilates pupils for eye exams — or kills you. Poppy, which stops unbearable pain — or stops your breathing. Foxglove, which regulates your heartbeat — or stops it entirely.</p>
+
+<p>These aren't dangerous because they're weak. They're dangerous because they're <em>powerful</em>. The entire profession of pharmacy exists because powerful substances demand protocol. Not suggestions. Not "best practices." Hard boundaries that you cannot cross.</p>
+
+<ul>
+<li>The <strong>harvester</strong> gathers the plant. Doesn't decide the dose.</li>
+<li>The <strong>apprentice</strong> grinds and sorts. Doesn't write the prescription.</li>
+<li>The <strong>apothecary</strong> reads symptoms, decides treatment. Never touches the mortar.</li>
+<li>The <strong>compounder</strong> mixes exactly what's prescribed. Never improvises.</li>
+</ul>
+
+<p>Remove any one of these boundaries and someone dies. That's not bureaucracy. That's safety engineering for dangerous tools.</p>
+
+<p>Large language models are the dangerous materials. Powerful, creative, capable of extraordinary insight — and capable of confidently fabricating nonsense. A swarm just throws them at the problem and hopes the aggregate is better than any individual. An apothecary shop handles them with the respect they require.</p>
+
+<h2>The Architecture</h2>
+
+<p>The system is called <strong>Yarrow</strong> — named for the wound-healing herb used in the I Ching for divination. A compound flower where dozens of tiny blooms function as one. It doesn't cause action. It controls the response.</p>
+
+<h3>The Hierarchy</h3>
+
+<pre><code>
+                         ┌─────────┐
+                         │   YOU   │
+                         └────┬────┘
+                              │
+                     ┌────────┴────────┐
+                     │   THE APOTHECARY │  Reads. Validates. Prescribes.
+                     │   (Orchestrator)  │  CANNOT implement. CANNOT edit.
+                     └───┬─────────┬───┘
+                         │         │
+              ┌──────────┘         └──────────┐
+              ▼                               ▼
+     ┌─────────────────┐          ┌────────────────┐
+     │  THE APPRENTICE  │          │ THE COMPOUNDER  │
+     │   (Assistant)     │          │   (Executor)     │
+     │                   │          │                  │
+     │  Deduplicates     │          │  Implements      │
+     │  Clusters         │          │  Tests           │
+     │  Scores           │          │  Reports         │
+     └────────┬──────────┘          └──────────────────┘
+              │
+     ┌────────┴────────┐
+     │   FINDINGS DB    │
+     └─────────────────┘
+        ▲   ▲   ▲   ▲
+        │   │   │   │   Independent. Isolated. Never see each other.
+     ┌──┘   │   │   └──┐
+     ▼      ▼   ▼      ▼
+   ┌────┐┌────┐┌────┐┌────┐
+   │ H1 ││ H2 ││ H3 ││ H4 │   Harvesters: different models, different providers
+   └────┘└────┘└────┘└────┘   READ-ONLY. Write findings. Nothing else.
+</code></pre>
+
+<h3>The Roles</h3>
+
+<p><strong>Harvesters</strong> (5–7 different LLMs from different providers) independently scan code, data, or any context. They write structured findings to a shared database. They never see each other's work. They never edit anything. They're gatherers — nothing more.</p>
+
+<p><strong>The Apprentice</strong> (a cheap, fast model) deduplicates findings, clusters related issues, and computes ensemble confidence scores. It's a filter — it preserves everything but organizes the noise so the orchestrator's context window stays clean.</p>
+
+<p><strong>The Apothecary</strong> (the strongest available model) reads the cleaned clusters, validates them against source material, prioritizes, and writes precise specifications for what should be done. It decides. It prescribes. It never implements.</p>
+
+<p><strong>The Compounder</strong> (a strong model with tool access) reads one specification at a time and implements it exactly as written. If the spec is ambiguous, it asks — it doesn't interpret. If the fix requires a larger scope than specified, it reports back — it doesn't expand. Discovered issues go into its report, not into the code.</p>
+
+<h3>The Hard Boundaries</h3>
+
+<table>
+<thead>
+<tr><th>Rule</th><th>What It Prevents</th></tr>
+</thead>
+<tbody>
+<tr><td>Harvesters can't edit</td><td>Drive-by fixes that skip review</td></tr>
+<tr><td>Harvesters can't see each other</td><td>Groupthink, confirmation bias</td></tr>
+<tr><td>Orchestrator can't implement</td><td>"Just quickly fix this" scope creep</td></tr>
+<tr><td>Executor can't scope</td><td>Gold-plating, unauthorized expansion</td></tr>
+<tr><td>Apprentice can't discard</td><td>Over-filtering before the brain sees it</td></tr>
+</tbody>
+</table>
+
+<p>Remove any one of these and the system degrades toward "one agent doing everything" — which is what every other system already is.</p>
+
+<h2>The Key Innovation: Ensemble Voting With Precision Tracking</h2>
+
+<p>This is what makes Yarrow fundamentally different from both Claude Code Swarms and OpenClaw.</p>
+
+<p>When you use Claude Code Swarms, you're running the same model multiple times. You get parallelism, but every instance shares the same blind spots, the same training biases, the same failure modes. It's the AI equivalent of asking the same person the same question five times.</p>
+
+<p>Yarrow uses 5–7 different models from different providers. Gemini, Claude, GLM, Kimi, DeepSeek, OpenAI — each with genuinely different training data, different architectures, different failure modes. When three of them independently flag the same issue without seeing each other's work, that's real signal.</p>
+
+<pre><code>
+1 harvester flags it              → low confidence, investigate
+2 harvesters flag same thing      → likely real
+3+ harvesters flag same thing     → high confidence, fast-track
+</code></pre>
+
+<p>But raw vote counting isn't enough. Each harvester has a tracked precision score based on historical performance:</p>
+
+<pre><code>
+agent_stats:
+  gemini:    { findings: 156, confirmed: 47, precision: 0.30 }  # noisy but creative
+  claude:    { findings: 62,  confirmed: 45, precision: 0.73 }  # reliable
+  glm:       { findings: 88,  confirmed: 35, precision: 0.40 }  # middle ground
+</code></pre>
+
+<p>A solo finding from a high-precision agent gets trusted. A solo finding from a noisy agent needs corroboration. The system learns which of its own components to trust — and how much.</p>
+
+<h2>Communication: Files, Not Wires</h2>
+
+<p>All inter-agent communication happens through the filesystem. JSON files for findings. Markdown files for task specs. A SQLite database for queries. No WebSockets. No message queues. No direct API calls between agents.</p>
+
+<p>This sounds primitive. It's actually the strongest design choice in the system.</p>
+
+<ul>
+<li><strong>Inspectable</strong> — you can read any message between any agents at any time</li>
+<li><strong>Git-trackable</strong> — version control the decision process itself, not just the code</li>
+<li><strong>Crash-proof</strong> — recovery is "re-read the files." That's it.</li>
+<li><strong>Model-agnostic</strong> — any model that can read and write JSON participates</li>
+<li><strong>Debuggable</strong> — when something goes wrong, the entire evidence trail exists on disk</li>
+</ul>
+
+<p>The database mirrors the filesystem. Either can be rebuilt from the other. Simplicity is a feature when your agents are the complex part.</p>
+
+<h2>User Control: The Gear Shift</h2>
+
+<pre><code>
+PLAN MODE  ──→  APPROVAL  ──→  YOLO MODE  ──→  PLAN MODE
+(research)      (you decide)    (autonomous)     (cycle)
+</code></pre>
+
+<p>The user controls mode transitions. The system never self-promotes to autonomous execution. When the executor encounters uncertainty, it auto-stops and asks. This isn't a limitation — it's the whole point. The system is powerful precisely because it knows when to stop.</p>
+
+<h2>The Generalization</h2>
+
+<p>Yarrow was built for code review and bug hunting. But the hierarchy has nothing to do with code. The pipeline is:</p>
+
+<ol>
+<li><strong>Direct</strong> — orchestrator tells harvesters where to look</li>
+<li><strong>Harvest</strong> — N models independently scan context</li>
+<li><strong>Reduce</strong> — assistant deduplicates and scores</li>
+<li><strong>Decide</strong> — orchestrator validates and writes action specs</li>
+<li><strong>Approve</strong> — user reviews</li>
+<li><strong>Execute</strong> — implementer follows specs precisely</li>
+<li><strong>Verify</strong> — orchestrator checks results</li>
+</ol>
+
+<p>This works for anything. Architecture design. Research analysis. Trading decisions. Security audits. The only things that change per domain are the directive format, the finding schema, and what the executor does with approved specs.</p>
+
+<p>It's not a tool. It's a decision-quality amplifier.</p>
+
+<h2>Comparison</h2>
+
+<table>
+<thead>
+<tr><th></th><th>Yarrow</th><th>Claude Code Swarms</th><th>OpenClaw</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Agent diversity</strong></td><td>Multi-provider ensemble</td><td>Same model, N instances</td><td>Single model per context</td></tr>
+<tr><td><strong>Role enforcement</strong></td><td>Hard architectural boundaries</td><td>Soft prompting</td><td>Persona files</td></tr>
+<tr><td><strong>Inter-agent comms</strong></td><td>Forbidden between scanners</td><td>Direct messaging</td><td>Disabled by default</td></tr>
+<tr><td><strong>Ensemble voting</strong></td><td>Yes, precision-weighted</td><td>No</td><td>No</td></tr>
+<tr><td><strong>Precision tracking</strong></td><td>Per-agent, per-domain</td><td>No</td><td>No</td></tr>
+<tr><td><strong>User control</strong></td><td>Explicit mode gates</td><td>Lead agent approval</td><td>Trust levels</td></tr>
+<tr><td><strong>Crash recovery</strong></td><td>Re-read files</td><td>Task list persists</td><td>Session persistence</td></tr>
+</tbody>
+</table>
+
+<h2>The Name</h2>
+
+<p>The project uses an apothecary naming theme. Not because it sounds cool — because it encodes the architecture.</p>
+
+<p>Every component is named after a medicinal plant or apothecary role. Poppy (the MCTS trading agent — dreams via planning). Belladonna (the market generator — vision of unseen markets). Foxglove (the training system — regulates the heartbeat of learning). And Yarrow — the orchestration layer that controls the healing response.</p>
+
+<p>All of these plants heal or kill depending on how carefully you work with them. That's not a theme. That's a worldview. And it's the right worldview for working with large language models — powerful, unpredictable tools that demand protocol, not faith.</p>
+
+<hr>
+
+<p><em>Yarrow is open-source and designed to run on top of existing AI coding tools. The architecture is documented at the project repository.</em></p>
+
+</body>
+</html>

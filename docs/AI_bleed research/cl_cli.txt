@@ -1,0 +1,457 @@
+ Causal Diagram
+
+                          ┌─────────────────────────────────────┐
+                          │     INITIAL STATE                   │
+                          │  Value function noisy/uncertain     │
+                          │  HOLD has lower variance than trade │
+                          └──────────────┬──────────────────────┘
+                                         │
+                                         ▼
+                      ┌──────────────────────────────────────┐
+                      │         MCTS SHARPENING              │
+                      │  Amplifies small value biases        │
+                      │  Prefers "safe" low-variance HOLD    │
+                      │  π_mcts becomes HOLD-heavy           │
+                      └──────────────┬───────────────────────┘
+                                     │
+             ┌───────────────────────┼───────────────────────┐
+             │                       │                       │
+             ▼                       ▼                       ▼
+  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+  │ POLICY COLLAPSE  │   │ DATA DISTRIBUTION│   │ VALUE NARROWING  │
+  │                  │   │ SHIFT            │   │                  │
+  │ CE loss trains   │   │ Buffer fills     │   │ MC returns from  │
+  │ π → π_mcts       │   │ with HOLD-heavy  │   │ HOLD → narrow    │
+  │ (HOLD-heavy)     │   │ trajectories     │   │ range (~0)       │
+  └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
+           │                      │                      │
+           │                      ▼                      │
+           │         ┌──────────────────────┐            │
+           │         │ PREDICTION COLLAPSE  │            │
+           │         │                      │            │
+           │         │ Sees (s, HOLD) → s'  │            │
+           │         │ where s' ≈ s         │            │
+           │         │ Learns trivial f=0   │            │
+           │         └──────────┬───────────┘            │
+           │                    │                        │
+           └────────────────────┼────────────────────────┘
+                                │
+                                ▼
+                ┌───────────────────────────────────┐
+                │        FEEDBACK AMPLIFICATION     │
+                │                                   │
+                │  Less exploration → less diverse  │
+                │  data → stronger HOLD bias →     │
+                │  sharper MCTS → less exploration │
+                └───────────────────────────────────┘
+                                │
+                                ▼
+                ┌───────────────────────────────────┐
+                │        STABLE EQUILIBRIUM         │
+                │                                   │
+                │  Policy: 85-90% HOLD              │
+                │  Predictor: output ≈ 0            │
+                │  Value: narrow range              │
+                │  Reward: ~12 (plateau)            │
+                └───────────────────────────────────┘
+
+  ---
+  Ranked Contributing Factors
+
+  1. MCTS as Collapse Amplifier (PRIMARY CAUSE)
+
+  Mechanism: MCTS takes the current value function V(s) and produces a refined policy π_mcts by lookahead search. This acts as a "sharpening" operator:
+  - If V slightly prefers HOLD (lower variance, no fee), MCTS amplifies this
+  - 8 sims: small sharpening, 32 sims: strong sharpening
+  - The improved policy π_mcts is then used as the target for policy learning
+
+  Evidence from symptoms:
+  - Collapse accelerates between epoch 6-10 (as warmup increases sims 8→32)
+  - Entropy drops most rapidly during sim warmup phase
+  - Higher sims = faster convergence to HOLD
+
+  Gradient flow: MCTS doesn't backprop - it produces a fixed target. The policy gradient pushes toward this target regardless of whether it's optimal.
+
+  Why HOLD wins early:
+  # Simplified value estimation
+  V(trade) = E[reward] - fee - slippage + γ * E[V(s')]  # High variance
+  V(HOLD) = 0 + γ * E[V(s')]                            # Low variance, no cost
+
+  # MCTS with uncertain values:
+  # When V has high uncertainty, HOLD has lower "regret bound"
+  # Gumbel MuZero samples from Q + Gumbel, but Q(HOLD) is less noisy
+
+  ---
+  2. Cross-Entropy Policy Loss (LOCKS IN COLLAPSE)
+
+  Mechanism: Policy is trained via cross-entropy:
+  loss_policy = -sum(π_mcts * log(π_network))
+
+  When π_mcts is 85% HOLD, this loss forces π_network toward HOLD. The network cannot explore differently than MCTS dictates.
+
+  Evidence:
+  - Policy entropy tracks MCTS entropy closely
+  - Adaptive entropy boost (0.01→0.2) is insufficient because:
+    - Entropy term: 0.2 * H(π) ≈ 0.2 * 3.3 ≈ 0.66
+    - CE term: CE(π_mcts, π) ≈ 0.5-1.0 (depending on divergence)
+    - Entropy can't overcome CE pulling toward HOLD
+
+  Critical insight: Entropy regularization adds +entropy_coef * H(π) to the loss. But the CE term is CE(π_mcts, π). When π_mcts is HOLD-heavy:
+  - Minimizing CE → match HOLD-heavy target
+  - Maximizing H → spread probability mass
+  - These fight, but CE dominates because entropy_coef < 1.0
+
+  ---
+  3. Data Distribution Shift (SELF-REINFORCING)
+
+  Mechanism: The replay buffer stores trajectories generated by the current policy. As policy → HOLD:
+  - Buffer fills with (state, HOLD, state') transitions
+  - Value targets become r_hold + γ * V(s') ≈ 0 + γ * V(s')
+  - Prediction targets become log_price' - log_price ≈ 0 (since HOLD doesn't affect prices)
+
+  Evidence:
+  - Prediction MSE drops to 0.01 (trivial solution)
+  - MC return mean shifts from 0 to -1.2 (HOLD with occasional losses)
+
+  Why prediction learns trivial solution:
+  When policy = HOLD:
+    Next price = f(current price, market noise)
+    Agent action has no effect
+
+  Prediction head sees:
+    Input: latent_state (encodes holdings, prices)
+    Target: price_change ≈ market_noise
+    
+  Optimal prediction: output 0 (mean of noise = 0)
+  This achieves loss ≈ variance(noise), which is small
+
+  ---
+  4. Value Function Narrowing (PROPAGATES COLLAPSE)
+
+  Mechanism: Value targets come from MC returns or bootstrapped estimates:
+  target = sum(γ^t * r_t)  # MC return
+  # or
+  target = r + γ * V_target(s')  # TD
+
+  When policy is HOLD-heavy:
+  - Most rewards are 0 (HOLD gives no reward)
+  - V(s) → ~0 for all states
+  - Value function loses discriminative power
+
+  Evidence:
+  - MC return mean: 0 → -1.2 (narrow, slightly negative due to occasional forced closes)
+  - Value distribution concentrates (symptom D)
+
+  Gradient consequence: When all values ≈ constant, ∂L_value/∂θ → 0. The value head stops providing useful gradients to the encoder.
+
+  ---
+  5. Information Bottleneck in Shared Encoder
+
+  Mechanism: The encoder produces latent state z used by:
+  - Policy head: π(z)
+  - Value head: V(z)
+  - Prediction head: pred(z)
+
+  When policy collapses to HOLD:
+  - Policy only needs z to encode "current position" (to know if HOLD is valid)
+  - Value only needs z to encode "approximate wealth" (HOLD value ≈ constant)
+  - Prediction gets gradients from trivial loss → weak signal
+
+  Evidence:
+  - Prediction loss drops faster than it should (0.76 → 0.04 in ~15 epochs)
+  - This suggests encoder stops encoding action-relevant features
+
+  Gradient analysis:
+  # Prediction gradient to encoder:
+  ∂L_pred/∂encoder = ∂L_pred/∂pred_output * ∂pred_output/∂z * ∂z/∂encoder
+
+  # When pred_output ≈ 0 (trivial):
+  # ∂L_pred/∂pred_output is small (near optimum)
+  # Gradient vanishes, encoder stops learning from prediction
+
+  ---
+  6. Entropy Regularization Structural Failure
+
+  Mechanism: Entropy is added to loss as:
+  total_loss = L_policy + L_value + entropy_coef * (-entropy)
+
+  Why this fails:
+
+  1. Coefficient too small: 0.01-0.2 vs 1.0 for other losses
+  2. Wrong target: Entropy regularizes π_network, but the CE target π_mcts is already collapsed
+  3. Delayed activation: Adaptive boost triggers at HOLD% > 70%, but collapse is already in motion
+  4. No gradient to MCTS: Entropy can't change π_mcts (it's computed, not learned)
+
+  What would work: Entropy regularization on the MCTS policy itself (e.g., temperature, Gumbel scale)
+
+  ---
+  7. Physics Warmup Failure Mode
+
+  Mechanism: The warmup was designed as:
+  neural_scale: 0 → 1 over N steps
+  # Physics-only for N steps, then neural kicks in
+
+  Why it still fails:
+  1. The warmup affects prediction head, not policy collapse
+  2. Policy collapse starts during warmup (epoch 6-10)
+  3. By the time neural_scale=1, the encoder is already compromised
+  4. The prediction head inherits a collapsed latent space
+
+  Evidence: Collapse timeline shows policy entropy dropping during warmup phase, before prediction head fully engages.
+
+  ---
+  Answers to Analysis Questions
+
+  1. Causality Chain
+
+  MCTS bias toward HOLD (low variance)
+      ↓
+  Policy trained to match MCTS → HOLD-heavy
+      ↓
+  Data distribution shifts → HOLD-heavy buffer
+      ↓
+  [Parallel collapse of prediction and value]
+      ↓
+  Encoder loses action-relevant features
+      ↓
+  MCTS has even less signal → more HOLD bias
+      ↓
+  Equilibrium
+
+  Root cause: MCTS, not prediction. Prediction collapse is a symptom, not cause.
+
+  2. Feedback Loops
+
+  1. Policy→Data→Value→MCTS→Policy: HOLD policy → HOLD data → narrow value → MCTS favors HOLD → policy trained HOLD
+  2. Policy→Data→Prediction→Encoder→Policy: HOLD policy → trivial prediction target → weak encoder gradients → less informative z → policy can't distinguish actions
+  3. Entropy→MCTS→Policy→Entropy: Low entropy → sharp MCTS → sharper policy → lower entropy
+
+  3. Loss Landscape Analysis
+
+  The equilibrium (HOLD + trivial predictor) is a local optimum:
+
+  | Loss Component | Value at Equilibrium | Gradient          |
+  |----------------|----------------------|-------------------|
+  | Policy CE      | Low (matches π_mcts) | Small             |
+  | Value MSE      | Low (narrow range)   | Small             |
+  | Prediction     | Minimal (output≈0)   | Small             |
+  | Entropy        | Sacrificed           | Overwhelmed by CE |
+
+  Key insight: This is a valid loss minimum. All individual losses are low. The problem is that the environment reward (extrinsic objective) isn't in the loss function - it only enters through the data distribution, which collapses.
+
+  4. Gradient Dynamics
+
+  When prediction loss → 0:
+  ∂L_pred/∂θ_encoder → 0  # Gradient vanishes
+  # Encoder only gets gradients from policy and value
+  # But value is also collapsed → weak gradients
+  # Only policy CE remains, which reinforces HOLD
+
+  Shared encoder becomes policy-dominated, and policy is trained to HOLD.
+
+  5. Information Bottleneck
+
+  Yes. The latent state z evolves to encode:
+  - What policy needs for HOLD: position size, cash available
+  - What policy doesn't need: price patterns, momentum, correlations
+
+  Action-relevant features (trading signals) are pruned because:
+  - Policy doesn't use them (HOLD ignores signals)
+  - Value doesn't need them (HOLD value ≈ constant)
+  - Prediction doesn't need them (trivial output)
+
+  6. MCTS Simulation Count Effect
+
+  | Sims | Sharpening  | Collapse Speed             | Exploration |
+  |------|-------------|----------------------------|-------------|
+  | 1    | None        | No collapse (pure network) | High        |
+  | 8    | Mild        | Slow                       | Medium      |
+  | 32   | Strong      | Fast                       | Low         |
+  | 64   | Very strong | Very fast                  | Very low    |
+
+  More sims = faster collapse. This is why the sims warmup (8→32) was added, but it only delays, doesn't prevent.
+
+  7. Why Warmup Fails
+
+  The warmup (neural_scale: 0→1) assumes:
+  1. Physics head will learn good features during warmup
+  2. Neural will inherit these features
+
+  But:
+  1. Physics head is separate from dynamics model
+  2. Encoder gets gradients from policy (which collapses during warmup)
+  3. By warmup end, encoder is already compromised
+
+  The warmup is on the wrong component. Should warmup MCTS sims, not neural_scale.
+
+  8. Entropy Regularization Insufficiency
+
+  It's structurally insufficient, not just coefficient too small:
+
+  1. Entropy acts on π_network
+  2. π_network is trained toward π_mcts
+  3. π_mcts is computed, not learned
+  4. Therefore: entropy cannot affect MCTS policy
+
+  Even entropy_coef=1.0 would fail because:
+  loss = CE(π_mcts, π_network) - 1.0 * H(π_network)
+  # Optimum: π_network = π_mcts (CE=0) with max entropy subject to matching π_mcts
+  # But π_mcts is HOLD-heavy → optimum is still HOLD-heavy!
+
+  9. Data Distribution Problem
+
+  Policy → Data → Training
+
+  When policy = HOLD:
+    - Trajectories: HOLD, HOLD, HOLD, ...
+    - Transitions: (s, HOLD, r=0, s')
+    - s' = f(s, market) independent of action
+
+  Prediction head objective:
+    min E[(pred(s) - actual_change)²]
+    
+  When action=HOLD doesn't affect change:
+    pred(s) = E[change|s] = 0 (mean of random walk)
+    
+  This is the globally optimal prediction for HOLD-heavy data!
+
+  The trivial predictor is correct for the collapsed data distribution.
+
+  10. Intervention Points
+
+  | Intervention                    | Breaks Loop? | Difficulty | Risk                  |
+  |---------------------------------|--------------|------------|-----------------------|
+  | Hard entropy floor              | Partial      | Easy       | Unstable learning     |
+  | ε-greedy in MCTS                | Yes          | Medium     | Slower convergence    |
+  | Diverse buffer sampling         | Partial      | Medium     | Sample inefficiency   |
+  | Separate prediction training    | Yes          | Hard       | Disconnects from task |
+  | Freeze policy, train prediction | Diagnostic   | Easy       | Non-solution          |
+  | Remove CE loss, use PG          | Yes          | Hard       | High variance         |
+
+  Best intervention: ε-greedy MCTS
+  # Instead of using π_mcts directly:
+  π_train = (1 - ε) * π_mcts + ε * uniform
+  # Or inject exploration into MCTS itself via higher gumbel_scale
+
+  ---
+  Predictions for Counterfactual Experiments
+
+  A. Freeze Policy (Only Train Predictor)
+
+  Prediction: Prediction loss will stay collapsed if policy is frozen at HOLD.
+
+  Reasoning: Frozen HOLD policy → data remains HOLD-heavy → trivial prediction optimal.
+
+  Test: Freeze policy at epoch 5 (before collapse), continue prediction training.
+
+  B. Freeze Predictor (Only Train Policy)
+
+  Prediction: Policy collapse still occurs, possibly faster.
+
+  Reasoning: Prediction head provides weak gradients anyway. Policy collapse is driven by MCTS.
+
+  C. Increase Entropy 10x (entropy_coef = 0.1 → 1.0)
+
+  Prediction: Slower collapse, not prevention. Policy will oscillate between HOLD-heavy and more diverse, eventually settling near HOLD.
+
+  Reasoning: Entropy fights CE loss, but CE target (π_mcts) remains collapsed. Higher entropy means policy doesn't perfectly match π_mcts, but MCTS still generates HOLD-heavy targets.
+
+  D. Remove MCTS (Use Network Policy Directly)
+
+  Prediction: No collapse! Policy will remain diverse.
+
+  Reasoning: Without MCTS sharpening, there's no mechanism to amplify small value biases into deterministic policy. Network policy exploration persists.
+
+  Evidence: This is equivalent to A2C/PPO-style training. These methods don't suffer from this collapse pattern.
+
+  Implication: MCTS is the collapse catalyst.
+
+  E. Use Uniform Random Policy
+
+  Prediction:
+  - Prediction loss will be higher (0.5-1.0) because data is diverse
+  - Value function will learn wide range
+  - No collapse (but no learning either)
+
+  Reasoning: Uniform policy provides maximum exploration. All action types represented equally. Prediction head must model all action effects.
+
+  ---
+  Recommended Diagnostic Experiments
+
+  Experiment 1: MCTS Isolation
+
+  Setup:
+  # Ablate MCTS entirely for first N epochs
+  if epoch < warmup_epochs:
+      π_train = π_network  # No MCTS
+  else:
+      π_train = π_mcts
+
+  Hypothesis: Collapse will be delayed until MCTS activates.
+
+  Metric: Track entropy decay onset vs. warmup_epochs.
+
+  Experiment 2: Diverse Buffer Minimum
+
+  Setup:
+  # Maintain minimum action diversity in buffer
+  while buffer.hold_fraction > 0.6:
+      inject_random_trajectory(buffer)
+
+  Hypothesis: Forced diversity will prevent prediction collapse, may still see policy collapse.
+
+  Metric: Prediction loss trajectory.
+
+  Experiment 3: Gumbel Scale Sweep
+
+  Setup:
+  for gumbel_scale in [0.1, 0.5, 1.0, 2.0, 5.0]:
+      train_with_gumbel_scale(gumbel_scale)
+
+  Hypothesis: Higher Gumbel scale = more stochastic MCTS = slower collapse.
+
+  Metric: Epochs until HOLD% > 80%.
+
+  Experiment 4: Policy Gradient Instead of CE
+
+  Setup:
+  # Replace cross-entropy with policy gradient
+  advantage = mc_return - value
+  loss_policy = -log_prob(action_taken) * advantage
+  # Instead of: -sum(π_mcts * log(π_network))
+
+  Hypothesis: PG learns from rewards directly, not from MCTS target. Should reduce collapse.
+
+  Risk: Higher variance, may need more samples.
+
+  Experiment 5: Prediction on External Data
+
+  Setup:
+  # Train prediction head on random-policy trajectories
+  # Collected offline or from separate random agent
+  loss_pred = compute_pred_loss(random_policy_buffer)
+  loss_policy = compute_policy_loss(current_policy_buffer)
+
+  Hypothesis: Prediction head will learn meaningful dynamics. Tests whether collapsed predictor affects policy collapse.
+
+  ---
+  Summary: Root Cause and Fix
+
+  Root Cause
+
+  MCTS sharpening + cross-entropy policy loss creates an unstable equilibrium.
+
+  MCTS amplifies small value biases → HOLD-heavy target policy → CE loss trains network to HOLD → data becomes HOLD-heavy → value narrows → MCTS has even less signal → more HOLD.
+
+  Prediction collapse is a downstream effect, not cause.
+
+  Recommended Fix Priority
+
+  1. ε-greedy MCTS (immediate): Mix 10-20% uniform into π_mcts before using as target
+  π_train = 0.85 * π_mcts + 0.15 * uniform
+  2. Action-balanced sampling (medium-term): Ensure each training batch has minimum representation of each action type
+  3. MCTS warmup extension: Keep sims low (8) until reward signal is stable, not just for N epochs
+  4. Consider PG hybrid: Use MCTS for action selection but policy gradient for training (instead of CE)
+
+  Would you like me to implement any of these interventions in the codebase?
+

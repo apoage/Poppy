@@ -1,0 +1,6 @@
+{
+  "name": "dark-factory",
+  "description": "The autonomous implementer loop: a ranked task queue, a build agent, a risk-tiered panel of adversarial verifiers, and a release ritual — behind hook-enforced guard rails (single-writer lane guard, fail-closed commit gate, no-push wall, exit-ritual stop gate). The lights are off; the line is running.",
+  "author": { "name": "apoage" },
+  "version": "0.2.0"
+}

@@ -13,11 +13,20 @@ Canonical 150/150 split; single benign `asset_split_source` deviation. **The str
 overturned the thin-run's provisional LAG-0 → LAG-1** via the targeted deep-merge stress cuts (the thin
 5-asset run was right in direction, wrong in bound).
 
-### Serving-lag convention (DECIDED — feeds [[TASK_801]]/[[TASK_803]])
-- **L8 inputs**: unshifted (`token_input[t] = token_id[t]`).
-- **L1 inputs**: full-stream annotation **delayed 2 bars** (`token_input[t] = token_id[t−2]`). LAG-1 means
-  bar t−1 is still *provisional* at decision time t, so t−2 is the last guaranteed-final bar. **"up to
-  t−1" is WRONG (off-by-one).** Shift lives in the timeline-slicing layer only.
+### Serving-lag convention (REVISED 2026-06-11 by the frozen-vocab re-cert — feeds [[TASK_801]]/[[TASK_803]])
+**Re-cert verdict on the canonical 512-merge vocab (cb 1376): L1 = SERVABLE-WITH-LAG-2 at p99**;
+lag_hist {0:960, 1:22, 2:11, 3:3, 4:3, 6:1}, max 6, not censored (max_k=128); L8 unchanged (churn 0);
+A0 byte-identical. The original LAG-1 was certified on the audit's in-process 256-merge fit only.
+- **The max_lag+1 rule is RETIRED**: it produced 2 on cb-1120 and 7 on cb-1376 (driven by one 0.1%
+  cut) — an empirical max over a tailed distribution is a sample statistic, not a bound (merge-consumed
+  numerosity runs have unbounded bar-span). A convention that flaps with sample size is not a convention.
+- **Current convention (p99-firm)**: **L1 inputs = `token_id[t−3]`** (covers 99.3% of cuts; residual
+  ~0.7% measured + reported, symmetric across arms). **L8 inputs unshifted.** Within [[TASK_804]],
+  train/eval skew is exactly 0 at any lag (both consume full-stream annotations, C3 parity); the
+  residual exists only vs live prefix-causal serving.
+- **Zero-skew endgame**: a **sealed-flag streaming annotator** (a token deep enough behind the merge
+  frontier is causally sealed — detectable without the future) replaces fixed-lag before paper trading
+  (gate 3 of the deployment ladder). Fixed lag-3 is the interim convention.
 - **Targets stay UNSHIFTED** everywhere (hindsight labels — only *inputs* carry the delay; see [[TASK_802]]).
 
 Harness lineage: `6068ef5` (build) → `17cb581` (strengthen) → `2ee1ad3` (L8 floor) → `d95db39`

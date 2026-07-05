@@ -1,0 +1,190 @@
+# TASK_689 v2 Review: Post-Revision Audit
+
+**Reviewer**: Claude Opus 4.6
+**Date**: 2026-02-21
+**Source**: TASK_689 v2 (revised after 3 independent reviews)
+**Previous**: mem-001 (v1 review)
+
+---
+
+## Verdict: MUCH IMPROVED, 1 NEW BUG, 3 ISSUES REMAIN
+
+v2 fixed all 5 original bugs and added good new features (multi-scale heat, confidence, scheduled sampling, state corruption). But the position-from-actions fix introduced a **new bug that's worse than the one it replaced**, plus there are VRAM, cost, and normalization concerns.
+
+---
+
+## BUG: Position Direction from Action Type (CRITICAL — NEW IN V2)
+
+### The Problem
+
+v2 lines 98-102:
+```python
+new_pos = jnp.where(
+    (action == 2) | (action == 4), 1.0,      # Buy/LimitBuy → +1
+    jnp.where((action == 0) | (action == 3), -1.0, pos)  # Sell/LimitSell → -1
+)
+```
+
+This maps **SELL → always short (-1)**. But from `path_solver.py:764-768`, the oracle uses SELL for TWO different things:
+
+| Context | Oracle Action | Resulting Position | v2 Says |
+|---------|--------------|-------------------|---------|
+| Flat → short | SELL (open short) | -1 | -1 ✓ |
+| Long → flat | SELL (close long) | 0 | **-1 ✗** |
+| Long → short | SELL (reverse) | -1 | -1 ✓ |
+
+Same problem with BUY:
+
+| Context | Oracle Action | Resulting Position | v2 Says |
+|---------|--------------|-------------------|---------|
+| Flat → long | BUY (open long) | +1 | +1 ✓ |
+| Short → flat | BUY (close short) | 0 | **+1 ✗** |
+| Short → long | BUY (reverse) | +1 | +1 ✓ |
+
+**Close actions map to the wrong position.** When the oracle closes a long (SELL), v2 thinks we went short. When it closes a short (BUY), v2 thinks we went long. This happens on ~4% of all timesteps (every close action), which is EVERY trade — far worse than v1's jitter on rare zero-return steps.
+
+### Impact
+
+- `position_state` channel is wrong after every close: shows -1/+1 instead of 0
+- `unrealized_pnl` accumulates using wrong position sign after close
+- `hold_duration` resets correctly (detects position change) but for wrong reason
+- Heat channels correct (just detect changes, don't care about direction)
+- Net effect: position and PnL channels are corrupt ~half the time, partially defeating the purpose
+
+### Fix
+
+You can't determine resulting position from action type alone — you need context (was there a previous position?). Two options:
+
+**Option A: Use oracle's target_position directly (cleanest)**
+
+The oracle already computes `target_position` at `path_solver.py:739-743`. Extract it as a return value and use it directly for state channels. No re-derivation needed.
+
+```python
+# In path_solver.py, return target_position alongside policy_targets
+# Then in state channel computation:
+position_channel = target_position  # (T, n_assets), values {-1, 0, +1}
+```
+
+This is the canonical source — it's exactly what the oracle decided the position should be. Zero ambiguity.
+
+**Option B: Derive from action + previous position (if can't modify path_solver)**
+
+```python
+def step(carry, inputs):
+    pos, ... = carry
+    action, ret = inputs
+
+    # Action effect depends on current position
+    # Buy when flat → long(+1). Buy when short → flat(0). Buy when long → noop(+1).
+    # Sell when flat → short(-1). Sell when long → flat(0). Sell when short → noop(-1).
+    is_buy = (action == 2) | (action == 4)
+    is_sell = (action == 0) | (action == 3)
+
+    new_pos = jnp.where(
+        is_buy,
+        jnp.where(pos < 0, 0.0, 1.0),   # short→flat, else→long
+        jnp.where(is_sell,
+            jnp.where(pos > 0, 0.0, -1.0),  # long→flat, else→short
+            pos)  # Hold → keep
+    )
+    ...
+```
+
+**Recommendation**: Option A. It's simpler, correct by construction, and avoids the entire class of action-to-position ambiguity bugs.
+
+For inference (where we use model's own actions, not oracle), Option B is needed since there's no oracle target_position. So implement BOTH: Option A for oracle state channels, Option B for model state channels during scheduled sampling.
+
+---
+
+## Issue 1: VRAM Headroom (RISK)
+
+27 → 34 channels = +26% observation tensor growth.
+
+```
+Observation tensor at batch=1024:
+  Old: 1024 × 27 × 64 × 64 × 4 bytes = 452 MB
+  New: 1024 × 34 × 64 × 64 × 4 bytes = 570 MB
+  Delta: +118 MB
+```
+
+Current large config uses 22.7 GB / 24 GB. That's 1.3 GB free. The 118 MB delta seems safe, but the observation tensor isn't the only thing that grows — the encoder's first projection layer, attention activations, and gradient storage also scale with channel count.
+
+**Estimated total VRAM delta**: ~200-300 MB (observation + encoder projection + gradients). Should fit, but tight. Monitor with `nvidia-smi` during first epoch.
+
+**Fallback**: If OOM, reduce batch_size from 1024 to 896 (12.5% reduction, minor impact on training stability).
+
+---
+
+## Issue 2: hold_duration Still Hardcoded (MINOR)
+
+v2 line 129:
+```python
+jnp.clip(new_steps / 64.0, 0.0, 1.0),
+```
+
+This hardcodes 64 instead of using `config.window_size`. The v1 review correctly identified the normalization should use `window_size`, and v2 correctly notes "normalize by window_size" in the channel definition table (line 51), but the code still uses a literal `64.0`.
+
+Since `window_size` is marked as `static_argnames` for the JIT function, it should be a parameter:
+
+```python
+@partial(jax.jit, static_argnames=['n_assets', 'window_size'])
+def build_state_channels(..., window_size=64, ...):
+    ...
+    jnp.clip(new_steps / window_size, 0.0, 1.0),
+```
+
+---
+
+## Issue 3: Scheduled Sampling Cost (CONCERN)
+
+The `model_forward_actions` function (v2 lines 229-262) runs 400 sequential forward passes per episode. Even at 20% of episodes, with buffer_size=32 episodes per refill:
+
+```
+Cost per refill: 32 × 0.2 × 400 = 2,560 forward passes
+Cost per training step: ~6 forward passes (batch=1024, episodes in buffer)
+Ratio: 2,560 / 6 = 426× overhead for data generation
+```
+
+This would make data generation the bottleneck (currently ~8s per refill, this would add ~30-60s).
+
+**Cheaper alternatives (pick one):**
+
+1. **Stale model**: Use the model from the PREVIOUS epoch's evaluation pass. Cache its predictions on the evaluation episodes. Free, slightly stale.
+
+2. **Single-step noise**: Instead of running 400 sequential forward passes, sample random actions with probability proportional to the model's current trade rate. Approximates model behavior without any forward passes.
+
+3. **State noise only (already in v2)**: The `corrupt_state()` function at v2 lines 183-202 already simulates imperfect state. If corruption is aggressive enough, it may cover the distribution gap without needing actual model forward passes at all. This makes Phase B much cheaper.
+
+**My recommendation**: Start with Phase A (oracle state) + aggressive state corruption. Skip the full model-forward scheduled sampling unless Phase A + corruption isn't enough. The corruption approach is 99% cheaper and likely sufficient.
+
+---
+
+## What v2 Got Right
+
+These are solid improvements over v1:
+
+1. **Multi-scale heat** — 3 fixed timescales (0.80/0.95/0.99) eliminate the single-decay-rate magic number. The model learns which timescale matters. Good design.
+
+2. **Tiling vs evolving** — Current-state-only, tiled across window. Simpler, avoids causal questions about state history. Correct for first implementation (can revisit later if ablation shows state evolution helps).
+
+3. **State corruption / denoising** — Position flip, PnL noise, full dropout. Trains robustness. The 5% full-zero-dropout is particularly good — forces the model to still work from price action alone.
+
+4. **lax.scan** — Properly JIT-compiled, ~100× faster than Python loop. Correct use of carry state.
+
+5. **Phased implementation** — A (core) → B (independence) → C (confidence) is the right order. Clear verification criteria per phase.
+
+6. **Conservative impact estimates** — More realistic than v1. Phase A giving 63-66% balanced acc is honest.
+
+7. **Flip counting as double trade** — Lines 108-109 correctly handle position reversals in heat channels.
+
+---
+
+## Revised Recommendation
+
+1. **Fix the position bug** — Use `target_position` from oracle (Option A) for training, action+context logic (Option B) for inference only
+2. **Parameterize `64.0` → `window_size`**
+3. **Skip full model-forward scheduled sampling initially** — Use oracle state + aggressive corruption instead, it's 99% cheaper
+4. **Monitor VRAM** on first epoch — have batch_size fallback ready
+5. **Proceed with Phase A** — the core concept is sound and the remaining issues are all fixable
+
+The position bug is the only blocker. Everything else is minor or optimization.

@@ -1,0 +1,403 @@
+User: Prompt 1: Deep Research (Web/Literature Search)
+
+  RESEARCH QUERY: Coupled Policy-Prediction Collapse in Model-Based Reinforcement Learning
+
+  CONTEXT:
+  We are training a MuZero-style model-based RL agent for trading with an auxiliary
+  prediction head (neural ODE for price forecasting). We observe a "dual collapse"
+  phenomenon where two seemingly independent components collapse together:
+
+  1. POLICY COLLAPSE: The policy entropy decreases over training, converging to a
+     single dominant action (HOLD) despite entropy regularization in the loss function.
+     - Starts with entropy ~4.5 (near-uniform over 320 actions)
+     - Collapses to entropy ~3.0 within 10-15 epochs
+     - Adaptive entropy boosting temporarily reverses but doesn't prevent recurrence
+
+  2. PREDICTION COLLAPSE: An auxiliary neural network (physics-informed ODE + neural
+     corrector) trained to predict future states shows decreasing loss that indicates
+     mode collapse rather than learning:
+     - Prediction MSE drops from 0.4 to 0.01 rapidly
+     - The predictor learns to output "no change" (trivial solution)
+     - This happens even with a "warmup" period where neural component is scaled down
+
+  3. COUPLING: These collapses are linked - when policy converges to HOLD (no action),
+     the prediction head only sees flat trajectories, so "predict no change" becomes
+     optimal. The collapsed predictor then provides no useful gradient signal.
+
+  SEARCH TOPICS:
+  - Policy collapse in MCTS / MuZero / AlphaZero training
+  - Entropy collapse in actor-critic and policy gradient methods
+  - Mode collapse in auxiliary prediction tasks
+  - World model collapse in model-based RL (Dreamer, MuZero, IRIS)
+  - Exploration-exploitation balance in tree search methods
+  - Self-reinforcing feedback loops in RL training
+  - Distribution shift in online RL / non-stationary training data
+  - Representation collapse in self-supervised RL
+  - Dormant neuron problem in deep RL
+  - Plasticity loss in continual learning
+  - Solutions: entropy scheduling, intrinsic motivation, population-based training,
+    reset mechanisms, auxiliary task design, data augmentation in RL
+
+  SPECIFIC QUESTIONS:
+  1. How do MuZero/AlphaZero implementations prevent policy collapse during training?
+  2. What causes auxiliary prediction heads to learn trivial solutions in model-based RL?
+  3. How should entropy regularization be weighted relative to policy loss?
+  4. Are there techniques to decouple policy and world model training to prevent coupled collapse?
+  5. What is the relationship between MCTS simulation count and policy entropy?
+  6. How do exploration bonuses (UCB, intrinsic curiosity) interact with learned value functions?
+  7. What are known failure modes when training world models on policy-generated data?
+
+  DESIRED OUTPUT:
+  - Academic papers addressing these phenomena
+  - Blog posts / technical reports from RL practitioners
+  - GitHub issues or discussions in MuZero/MuZero-General/EfficientZero repositories
+  - Techniques used in production systems (AlphaGo, AlphaStar, OpenAI Five)
+  - Theoretical analysis of entropy dynamics in policy optimization
+Kimi: # Deep Research Report: Coupled Policy-Prediction Collapse in Model-Based RL
+
+## Executive Summary
+
+Your "dual collapse" phenomenon—where policy entropy collapses to HOLD actions while the auxiliary prediction head learns trivial "no-change" solutions—is a recognized failure mode in model-based RL. This represents a **self-reinforcing feedback loop**: policy collapse → impoverished training data → prediction collapse → useless gradients → accelerated policy collapse. The literature identifies this as a combination of **distribution shift**, **plasticity loss**, and **exploration failure** in jointly-trained systems.
+
+---
+
+## 1. How MuZero/AlphaZero Prevent Policy Collapse
+
+### Core Mechanisms
+
+**AlphaZero/MuZero implementations rely on several key safeguards:**
+
+1. **Dirichlet Noise Injection**: At the root of MCTS, noise is added to the prior policy to ensure all actions have non-zero probability, preventing premature convergence. The formula from AlphaGo Zero uses: `P(s,a) = (1 - ε)p_a + εη_a` where η_a ~ Dirichlet(α) .
+
+2. **Temperature Scheduling**: The visit count distribution is raised to temperature τ: `π_a ∝ N(s,a)^(1/τ)`. During training, τ starts high (exploration) and anneals, but never reaches zero. Production systems like AlphaStar maintain τ > 0.5 throughout training.
+
+3. **Reanalyse Mechanism**: MuZero regenerates fresh targets from old trajectories by re-running MCTS with the *latest* network, providing continuous novelty and preventing stale data from reinforcing collapsed policies , .
+
+4. **Policy Prior Regularization**: The policy network serves as a prior that regularizes MCTS toward areas where the learned model is accurate, preventing overfitting to model errors .
+
+### Critical Implementation Details
+
+From Reddit discussions on MuZero collapse :
+- **Learning rate warm-up** is essential—cold-starting with full LR causes immediate collapse
+- **Gradient clipping** at 0.5-1.0 prevents value head gradients from dominating policy updates
+- **Experience replay prioritization** must be tuned to prioritize diverse state-action pairs
+
+---
+
+## 2. Causes of Auxiliary Prediction Head Collapse
+
+### Primary Mechanisms
+
+**The prediction head learns trivial solutions due to:**
+
+1. **Data Distribution Collapse**: When the policy emits HOLD (action=0) 90%+ of the time, the dynamics model only sees flat trajectories. The optimal solution becomes predicting "no change" (MSE minimization incentivizes this) .
+
+2. **Gradient Starvation**: The physics-informed ODE component produces small gradients when trajectories are static. The neural corrector then dominates with a trivial identity mapping.
+
+3. **Loss Weight Imbalance**: In MuZero's joint loss `L_total = L_value + L_policy + L_reward + L_auxiliary`, if `L_auxiliary` is weighted too high early in training, it can overpower policy exploration signals.
+
+### Evidence from Literature
+
+**Dreamer-VXS** shows that auxiliary predictions (reward/discount) are "crucial for policy learning in imagination" but require careful weighting: `L_model = L_VAE + L_RSSM + λ_rL_r + λ_dL_d` . Poor λ tuning causes the RSSM state to collapse.
+
+**ReCoRe** identifies that contrastive learning in world models causes encoder collapse when "policy learning is disconnected from world-model learning" . Their solution: intervention-invariant auxiliary tasks (depth reconstruction) that remain valid under augmentations.
+
+---
+
+## 3. Entropy Regularization Weighting
+
+### Recommended Practices
+
+**Relative Weighting:**
+- **Policy loss coefficient**: 1.0 (baseline)
+- **Entropy regularization**: 0.01-0.05 relative to policy loss
+- **Value loss**: 0.25-0.5 relative to policy loss
+- **Auxiliary prediction loss**: 0.1-0.2 relative to policy loss (during warmup)
+
+**Dynamic Scheduling:**
+```python
+# EfficientZero V2 uses curriculum scheduling
+entropy_coef = initial_coef * (1 - progress) + final_coef * progress
+# where progress ∈ [0, 1] and final_coef ≈ 0.001
+```
+
+**Temperature Annealing:**
+- Early training: τ = 1.0 (uniform MCTS exploration)
+- Mid training: τ = 0.25-0.5 (softmax policy)
+- Late training: τ = 0.1-0.25 (sharpening but not collapsing)
+
+### Pitfalls to Avoid
+
+- **Static entropy coefficients**: Reddit reports  show this leads to inevitable collapse
+- **Adaptive entropy boosting** (increasing coef when entropy drops) provides only temporary relief—the root cause remains
+- **Overweighting auxiliary loss** (>0.5) during early training accelerates prediction collapse
+
+---
+
+## 4. Decoupling Policy and World Model Training
+
+### Proven Techniques
+
+**1. DMO (Decoupled Forward-Backward Model-Based Optimization) , :**
+- **Forward pass**: Use high-fidelity simulator for trajectory generation
+- **Backward pass**: Use learned differentiable model for gradient computation
+- **Benefit**: Prevents compounding errors while maintaining analytical gradients
+
+**2. Alternating Training Schedules:**
+```python
+# RL-AUX framework 
+for epoch in range(total_epochs):
+    # Phase 1: Train auxiliary head on frozen policy data
+    train_auxiliary_only()
+    # Phase 2: Train policy with fixed auxiliary predictions
+    train_policy_only()
+```
+This breaks the feedback loop by ensuring each component sees diverse data.
+
+**3. Conservative Planning :**
+MuZero's policy prior biases MCTS toward regions where the model is accurate. Decouple this by:
+- Training world model on policy's behavior distribution
+- Training policy on imagined rollouts from a separate exploration policy
+
+**4. Reset-Based Interventions :**
+- Periodically reinitialize auxiliary head weights (every 50k steps)
+- Use "Shrink and Perturb" : `w ← 0.99w + 0.01N(0,σ²)`
+
+---
+
+## 5. MCTS Simulation Count vs. Policy Entropy
+
+### Empirical Relationship
+
+**Low simulation counts (<50):**
+- High variance in visit distributions
+- Entropy remains artificially high due to random tie-breaking
+- Poor policy improvement
+
+**Moderate counts (50-200):**
+- Optimal entropy range (3.5-4.5 for 320 actions)
+- MCTS statistically significant exploration
+- Balance between exploitation and noise
+
+**High counts (>500):**
+- **Entropy collapse risk**: Visit distribution concentrates on single action
+- Policy prior dominates, Dirichlet noise becomes negligible
+- Trading environments particularly sensitive due to sparse rewards
+
+### Recommended Configuration
+
+For 320-action trading domain:
+- **Training**: 100-150 simulations with τ = 0.5-1.0
+- **Inference**: 500-800 simulations with τ = 0.1
+- **Dirichlet noise**: α = 0.15, ε = 0.25 (higher than board games due to action space size)
+
+**Critical Insight**: Increasing simulations without temperature scheduling accelerates collapse. Use **dynamic rollout allocation** : increase simulations proportionally to iteration number, but maintain temperature.
+
+---
+
+## 6. Exploration Bonuses and Value Function Interaction
+
+### Intrinsic Motivation Integration
+
+**Novelty-based bonuses** , :
+```python
+# Pseudocount-based exploration
+bonus(s) = β / √(visit_count(s) + 1)
+# Add to UCB: UCB(s,a) = Q(s,a) + c·P(s,a)·√(N(s))/(1+N(s,a)) + bonus(s)
+```
+
+**State visitation density models** :
+- Train neural density model to predict state visitation
+- Reward model for visiting low-probability states
+- Prevents the "flat trajectory" trap in trading
+
+### Interaction Effects
+
+**Positive interactions**:
+- Intrinsic bonuses maintain high stable rank 
+- Dormant neurons stay active when exploring novel states 
+- Continual backpropagation  maintains plasticity
+
+**Negative interactions**:
+- High exploration bonus → overfitting to bonus signal → value function misevaluation
+- Must anneal β over time: β_t = β_0 × (1 - progress)^2
+
+**Implementation**: In MuZero, add bonus to MCTS value estimate:
+`v'(s) = v(s) + intrinsic_bonus(s)`
+
+---
+
+## 7. Failure Modes in World Models on Policy-Generated Data
+
+### Documented Issues
+
+**1. Value-Equivalent Model Limitations :**
+- MuZero's model cannot evaluate policies far from data collection distribution
+- Prediction errors compound exponentially for non-policy-compliant actions
+- Policy collapse makes training data stationary, model learns narrow region
+
+**2. Encoder-Decoder Mismatch in Dreamer :**
+- Contrastive learning creates augmented views
+- World model predicts original image from augmented latent
+- **Encoder collapses** to trivial representation invariant to augmentations
+
+**3. Dormant Neuron Phenomenon :**
+- RL networks develop 40-60% inactive neurons by mid-training
+- Gradient flow only through HOLD action pathway
+- Auxiliary head's neural corrector receives no meaningful gradients
+
+**4. Plasticity Loss , :**
+- Standard Adam/Norm layers increase plasticity loss
+- Weights grow large, network becomes "solidified"
+- No capacity to learn new patterns when policy shifts
+
+### Solutions from Literature
+
+**ReDo (Recycling Dormant Neurons)** :
+```python
+# Reset neuron if inactive for >10k steps
+if activation_moving_average < threshold:
+    w, b ← reinitialize(w, b)
+```
+
+**Continual Backpropagation** :
+- Reinitialize least-used units continuously
+- Replacement rate: ~1 unit per 500 steps per layer
+
+**Neuroplastic Expansion :**
+- Start with small network, dynamically grow
+- Prune dormant neurons, consolidate useful ones
+- Outperforms fixed-size networks with 5x parameters
+
+---
+
+## 8. Production System Techniques
+
+### AlphaGo/AlphaStar Implementation Details
+
+**Population-Based Training (PBT)**:
+- Maintain population of 10-20 agents
+- Replace collapsed agents (entropy < 2.5) with copies of healthy ones
+- Hyperparameter evolution: entropy_coef, LR, temperature
+
+**Checkpoint Averaging**:
+- AlphaGo Zero averaged past 20 checkpoints for evaluation
+- Prevents overfitting to recent collapsed policy
+
+**Exploration vs Exploitation in MCTS**:
+- **First 30 moves**: τ=1.0, Dirichlet noise ε=0.25
+- **Mid-game**: τ=0.5, ε=0.15  
+- **Endgame**: τ=0.1, no noise
+- Trading requires similar phases: market open/close vs mid-day
+
+### OpenAI Five's Exploration Strategy
+
+- **Intrinsic reward**: `r_intrinsic = 0.01 × teamfight_potential`
+- **Forced diversity**: If entropy < 3.0, inject random actions for 100 steps
+- **Separate behavior policy**: Collect data with more exploratory policy than learning policy
+
+---
+
+## 9. Concrete Recommendations for Your System
+
+### Immediate Fixes (1-2 day implementation)
+
+1. **Emergency Entropy Floor**:
+```python
+if policy_entropy < 3.2:
+    # Inject uniform noise for 10 steps
+    policy_logits += torch.randn_like(policy_logits) * 0.5
+```
+
+2. **Decouple Auxiliary Training**:
+- Freeze policy network for 5k steps, train only ODE predictor on replay buffer
+- Use 20% random actions during this phase to populate diverse trajectories
+
+3. **Reset Non-Performing Components**:
+- Track per-action MSE: if HOLD prediction MSE < 0.001 for 1k steps, reinitialize prediction head
+- Use Shrink-and-Perturb: `w ← 0.95w + 0.05N(0, 0.01)`
+
+### Medium-Term Solutions (1-2 weeks)
+
+1. **Implement Reanalyse**:
+- Every 1000 training steps, sample 32 old trajectories
+- Regenerate MCTS targets with current network
+- Provides fresh supervision to collapsed predictor
+
+2. **Curriculum Entropy Scheduling**:
+```python
+# Target entropy should track moving average of best episodes
+target_entropy = 4.0 - 1.5 * (training_progress)
+entropy_loss = -entropy_coef * (policy_entropy - target_entropy).abs()
+```
+
+3. **Auxiliary Task Weight Annealing**:
+- First 50 epochs: λ_aux = 0.1 (prevents early dominance)
+- Epoch 50-200: λ_aux = 0.5 (balanced learning)
+- After epoch 200: λ_aux = 1.0 (fine-tuning)
+
+4. **Add Novelty Bonus**:
+- Train state autoencoder
+- Reward = reconstruction error
+- Add to HOLD action to prevent "safe but trivial" solutions
+
+### Long-Term Architectural Changes (1 month)
+
+1. **Adopt DMO-style Decoupling**:
+- Forward: Use simplified market simulator for trajectory generation
+- Backward: Use neural ODE for gradient computation
+- Eliminates compounding prediction errors
+
+2. **Implement Recurrent Replay**:
+- Maintain separate buffer for non-HOLD trajectories
+- Oversample during auxiliary training (80% non-HOLD, 20% HOLD)
+- Ensures predictor sees meaningful dynamics
+
+3. **Population-Based Training**:
+- Run 5 parallel agents with different entropy_coef
+- Every 10k steps, replace worst performer with clone of best
+- Evolutionary pressure maintains diversity
+
+4. **Continual Backpropagation**:
+```python
+# Track unit usage via moving average of activations
+if step % 500 == 0:
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            if unit_inactive_for > 1000_steps:
+                nn.init.kaiming_normal_(param.data)
+```
+
+---
+
+## 10. Key Papers and Resources
+
+### Essential Reading
+
+1. **MuZero Analysis**: "What model does MuZero learn?" —reveals value-equivalent model limitations
+2. **Plasticity Loss**: "Loss of plasticity in deep continual learning" (Nature) —explains why networks stop learning
+3. **Dormant Neurons**: "The Dormant Neuron Phenomenon in Deep RL" —directly addresses representation collapse
+4. **Decoupled Training**: "DMO: Decoupled Model-Based Policy Optimization" —practical decoupling method
+5. **Auxiliary Task Design**: "ReCoRe: Regularized Contrastive Representation Learning of World Models" —prevents encoder collapse
+
+### GitHub Repositories
+
+- **MuZero-General**: Search issues for "policy collapse" and "entropy"—community solutions 
+- **EfficientZero**: Official implementation shows entropy scheduling 
+- **Plasticine**: Benchmark for plasticity methods 
+- **ReDo**: Dormant neuron recycling implementation 
+
+### Trading-Specific Considerations
+
+- **Market microstructure noise**: Your ODE predictor needs to model order book dynamics, not just price
+- **Regime changes**: Implementation of **Neuroplastic Expansion**  would allow network growth during market shifts
+- **Sparse rewards**: Use **intrinsic motivation** based on position risk, not just P&L
+
+---
+
+## Conclusion
+
+The coupled collapse you're experiencing is fundamentally a **positive feedback loop** rooted in joint training dynamics. The literature consensus is that **decoupling + plasticity maintenance + entropy control** forms a robust solution. Start with immediate fixes (entropy floor, ReDo), then implement medium-term scheduling, and finally adopt architectural decoupling via DMO or Neuroplastic Expansion for production stability.
+
+The key insight: **Don't fight the loop—break it** by ensuring at least one component always maintains diversity, whether through noise injection, reset mechanisms, or explicit diversity objectives.
+

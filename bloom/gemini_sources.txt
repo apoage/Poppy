@@ -1,0 +1,22 @@
+│ Subagent cli_help Finished                                                                                                        │
+│                                                                                                                                   │
+│ Termination Reason:                                                                                                               │
+│  GOAL                                                                                                                             │
+│                                                                                                                                   │
+│ Result:                                                                                                                           │
+│ {                                                                                                                                 │
+│   "answer": "The local Gemini CLI chat history is stored in a project-specific directory within the user's home folder.           │
+│ Specifically, the conversation sessions are located at:\n\n~/.gemini/tmp/<project_hash>/chats/\n\nWhere <project_hash> is a       │
+│ unique identifier based on the project's root directory. \n\nAdditional related storage locations include:\n- Shell command       │
+│ history: ~/.gemini/tmp/<project_hash>/shell_history\n- Session checkpoints (if enabled):                                          │
+│ ~/.gemini/tmp/<project_hash>/checkpoints\n- Shadow Git repositories for checkpoints: ~/.gemini/history/<project_hash>\n\nThe base │
+│ directory ~/.gemini can be overridden by setting the GEMINI_CLI_HOME environment variable. If this variable is set, the history   │
+│ will be stored in $GEMINI_CLI_HOME/.gemini/tmp/<project_hash>/chats/.",                                                           │
+│   "sources": [                                                                                                                    │
+│     "cli/session-management.md",                                                                                                  │
+│     "reference/configuration.md",                                                                                                 │
+│     "cli/checkpointing.md"                                                                                                        │
+│   ]                                                                                                                               │
+│ }            
+
+

@@ -1,0 +1,28 @@
+  7. Missing Consideration: MCTS Integration
+
+  The plan proposes risk-adjusted reward, which is good. But there's a deeper integration possible:
+
+  Replace MuZero Dynamics with NeuralMarketODE
+
+  # Current MuZero dynamics
+  next_latent = dynamics_net([latent, action])
+
+  # Proposed: Physics-grounded dynamics
+  def recurrent_inference(self, latent_state, action):
+      # Decode latent to market state
+      market_state = self.decode_latent_to_market(latent_state)
+
+      # Predict next market state using NeuralMarketODE
+      next_market_state = self.predictor(market_state, action, noise)
+
+      # Encode back to latent
+      next_latent = self.encode_market_to_latent(next_market_state)
+
+      # Predict reward from transition
+      reward = self.reward_predictor(market_state, action, next_market_state)
+
+      return next_latent, reward
+
+  This makes MCTS rollouts physically grounded rather than learned black-box dynamics.
+
+

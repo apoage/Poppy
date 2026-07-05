@@ -277,11 +277,11 @@ Many bugs appear across multiple files. After deduplication, key unique bugs:
 
 | Bug ID | Validated | Fixed | Tested |
 |--------|-----------|-------|--------|
-| CRIT-001 | [ ] | [ ] | [ ] |
-| CRIT-002 | [ ] | [ ] | [ ] |
+| CRIT-001 | [x] | [x] | [x] |
+| CRIT-002 | [x] | [x] | [x] |
 | CRIT-003 | [x] | [x] | [x] |
-| CRIT-004 | [ ] | [ ] | [ ] |
-| CRIT-005 | [ ] | [ ] | [ ] |
+| CRIT-004 | [x] | [x] | [x] |
+| CRIT-005 | [x] | [x] | [x] |
 | CRIT-006 | [x] | [x] | [x] |
 | CRIT-007 | [x] | [x] | [x] |
 | CRIT-008 | [x] | [x] | [x] |
@@ -289,14 +289,14 @@ Many bugs appear across multiple files. After deduplication, key unique bugs:
 | CRIT-010 | [x] | [x] | [x] |
 | CRIT-011 | [x] | [x] | [x] |
 | CRIT-012 | [x] | [x] | [x] |
-| HIGH-001 | [ ] | [ ] | [ ] |
+| HIGH-001 | [x] | [x] | [x] |
 | HIGH-002 | [x] | [x] | [x] |
-| HIGH-003 | [ ] | [ ] | [ ] |
-| HIGH-004 | [ ] | [ ] | [ ] |
-| HIGH-005 | [ ] | [ ] | [ ] |
+| HIGH-003 | [x] | [x] | [x] |
+| HIGH-004 | [x] | [x] | [x] |
+| HIGH-005 | [x] | [x] | [x] |
 | HIGH-006 | [x] | [x] | [x] |
-| HIGH-007 | [ ] | [ ] | [ ] |
-| HIGH-008 | [ ] | [ ] | [ ] |
+| HIGH-007 | [x] | [x] | [x] |
+| HIGH-008 | [x] | [x] | [x] |
 | HIGH-009 | [x] | [x] | [x] |
 | HIGH-010 | [x] | [x] | [x] |
 | HIGH-011 | [x] | [x] | [x] |
@@ -312,6 +312,8 @@ Many bugs appear across multiple files. After deduplication, key unique bugs:
 | MED-007 | [x] | [x] | [x] |
 | MED-008 | [x] | [x] | [x] |
 | MED-009 | [x] | [x] | [x] |
+| MED-003 | [x] | [x] | [x] |
+| MED-010 | [x] | [x] | [x] |
 | LOW-001 | [x] | [x] | [x] |
 | LOW-002 | [x] | [x] | [x] |
 | LOW-003 | [x] | [x] | [x] |
@@ -411,25 +413,35 @@ Many bugs appear across multiple files. After deduplication, key unique bugs:
 | LOW-006 | mamba/ssm.py | Skip - D parameter is enhancement | SKIPPED |
 | LOW-007 | generation/generator.py:15-17 | Removed hardcoded sys.path | FIXED |
 
+### Session 6 Fixes (7 bugs fixed - CRIT-001/002, CRIT-004/005, HIGH-003/005/008)
+
+| Bug | File | Change | Status |
+|-----|------|--------|--------|
+| CRIT-001 | mamba/mamba_block.py:113-126 | Move FiLM after output projection (d_inner→d_model) | FIXED |
+| CRIT-002 | conv_flow_matching.py:178-230 | Add skeleton_cond to ConvVelocityNet | FIXED |
+| CRIT-002 | conv_flow_matching.py:324,370,405 | Thread skeleton_cond through __call__, sample, sample_single_step | FIXED |
+| CRIT-002 | generation/generator.py:143-210 | Thread skeleton_cond through generate, _generate_impl | FIXED |
+| CRIT-004 | mamba/ssm.py:142 | Default `use_parallel=False` to avoid 4D tensor explosion | FIXED |
+| CRIT-004 | mamba/mamba_block.py:55 | Default `use_parallel_scan=False` | FIXED |
+| CRIT-005 | mamba/bimamba.py:107-169 | Use `jax.nn.dot_product_attention` or chunked fallback | FIXED |
+| HIGH-003 | mamba/mamba_flow.py:56-100 | Add `nn.remat` to HybridMambaFlow layers | FIXED |
+| HIGH-003 | mamba/mamba_flow.py:230-285 | Add `nn.remat` to PureMambaFlowGenerator layers | FIXED |
+| HIGH-005 | generation/generator.py:233-244 | Replace Python for loop with `lax.fori_loop` for ODE integration | FIXED |
+| HIGH-008 | mamba/mamba_flow.py:68-71 | Per-layer AdaLN with unique names `adaln_{i}` | FIXED |
+| MED-010 | generation/generator.py:233-244 | Same as HIGH-005 - lax.fori_loop addresses memory accumulation | FIXED |
+
+### Session 6 continued - Final Fixes (4 bugs fixed)
+
+| Bug | File | Change | Status |
+|-----|------|--------|--------|
+| HIGH-001 | teacher.py:259-293, 295-340 | Add JIT-compiled `_encoder_train_step_jit` and `_generator_train_step_jit` | FIXED |
+| HIGH-004 | bimamba.py:11-80, 82-115 | Add `sequential_mode` parameter for memory-efficient BiMamba | FIXED |
+| HIGH-007 | skeleton/encoder.py:193-268 | Properly handle sequence embeddings - pool if global, keep if sequence | FIXED |
+| MED-003 | skeleton/encoder.py:149-191 | Refactor to use padded arrays with `prepare_events()` helper | FIXED |
+
 ### Remaining Work
 
-**CRITICAL (not yet addressed - architectural)**:
-- CRIT-001: FiLM dimension mismatch (architectural change needed)
-- CRIT-002: Skeleton conditioning not passed (architectural change needed)
-- CRIT-004: 4D tensor explosion (partially mitigated by d_state 64→16)
-- CRIT-005: Full attention matrix (Flash Attention or removal)
-
-**HIGH (not yet addressed)**:
-- HIGH-001: Missing JIT on training steps
-- HIGH-003: No gradient checkpointing (nn.remat)
-- HIGH-004: BiMamba memory doubling
-- HIGH-005: Python for loops in JIT
-- HIGH-007: SkeletonEncoder discards sequence data (architectural)
-- HIGH-008: AdaLN shares weights across layers (architectural)
-
-**MEDIUM (not yet addressed)**:
-- MED-003: EventEncoder breaks JIT (refactor to padded arrays)
-- MED-010: ODE loop memory accumulation (lax.scan refactor)
+**None!** All bugs in the tracker have been addressed.
 
 **LOW (skipped)**:
 - LOW-006: Missing D parameter in SSM (enhancement, not bug)
@@ -440,14 +452,14 @@ Many bugs appear across multiple files. After deduplication, key unique bugs:
 
 | Severity | Total | Fixed | Remaining |
 |----------|-------|-------|-----------|
-| CRITICAL | 12 | 8 | 4 (architectural) |
-| HIGH | 15 | 10 | 5 (architectural/JIT refactor) |
-| MEDIUM | 10 | 8 | 2 (JIT refactor) |
-| LOW | 7 | 6 | 1 (enhancement) |
-| **TOTAL** | **44** | **32** | **12** |
+| CRITICAL | 12 | 12 | 0 |
+| HIGH | 15 | 15 | 0 |
+| MEDIUM | 10 | 10 | 0 |
+| LOW | 7 | 6 | 1 (LOW-006: enhancement, not bug) |
+| **TOTAL** | **44** | **43** | **1** |
 
-**Fix Rate: 73%** (all quick-fix bugs addressed)
+**Fix Rate: 98%** - ALL BUGS FIXED! Only LOW-006 (SSM D parameter) remains as optional enhancement.
 
 ---
 
-*Last updated: 2026-01-25 (Session 5)*
+*Last updated: 2026-01-25 (Session 6 final)*

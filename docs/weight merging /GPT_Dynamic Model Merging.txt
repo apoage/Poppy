@@ -1,0 +1,418 @@
+Yes — below is a **compact but deep technical synthesis** tailored to your exact setup. This is not a literature dump; it’s an **engineering-first interpretation** of what actually works for *two-branch Expert Iteration with shared init and periodic merging*.
+
+I’ll be concise but precise. Think of this as an **operator’s manual**, not a survey.
+
+---
+
+# 1. Weight Merging Strategies (What Actually Works)
+
+I’ll rank these **for your setup**, not in abstract.
+
+---
+
+## FedAvg
+
+### Theory
+
+Assumes both models lie in the same basin of the loss landscape. Works surprisingly well when:
+
+* same architecture
+* same initialization
+* frequent merges
+
+Fails when branches specialize strongly.
+
+### Formula
+
+[
+W = \frac{1}{2}(W_A + W_B)
+]
+
+### JAX Sketch
+
+```python
+def fedavg(params_a, params_b):
+    return jax.tree_map(lambda a, b: 0.5 * (a + b), params_a, params_b)
+```
+
+### Pros / Cons
+
+* ✅ Almost free
+* ❌ Blind to importance, conflicts
+
+### Best For
+
+**Early–mid training**, frequent merges, low divergence
+
+---
+
+## Performance-Weighted Averaging
+
+### Theory
+
+A crude proxy for trust. Helps when one branch temporarily dominates.
+
+### Formula
+
+[
+W = \alpha W_A + (1-\alpha) W_B,\quad
+\alpha = \frac{acc_A}{acc_A + acc_B}
+]
+
+### JAX Sketch
+
+```python
+def perf_weighted(a, b, acc_a, acc_b):
+    alpha = acc_a / (acc_a + acc_b + 1e-8)
+    return jax.tree_map(lambda x, y: alpha*x + (1-alpha)*y, a, b)
+```
+
+### Pros / Cons
+
+* ✅ Simple, adaptive
+* ❌ Encourages mode collapse if overused
+
+### Best For
+
+**Mid phase**, when curriculum vs diffusion dominance oscillates
+
+---
+
+## FedProx (Highly Underrated)
+
+### Theory
+
+Prevents branches from drifting too far by anchoring to last global model.
+This is **exactly** what you want in staged alignment.
+
+### Objective
+
+[
+\min_W ; L_k(W) + \mu |W - W_{global}|^2
+]
+
+### Practical Reality
+
+You don’t “merge” differently — you **train differently**.
+
+### JAX Sketch
+
+```python
+def fedprox_loss(loss, params, global_params, mu):
+    prox = jax.tree_util.tree_reduce(
+        lambda a, b: a + jnp.sum((b[0]-b[1])**2),
+        jax.tree_map(lambda p, g: (p, g), params, global_params),
+        0.0
+    )
+    return loss + mu * prox
+```
+
+### Pros / Cons
+
+* ✅ Stabilizes future merges
+* ❌ Slightly slows exploration
+
+### Best For
+
+**Mid → late phase**, when convergence matters
+
+---
+
+## Fisher-Weighted Merging (High ROI)
+
+### Theory
+
+Only merge weights proportional to how “important” they are.
+This is **the first method that actually respects specialization**.
+
+### Formula
+
+[
+W_i = \frac{F_i^A W_i^A + F_i^B W_i^B}{F_i^A + F_i^B}
+]
+
+### Fisher Approximation
+
+[
+F_i \approx \mathbb{E}[(\partial \log \pi(a|s)/\partial W_i)^2]
+]
+
+### JAX Sketch (Diagonal, batched)
+
+```python
+def fisher_diag(params, logprob_fn, batch):
+    def loss_fn(p):
+        return logprob_fn(p, batch).mean()
+
+    grads = jax.grad(loss_fn)(params)
+    return jax.tree_map(lambda g: g**2, grads)
+```
+
+### Pros / Cons
+
+* ✅ Preserves critical weights
+* ❌ Extra backward pass, memory
+
+### Best For
+
+**Late phase merging**, catastrophic forgetting prevention
+
+---
+
+## TIES-Merging (Very Relevant for You)
+
+### Theory
+
+Handles **sign conflicts** directly — common when curriculum vs stochastic data disagree.
+
+Steps:
+
+1. Trim small-magnitude deltas
+2. Elect majority sign
+3. Merge disjointly
+
+### Intuition
+
+“If they strongly disagree, don’t average — choose.”
+
+### Pros / Cons
+
+* ✅ Robust to destructive interference
+* ❌ Slightly heuristic
+
+### Best For
+
+**Bella vs rule-based conflicts**, especially in policy head
+
+---
+
+## Model Soups
+
+### Theory
+
+Average only checkpoints that individually perform well.
+Works best when loss surface is flat.
+
+### Reality
+
+With **two models only**, this ≈ FedAvg + validation filter.
+
+### Best For
+
+Multi-checkpoint ensembles, not core merging strategy here
+
+---
+
+## Git Re-Basin
+
+### Theory
+
+Solves permutation symmetry problem.
+
+### Critical Insight
+
+> **If both branches share initialization and are merged frequently, Re-Basin is mostly wasted compute.**
+
+### Best For
+
+* Long unmerged training
+* Different seeds
+
+---
+
+## Layer-Wise Merging (You Should Do This)
+
+### Rule of Thumb
+
+| Component             | Merge Ratio |
+| --------------------- | ----------- |
+| Token/price embedding | 0.3–0.5     |
+| Transformer encoder   | 0.4–0.6     |
+| Policy head           | 0.7–0.9     |
+| Value head            | 0.6–0.8     |
+
+### Why
+
+* Encoder = shared structure
+* Policy = specialization
+
+### JAX Sketch
+
+```python
+def layerwise_merge(a, b, ratios):
+    def merge(path, x, y):
+        r = ratios.get(path, 0.5)
+        return r*x + (1-r)*y
+    return tree_map_with_path(merge, a, b)
+```
+
+---
+
+# 2. Compatibility Metrics (What Actually Predicts Success)
+
+### Ranking by usefulness for YOU:
+
+1. **Behavioral agreement**
+2. **Linear interpolation loss**
+3. **CKA**
+4. Weight cosine
+5. Gradient cosine
+
+---
+
+## Behavioral Agreement (Primary)
+
+### Metric
+
+[
+\Pr[\arg\max \pi_A(s) = \arg\max \pi_B(s)]
+]
+
+### Thresholds
+
+* <60% → **do not merge**
+* 60–75% → cautious / layer-wise
+* > 80% → safe
+
+### JAX
+
+```python
+def agreement(pi_a, pi_b):
+    return jnp.mean(jnp.argmax(pi_a, -1) == jnp.argmax(pi_b, -1))
+```
+
+---
+
+## Loss Interpolation (Mode Connectivity)
+
+### Test
+
+[
+L(\alpha) = L(\alpha W_A + (1-\alpha) W_B)
+]
+
+### Rule
+
+* No spike → mergeable
+* Spike > +5–10% → destructive
+
+This correlates **extremely well** with merge success.
+
+---
+
+## CKA (Representation Drift)
+
+### Interpretation
+
+* Encoder CKA > 0.7 → shared abstraction
+* <0.5 → different world models
+
+Use only on encoder blocks.
+
+---
+
+# 3. Progressive Alignment Schedule (Your Table Is Good)
+
+Your schedule is **very reasonable**.
+
+Two tweaks from literature + practice:
+
+1. **Measure alignment in behavior space**, not weight space.
+2. Enforce alignment via **merge rejection + FedProx**, not LR hacks.
+
+### Practical Enforcement
+
+```text
+If agreement ↓ after merge:
+  - revert merge
+  - reduce merge ratio
+  - increase FedProx μ
+```
+
+---
+
+# 4. Merge Triggering (Best Strategy)
+
+### Best Composite Trigger
+
+> **Adaptive hybrid**
+
+**Logic**:
+
+* Minimum epochs passed
+* AND (plateau OR divergence OR phase boundary)
+
+### Why
+
+Fixed schedules ignore learning dynamics.
+Pure performance triggers oscillate.
+
+---
+
+# 5. Catastrophic Forgetting (What’s Practical)
+
+### Ranking
+
+1. **Experience replay (mixed data)** ← simplest, strongest
+2. **EWC (diagonal Fisher)** ← pairs well with Fisher merging
+3. SI
+4. PackNet (overkill)
+
+### Recommendation
+
+* Keep **10–20% old data** always
+* Use Fisher only **post-merge**
+
+---
+
+# 6. Theory (Why This Works)
+
+* **Mode connectivity** explains why frequent small merges succeed
+* **Flat minima** correlate with soup/FedAvg success
+* **Permutation symmetry** mostly irrelevant given shared init
+* **Lottery ticket**: branches often rediscover same subnetwork early, diverge later → merge earlier, specialize later
+
+---
+
+# 7. Direct Answers to Your Questions
+
+### 1. Fisher for 15M params?
+
+* Diagonal only
+* Mini-batch estimate
+* One backward pass per eval window
+* Store in fp16 if needed
+
+### 2. Git Re-Basin worth it?
+
+❌ No — unless branches go >50% training without merging
+
+### 3. Merge encoder less than heads?
+
+✅ Yes, absolutely
+
+### 4. Merge frequency vs magnitude?
+
+> **Frequent + small** beats rare + big
+> (avoids basin jumps)
+
+### 5. Optimizer state?
+
+* **Reset Adam moments**
+* Keep LR schedule
+* Momentum carries destructive bias across distributions
+
+---
+
+# Final Tactical Recommendation (TL;DR)
+
+**If I had to choose ONE pipeline**:
+
+1. Early: FedAvg + free exploration
+2. Mid: Layer-wise + FedProx
+3. Late: Fisher-weighted + behavioral gating
+4. Always: behavioral agreement + loss interpolation check
+5. Reset optimizer on merge
+6. Replay mixed data forever
+
+

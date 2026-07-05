@@ -1,0 +1,41 @@
+diff --git a/train_jax_fast.py b/train_jax_fast.py
+index 123456..789abc 100644
+--- a/train_jax_fast.py
++++ b/train_jax_fast.py
+@@ -717,6 +717,7 @@ def train_jax_fast(config: TradingConfig):
+         # TASK_125: Causal Expert Imprinting metrics
+         'bc_loss', 'bc_weight', 'expert_action_agreement', 'expert_acceptance_rate', 'expert_demo_count',
++        'expert_batch_size', 'bc_ce_loss', 'bc_margin_loss',
+         # Generalization eval metrics
+         'eval_level', 'eval_reward', 'eval_alpha', 'eval_pct_hold',
+     ]
+@@ -1294,10 +1295,10 @@ def train_jax_fast(config: TradingConfig):
+                 'amax_alpha_capture': get_last(metrics.get('alpha_capture', [0])),
+                 'amax_optimal_gain': get_last(metrics.get('optimal_gain', [0])),
+                 # TASK_125: Causal Expert Imprinting metrics
+-                'bc_loss': get_last(metrics.get('bc_loss', [])) if metrics.get('bc_loss') else None,
+-                'bc_weight': get_last(metrics.get('bc_weight', [])) if metrics.get('bc_weight') else None,
+-                'expert_action_agreement': get_last(metrics.get('expert_action_agreement', [])) if metrics.get('expert_action_agreement') else None,
+-                'expert_acceptance_rate': get_last(metrics.get('expert_acceptance_rate', [])) if metrics.get('expert_acceptance_rate') else None,
++                'bc_loss': get_last(metrics.get('bc_loss', [0])) if 'bc_loss' in metrics else None,
++                'bc_weight': get_last(metrics.get('bc_weight', [0])) if 'bc_weight' in metrics else None,
++                'expert_action_agreement': get_last(metrics.get('expert_action_agreement', [0])) if 'expert_action_agreement' in metrics else None,
++                'expert_acceptance_rate': get_last(metrics.get('expert_acceptance_rate', [0])) if 'expert_acceptance_rate' in metrics else None,
+                 'expert_demo_count': expert_buffer.demo_count if expert_buffer else 0,
+ 
+diff --git a/mcts_trader/jax_agent/trainer.py b/mcts_trader/jax_agent/trainer.py
+index 123456..789abc 100644
+--- a/mcts_trader/jax_agent/trainer.py
++++ b/mcts_trader/jax_agent/trainer.py
+@@ -1500,11 +1500,11 @@ class MuZeroTrainer:
+             metrics['expert_acceptance_rate'] = jnp.mean(expert_agreement)  # Alias for backwards compat
+         else:
+-            metrics['bc_loss'] = 0.0
+-            metrics['bc_weight'] = 0.0
++            metrics['bc_loss'] = jnp.array(0.0)
++            metrics['bc_weight'] = jnp.array(0.0)
+             metrics['expert_batch_size'] = 0
+-            metrics['expert_acceptance_rate'] = 0.0
+-            metrics['expert_action_agreement'] = 0.0
++            metrics['expert_acceptance_rate'] = jnp.array(0.0)
++            metrics['expert_action_agreement'] = jnp.array(0.0)

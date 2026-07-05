@@ -1,7 +1,8 @@
 # TASK_802 — Token-grounded dynamics: next-token prediction head on the MuZero transition model
 
-**Status**: 📋 SPEC (2026-06-09). **Blocked on [[TASK_800]]**; pairs with [[TASK_801]] in the
-[[TASK_804]] experiment. **This is the planning-side bet of branch C.**
+**Status**: 📋 SPEC (2026-06-09). **UNBLOCKED 2026-06-10** ([[TASK_800]] signed off — targets use
+the unshifted timeline, see Lag note); pairs with [[TASK_801]] in the [[TASK_804]] experiment.
+**This is the planning-side bet of branch C.**
 
 ## Why this surface
 

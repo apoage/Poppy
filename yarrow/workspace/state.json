@@ -1,0 +1,25 @@
+{
+  "mode": "idle",
+  "current_scan": null,
+  "active_harvesters": [],
+  "available_harvesters": [
+    {"name": "wildcrafter", "agent_id": "gemini", "status": "ready"},
+    {"name": "simpler", "agent_id": "claude", "status": "ready"},
+    {"name": "root_digger", "agent_id": "glm", "status": "ready"},
+    {"name": "herb_walker", "agent_id": "kimi", "status": "ready"},
+    {"name": "distiller", "agent_id": "deepseek", "status": "ready"},
+    {"name": "physick", "agent_id": "openai", "status": "ready"},
+    {"name": "chronicler", "agent_id": "minimax", "status": "ready"}
+  ],
+  "pending_clusters": 0,
+  "tasks": {
+    "approved": [],
+    "in_progress": [],
+    "completed": [],
+    "rejected": [],
+    "deferred": []
+  },
+  "executor_status": "idle",
+  "session_start": null,
+  "last_updated": "2026-02-15T00:00:00Z"
+}

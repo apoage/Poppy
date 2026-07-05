@@ -1,0 +1,33 @@
+{
+  "task": "TASK_804-B2.5 shift_fe (cyclic-shift null)",
+  "tag": "local-vocab (CPU acceptance; NOT the real cb-1376)",
+  "null_type": "cyclic_shift",
+  "base_vocab": "/tmp/804b25_local_base_vocab.json",
+  "base_vocab_sha": "1af8e57389ddfe602b0d400aaf5ced7f466712027af35c32b3806f279ad041f7",
+  "seed": 804,
+  "frac_band": [
+    0.2,
+    0.8
+  ],
+  "per_asset_offsets": {
+    "309": 1937,
+    "353": 2352,
+    "586": 2135,
+    "1087": 2291
+  },
+  "per_asset_lengths": {
+    "309": 5000,
+    "353": 5000,
+    "586": 5000,
+    "1087": 5000
+  },
+  "per_asset_fracs": {
+    "309": 0.38737107234091706,
+    "353": 0.4703488048633023,
+    "586": 0.42695045832378087,
+    "1087": 0.45811637818179746
+  },
+  "derived_vocab_sha": "8f5321ff5008fac0db0a2c4cbc953bdb3494711bc23f558d2be7c601bb79e06e",
+  "convention": "rolled_token_id = np.roll(token_id, off); rolled_valid = np.roll(valid, off); ts NOT rolled. The shifted timeline flows through the SAME join_timeline_to_grid + lag as real (the roll is purely pre-join). offset = round(f_a * T_a), f_a in [0.2,0.8] keyed by (seed, asset_id) \u2014 large so the roll DECOUPLES token from bar (agreement ~ Sum p_i^2).",
+  "sha256": "ead0b6c7fb17e24a981eae51876d266ab5120e0939910bdba43acd97073a219c"
+}

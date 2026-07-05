@@ -1,0 +1,107 @@
+The system is caught in a Martingale Trap where the "Identity Function" (Predicting no change) is a strong local optimum for the
+  prediction head, which in turn causes the Value head to see no profit opportunity, driving the policy to a cost-minimizing "HOLD"
+  equilibrium.
+
+  1. Causal Diagram (Feedback Loops)
+
+    1 graph TD
+    2     A[Market Data is Noisy/Stochastic] -->|Strong Local Min| B[Prediction Head learns Identity]
+    3     B -->|Predicts P_t+1 approx P_t| C[Dynamics Model becomes Inert]
+    4     C -->|Future State = Current State| D[Value Head sees Constant Value]
+    5     D -->|V_trade < V_hold due to Fees| E[Policy Converges to HOLD]
+    6     E -->|Action = Hold| F[Latent State Collapses]
+    7     F -->|Loss of Market Encoding| B
+    8     
+    9     subgraph "The Martingale Trap"
+   10     A
+   11     B
+   12     C
+   13     end
+   14     
+   15     subgraph "The Safety Loop"
+   16     D
+   17     E
+   18     F
+   19     end
+
+  2. Ranked Contributing Factors
+
+   1. The "Martingale" Local Optimum (Critical):
+       * Mechanism: In noisy markets, $P_{t+1} \approx P_t$ is a very hard baseline to beat. The Physics Core (alpha, beta) and
+         Neural Corrector (G_neural) both converge to zero output because predicting "no change" minimizes MSE effectively against
+         noise (MSE ~ 0.01).
+       * Evidence: "Pred loss 0.04", "Step1 MSE 0.01", "Neural corrector outputs near-zero".
+       * Code: NeuralMarketODE computes next_log_prices = log_prices + dt * (G_phys + G_neural + G_impact). If $G$ terms are 0,
+         prediction is Identity.
+
+   2. Fee/Slippage Penalty Dominance:
+       * Mechanism: When the Dynamics model predicts "no change" (or random noise), the expected return of any trade is negative due
+         to fees/slippage (e.g., -5bps). The expected return of HOLD is 0. Thus, $V_{hold} > V_{trade}$.
+       * Evidence: Policy collapses to HOLD simultaneously with prediction collapse.
+
+   3. Latent State Collapse (Information Bottleneck):
+       * Mechanism: The latent_to_market decoder relies on latent_state containing market info. When the policy collapses to HOLD,
+         the representation network only needs to encode "I am holding" to satisfy the policy loss. It stops encoding subtle market
+         features, starving the Prediction Head of valid inputs.
+       * Evidence: "Symptom A" (Entropy decay) and "Symptom D" (Value targets concentrate).
+
+   4. Physics Warmup Failure:
+       * Mechanism: The warmup (scaling neural from 0 to 1) was intended to let physics learn. However, since the Physics Core is
+         too simple to model complex market noise, it also converges to the Identity/Inert solution ($\alpha \approx 0$) as its
+         safest bet. The Neural Corrector then initializes into this "stagnant" regime.
+
+  3. Predictions for Interventions
+
+
+  ┌────────────────────┬────────┬───────────────────────────────────────────────────────────────────────────────────────────────────
+  ─┐
+  │ Intervention       │ Pre... │ Reasoning
+  │
+  ├────────────────────┼────────┼───────────────────────────────────────────────────────────────────────────────────────────────────
+  ─┤
+  │ **Freeze Policy... │ **P... │ If you force trades, the Latent State must encode market data to predict rewards. This breaks t...
+  │
+  │ **Freeze Predic... │ **S... │ If the predictor is pre-trained (e.g., on historical data) to recognize trends and frozen, it f...
+  │
+  │ **Increase Entr... │ **T... │ Will force random actions, but without a predictive signal, the policy will drift back to HOLD ...
+  │
+  │ **Remove MCTS (... │ Worse  │ MCTS provides the lookahead. Without it, the agent is even more myopic and risk-averse.
+  │
+  │ **Use Synthetic... │ **D... │ If it works here, the issue is "Real data is too noisy". If it fails here, the architecture is ...
+  │
+  └────────────────────┴────────┴───────────────────────────────────────────────────────────────────────────────────────────────────
+  ─┘
+
+  4. Recommended Diagnostic Experiments
+
+  To isolate the root cause, run these experiments in order:
+
+   1. The "Signal Injection" Test (Synthetic Level 3):
+       * Config: Run training on synthetic_level=3 (Clear trends) instead of real/level 0 data.
+       * Hypothesis: If the agent learns to trade here, the architecture is fine, and the issue is that real market signal-to-noise
+         ratio is too low for the current model size/hyperparams to detect alpha > fees.
+
+   2. The "Forced Dynamics" Test:
+       * Config: Manually initialize Physics parameters to be "active" (e.g., alpha=0.5) and freeze them for the first 10 epochs.
+       * Goal: Force the dynamics model to predict change ($P_{t+1} \neq P_t$).
+       * Expected Outcome: The Value head will see changing futures. If the Policy still holds, the Value head is failing to
+         propagate gradients.
+
+   3. Reconstruction Loss (Auxiliary Task):
+       * Code Change: Add a decoder latent -> observation and a reconstruction loss term.
+       * Goal: Force latent_state to always encode the full market state, preventing "Latent Collapse" even if the policy holds.
+       * Implementation: In mcts_trader/jax_agent/trainer.py, add loss_reconstruction = MSE(decoder(latent), observation).
+
+   4. Contrastive Prediction:
+       * Concept: Instead of minimizing MSE (which loves the mean/identity), use a Contrastive Loss (InfoNCE) that forces the model
+         to distinguish the true next step from random other steps. This penalizes the "predict nothing" solution.
+
+  5. Immediate Action Plan
+
+  I recommend implementing the Reconstruction Loss or Pre-training the Predictor as the most robust structural fixes. For now, you
+  can try increasing `prediction_loss_weight` significantly (e.g., to 1.0 or 5.0) early in training to force the model to prioritize
+  prediction over policy safety.
+
+  Would you like me to create a patch to add an Observation Reconstruction Auxiliary Loss to MuZeroNetworks? This is a standard fix
+  for "posterior collapse" in latent variable models.
+

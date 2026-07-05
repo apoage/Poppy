@@ -237,4 +237,99 @@ The JAX TRM encoder re-processes 64-step windows for every training step. 63/64 
 - [x] #9 Thread seed collision fix — atomic counter replaces hash
 - [x] #10 Config zombie cleanup — clearer deprecation markers
 - [x] #11 Memory-safe multipass — `jax.lax.map` replaces `jax.vmap` for pass dimension
-- [ ] #12 Streaming encoder research — future work (KV-cache / recurrent encoder)
+- [ ] #12 Streaming encoder research — future work (TASK_676)
+- [x] #13 Empty buffer crash guard — `RuntimeError` after empty refill (`train_easy.py:619`)
+- [x] #14 Optimizer structure assertions — duck-type checks for `.mu`/`.nu`/`.count` (`easy_trainer.py:453-458`)
+- [x] #15 Pin optax==0.2.6 — prevents private API breakage (`requirements.txt:5`)
+
+---
+
+## Yarrow Scan Findings (2026-02-17)
+
+Added from multi-model code review (GLM-4.7, gpt-oss-120b, llama-8b).
+
+### 13. Empty Buffer Crash Guard
+**File**: `train_easy.py:595-618`
+**Severity**: HIGH
+**Source**: gpt-oss-120b
+
+`generate_batch()` crashes with `ValueError` if `_refill_buffer()` returns empty
+(e.g., data generation thread dies, all episodes fail to generate). No guard after refill.
+
+**Fix** (~2 lines):
+```python
+if not self.buffer:
+    raise RuntimeError("Buffer empty after refill — check price generation pipeline")
+```
+
+**Test**:
+```python
+# Temporarily mock _refill_buffer to return empty, verify RuntimeError
+generator.buffer = []
+generator.buffer_sample_counts = []
+try:
+    generator.generate_batch(batch_size=256)
+    assert False, "Should have raised RuntimeError"
+except RuntimeError as e:
+    assert "Buffer empty" in str(e)
+```
+
+---
+
+### 14. Brittle Optimizer State Indices
+**File**: `easy_trainer.py:346-373` (rebuild_optimizer_state)
+**Severity**: HIGH (tech debt)
+**Source**: GLM-4.7
+
+`rebuild_optimizer_state()` hardcodes `opt_state[1][0]` = Adam, `[1][2]` = Schedule.
+If `optax.chain()` order ever changes (e.g., adding gradient accumulation, changing
+clip position), these indices silently corrupt the optimizer state.
+
+**Fix**: Add structural assertion:
+```python
+# Verify optimizer structure matches expectations
+assert isinstance(template[0], optax.EmptyState), \
+    f"Expected EmptyState (clip) at [0], got {type(template[0])}"
+assert hasattr(template[1][0], 'mu') and hasattr(template[1][0], 'nu'), \
+    f"Expected ScaleByAdamState at [1][0], got {type(template[1][0])}"
+assert hasattr(template[1][2], 'count') and not hasattr(template[1][2], 'mu'), \
+    f"Expected ScaleByScheduleState at [1][2], got {type(template[1][2])}"
+```
+
+**Test**:
+```python
+# Verify assertions pass with current optimizer structure
+trainer.rebuild_optimizer_state()  # Should not raise
+# Then change optax.chain order and verify it DOES raise
+```
+
+---
+
+### 15. optax Private API Dependency
+**File**: `easy_trainer.py:346`
+**Severity**: HIGH (tech debt)
+**Source**: GLM-4.7
+
+```python
+from optax._src.base import EmptyState  # Private API
+```
+
+Also uses `optax.ScaleByAdamState` and `optax.ScaleByScheduleState` which are
+semi-public (not in `optax.__all__` but importable). Any optax version bump could
+break the import or rename these types.
+
+**Fix options** (pick one):
+1. **Pin optax version** in requirements.txt (cheapest, short-term)
+2. **Duck-type instead of import**: Check for `.mu`/`.nu` attributes instead of
+   `isinstance(x, ScaleByAdamState)` — works regardless of class name
+3. **Use optax serialization API** if available in newer versions
+
+**Test**:
+```python
+# Verify current optax version exports needed types
+import optax
+assert hasattr(optax, 'ScaleByAdamState'), "ScaleByAdamState not in optax"
+assert hasattr(optax, 'ScaleByScheduleState'), "ScaleByScheduleState not in optax"
+# EmptyState: check private import
+from optax._src.base import EmptyState  # Will fail if optax restructures
+```

@@ -1,7 +1,16 @@
 # TASK_803 — Token-derived trade gate: attack the trade-rate explosion directly
 
-**Status**: 📋 SPEC (2026-06-09). **Phase 1 blocked only on [[TASK_800]]** (no trader code changes,
-no training). Phase 2 joins [[TASK_804]] arms 4-5.
+**Status**: ⛔ **Phase 1 CLOSED 2026-06-11 — NO-MARGIN-ON-BASELINE** (killed early at ~4/18 cells,
+decisive). Δα = 0.00 across all periods at θ6.5/θ7.0, trade rates byte-identical; gate verified
+*working* (lag=2 resolved, 0.06–3.4% of decisions gated as θ rises) — the null is real: **a1b1
+already HOLDs 98.5% of decisions**, so quiet-bar suppression has nothing to suppress. The
+trade-rate-explosion premise is a property of *variants under training* (737/741/758), not the
+conservative canon baseline. Caveats recorded: mega/flat arm inert at mega_bars=16 (L1 turns over
+faster), so the sweep was codelength-θ only; runner re-annotates streams per cell (cache before
+any reuse). **Disposition**: no dedicated re-target sweep at dead over-trading checkpoints; the
+gate harness is RETAINED as an optional cheap diagnostic column in [[TASK_804]] arm evals — if a
+token arm explodes its trade rate, the θ-gate localizes whether the explosion lives on token-quiet
+bars. Phase 2 (learned channel) joins [[TASK_804]] arms 4-5 only if an arm shows over-trading.
 
 ## Why
 

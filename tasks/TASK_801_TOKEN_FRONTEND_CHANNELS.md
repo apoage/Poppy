@@ -5,19 +5,23 @@
 1000 cuts, 968 merge-stress, lag_hist {0:987, 1:13}, A0 byte-identical).
 Concretizes the [[TASK_794]] front-end fork. Feeds [[TASK_804]] arms 2-3.
 
-## Serving-lag convention (from the TASK_800 verdict — NOT optional)
+## Serving-lag convention (REVISED 2026-06-11 — frozen-vocab re-cert; NOT optional)
 
-Churn at k=1 means: at decision time *t*, the annotation of bar *t−1* is still provisional (13/1000
-cuts). The final-only horizon at time *t* is bars ≤ *t − (max_lag + 1)*. Therefore:
+The canonical 512-merge vocab re-certified L1 with a lag TAIL (hist {0:960, 1:22, 2:11, 3:3, 4:3,
+6:1}); the old max_lag+1 rule is retired as sample-unstable (gave 2 on cb-1120, would give 7 here
+off one 0.1% cut). Convention is now **p99-firm**:
 
-- **L1 inputs**: full-stream annotation **delayed by 2 bars** (`token_input[t] = token_id[t−2]`) —
-  final-only, identical to what live serving sees, zero train/serve skew. A 2-bar information delay
-  on a 64-bar window is negligible.
-- **L8 inputs**: **unshifted** (LAG-0 exact; churn ≡ 0 over 1000 cuts).
-- The shift is applied at the timeline-slicing layer (one place), NOT inside the model — the model
-  never knows about lag. The first 2 bars of an L1 stream map to the reserved invalid id.
-- "Use tokens up to t−1" is WRONG for L1 (off-by-one: t−1 is provisional at time t). Do not
-  implement that.
+- **L1 inputs**: full-stream annotation **delayed by 3 bars** (`token_input[t] = token_id[t−3]`) —
+  firm for 99.3% of cuts; the ~0.7% residual is measured, reported, and symmetric across arms.
+  Within [[TASK_804]] train/eval skew is exactly 0 regardless (both paths consume full-stream
+  annotations — C3 parity); the residual exists only vs live prefix-causal serving, which is
+  behind deployment-ladder gates 2-3 where the sealed-flag streaming annotator supersedes
+  fixed-lag entirely.
+- **L8 inputs**: **unshifted** (churn ≡ 0, unchanged by the re-cert).
+- The shift is applied at the timeline-slicing layer (one place), via `input_lag_for` ONLY — the
+  model never knows about lag. Leading `lag` bars map to the reserved invalid id.
+- `LANGUAGE_INPUT_LAG["L1"] = 3` is the single source; B2/C2/C3 must be re-run after the constant
+  change (zero structural rework — the join inherits it).
 
 ## Honest expectation — read this first
 
@@ -72,8 +76,11 @@ obs grid (no float-cast ids, no V-wide one-hots).
   one step on a synthetic batch).
 - **E4**: `step()` streaming path produces the same per-asset feats as the windowed path on a
   replayed sequence (existing parity-test pattern).
-- **E5**: random-codebook arm wiring — swapping the vocab for a frequency-matched permutation
-  ([[TASK_804]]) touches **only the id mapping**, zero code branches.
+- **E5**: null-arm wiring — the null timeline (REDEFINED 2026-06-12: per-asset cyclic shift of
+  the real timeline, [[TASK_804]]; the original "permuted codebook" was vacuous — a consistent
+  bijective relabel is invisible to a from-scratch embedding) flows through the **identical model
+  wiring** with zero model-side branches; the substitution happens at the timeline/cache layer
+  only.
 
 ## VRAM note (do not OOM)
 

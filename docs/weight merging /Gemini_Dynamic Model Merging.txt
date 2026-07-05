@@ -1,0 +1,252 @@
+Dynamic Model Merging for Federated Reinforcement Learning: A Comprehensive Research ReportExecutive SummaryThe convergence of disparate learning paradigms—specifically, diffusion-based synthetic data generation and rule-based curriculum learning—within a unified Reinforcement Learning (RL) agent presents a frontier challenge in modern AI finance. The objective to merge two training branches, characterized by distinct data distributions but identical MuZero-style architectures, into a single agent with high oracle agreement requires navigating the complex geometry of high-dimensional loss landscapes. This report provides an exhaustive analysis of the theoretical mechanisms, algorithmic strategies, and practical implementations required to achieve this integration.We posit that standard Federated Averaging (FedAvg) is insufficient for this task due to the high probability of "symmetry breaking" and the formation of high-loss barriers between the two branches, despite their shared initialization. The disparate nature of stochastic diffusion data (Branch A) and deterministic rule-based patterns (Branch B) drives the optimization trajectories into topologically distinct basins of attraction. To resolve this, advanced merging strategies must be employed that account for parameter permutation invariance (Git Re-Basin), gradient conflict resolution (TIES-Merging), and curvature-aware importance weighting (Fisher Merging).This document details eight specific weight merging strategies, five compatibility metrics, and a robust progressive alignment schedule. We provide mathematical formulations and JAX/Flax implementation sketches for each, alongside a critical analysis of their computational costs and failure modes. Furthermore, we address the critical issue of catastrophic forgetting through Elastic Weight Consolidation (EWC) and Experience Replay, proposing a dynamic, divergence-triggered merging framework that adapts to the non-stationary nature of financial trading environments.1. Theoretical Foundations of Model MergingTo engineer a successful merging strategy for a trading agent trained on disjoint data sources, one must first deconstruct the underlying geometric and probabilistic assumptions that govern neural network optimization. The success or failure of combining weights from Branch A (Bella) and Branch B (Synthetic) is determined not merely by their individual performance, but by the topological properties of the path connecting their respective solutions in parameter space.1.1 The Geometry of Loss Landscapes and Mode ConnectivityThe central theoretical construct in model merging is the concept of Mode Connectivity. In the non-convex loss landscapes typical of deep neural networks, there exist infinitely many local minima that achieve comparable performance. A "mode" refers to one such basin of attraction.Linear Mode Connectivity (LMC)The simplest merging strategy, averaging weights, relies on the strong assumption of Linear Mode Connectivity (LMC). LMC implies that if we have two parameter vectors $\theta_A$ and $\theta_B$, the loss function $\mathcal{L}(\theta)$ remains low along the linear path connecting them:
+\ ]
+In your specific context, Branch A (trained on diffusion data) and Branch B (trained on rules) are pushed by gradients derived from fundamentally different manifolds. While they share an initialization $\theta_0$, the gradients $\nabla_{\theta} \mathcal{L}_{diff}$ and $\nabla_{\theta} \mathcal{L}_{rule}$ are likely orthogonal or even conflicting. Over time, as training progresses, the trajectory of $\theta_A$ and $\theta_B$ diverges. If they enter distinct basins separated by a high-loss region (a "barrier"), LMC breaks. Averaging two models separated by a barrier results in a merged model $\theta_{avg}$ that sits atop a "ridge" of high loss—a phenomenon often observed as a sudden collapse in agent performance post-merge.The Basin Structure in Federated SettingsRecent research into the "Loss Basin" theory suggests that models trained with the same initialization often remain in the same "macro-basin" for a significant portion of training. However, the definition of a basin is nuanced. While they may be connected by non-linear paths of low loss, FedAvg forces a traversal along a linear chord. If the basin is curved (non-convex), the chord cuts through the wall of the basin, leading to high loss.The severity of this curvature is dictated by the Hessian of the loss function. Financial data, being inherently noisy and non-stationary, often results in "sharp" minima where the loss rises steeply in all directions. Rule-based data, being cleaner and deterministic, often results in "flatter" minima. Merging a sharp model with a flat model requires careful handling of weight magnitudes to prevent the sharp (unstable) solution from dominating the flat (robust) one.1.2 Neural Network Symmetries and Permutation InvarianceA 15-million parameter Transformer model exhibits massive redundancy due to Permutation Symmetry. For any given hidden layer with $H$ neurons, there are $H!$ possible permutations of those neurons that result in an identical functional output, provided the weights of the incoming and outgoing layers are permuted accordingly.The "Symmetry Breaking" PhenomenonEven with identical initialization, stochastic gradient descent (SGD) introduces noise. In Branch A, the network might learn to encode "market volatility" in neuron #42 of the encoder. In Branch B, the same concept might be encoded in neuron #105.Functional Mismatch: If we naively average these weights (FedAvg), we align neuron #42 from A with neuron #42 from B. Since B's neuron #42 might be encoding "liquidity" (or nothing at all), the average destroys the feature selectivity of both.Feature Interference: This is a primary cause of merge failure in federated learning with non-IID data. The weights are not "aligned" semantically, even if they share the same architecture.Resolution: This necessitates techniques like Git Re-Basin , which explicitly solves for the permutation matrix $P$ that aligns the hidden units of Branch B to Branch A before merging.1.3 The Lottery Ticket Hypothesis and Subnetwork SpecializationThe Lottery Ticket Hypothesis  posits that dense networks contain sparse subnetworks ("winning tickets") that are responsible for the model's performance. In your dual-branch setup, it is highly probable that Branch A finds a winning ticket utilizing a specific subset of the 15M parameters suitable for diffusion robustness, while Branch B activates a different, perhaps disjoint, subnetwork for mathematical pattern recognition.Constructive vs. Destructive Interference: If the winning tickets are disjoint (using different weights), simple averaging effectively dilutes the active weights of one branch with the inactive (near-zero or random) weights of the other, effectively halving the signal strength.Sign Conflict: Worse, if both branches use the same weight parameter for different purposes, they may update it in opposite directions (one positive, one negative). Averaging these results in a value near zero, effectively "killing" the neuron. This is the motivation behind TIES-Merging , which explicitly handles sign disagreements to prevent this destructive interference.2. Weight Merging Strategies: Exhaustive AnalysisThis section provides a detailed comparative analysis of eight merging strategies. For each, we detail the mathematical formulation, analyze the computational complexity specific to your 15M parameter constraint, and provide JAX/Flax implementation sketches.2.1 FedAvg (Federated Averaging)TheoryFedAvg is the canonical baseline for federated learning, first proposed by McMahan et al. It operates on the assumption that the global optimum is the expected value of the local updates. In convex optimization landscapes, this is theoretically sound. In non-convex neural networks, it works effectively only when models remain within the same local basin of attraction or when the data distributions are sufficiently IID (Independent and Identically Distributed).FormulaFor two branches $\theta_A$ and $\theta_B$:Generalized for weighted averaging (e.g., based on dataset size):\JAX ImplementationThe implementation in JAX is straightforward due to its functional nature and tree-mapping capabilities.Pythonimport jax
+import jax.numpy as jnp
+
+def fed_avg(params_a, params_b, weight=0.5):
+    """
+    Computes the weighted average of two PyTrees (model checkpoints).
+    
+    Args:
+        params_a: PyTree of parameters from Branch A.
+        params_b: PyTree of parameters from Branch B.
+        weight: Float, weight assigned to Branch A (default 0.5).
+        
+    Returns:
+        Merged PyTree.
+    """
+    # jax.tree_util.tree_map allows element-wise operations 
+    # over arbitrarily nested dictionaries/lists of arrays.
+    return jax.tree_util.tree_map(
+        lambda a, b: weight * a + (1.0 - weight) * b,
+        params_a,
+        params_b
+    )
+Pros/ConsPro: Computational Efficiency. Requires only element-wise addition and multiplication. Memory overhead is zero if done in-place or minimal (streaming). It is the fastest possible merge operation.Pro: Simplicity. No hyperparameters to tune other than the mixing weight.Con: Barrier Vulnerability. Fails catastrophically if LMC is broken. If models drift into different basins, the average will result in a model with high loss (low performance).Con: Feature Smearing. Does not account for permutation symmetries; essentially "smears" features if neurons are misaligned.Best ForEarly training phases (0-30% progress) where models are still close to their shared initialization and have not yet specialized into deep, disjoint local minima.2.2 Performance-Weighted AveragingTheoryThis strategy modifies FedAvg by assigning scalar weights to each branch proportional to their validation performance (e.g., accuracy, reward, or oracle agreement rate). The intuition is to "trust" the model that performs better on the validation set, thereby pulling the merged model closer to the higher-quality solution.FormulaLet $S_A$ and $S_B$ be the validation scores (e.g., agreement rate $\in $).Alternatively, using a softmax temperature $T$ to sharpen the difference:\JAX ImplementationPythondef performance_weighted_merge(params_a, params_b, score_a, score_b, temperature=1.0):
+    """
+    Merges checkpoints weighted by their validation scores.
+    """
+    # Compute Softmax weights
+    scores = jnp.array([score_a, score_b])
+    weights = jax.nn.softmax(scores / temperature)
+    w_a, w_b = weights, weights
+    
+    return jax.tree_util.tree_map(
+        lambda a, b: w_a * a + w_b * b,
+        params_a,
+        params_b
+    )
+Pros/ConsPro: Robustness. Reduces the impact of a "collapsed" branch. If Branch A diverges due to unstable diffusion data (score drops to 0.1), the merge will predominantly preserve Branch B, preventing the global model from being corrupted.Con: Insensitivity to Topology. A model with 80% accuracy and one with 75% accuracy might still be topologically incompatible. Weighting them 0.52/0.48 does not solve the barrier problem.Con: Bias Risk. If one task (e.g., rule-following) is easier than the other (diffusion robustness), the easier task will consistently dominate the weights, potentially leading to forgetting of the harder task.Best ForScenarios where training stability is a concern, or when one data source is significantly noisier than the other, serving as a safety mechanism against bad updates.2.3 FedProx (Federated Proximal Optimization)TheoryFedProx  addresses the issue of client drift (divergence) directly in the local training objective rather than just at the merge step. It adds a "proximal term" to the loss function that penalizes the local model for moving too far from the global model (the state at the last merge). This effectively acts as a dynamic regularizer, constraining the optimization trajectory to remain close to the shared basin.FormulaThe modified local loss function for Branch $k$:where $\mu$ is a hyperparameter controlling the strength of the constraint. The update step remains:\JAX ImplementationThis is implemented as a wrapper around the loss function passed to optax.Pythonimport optax
+
+def fedprox_loss_wrapper(task_loss_fn, mu=0.01):
+    """
+    Wraps a standard loss function with the FedProx regularization term.
+    """
+    def prox_loss(params, global_params, batch, **kwargs):
+        # 1. Compute original task loss
+        base_loss = task_loss_fn(params, batch, **kwargs)
+        
+        # 2. Compute L2 Euclidean distance between current and global params
+        # tree_map computes (p-g)^2 for every tensor
+        squared_diffs = jax.tree_util.tree_map(
+            lambda p, g: jnp.sum(jnp.square(p - g)),
+            params, 
+            global_params
+        )
+        
+        # 3. Sum all squared differences to get scalar L2 norm
+        prox_term = sum(jax.tree_util.tree_leaves(squared_diffs))
+        
+        return base_loss + (mu / 2.0) * prox_term
+        
+    return prox_loss
+Pros/ConsPro: Convergence Guarantee. Theoretically proven to improve convergence in heterogeneous settings (Non-IID data) by bounding the divergence.Pro: Drift Prevention. Explicitly prevents the formation of high-loss barriers by ensuring $\theta_A$ and $\theta_B$ never wander too far apart.Con: Sensitivity. The performance is highly sensitive to $\mu$. If $\mu$ is too large, the models barely learn (over-constrained). If too small, it has no effect.Con: Compute Overhead. Requires calculating the L2 norm at every training step, and storing a copy of global_params in memory (doubling memory for weights, though feasible for 15M params).Best ForMid-to-Late training phases (30-95%) where the risk of divergence is highest. It serves as a tether to keep the branches compatible for future merging.2.4 Fisher MergingTheoryFisher Merging  moves beyond simple averaging by incorporating the curvature of the loss landscape. It assumes the posterior distribution over the weights is Gaussian, with the covariance approximated by the inverse Fisher Information Matrix (FIM). Intuitively, the FIM measures how "sharp" the loss is with respect to each parameter.High Fisher Information: The loss is very sensitive to this parameter; changing it increases loss significantly. The parameter is "important."Low Fisher Information: The loss is flat; the parameter can vary without hurting performance.Fisher merging calculates a weighted average where each parameter is weighted by its own Fisher information (importance).FormulaUsing the Diagonal Approximation (ignoring correlations between parameters) reduces this to an element-wise operation:where $F_k^{(i)}$ is the $i$-th element of the diagonal Fisher matrix for model $k$.Computational CostMemory: Requires storing a diagonal FIM for each branch. For a 15M parameter model, this is an additional $15 \times 10^6 \times 4$ bytes $\approx 60$ MB per branch. This is negligible on modern GPUs.FLOPs: High. Computing the Fisher requires gradients. Specifically, the Empirical Fisher requires computing per-sample gradients (or expected gradients) over a validation batch.JAX ImplementationEfficient computation of the diagonal Fisher using jax.vmap is critical.Pythondef compute_diagonal_fisher(loss_fn, params, data_batch):
+    """
+    Computes diagonal Empirical Fisher Information Matrix (EFIM).
+    EFIM ~ sum of squared gradients over the batch.
+    """
+    
+    # 1. Define function to get gradient for a SINGLE sample
+    # Note: For Fisher, we typically use the gradient of the log-likelihood 
+    # of the *model's own prediction* (sampled y), not ground truth.
+    def per_sample_grad(p, x, y_pred):
+        return jax.grad(lambda pp, xx, yy: loss_fn(pp, xx, yy))(p, x, y_pred)
+
+    # 2. Get predictions (to treat as targets for empirical fisher)
+    # This assumes loss_fn handles the logic, or we pass fixed targets.
+    # Here, simplified to standard gradient magnitude.
+    
+    grad_fn_vmapped = jax.vmap(per_sample_grad, in_axes=(None, 0, 0))
+    
+    # Compute gradients for the whole batch:
+    # We need to construct dummy targets or use the model's own preds.
+    # Assuming 'data_batch' contains (inputs, targets):
+    inputs, targets = data_batch
+    batch_grads = grad_fn_vmapped(params, inputs, targets)
+    
+    # 3. Square and mean over batch to get Diagonal Fisher
+    fisher_diag = jax.tree_util.tree_map(
+        lambda g: jnp.mean(jnp.square(g), axis=0),
+        batch_grads
+    )
+    return fisher_diag
+
+def fisher_merge(params_a, params_b, fisher_a, fisher_b, epsilon=1e-6):
+    """
+    Merges parameters weighted by their diagonal Fisher information.
+    """
+    return jax.tree_util.tree_map(
+        lambda p_a, p_b, f_a, f_b: (f_a * p_a + f_b * p_b) / (f_a + f_b + epsilon),
+        params_a, params_b, fisher_a, fisher_b
+    )
+Pros/ConsPro: Information Preservation. Optimally retains the "knowledge" of each model. If Branch A relies heavily on Layer 1 weights and Branch B relies on Layer 2, Fisher Merging will preserve A's Layer 1 and B's Layer 2 naturally.Pro: Soft Selection. Unlike hard masking, it allows for nuanced blending.Con: Approximation Error. The diagonal approximation ignores correlations (e.g., if weight $i$ and $j$ must change together). The Empirical Fisher is also a biased estimate of the true Fisher.Con: Compute Intensity. Calculating per-sample gradients is slower than a standard forward/backward pass, though jax.vmap mitigates this significantly.Best ForLate-stage merging or when the branches have highly specialized roles (e.g., one learns microstructure, one learns macro trends).2.5 TIES-Merging (Trim, Elect Sign, Disjoint Merge)TheoryTIES-Merging  identifies two major sources of interference in model merging:Redundancy: Many parameters change only slightly due to random noise. These small changes accumulate and act as noise in the merged model.Sign Disagreement: One model increases a weight ($+0.1$) while another decreases it ($-0.1$). Averaging yields $0.0$, canceling out the feature entirely.TIES proposes a three-step process:Trim: Reset the bottom $k$% of updates (smallest magnitude) to zero.Elect Sign: Determine the "dominant" direction of change for each parameter across all models (by summing the updates).Disjoint Merge: Only keep updates that agree with the elected sign. Discard (zero out) the updates from branches that disagree.FormulaLet $\Delta_k = \theta_k - \theta_{init}$.Trim: $\hat{\Delta}_k = \Delta_k \odot \mathbb{I}(|\Delta_k| \in \text{top-}k\%)$Elect: $\sigma_{total} = \text{sgn}(\sum_k \hat{\Delta}_k)$Merge: $\theta_{new} = \theta_{init} + \frac{1}{|S|} \sum_{k \in S} \hat{\Delta}_k$, where $S = \{k \mid \text{sgn}(\hat{\Delta}_k) = \sigma_{total}\}$JAX ImplementationTIES requires access to the initialization checkpoint $\theta_{init}$.Pythondef ties_merging(params_a, params_b, params_init, k=0.2, merge_func='mean'):
+    """
+    TIES-Merging: Trims noise, resolves sign conflicts, and merges.
+    """
+    # 1. Calculate Deltas (Task Vectors)
+    delta_a = jax.tree_util.tree_map(lambda a, i: a - i, params_a, params_init)
+    delta_b = jax.tree_util.tree_map(lambda b, i: b - i, params_b, params_init)
+    
+    def process_layer(da, db):
+        # We process each tensor independently
+        
+        # TRIM: Create masks for top-k magnitude values
+        # Note: percentiles in JAX can be slow on large tensors; use approximations if needed.
+        def get_trim_mask(d):
+            threshold = jnp.percentile(jnp.abs(d), (1 - k) * 100)
+            return jnp.abs(d) >= threshold
+            
+        mask_a = get_trim_mask(da)
+        mask_b = get_trim_mask(db)
+        
+        # Zero out trimmed values (Redundancy Elimination)
+        da_trim = da * mask_a
+        db_trim = db * mask_b
+        
+        # ELECT SIGN: Sum of trimmed deltas defines the "consensus" direction
+        total_delta = da_trim + db_trim
+        elected_sign = jnp.sign(total_delta)
+        
+        # DISJOINT MERGE: Only keep updates that match the elected sign
+        # Check sign agreement (including handling zeros correctly)
+        valid_a = (jnp.sign(da_trim) == elected_sign) & (mask_a)
+        valid_b = (jnp.sign(db_trim) == elected_sign) & (mask_b)
+        
+        # Calculate the merge
+        # If both agree, average them. If only one agrees, take that one. 
+        # If neither agrees (or both were trimmed), result is 0.
+        count = valid_a.astype(jnp.float32) + valid_b.astype(jnp.float32)
+        sum_updates = (da_trim * valid_a) + (db_trim * valid_b)
+        
+        # Avoid division by zero where count is 0
+        final_delta = jnp.where(count > 0, sum_updates / count, 0.0)
+        
+        return final_delta
+
+    merged_deltas = jax.tree_util.tree_map(process_layer, delta_a, delta_b)
+    
+    # Add merged deltas back to initialization
+    return jax.tree_util.tree_map(lambda i, d: i + d, params_init, merged_deltas)
+Pros/ConsPro: Interference Resolution. Specifically designed to handle the "conflicting gradient" problem common in multi-task setups (Diffusion vs. Rules). Prevents feature cancellation.Pro: Sparsity. Naturally filters out noise, potentially leading to a cleaner model.Con: Hyperparameter Dependence. The trim fraction $k$ is critical.Con: Reference Dependency. Requires keeping $\theta_{init}$ throughout the training process.Best ForFinal Aggregation or merging when branches have drifted significantly. It effectively acts as a "vote" on which parameters are actually important, discarding the rest.2.6 Model Soups (Greedy Strategy)TheoryModel Soups  challenges the notion of a single "best" checkpoint. Instead of merging A and B immediately, it suggests maintaining a population of checkpoints. The "Greedy Soup" approach sequentially adds models to the average only if they improve performance on a held-out validation set.FormulaLet $M = \{ \theta_1, \theta_2, \dots, \theta_N \}$ be a set of checkpoints (e.g., from different epochs of Branch A and B).Sort models by validation accuracy.Initialize $\theta_{soup} = \theta_{best}$.For each candidate $\theta_c \in M$:$\theta_{candidate} = \text{Avg}(\theta_{soup}, \theta_c)$If $\text{Acc}(\theta_{candidate}) > \text{Acc}(\theta_{soup})$, then $\theta_{soup} \leftarrow \theta_{candidate}$.JAX Implementation SketchNote: This is an inference-time or validation-time loop, not a training operator.Pythondef greedy_model_soup(checkpoints, eval_fn):
+    """
+    Greedy Model Soup algorithm.
+    checkpoints: List of PyTrees.
+    eval_fn: Function taking params -> scalar score.
+    """
+    # 1. Sort by individual performance
+    ranked_models = sorted(checkpoints, key=eval_fn, reverse=True)
+    
+    current_soup = ranked_models
+    best_score = eval_fn(current_soup)
+    ingredients = [current_soup]
+    
+    for i in range(1, len(ranked_models)):
+        candidate_model = ranked_models[i]
+        
+        # Create temporary average of current soup + candidate
+        # Note: In true soup, we average ALL ingredients uniformly.
+        # New Soup = Mean(ingredients + [candidate])
+        new_ingredients = ingredients + [candidate_model]
+        
+        # Efficient computation: new_soup = (current_soup * N + candidate) / (N+1)
+        n = len(ingredients)
+        new_soup = jax.tree_util.tree_map(
+            lambda s, c: (s * n + c) / (n + 1),
+            current_soup, candidate_model
+        )
+        
+        score = eval_fn(new_soup)
+        
+        if score >= best_score:
+            best_score = score
+            current_soup = new_soup
+            ingredients.append(candidate_model)
+            
+    return current_soup
+Pros/ConsPro: Monotonic Improvement. Guaranteed not to degrade performance relative to the best single model.Con: Inference/Validation Cost. Requires evaluating the model on the validation set $N$ times. For a 2-branch setup, this is trivial, but for many checkpoints, it scales linearly.Con: Not a Training Strategy. Soups are typically done post-training.Best ForFinal Deployment. After training is complete, take the last 5 checkpoints from Branch A and last 5 from Branch B and create a soup to maximize robustness.2.7 Git Re-Basin (Permutation Alignment)TheoryGit Re-Basin  addresses the Permutation Symmetry problem directly. It posits that low-loss connectivity exists, but only modulo permutation. Before averaging $\theta_A$ and $\theta_B$, we must find a set of permutation matrices $\Pi = \{P_1, \dots, P_L\}$ (one for each layer) that aligns the neurons of $\theta_B$ to $\theta_A$.
+The goal is to solve:
+This is a combinatorial optimization problem, but it can be relaxed to a linear assignment problem and solved layer-by-layer using the Hungarian Algorithm or Sinkhorn iterations.Algorithm (Weight Matching)Iterate through layers $\ell = 1 \dots L$.For layer $\ell$, compute the cost matrix $C$ between the units of $A$ and $B$. The cost is usually the negative inner product of the weight vectors (maximizing similarity).Solve the linear assignment problem on $C$ to find the optimal permutation $P_\ell$.Apply $P_\ell$ to the output weights of layer $\ell$ and the input weights of layer $\ell+1$.Repeat until convergence (permutations stabilize).Computational CostMatching Cost: $O(L \cdot H^3)$, where $H$ is the hidden dimension. For a standard Transformer ($H=512$ or $768$), this takes seconds to minutes on a CPU.Overhead: Significant compared to FedAvg, but feasible to run periodically (e.g., every 50 epochs).JAX Implementation SketchUses scipy.optimize.linear_sum_assignment for the matching step (CPU-bound) and JAX for the permutation application.Pythonimport numpy as np
+from scipy.optimize import linear_sum_assignment
+
+def match_weights(params_a, params_b):
+    """
+    Simplified weight matching for a single dense layer.
+    """
+    # Extract weight matrices W_a, W_b: [Out, In]
+    # We want to permute the rows (Out dimension) of B to match A
+    
+    # Cost matrix: Euclidean distance or correlation
+    # Maximize dot product = Minimize angle
+    # C[i, j] = - dot(row_a[i], row_b[j])
+    w_a = params_a['kernel'] # Assuming [In, Out] standard Flax layout
+    w_b = params_b['kernel']
+    
+    # We permute the 'Out' dimension (axis 1)
+    # To use linear_sum_assignment, we need cost matrix size [Out, Out]
+    # We compare the columns (neurons)
+    cost_matrix = -np.dot(w_a.T, w_b) 
+    
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    
+    # col_ind is the permutation vector. 
+    # The neuron at index col_ind[i] in B should move to index i.
+    return col_ind
+
+def apply_permutation(params, perm_vec):
+    """
+    Permutes a layer's output weights and the next layer's input weights.
+    """
+    # This requires a graph-aware traversal logic.
+    # 1. Permute columns of current layer W
+    # 2. Permute rows of next layer W
+    # 3. Permute bias of current layer
+    pass # (Full graph traversal implementation is complex)
+Pros/ConsPro: Restores LMC. Empirically shown to find zero-barrier paths between models trained on different data, effectively placing them in the same basin.Con: Implementation Complexity. Handling residual connections (ResNets/Transformers) is non-trivial; if you permute the residual path, you must permute the skip connection identically.Con: Architecture Dependent. Requires custom logic for Multi-Head Attention (permuting heads vs. internal dimensions).Best ForLate-phase merging when models have drifted significantly and simple FedAvg causes a spike in loss. It acts as a "realignment" phase.2.8 Layer-wise MergingTheoryNeural networks learn hierarchical representations. In a Transformer:Lower Layers (Encoder): Learn general feature representations (syntax, market microstructure). These are likely shared across tasks.Upper Layers (Heads): Learn task-specific logic (policy/value outputs). These are highly specialized.Layer-wise merging advocates for applying different merge strategies or ratios to different parts of the network.StrategyEncoder: Merge aggressively (e.g., Fisher Merge) to enforce a unified representation space.Heads: Merge conservatively or not at all (Ensemble). Alternatively, use TIES-Merging on the heads to resolve conflicting policy decisions.JAX ImplementationUse jax.tree_util.tree_map_with_path to apply different logic based on the parameter name.Pythondef layer_wise_merge(params_a, params_b, alpha_encoder=0.5, alpha_head=0.5):
+    def merge_leaf(path, a, b):
+        # path is a tuple of dict keys, e.g., ('params', 'Encoder_0', 'Dense', 'kernel')
+        path_str = "/".join([str(p) for p in path])
+        
+        if "Encoder" in path_str:
+            w = alpha_encoder
+        elif "Head" in path_str:
+            w = alpha_head
+        else:
+            w = 0.5
+            
+        return w * a + (1 - w) * b
+
+    return jax.tree_util.tree_map_with_path(merge_leaf, params_a, params_b)
+Pros/ConsPro: Flexibility. Acknowledges the functional difference between feature extraction and decision making.Con: Manual Tuning. Requires deciding which layers constitute the "encoder" vs "head" and tuning respective ratios.Best ForHeterogeneous Data Sources (like yours). Branch B's "Rule" knowledge is likely localized in the Policy Head and specific Transformer blocks. Layer-wise merging allows protecting those specific weights.3. Compatibility & Divergence MetricsTo decide when to merge, we need rigorous metrics.3.1 Weight Space: Cosine SimilarityMeasures the angle between the flattened parameter vectors.\JAX: optax.cosine_similarity(flat_a, flat_b).Threshold:$> 0.9$: High alignment. Safe to merge.$0.5 - 0.9$: Moderate drift. Use FedProx/Fisher.$< 0.5$: Orthogonal/Diverged. High risk. Use Git Re-Basin.3.2 Loss Landscape: Linear Barrier HeightThe gold standard. Evaluates the loss at the midpoint.\Implementation: Requires an extra forward pass on a validation batch.Threshold: Barrier should be near 0. If Barrier > 10% of base loss, LMC is broken.3.3 Representation: CKA (Centered Kernel Alignment)CKA measures the similarity of activations (hidden states), which is robust to rotation and permutation.Formula:where $K = X_A X_A^T$ and $L = X_B X_B^T$ are the Gram matrices of activations for a batch of data.JAX Implementation:Pythondef linear_cka(activations_a, activations_b):
+    # Act:
+    # Center columns
+    a = activations_a - jnp.mean(activations_a, axis=0)
+    b = activations_b - jnp.mean(activations_b, axis=0)
+
+    # HSIC(X, Y) = ||Y^T X||_F^2 / (n-1)^2
+    # But for CKA ratio, the scaling factors cancel out.
+    numerator = jnp.linalg.norm(b.T @ a, ord='fro') ** 2
+    denom_a = jnp.linalg.norm(a.T @ a, ord='fro')
+    denom_b = jnp.linalg.norm(b.T @ b, ord='fro')
+
+    return numerator / (denom_a * denom_b)
+Threshold: $> 0.8$ indicates compatible representations.3.4 Gradient AlignmentComputes the cosine similarity of the gradients on a shared batch.\Insight: Positive score = Cooperative tasks. Negative score = Conflicting tasks (Gradient Surgery needed).4. Progressive Alignment & Merge Schedules4.1 Critique of Proposed ScheduleYour proposed schedule (0-30% Free, 30-70% Mid, etc.) is structurally sound but requires refinement based on the metrics above.PhaseTraining ProgressStrategyJustificationEarly0-30%Independent ExplorationAllow branches to learn basic features (syntax, rules) without interference. Merging too early collapses diversity.Mid30-70%FedProx ConstrainedIntroduce soft constraints ($\mu \approx 0.01$). Do not hard merge weights yet. Use FedProx to prevent the basins from moving too far apart.Late70-95%Git Re-Basin + FisherModels have specialized. Perform Permutation Alignment (Re-Basin) to fix symmetries, then Fisher Merge to combine high-precision weights.Final95-100%TIES-MergingFinal consolidation. Use TIES to strip noise and resolve sign conflicts in the policy head.4.2 Merge Triggering StrategiesWe recommend an Adaptive Divergence-Triggered strategy over a fixed schedule.Monitor CKA every 10 epochs.Trigger: If $\text{CKA} < 0.8$, initiate a Soft Merge (FedProx constraint increase).Trigger: If $\text{Barrier Height} > \epsilon$, initiate Re-Basin Alignment.Hard Merge: Only merge weights when Barrier $\approx 0$.5. Mitigating Catastrophic ForgettingWhen merging Branch A (Diffusion) and B (Rules), the merged model tends to forget the "Rules" (Branch B) as it continues training on A's data, or vice versa.5.1 Experience Replay (Recommended)This is the most robust solution for RL.Mechanism: Each branch maintains a small buffer (5-10%) of the other branch's data.Branch A trains on: $90\% \mathcal{D}_{diff} + 10\% \mathcal{D}_{rule}$.Branch B trains on: $90\% \mathcal{D}_{rule} + 10\% \mathcal{D}_{diff}$.JAX: Use jax.random.choice to mix batches dynamically.5.2 Elastic Weight Consolidation (EWC)Use the Fisher matrix computed for Fisher Merging.Add penalty to loss: $\lambda \sum_i F_i (\theta_i - \theta^*_{old})^2$.This protects the weights that were critical for the previous merged state.6. Implementation Deep Dives6.1 Fisher Information in JAX (15M Params)For a 15M parameter model, the diagonal Fisher vector consumes $\approx 60$ MB of memory.Efficiency: Use jax.vmap over the batch dimension of jax.grad.Batching: You don't need the Fisher on the entire dataset. A representative sample of 1024-4096 transitions is sufficient for a stable estimate.6.2 Is Git Re-Basin Worth It?Yes. For trading agents, the signal-to-noise ratio is low. SGD is driven heavily by noise, meaning the probability of symmetry breaking is near 100%. Without Re-Basin, you are likely averaging noise with signal. The computational cost (minutes every few hours) is negligible compared to the cost of training a failed model.6.3 Layer-wise StrategyEncoder: Merge with Fisher. We want a shared "Market View."Heads: Keep separate (Ensemble) or merge with TIES. Policy decisions are fragile.6.4 Optimizer State MergingCrucial: Do not reset the optimizer state (Adam momentum $m$, variance $v$).Merge Rule: $m_{new} = 0.5 m_A + 0.5 m_B$, $v_{new} = 0.5 v_A + 0.5 v_B$.Why?: Resetting $v$ to 0 effectively resets the learning rate adaptation, causing a massive spike in update magnitude (shock) that can eject the model from the basin.ConclusionTo achieve >80% oracle agreement, simple FedAvg is insufficient. The recommended pipeline is:Train with FedProx to tether trajectories.Monitor CKA and Barrier Height.Merge using Fisher Merging for the Encoder and TIES-Merging for the Heads.Align using Git Re-Basin before any hard merge.Preserve knowledge using Experience Replay.This holistic approach addresses the geometric, probabilistic, and architectural challenges of federated RL in financial domains.
