@@ -1,4 +1,3 @@
 from .trm import TinyRecursiveTradingModel
-from .portfolio import PortfolioManager
-# from .wrapper import TRMMuZeroModel
+# PortfolioManager removed - use VectorBTTradingEnv instead
 

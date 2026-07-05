@@ -299,9 +299,17 @@ def setup_jax_environment(config: TrainingConfig, seed: int = None):
         logging.info(f"[JAX ENV] Unique prices per env: {config.parallel_envs} envs × {n_steps_per_env} steps")
     else:
         # Shared prices with random windows (original mode)
+        # TASK_821: when --seed was given (config.seed is not None), also seed the
+        # SyntheticMarket price generator with the per-call `seed` (which already
+        # includes the CLI seed offset from the call sites in train_jax_fast.py).
+        # Default (config.seed None) → price_seed=None → unseeded RandomState,
+        # bit-identical to pre-TASK_821 behavior. The unique-prices branch above is
+        # already deterministic given rng_key (per-env seeds derived via fold_in).
+        _cli_seed = getattr(config, 'seed', None)
         jax_env_states, jax_prices, jax_env_config = create_jax_env_and_prices(
             **common_kwargs,
             n_steps=config.synthetic_steps,
+            price_seed=(seed if _cli_seed is not None else None),
         )
         logging.info(f"[JAX ENV] Shared prices: {config.synthetic_steps} steps, {config.parallel_envs} envs with random windows")
 

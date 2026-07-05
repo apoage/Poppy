@@ -10,7 +10,6 @@ Removes expensive operations:
 Speed improvement: ~10-20x faster than full encoder
 """
 
-import torch
 import numpy as np
 from typing import Dict
 
@@ -135,12 +134,12 @@ class FastMultiAssetStateEncoder:
             part2 = buffer[:, :idx]
             return np.concatenate([part1, part2], axis=1)
 
-    def encode(self) -> torch.Tensor:
+    def encode(self) -> np.ndarray:
         """
-        Fast encoding - returns (27, n_assets, n_assets) tensor ready for CNN.
+        Fast encoding - returns (27, n_assets, n_assets) array ready for CNN.
 
         Returns:
-            torch.Tensor: Shape (27, n_assets, n_assets)
+            np.ndarray: Shape (27, n_assets, n_assets), dtype float32
         """
         # Get recent data (n_assets × 60 timesteps)
         prices = self._get_recent_data(self.price_buffer)    # (n, 60)
@@ -178,7 +177,9 @@ class FastMultiAssetStateEncoder:
 
         # Channel 4-7: Log returns at different timeframes
         # CLIP RETURNS to prevent explosions from 0->Price jumps
-        returns_1m = np.diff(prices, axis=1, prepend=prices[:, 0:1]) / (prices + 1e-8)
+        # TASK_122: Fixed denominator to use previous price, not current
+        prev_prices = np.concatenate([prices[:, 0:1], prices[:, :-1]], axis=1)
+        returns_1m = (prices - prev_prices) / (prev_prices + 1e-8)
         returns_1m = np.clip(returns_1m, -10.0, 10.0)
         output[4, :, :] = np.tile(returns_1m[:, -1:], (1, n))  # 1-min return
 
@@ -266,5 +267,4 @@ class FastMultiAssetStateEncoder:
             output[25, :, :] = np.tile(np.clip(upper_band[:, None], 0, 1), (1, n))
             output[26, :, :] = np.tile(np.clip(lower_band[:, None], 0, 1), (1, n))
 
-        # Convert to PyTorch tensor (on CPU)
-        return torch.from_numpy(output).float()
+        return output

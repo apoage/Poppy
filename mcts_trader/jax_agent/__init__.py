@@ -21,6 +21,18 @@ from .differential_reward import (
     integrate_differential_reward_jax,
 )
 
+# TASK_119: Optimal hindsight path solvers
+from .path_solver import (
+    OptimalPath,
+    greedy_lookahead_path,
+    soft_topk_path,
+    sinkhorn_topk_path,
+    compute_optimal_path,
+    compute_regret,
+    dense_sign_oracle,
+    dense_sign_labels_to_policy,
+)
+
 # Value head configuration
 # Support range for categorical value representation
 #

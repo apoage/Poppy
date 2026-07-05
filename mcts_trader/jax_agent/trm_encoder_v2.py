@@ -25,8 +25,15 @@ class AssetTransformerEncoder(nn.Module):
     param_dtype: Any = jnp.float32
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
-        # x: (batch, 27, 60, 64)
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True,
+                 return_per_asset: bool = False):
+        """
+        Args:
+            x: (batch, channels, window, n_assets)
+            return_per_asset: If True, returns (global_state, per_asset_feats)
+                where per_asset_feats has shape (batch, n_assets, embed_dim).
+                TASK_729a: per-asset routing for direction + per-asset policy heads.
+        """
         batch, channels, window, n_assets = x.shape
         
         # 1. Transpose to (batch, n_assets, window, channels)
@@ -78,15 +85,18 @@ class AssetTransformerEncoder(nn.Module):
         # Combine all asset information into the MuZero latent state
         # We use a final LayerNorm + Dense
         x_final = nn.LayerNorm(dtype=self.dtype, param_dtype=self.param_dtype)(x_assets)
-        
+        # x_final: (batch, n_assets, embed_dim) — TASK_729a: per-asset feats exposed here
+
         # Flatten all assets into one global state
         x_global = x_final.reshape(batch, -1)
-        
+
         state = nn.Dense(
             features=self.state_dim,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
             name="global_state_projection"
         )(x_global)
-        
+
+        if return_per_asset:
+            return state, x_final
         return state

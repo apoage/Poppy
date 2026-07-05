@@ -335,7 +335,8 @@ def multipass_oracle_policy(
         soft_policy = sharpened.reshape(T, n_assets * n_actions_per_asset)
 
     # 8. Value targets from CLEAN oracle (true achievable PnL)
-    return soft_policy, clean_path.cumulative_pnl, clean_path.total_alpha
+    # TASK_689: Also return clean selections for target_position derivation
+    return soft_policy, clean_path.cumulative_pnl, clean_path.total_alpha, clean_path.selections
 
 
 @partial(jax.jit, static_argnames=['k', 'lookahead', 'max_len', 'n_passes',
@@ -354,7 +355,7 @@ def batched_multipass_oracle_policy(
     n_actions_per_asset: int = 5,
     temperature: float = 1.0,
     sharpen_temperature: float = 1.0,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     TASK_673: Batched multipass oracle for N episodes in parallel.
 
@@ -370,6 +371,7 @@ def batched_multipass_oracle_policy(
         soft_policies: (N, T, n_assets * n_actions_per_asset) batched soft targets
         avg_pnls: (N, T) batched mean cumulative PnL
         avg_alphas: (N,) batched mean final alpha
+        clean_selections: (N, T, n_assets) TASK_689: clean oracle selections for state channels
     """
     N = returns_batch.shape[0]
     keys = jax.random.split(key, N)
@@ -388,6 +390,91 @@ def batched_multipass_oracle_policy(
         )
     )
     return vmapped_fn(returns_batch, keys)
+
+
+# =============================================================================
+# TASK_739: Dense Sign-of-Forward-Return Oracle (Tier A1)
+# =============================================================================
+
+# WHY: The top-k oracle produces 93.75% HOLD labels by construction (4/64 assets
+# trade per step), so BC fits the HOLD marginal and never learns the per-asset
+# directional conditional. The dense-sign oracle emits {SELL, HOLD, BUY} for
+# every (t, asset) based on sign(r_fwd) with an ε dead-zone. Used ONLY as the
+# BC target; value/path computations continue to use top-k.
+#
+# Action-id convention: matches optimal_path_to_policy (0=Sell, 1=Hold, 2=Buy,
+# 3=LimitSell, 4=LimitBuy). LimitSell/LimitBuy are never emitted by this oracle.
+
+@partial(jax.jit, static_argnames=['lookahead', 'max_len'])
+def dense_sign_oracle(
+    returns: jnp.ndarray,
+    lookahead: int = 20,
+    epsilon: float = 1e-4,
+    max_len: int = DEFAULT_MAX_PATH_LEN,
+) -> jnp.ndarray:
+    """Per-asset, per-step directional labels from sign of r_fwd.
+
+    For each (t, asset):
+        r_fwd = sum(returns[t : t+lookahead])   (log-return cumulant)
+        label = 2 (BUY)  if r_fwd > +ε
+              = 0 (SELL) if r_fwd < -ε
+              = 1 (HOLD) otherwise
+
+    Boundary: row t is valid iff (t + lookahead) ≤ T — row T-lookahead has a
+    full window [T-lookahead, T). The last `lookahead - 1` rows (t = T-lookahead+1
+    .. T-1) would see zero-padded returns, so they are explicitly forced to HOLD
+    to keep the label invariant to end-of-series noise.
+
+    Args:
+        returns: (T, n_assets) per-step log returns.
+        lookahead: forward horizon in steps. Static for JIT.
+        epsilon: dead-zone threshold on |r_fwd|. Calibrate to target trade
+            density 5-15% per asset (spec TASK_739). At minute-bar crypto,
+            1e-4 is a reasonable starting point.
+        max_len: static max-length padding (matches greedy_lookahead_path).
+
+    Returns:
+        labels: (T, n_assets) int32 in {0, 1, 2}.
+    """
+    T, n_assets = returns.shape
+
+    # Pad to static max_len so JIT recompiles once across sequence lengths
+    padded = jnp.zeros((max_len, n_assets), dtype=returns.dtype)
+    padded = padded.at[:T].set(returns)
+
+    # Forward-sum over a fixed window. Pad by `lookahead` zeros so the
+    # dynamic_slice at (max_len - 1, 0) is still in-bounds.
+    returns_padded = jnp.pad(padded, ((0, lookahead), (0, 0)), mode='constant')
+
+    def step(t):
+        window = jax.lax.dynamic_slice(returns_padded, (t, 0), (lookahead, n_assets))
+        return jnp.sum(window, axis=0)
+
+    r_fwd = jax.vmap(step)(jnp.arange(max_len))  # (max_len, n_assets)
+
+    # Boundary invariant: once t + lookahead > T, the window contains padding
+    # zeros. Force HOLD on those steps regardless of the noise-dominated r_fwd.
+    valid = (jnp.arange(max_len) + lookahead) <= T  # (max_len,)
+    buy = (r_fwd > epsilon) & valid[:, None]
+    sell = (r_fwd < -epsilon) & valid[:, None]
+
+    # Argmax of a 3-way {SELL, HOLD, BUY} indicator, using HOLD as default.
+    labels = jnp.where(buy, 2, jnp.where(sell, 0, 1)).astype(jnp.int32)
+    return labels[:T]
+
+
+@partial(jax.jit, static_argnames=['n_actions_per_asset'])
+def dense_sign_labels_to_policy(
+    labels: jnp.ndarray,
+    n_actions_per_asset: int = 5,
+) -> jnp.ndarray:
+    """Convert (T, n_assets) {0=SELL, 1=HOLD, 2=BUY} labels → (T, n_assets*5)
+    one-hot policy targets, shaped identically to optimal_path_to_policy output
+    (per-asset softmax over 5 actions; LimitSell/LimitBuy rows are zero).
+    """
+    T, n_assets = labels.shape
+    onehot = jax.nn.one_hot(labels, n_actions_per_asset, dtype=jnp.float32)
+    return onehot.reshape(T, n_assets * n_actions_per_asset)
 
 
 # =============================================================================

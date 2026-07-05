@@ -140,6 +140,13 @@ class HistoricalMarket:
         if cache_path and self.cache_data is not None and not self._loaded_from_cache:
             self._save_cache(cache_path)
 
+    def close_db(self):
+        """Close DB connection after RAM cache is loaded. Saves file descriptors when many periods loaded."""
+        if hasattr(self, 'conn') and self.conn is not None:
+            self.conn.close()
+            self.conn = None
+            self.cursor = None
+
     def _try_load_cache(self, cache_path: str) -> bool:
         """Try to load from numpy cache file. Returns True if successful."""
         if not os.path.exists(cache_path):
@@ -552,6 +559,54 @@ class HistoricalMarket:
                     }
             return data
         
+    def get_window_random(self, length: int) -> np.ndarray:
+        """Sample a sequential window of OHLCV prices from RAM cache.
+
+        TASK_703: Returns full OHLCV instead of close-only.
+        Walks through data with stride = length//2 (50% overlap), guaranteeing
+        full coverage before wrapping. Small jitter on subsequent passes.
+
+        Returns:
+            (length, n_assets, 5) OHLCV prices as float32
+        """
+        assert self.cache_data is not None, "RAM cache not loaded — set use_ram_cache=True"
+        max_start = len(self.valid_timestamps) - length
+        assert max_start > 0, f"Period too short: {len(self.valid_timestamps)} timestamps < {length} required"
+
+        if not hasattr(self, '_scan_cursor'):
+            self._scan_cursor = 0
+            self._scan_stride = max(length // 2, 1)
+            self._scan_pass = 0
+
+        start_idx = self._scan_cursor
+        if self._scan_pass > 0:
+            jitter = np.random.randint(-self._scan_stride // 4, self._scan_stride // 4 + 1)
+            start_idx = np.clip(start_idx + jitter, 0, max_start)
+
+        self._scan_cursor += self._scan_stride
+        if self._scan_cursor > max_start:
+            self._scan_pass += 1
+            windows_per_pass = max_start // self._scan_stride + 1
+            logging.getLogger(__name__).info(
+                f"[HISTORICAL] Pass {self._scan_pass} complete: "
+                f"{windows_per_pass} windows, stride={self._scan_stride}")
+            self._scan_cursor = 0
+
+        start_idx = min(start_idx, max_start)
+        return self.cache_data[start_idx:start_idx + length]  # TASK_703: full OHLCV
+
+    def get_window(self, start_idx: int, length: int) -> np.ndarray:
+        """Get a specific contiguous window of OHLCV prices from RAM cache.
+
+        TASK_703: Returns full OHLCV instead of close-only.
+
+        Returns:
+            (length, n_assets, 5) OHLCV prices as float32
+        """
+        assert self.cache_data is not None, "RAM cache not loaded — set use_ram_cache=True"
+        end_idx = min(start_idx + length, len(self.valid_timestamps))
+        return self.cache_data[start_idx:end_idx]  # TASK_703: full OHLCV
+
     def get_history(self, lookback_minutes: int) -> Dict[str, Dict]:
         """Get historical window for initialization (slow, use sparingly)"""
         start = self.current_time - (lookback_minutes * 60)

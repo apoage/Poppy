@@ -1,4 +1,4 @@
-from ding.utils import ENV_REGISTRY
-from .trading_env import TradingEnv
-# Import the wrapper to ensure it registers 'wrapped_trading_env' class
-from .wrapper import DICompatibleTradingEnv
+# VectorBT-based trading environment
+from .vectorbt_env import VectorBTTradingEnv
+
+__all__ = ['VectorBTTradingEnv']

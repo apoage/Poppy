@@ -27,3 +27,14 @@ debug_env.py
 
 # Secrets
 .env
+
+# Deploy plumbing
+.git-training-worktree/
+.env-workstation
+
+# Training output (server-side, rsync'd back)
+runs/
+checkpoints/
+logs/
+wandb/
+output/

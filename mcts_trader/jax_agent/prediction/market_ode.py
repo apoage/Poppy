@@ -111,6 +111,7 @@ class NeuralMarketODE(nn.Module):
     - RK2 integration (more accurate)
     - Action conditioning for market impact
     - Multi-step rollout
+    - Physics-only mode (disable neural corrector for interpretability)
 
     All operations in LOG-SPACE.
     """
@@ -122,10 +123,12 @@ class NeuralMarketODE(nn.Module):
     use_garch: bool = True
     use_transformer: bool = True
     use_action_conditioning: bool = True
+    physics_only: bool = False  # If True, disable neural corrector (G_neural = 0)
 
     # Neural corrector parameters
     embed_dim: int = 128
     num_transformer_blocks: int = 2
+    mlp_dim: int = 256  # FFN hidden dimension in transformer blocks
 
     def setup(self):
         """Initialize sub-modules."""
@@ -143,6 +146,7 @@ class NeuralMarketODE(nn.Module):
                 n_features=self.n_features,
                 embed_dim=self.embed_dim,
                 num_transformer_blocks=self.num_transformer_blocks,
+                mlp_dim=self.mlp_dim,
             )
         else:
             self.neural_corrector = SimpleNeuralCorrector(
@@ -164,11 +168,16 @@ class NeuralMarketODE(nn.Module):
         action: Optional[jnp.ndarray] = None,
         prev_variance: Optional[jnp.ndarray] = None,
         deterministic: bool = True,
+        neural_scale: float = 1.0,
     ) -> Tuple[jnp.ndarray, Dict]:
         """
         Compute total tendency (RHS of ODE).
 
-        G_total = G_phys + G_neural + G_impact
+        G_total = G_phys + neural_scale * G_neural + G_impact
+
+        TASK_035: Added neural_scale parameter for physics warmup.
+        During warmup (neural_scale < 1.0), physics gets more gradient signal
+        because the neural corrector can't "eat" all the prediction error.
 
         Args:
             log_prices: (batch, n_assets) current log prices
@@ -179,6 +188,9 @@ class NeuralMarketODE(nn.Module):
             action: (batch,) action indices (optional)
             prev_variance: (batch, n_assets) previous variance for GARCH
             deterministic: Whether to use deterministic mode
+            neural_scale: Scale factor for neural corrector [0, 1].
+                         0 = physics only, 1 = full neural contribution.
+                         Use for warmup: start at 0, anneal to 1 over N steps.
 
         Returns:
             G_total: (batch, n_assets) total tendency
@@ -195,14 +207,20 @@ class NeuralMarketODE(nn.Module):
         )
         G_phys = physics_output.G_total
 
-        # Neural correction
-        G_neural = self.neural_corrector(
-            log_prices,
-            log_returns,
-            moving_avg,
-            features,
-            deterministic=deterministic,
-        )
+        # Neural correction (skip if physics_only mode)
+        if self.physics_only:
+            G_neural = jnp.zeros_like(log_prices)
+        else:
+            G_neural = self.neural_corrector(
+                log_prices,
+                log_returns,
+                moving_avg,
+                features,
+                deterministic=deterministic,
+            )
+            # TASK_035: Scale neural contribution for physics warmup
+            # This gives physics a "head start" to learn before neural takes over
+            G_neural = G_neural * neural_scale
 
         # Action impact (if enabled and action provided)
         if self.use_action_conditioning and action is not None:
@@ -215,10 +233,12 @@ class NeuralMarketODE(nn.Module):
 
         aux = {
             'G_phys': G_phys,
-            'G_neural': G_neural,
+            'G_neural': G_neural,  # Already scaled
+            'G_neural_unscaled': G_neural / jnp.maximum(neural_scale, 1e-8),  # For logging
             'G_impact': G_impact,
             'physics_components': physics_output,
             'next_variance': next_variance,
+            'neural_scale': neural_scale,
         }
 
         return G_total, aux
@@ -233,6 +253,7 @@ class NeuralMarketODE(nn.Module):
         action: Optional[jnp.ndarray] = None,
         prev_variance: Optional[jnp.ndarray] = None,
         deterministic: bool = True,
+        neural_scale: float = 1.0,
     ) -> ODEOutput:
         """
         Single Euler integration step.
@@ -241,7 +262,7 @@ class NeuralMarketODE(nn.Module):
         """
         G_total, aux = self.compute_tendency(
             log_prices, log_returns, moving_avg, noise,
-            features, action, prev_variance, deterministic
+            features, action, prev_variance, deterministic, neural_scale
         )
 
         next_log_prices = log_prices + self.dt * G_total
@@ -265,6 +286,7 @@ class NeuralMarketODE(nn.Module):
         action: Optional[jnp.ndarray] = None,
         prev_variance: Optional[jnp.ndarray] = None,
         deterministic: bool = True,
+        neural_scale: float = 1.0,
     ) -> ODEOutput:
         """
         Single RK2 (Midpoint method) integration step.
@@ -278,7 +300,7 @@ class NeuralMarketODE(nn.Module):
         # k1: tendency at current state
         k1, aux1 = self.compute_tendency(
             log_prices, log_returns, moving_avg, noise,
-            features, action, prev_variance, deterministic
+            features, action, prev_variance, deterministic, neural_scale
         )
 
         # Midpoint state
@@ -288,7 +310,7 @@ class NeuralMarketODE(nn.Module):
         # k2: tendency at midpoint
         k2, aux2 = self.compute_tendency(
             log_prices_mid, log_returns_mid, moving_avg, noise,
-            features, action, aux1['next_variance'], deterministic
+            features, action, aux1['next_variance'], deterministic, neural_scale
         )
 
         # Final update
@@ -314,9 +336,12 @@ class NeuralMarketODE(nn.Module):
         action: Optional[jnp.ndarray] = None,
         prev_variance: Optional[jnp.ndarray] = None,
         deterministic: bool = True,
+        neural_scale: float = 1.0,
     ) -> Tuple[jnp.ndarray, Dict]:
         """
         Perform single ODE step.
+
+        TASK_035: Added neural_scale for physics warmup.
 
         Args:
             log_prices: (batch, n_assets) current log prices
@@ -327,6 +352,7 @@ class NeuralMarketODE(nn.Module):
             action: (batch,) action indices (optional)
             prev_variance: (batch, n_assets) previous variance for GARCH
             deterministic: Whether to use deterministic mode
+            neural_scale: Scale for neural corrector [0, 1] for physics warmup
 
         Returns:
             next_log_prices: (batch, n_assets) predicted log prices
@@ -335,12 +361,12 @@ class NeuralMarketODE(nn.Module):
         if self.ode_method == 'rk2':
             output = self._rk2_step(
                 log_prices, log_returns, moving_avg, noise,
-                features, action, prev_variance, deterministic
+                features, action, prev_variance, deterministic, neural_scale
             )
         else:  # euler
             output = self._euler_step(
                 log_prices, log_returns, moving_avg, noise,
-                features, action, prev_variance, deterministic
+                features, action, prev_variance, deterministic, neural_scale
             )
 
         aux = {
@@ -529,6 +555,7 @@ def create_neural_market_ode(
     use_garch: bool = True,
     use_transformer: bool = True,
     use_action_conditioning: bool = True,
+    physics_only: bool = False,
     rng: Optional[jnp.ndarray] = None,
 ) -> Tuple[NeuralMarketODE, Dict]:
     """
@@ -543,6 +570,7 @@ def create_neural_market_ode(
         use_garch: Whether to use GARCH volatility
         use_transformer: Whether to use transformer corrector
         use_action_conditioning: Whether to model action impact
+        physics_only: If True, disable neural corrector (only use physics)
         rng: Random key for initialization
 
     Returns:
@@ -561,6 +589,7 @@ def create_neural_market_ode(
         use_garch=use_garch,
         use_transformer=use_transformer,
         use_action_conditioning=use_action_conditioning,
+        physics_only=physics_only,
     )
 
     # Initialize with dummy inputs

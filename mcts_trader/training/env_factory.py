@@ -44,6 +44,10 @@ def create_jax_env_and_prices(
     burn_random_limit: int = 10,
     # TASK_818 Tier B: realized-PnL-on-close attributable reward (default OFF = canon)
     reward_attributable: bool = False,
+    # TASK_821: seed for the SyntheticMarket price generator. None (default) = current
+    # behavior (unseeded RandomState → OS entropy). Set only when --seed is given, so
+    # two runs with the same --seed generate identical synthetic prices.
+    price_seed: Optional[int] = None,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment states and synthetic prices.
 
@@ -90,6 +94,8 @@ def create_jax_env_and_prices(
         temporal_jitter=temporal_jitter,
         time_dilation=time_dilation,
         phase_shift_prob=phase_shift_prob,
+        # TASK_821: None (default) = unseeded RandomState, bit-identical to before
+        seed=price_seed,
     )
     synthetic.reset()
 
