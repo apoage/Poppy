@@ -6,6 +6,16 @@ and REST API for Execution.
 
 WARNING: THIS SCRIPT TRADES REAL MONEY.
 Ensure you have configured `config/real_trade_config.py` correctly.
+
+------------------------------------------------------------------------------
+STATUS (2026-07-05): BROKEN / LEGACY. This is the old MuZero live-trader path.
+It depends on mcts_trader.agent.real_portfolio.RealPortfolioManager, which is
+not present in this working tree (see the guarded import below) and is not
+being resurrected. Live trading (gate 4 of the deployment ladder) is now
+planned on the `trader/` package instead — see the paper-trading loop at
+`runs/820_paper` and `tasks/TASK_820_SHIP_TREND_CTA.md` for the current plan.
+Do not use this file for live/paper trading; kept only for reference/history.
+------------------------------------------------------------------------------
 """
 
 import jax
@@ -31,8 +41,18 @@ from mcts_trader.encoder.state_fast import FastMultiAssetStateEncoder
 from mcts_trader.data.kraken_client import KrakenClient
 from mcts_trader.data.stream import KrakenWebSocket
 from mcts_trader.data.database import Database
-from mcts_trader.agent.real_portfolio import RealPortfolioManager
 from config import real_trade_config as cfg
+
+# real_portfolio was never committed to this tree (see module docstring above).
+# Guard the import so the module can at least be imported/inspected; the
+# entrypoint below fails fast with a clear message instead of a NameError/
+# ImportError traceback if anyone actually tries to run this legacy path.
+try:
+    from mcts_trader.agent.real_portfolio import RealPortfolioManager
+    _REAL_PORTFOLIO_AVAILABLE = True
+except ImportError:
+    RealPortfolioManager = None
+    _REAL_PORTFOLIO_AVAILABLE = False
 
 # Logging Setup
 timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -101,23 +121,29 @@ class RealTrader:
         self.encoder.register_assets(self.kraken_symbols)
 
         logging.info("Initializing JAX model...")
-        self.model = MuZeroNetworks(state_dim=64, action_space_size=192, support_size=601)
-        self.trainer = MuZeroTrainer(model=self.model)
-        
+        # Model architecture must match checkpoint (configured in real_trade_config.py)
+        self.model = MuZeroNetworks(
+            state_dim=cfg.STATE_DIM,
+            action_space_size=cfg.ACTION_SPACE_SIZE,
+            support_size=cfg.SUPPORT_SIZE,
+            use_prediction_head=cfg.USE_PREDICTION_HEAD,
+            n_assets=cfg.N_ASSETS,
+        )
+        self.trainer = MuZeroTrainer(
+            model=self.model,
+            use_popart=cfg.USE_POPART,
+        )
+
         # Dummy init
         rng = jax.random.PRNGKey(0)
-        dummy_obs = jnp.ones((1, 27, 64, 64))
+        dummy_obs = jnp.ones((1, 27, cfg.N_ASSETS, cfg.N_ASSETS))
         self.trainer.init_train_state(rng, dummy_obs)
-        
-        # Load Checkpoint
+
+        # Load Checkpoint (use orbax for modern checkpoints)
         logging.info(f"Loading checkpoint from {cfg.CHECKPOINT_DIR}...")
         try:
-            from flax.training import checkpoints
-            self.trainer.state = checkpoints.restore_checkpoint(
-                ckpt_dir=cfg.CHECKPOINT_DIR,
-                target=self.trainer.state
-            )
-            logging.info("Checkpoint loaded.")
+            self.trainer.load_checkpoint(cfg.CHECKPOINT_DIR)
+            logging.info("Checkpoint loaded successfully.")
         except Exception as e:
             logging.critical(f"Failed to load checkpoint: {e}")
             sys.exit(1)
@@ -218,15 +244,6 @@ class RealTrader:
                 # Optional: dump keys to see if we missed it
                 # logging.debug(f"  Available wsnames sample: {list(wsname_to_api.keys())[:5]}")
         
-        logging.info(f"Mapped {mapped_count}/{len(self.kraken_symbols)} symbols.")
-                ws_symbol = base_ws.replace('XBT', 'BTC').replace('XDG', 'DOGE')
-                
-                self.ws_symbol_map[db_symbol] = ws_symbol
-                self.reverse_api_map[ws_symbol] = db_symbol
-                mapped_count += 1
-            else:
-                logging.warning(f"Could not map symbol: {db_symbol}")
-
         logging.info(f"Mapped {mapped_count}/{len(self.kraken_symbols)} symbols.")
 
     async def warmup(self):
@@ -425,6 +442,13 @@ class RealTrader:
 
 
 if __name__ == "__main__":
+    if not _REAL_PORTFOLIO_AVAILABLE:
+        sys.exit(
+            "FATAL: legacy MuZero live-trader path is non-functional: "
+            "mcts_trader.agent.real_portfolio was never committed; live "
+            "trading (gate 4) is planned on the trader/ package — see "
+            "tasks/TASK_820_SHIP_TREND_CTA.md"
+        )
     trader = RealTrader()
     try:
         if cfg.DRY_RUN:
