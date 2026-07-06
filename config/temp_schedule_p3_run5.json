@@ -67,8 +67,8 @@
     "ETH/USD",
     "XMR/USD"
   ],
-  "min_coverage": 0.1,
   "start_date": 1570839960,
   "end_date": 1586393400,
-  "description": "Scheduled run for period 3"
+  "min_coverage": 0.1,
+  "description": "Period 3 Run 5: 180d"
 }

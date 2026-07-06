@@ -143,6 +143,13 @@ class DS24MetricsLogger:
         # TASK_043: ATC Contrastive Loss
         'atc_loss', 'atc_pos_sim', 'atc_neg_sim', 'atc_temperature',
 
+        # TASK_119: Optimal hindsight path metrics
+        'optimal_alpha', 'optimal_trades', 'alpha_capture',
+
+        # TASK_125: Causal Expert Imprinting metrics
+        'bc_loss', 'bc_weight', 'expert_acceptance_rate',
+        'expert_demo_count', 'expert_agent_count', 'expert_buffer_utilization',
+
         # Note: 'alpha', 'market_return', 'agent_return' are in base columns
         # Do NOT duplicate them here - causes pandas issues with duplicate columns
     ]
@@ -456,7 +463,10 @@ class DS24MetricsLogger:
         self,
         alpha: Optional[float] = None,
         market_return: Optional[float] = None,
-        agent_return: Optional[float] = None
+        agent_return: Optional[float] = None,
+        optimal_alpha: Optional[float] = None,
+        optimal_trades: Optional[int] = None,
+        alpha_capture: Optional[float] = None
     ):
         """
         Log market baseline metrics for alpha analysis.
@@ -466,10 +476,18 @@ class DS24MetricsLogger:
           - Negative alpha: Agent underperforming market
           - Zero alpha: Agent matching market (no edge)
 
+        TASK_119: Optimal hindsight path metrics:
+          - optimal_alpha: Maximum achievable alpha with perfect hindsight
+          - optimal_trades: Number of trades in optimal path
+          - alpha_capture: agent_pnl / optimal_alpha (0-1 efficiency ratio)
+
         Args:
             alpha: Agent return minus market return (percentage)
             market_return: Buy-and-hold benchmark return (percentage)
             agent_return: Cumulative agent return from trading (percentage)
+            optimal_alpha: Max achievable alpha from hindsight path solver
+            optimal_trades: Trade count in optimal path
+            alpha_capture: Ratio of agent PnL to optimal alpha (efficiency)
         """
         if alpha is not None:
             self.current_row['alpha'] = alpha
@@ -477,6 +495,46 @@ class DS24MetricsLogger:
             self.current_row['market_return'] = market_return
         if agent_return is not None:
             self.current_row['agent_return'] = agent_return
+        if optimal_alpha is not None:
+            self.current_row['optimal_alpha'] = optimal_alpha
+        if optimal_trades is not None:
+            self.current_row['optimal_trades'] = optimal_trades
+        if alpha_capture is not None:
+            self.current_row['alpha_capture'] = alpha_capture
+
+    def log_expert_buffer(
+        self,
+        bc_loss: Optional[float] = None,
+        bc_weight: Optional[float] = None,
+        expert_storage_rate: Optional[float] = None,  # TASK_132B: Renamed for clarity
+        demo_count: Optional[int] = None,
+        agent_count: Optional[int] = None,
+        buffer_capacity: Optional[int] = None,
+    ):
+        """
+        TASK_125: Log Causal Expert Imprinting metrics.
+
+        Args:
+            bc_loss: Behavioral cloning loss value
+            bc_weight: Current BC loss weight (after decay)
+            expert_storage_rate: Demos stored / total steps (NOT action agreement)
+            demo_count: Number of demonstrations in buffer
+            agent_count: Number of agent experiences in buffer
+            buffer_capacity: Total buffer capacity
+        """
+        if bc_loss is not None:
+            self.current_row['bc_loss'] = bc_loss
+        if bc_weight is not None:
+            self.current_row['bc_weight'] = bc_weight
+        if expert_storage_rate is not None:
+            self.current_row['expert_storage_rate'] = expert_storage_rate
+        if demo_count is not None:
+            self.current_row['expert_demo_count'] = demo_count
+        if agent_count is not None:
+            self.current_row['expert_agent_count'] = agent_count
+        if buffer_capacity is not None and buffer_capacity > 0:
+            total_count = (demo_count or 0) + (agent_count or 0)
+            self.current_row['expert_buffer_utilization'] = total_count / buffer_capacity
 
     def save_tensor_snapshot(
         self,

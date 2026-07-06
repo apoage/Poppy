@@ -339,7 +339,10 @@ function initCharts() {
             { label: 'Alpha (%)', borderColor: COLORS.alphaPositive, fill: false },
             { label: 'Alpha MA30', borderColor: '#ffffff', borderWidth: 3, fill: false },
             { label: 'Market Return', borderColor: COLORS.marketReturn, borderDash: [3, 3], fill: false },
-            { label: 'Agent Return', borderColor: COLORS.agentReturn, borderDash: [3, 3], fill: false }
+            { label: 'Agent Return', borderColor: COLORS.agentReturn, borderDash: [3, 3], fill: false },
+            // TASK_119: Optimal hindsight path
+            { label: 'Optimal Alpha', borderColor: '#ffd700', borderWidth: 2, borderDash: [5, 5], fill: false },
+            { label: 'Alpha Capture %', borderColor: '#ff6b6b', yAxisID: 'y2', fill: false }
         ]
     });
 
@@ -348,7 +351,10 @@ function initCharts() {
             { label: 'Total Loss', borderColor: '#ffffff', borderWidth: 3, fill: false },
             { label: 'Value Loss', borderColor: COLORS.valueLoss, fill: false },
             { label: 'Policy Loss', borderColor: COLORS.policyLoss, fill: false },
-            { label: 'Reward Loss', borderColor: COLORS.rewardLoss, fill: false }
+            { label: 'Reward Loss', borderColor: COLORS.rewardLoss, fill: false },
+            { label: 'Pred Loss', borderColor: COLORS.predLoss || '#10b981', fill: false },
+            { label: 'Physics Reg', borderColor: '#f59e0b', fill: false, borderDash: [3, 3] },
+            { label: 'Value Cat', borderColor: '#ec4899', fill: false, borderDash: [5, 2] }
         ]
     });
 
@@ -362,10 +368,44 @@ function initCharts() {
         ]
     });
 
-    state.charts.valueCal = createDualAxisChart('value-cal-chart',
-        { label: 'Value MSE', borderColor: COLORS.valueLoss },
-        { label: 'Value Std', borderColor: COLORS.policyLoss }
-    );
+    state.charts.valueCal = createMultiAxisChart('value-cal-chart', {
+        datasets: [
+            { label: 'Value MSE', borderColor: COLORS.valueLoss, yAxisID: 'y', fill: false },
+            { label: 'Value Std', borderColor: COLORS.policyLoss, yAxisID: 'y', fill: false },
+            { label: 'Avg Value', borderColor: '#10b981', yAxisID: 'y1', fill: false }
+        ],
+        scales: {
+            y: { position: 'left', title: { display: true, text: 'MSE / Std' } },
+            y1: { position: 'right', title: { display: true, text: 'Avg Value' }, grid: { drawOnChartArea: false } }
+        }
+    });
+
+    // PopArt Normalization chart
+    state.charts.popart = createMultiAxisChart('popart-chart', {
+        datasets: [
+            { label: 'PopArt Mean', borderColor: '#3b82f6', yAxisID: 'y', fill: false },
+            { label: 'PopArt Std', borderColor: '#8b5cf6', yAxisID: 'y1', fill: false },
+            { label: 'Value Scale', borderColor: '#10b981', yAxisID: 'y1', fill: false, borderDash: [3, 3] },
+            { label: 'Value Shift', borderColor: '#f59e0b', yAxisID: 'y', fill: false, borderDash: [3, 3] }
+        ],
+        scales: {
+            y: { position: 'left', title: { display: true, text: 'Mean / Shift' } },
+            y1: { position: 'right', title: { display: true, text: 'Std / Scale' }, grid: { drawOnChartArea: false } }
+        }
+    });
+
+    // Curriculum Evaluation chart (TASK_059)
+    state.charts.eval = createMultiAxisChart('eval-chart', {
+        datasets: [
+            { label: 'Eval Reward', borderColor: '#10b981', yAxisID: 'y', fill: false },
+            { label: 'Eval Alpha %', borderColor: '#3b82f6', yAxisID: 'y1', fill: false },
+            { label: 'Eval HOLD %', borderColor: '#f59e0b', yAxisID: 'y1', fill: false, borderDash: [3, 3] }
+        ],
+        scales: {
+            y: { position: 'left', title: { display: true, text: 'Reward' } },
+            y1: { position: 'right', title: { display: true, text: 'Percentage' }, grid: { drawOnChartArea: false } }
+        }
+    });
 
     state.charts.entropy = createAreaChart('entropy-chart', {
         label: 'Policy Entropy',
@@ -378,6 +418,43 @@ function initCharts() {
             { label: 'Self-Play', backgroundColor: 'rgba(0, 212, 170, 0.6)' },
             { label: 'Training', backgroundColor: 'rgba(124, 77, 255, 0.6)' }
         ]
+    });
+
+    // === Adaptive Difficulty Chart (TASK_058) ===
+    state.charts.difficulty = createMultiAxisChart('difficulty-chart', {
+        datasets: [
+            { label: 'Difficulty', borderColor: '#f59e0b', yAxisID: 'y', fill: false },
+            { label: 'Effective Reward', borderColor: '#8b5cf6', yAxisID: 'y1', fill: false },
+            { label: 'Raw Reward', borderColor: 'rgba(139, 92, 246, 0.4)', yAxisID: 'y1', fill: false, borderDash: [5, 5] },
+            { label: 'Reward EMA', borderColor: '#10b981', yAxisID: 'y1', fill: false, borderDash: [2, 2] }
+        ],
+        scales: {
+            y: { position: 'left', title: { display: true, text: 'Difficulty' }, min: 0, max: 1 },
+            y1: { position: 'right', title: { display: true, text: 'Reward' }, grid: { drawOnChartArea: false } }
+        }
+    });
+
+    // === Noise Components Chart (TASK_058) ===
+    state.charts.noise = createStackedAreaChart('noise-chart', {
+        datasets: [
+            { label: 'Price Noise', backgroundColor: 'rgba(245, 158, 11, 0.6)' },
+            { label: 'Temporal Jitter', backgroundColor: 'rgba(59, 130, 246, 0.6)' },
+            { label: 'Time Dilation', backgroundColor: 'rgba(16, 185, 129, 0.6)' },
+            { label: 'Phase Shift', backgroundColor: 'rgba(139, 92, 246, 0.6)' }
+        ]
+    });
+
+    // === Adaptive Fees Chart ===
+    state.charts.fees = createMultiAxisChart('fees-chart', {
+        datasets: [
+            { label: 'Fee (bps)', borderColor: '#ef4444', yAxisID: 'y', fill: false },
+            { label: 'Slippage (bps)', borderColor: '#f97316', yAxisID: 'y', fill: false },
+            { label: 'Fee Reward EMA', borderColor: '#8b5cf6', yAxisID: 'y1', fill: false, borderDash: [5, 5] }
+        ],
+        scales: {
+            y: { position: 'left', title: { display: true, text: 'Basis Points' }, min: 0, max: 20 },
+            y1: { position: 'right', title: { display: true, text: 'Reward EMA' }, grid: { drawOnChartArea: false } }
+        }
     });
 
     // === Reasoning Tab Charts ===
@@ -478,7 +555,7 @@ function initCharts() {
     });
 
     state.charts.mctsCalibration = createScatterChart('mcts-calibration-chart', {
-        label: 'Predicted vs Actual',
+        label: 'Predicted vs Actual (different scales)',
         borderColor: COLORS.primary,
         backgroundColor: 'rgba(0, 212, 170, 0.5)'
     });
@@ -502,15 +579,19 @@ function initCharts() {
             { label: 'Policy', backgroundColor: 'rgba(54, 162, 235, 0.7)' },
             { label: 'Reward', backgroundColor: 'rgba(255, 206, 86, 0.7)' },
             { label: 'Prediction', backgroundColor: 'rgba(153, 102, 255, 0.7)' },
-            { label: 'Physics', backgroundColor: 'rgba(255, 159, 64, 0.7)' }
+            { label: 'Physics', backgroundColor: 'rgba(255, 159, 64, 0.7)' },
+            { label: 'Value Cat', backgroundColor: 'rgba(236, 72, 153, 0.7)' }
         ]
     });
 
     state.charts.gradientNorms = createLineChart('gradient-norms-chart', {
         datasets: [
-            { label: 'Value Head', borderColor: COLORS.valueLoss, fill: false },
-            { label: 'Policy Head', borderColor: COLORS.policyLoss, fill: false },
-            { label: 'Dynamics', borderColor: COLORS.predLoss, fill: false }
+            { label: 'Value', borderColor: COLORS.valueLoss, fill: false },
+            { label: 'Policy', borderColor: COLORS.policyLoss, fill: false },
+            { label: 'Dynamics', borderColor: COLORS.predLoss || '#10b981', fill: false },
+            { label: 'Encoder', borderColor: '#f59e0b', fill: false },
+            { label: 'Value (clipped)', borderColor: COLORS.valueLoss, fill: false, borderDash: [3, 3] },
+            { label: 'Policy (clipped)', borderColor: COLORS.policyLoss, fill: false, borderDash: [3, 3] }
         ]
     });
 
@@ -533,6 +614,22 @@ function initCharts() {
             { label: 'Pos Sim', borderColor: COLORS.success, fill: false },
             { label: 'Neg Sim', borderColor: COLORS.danger, fill: false }
         ]
+    });
+
+    // BC Expert Imprinting chart (TASK_125)
+    state.charts.bc = createLineChart('bc-chart', {
+        datasets: [
+            { label: 'BC Loss', borderColor: COLORS.secondary, fill: false, yAxisID: 'y' },
+            { label: 'Demo Count (k)', borderColor: COLORS.success, fill: false, yAxisID: 'y1' },
+            { label: 'Action Agreement %', borderColor: COLORS.warning, fill: false, yAxisID: 'y2' }
+        ],
+        options: {
+            scales: {
+                y: { position: 'left', title: { display: true, text: 'BC Loss' } },
+                y1: { position: 'right', title: { display: true, text: 'Demos (k)' }, grid: { drawOnChartArea: false } },
+                y2: { position: 'right', title: { display: true, text: 'Agreement %' }, grid: { drawOnChartArea: false }, min: 0, max: 100 }
+            }
+        }
     });
 }
 
@@ -687,6 +784,52 @@ function createDualAxisChart(canvasId, leftConfig, rightConfig) {
                     grid: { drawOnChartArea: false }
                 }
             }
+        }
+    });
+}
+
+function createMultiAxisChart(canvasId, config) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+
+    // Merge custom scales with defaults
+    const defaultScales = {
+        x: { grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: {
+            type: 'linear',
+            position: 'left',
+            grid: { color: 'rgba(255,255,255,0.05)' }
+        },
+        y1: {
+            type: 'linear',
+            position: 'right',
+            grid: { drawOnChartArea: false }
+        }
+    };
+    const customScales = config.scales || {};
+    const mergedScales = {};
+    for (const axis of ['x', 'y', 'y1']) {
+        mergedScales[axis] = { ...(defaultScales[axis] || {}), ...(customScales[axis] || {}) };
+    }
+
+    return new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: config.datasets.map(d => ({
+                ...d,
+                tension: 0.1,
+                pointRadius: 0,
+                borderWidth: 2,
+                spanGaps: true
+            }))
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { position: 'top' } },
+            scales: mergedScales
         }
     });
 }
@@ -867,6 +1010,15 @@ function updateMetricsCharts() {
         state.charts.alpha.data.datasets[1].data = alphaMa30;
         state.charts.alpha.data.datasets[2].data = data.market_return || [];
         state.charts.alpha.data.datasets[3].data = data.agent_return || [];
+        // TASK_119/126: Optimal hindsight path (episode_optimal_alpha from base columns)
+        state.charts.alpha.data.datasets[4].data = data.episode_optimal_alpha || data.optimal_alpha || [];
+        // Alpha capture: agent_alpha / optimal_alpha
+        const alphaCapture = (data.alpha || []).map((a, i) => {
+            const opt = (data.episode_optimal_alpha || data.optimal_alpha || [])[i];
+            return opt && opt > 0 ? (a / opt) * 100 : 0;
+        });
+        state.charts.alpha.data.datasets[5].data = data.alpha_capture ?
+            (data.alpha_capture || []).map(v => v * 100) : alphaCapture;
         state.charts.alpha.update('none');
     }
 
@@ -877,6 +1029,9 @@ function updateMetricsCharts() {
         state.charts.loss.data.datasets[1].data = data.value_loss || [];
         state.charts.loss.data.datasets[2].data = data.policy_loss || [];
         state.charts.loss.data.datasets[3].data = data.reward_loss || [];
+        state.charts.loss.data.datasets[4].data = data.pred_loss || [];
+        state.charts.loss.data.datasets[5].data = data.physics_reg || [];
+        state.charts.loss.data.datasets[6].data = data.value_cat || [];
         state.charts.loss.update('none');
     }
 
@@ -896,7 +1051,45 @@ function updateMetricsCharts() {
         state.charts.valueCal.data.labels = epochs;
         state.charts.valueCal.data.datasets[0].data = data.value_mse;
         state.charts.valueCal.data.datasets[1].data = data.value_std || [];
+        state.charts.valueCal.data.datasets[2].data = data.avg_value || [];
         state.charts.valueCal.update('none');
+    }
+
+    // PopArt Normalization
+    if (state.charts.popart && (data.popart_mean || data.popart_std)) {
+        state.charts.popart.data.labels = epochs;
+        state.charts.popart.data.datasets[0].data = data.popart_mean || [];
+        state.charts.popart.data.datasets[1].data = data.popart_std || [];
+        state.charts.popart.data.datasets[2].data = data.value_scale || [];
+        state.charts.popart.data.datasets[3].data = data.value_shift || [];
+        state.charts.popart.update('none');
+    }
+
+    // Curriculum Evaluation (TASK_059)
+    // Forward-fill sparse eval data (only logged every N epochs)
+    const forwardFillSparse = (arr) => {
+        if (!arr || arr.length === 0) return [];
+        const result = [];
+        let lastValue = null;
+        for (let i = 0; i < arr.length; i++) {
+            if (arr[i] !== 0 && arr[i] !== null && arr[i] !== undefined) {
+                lastValue = arr[i];
+            }
+            result.push(lastValue);
+        }
+        return result;
+    };
+
+    if (state.charts.eval && (data.eval_reward || data.eval_alpha)) {
+        state.charts.eval.data.labels = epochs;
+        state.charts.eval.data.datasets[0].data = forwardFillSparse(data.eval_reward);
+        state.charts.eval.data.datasets[1].data = forwardFillSparse(data.eval_alpha);
+        state.charts.eval.data.datasets[2].data = forwardFillSparse(data.eval_pct_hold);
+        state.charts.eval.update('none');
+
+        // Show eval section if data exists
+        const evalSection = document.getElementById('eval-analysis-section');
+        if (evalSection) evalSection.style.display = 'block';
     }
 
     // Entropy
@@ -912,6 +1105,47 @@ function updateMetricsCharts() {
         state.charts.speed.data.datasets[0].data = data.self_play_time;
         state.charts.speed.data.datasets[1].data = data.train_time || [];
         state.charts.speed.update('none');
+    }
+
+    // Adaptive Difficulty (TASK_058)
+    if (state.charts.difficulty && data.difficulty_level) {
+        state.charts.difficulty.data.labels = epochs;
+        state.charts.difficulty.data.datasets[0].data = data.difficulty_level;  // Difficulty
+        // Calculate effective reward = reward * (1 + difficulty)
+        const effectiveReward = data.reward && data.difficulty_level ?
+            data.reward.map((r, i) => {
+                const d = data.difficulty_level[i] || 0;
+                return r != null ? r * (1 + d) : null;
+            }) : [];
+        state.charts.difficulty.data.datasets[1].data = effectiveReward;  // Effective Reward
+        state.charts.difficulty.data.datasets[2].data = data.reward || [];  // Raw Reward
+        state.charts.difficulty.data.datasets[3].data = data.reward_ema || [];  // Reward EMA
+        state.charts.difficulty.update('none');
+    }
+
+    // Noise Components (TASK_058)
+    if (state.charts.noise && (data.price_noise || data.temporal_jitter || data.time_dilation || data.phase_shift_prob)) {
+        state.charts.noise.data.labels = epochs;
+        state.charts.noise.data.datasets[0].data = data.price_noise || [];
+        // Normalize temporal_jitter (0-10 steps) to 0-1 range for stacking
+        const jitterNorm = data.temporal_jitter ? data.temporal_jitter.map(v => v != null ? v / 10 : null) : [];
+        state.charts.noise.data.datasets[1].data = jitterNorm;
+        // time_dilation is already 0-0.5 range, scale to 0-1
+        const dilationNorm = data.time_dilation ? data.time_dilation.map(v => v != null ? v * 2 : null) : [];
+        state.charts.noise.data.datasets[2].data = dilationNorm;
+        // phase_shift_prob is already 0-0.8 range, scale to 0-1
+        const phaseNorm = data.phase_shift_prob ? data.phase_shift_prob.map(v => v != null ? v * 1.25 : null) : [];
+        state.charts.noise.data.datasets[3].data = phaseNorm;
+        state.charts.noise.update('none');
+    }
+
+    // Adaptive Fees Chart
+    if (state.charts.fees && (data.fee_bps || data.slippage_bps || data.fee_reward_ema)) {
+        state.charts.fees.data.labels = epochs;
+        state.charts.fees.data.datasets[0].data = data.fee_bps || [];
+        state.charts.fees.data.datasets[1].data = data.slippage_bps || [];
+        state.charts.fees.data.datasets[2].data = data.fee_reward_ema || [];
+        state.charts.fees.update('none');
     }
 }
 
@@ -1002,6 +1236,32 @@ function updateRedoATC() {
 
         if (posSimEl) posSimEl.textContent = posSim != null ? posSim.toFixed(3) : '-';
         if (negSimEl) negSimEl.textContent = negSim != null ? negSim.toFixed(3) : '-';
+    }
+
+    // BC Expert Imprinting chart (TASK_125)
+    if (state.charts.bc && data.bc_loss) {
+        state.charts.bc.data.labels = epochs;
+        state.charts.bc.data.datasets[0].data = data.bc_loss || [];
+        // Scale demo count to thousands for readability
+        const demoCountK = (data.expert_demo_count || []).map(v => v ? v / 1000 : null);
+        state.charts.bc.data.datasets[1].data = demoCountK;
+        // Scale agreement to percentage (0-100)
+        const agreementPct = (data.expert_action_agreement || []).map(v => v != null ? v * 100 : null);
+        state.charts.bc.data.datasets[2].data = agreementPct;
+        state.charts.bc.update('none');
+
+        // Update metric values
+        const demoCount = getLatest(data.expert_demo_count);
+        const bcWeight = getLatest(data.bc_weight);
+        const agreement = getLatest(data.expert_action_agreement);
+
+        const demoCountEl = document.getElementById('bc-demo-count');
+        const bcWeightEl = document.getElementById('bc-weight');
+        const agreementEl = document.getElementById('bc-action-agreement');
+
+        if (demoCountEl) demoCountEl.textContent = demoCount != null ? demoCount.toLocaleString() : '-';
+        if (bcWeightEl) bcWeightEl.textContent = bcWeight != null ? bcWeight.toFixed(4) : '-';
+        if (agreementEl) agreementEl.textContent = agreement != null ? (agreement * 100).toFixed(1) + '%' : '-';
     }
 }
 
@@ -1096,6 +1356,88 @@ function updateStats() {
             statusEl.style.color = COLORS.info;
         }
     }
+
+    // Difficulty level (TASK_058)
+    const difficultyEl = document.getElementById('stat-difficulty');
+    if (data.difficulty_level && data.difficulty_level.length > 0) {
+        const current = data.difficulty_level[data.difficulty_level.length - 1];
+        if (current != null) {
+            difficultyEl.textContent = (current * 100).toFixed(0) + '%';
+        } else {
+            difficultyEl.textContent = '--';
+        }
+    } else {
+        difficultyEl.textContent = '--';
+    }
+
+    // Effective reward (reward × (1 + difficulty))
+    const effectiveEl = document.getElementById('stat-effective-reward');
+    if (data.reward && data.difficulty_level && data.reward.length > 0) {
+        const rewardCurrent = data.reward[data.reward.length - 1];
+        const difficultyCurrent = data.difficulty_level[data.difficulty_level.length - 1] || 0;
+        if (rewardCurrent != null) {
+            const effectiveReward = rewardCurrent * (1 + difficultyCurrent);
+            effectiveEl.textContent = effectiveReward.toFixed(1);
+            // Color based on value
+            if (effectiveReward > 30) {
+                effectiveEl.style.color = COLORS.success;
+            } else if (effectiveReward < 10) {
+                effectiveEl.style.color = COLORS.danger;
+            } else {
+                effectiveEl.style.color = '#8b5cf6';
+            }
+        } else {
+            effectiveEl.textContent = '--';
+        }
+    } else {
+        effectiveEl.textContent = '--';
+    }
+
+    // Fee stat (adaptive fees)
+    const feeEl = document.getElementById('stat-fee-bps');
+    if (feeEl) {
+        if (data.fee_bps && data.fee_bps.length > 0) {
+            const current = data.fee_bps[data.fee_bps.length - 1];
+            if (current != null) {
+                feeEl.textContent = current + ' bps';
+                // Color based on stage (0=green, 8=yellow, 16=red)
+                if (current >= 16) {
+                    feeEl.style.color = COLORS.danger;
+                } else if (current >= 8) {
+                    feeEl.style.color = COLORS.warning;
+                } else {
+                    feeEl.style.color = COLORS.success;
+                }
+            } else {
+                feeEl.textContent = '--';
+            }
+        } else {
+            feeEl.textContent = '--';
+        }
+    }
+
+    // Slippage stat (adaptive fees)
+    const slipEl = document.getElementById('stat-slippage-bps');
+    if (slipEl) {
+        if (data.slippage_bps && data.slippage_bps.length > 0) {
+            const current = data.slippage_bps[data.slippage_bps.length - 1];
+            if (current != null) {
+                slipEl.textContent = current + ' bps';
+                // Color based on stage
+                if (current >= 5) {
+                    slipEl.style.color = COLORS.danger;
+                } else if (current >= 2) {
+                    slipEl.style.color = COLORS.warning;
+                } else {
+                    slipEl.style.color = COLORS.success;
+                }
+            } else {
+                slipEl.textContent = '--';
+            }
+        } else {
+            slipEl.textContent = '--';
+        }
+    }
 }
 
 // =============================================================================
@@ -1157,24 +1499,29 @@ function updateReasoningTab() {
         const h3 = data.latent_delta_norm_h3 || [];
 
         // Compute normalized contributions (percentage of total)
+        // Carry forward last valid values when no data available
         const contrib0 = [];
         const contrib1 = [];
         const contrib2 = [];
         const contrib3 = [];
 
+        let lastValid = [25, 25, 25, 25];  // Default to equal distribution
+
         for (let i = 0; i < epochs.length; i++) {
             const total = (h0[i] || 0) + (h1[i] || 0) + (h2[i] || 0) + (h3[i] || 0);
             if (total > 0) {
-                contrib0.push(((h0[i] || 0) / total) * 100);
-                contrib1.push(((h1[i] || 0) / total) * 100);
-                contrib2.push(((h2[i] || 0) / total) * 100);
-                contrib3.push(((h3[i] || 0) / total) * 100);
-            } else {
-                contrib0.push(25);
-                contrib1.push(25);
-                contrib2.push(25);
-                contrib3.push(25);
+                lastValid = [
+                    ((h0[i] || 0) / total) * 100,
+                    ((h1[i] || 0) / total) * 100,
+                    ((h2[i] || 0) / total) * 100,
+                    ((h3[i] || 0) / total) * 100
+                ];
             }
+            // Always use lastValid (either newly computed or carried forward)
+            contrib0.push(lastValid[0]);
+            contrib1.push(lastValid[1]);
+            contrib2.push(lastValid[2]);
+            contrib3.push(lastValid[3]);
         }
 
         state.charts.cycleContribution.data.labels = epochs;
@@ -1191,15 +1538,34 @@ function updateTRMHeatmap(data, epochs) {
     const hCycles = 4;
     const lCycles = 6;
 
-    // Get latest epoch data for heatmap
-    const latestIdx = epochs.length - 1;
+    // Find the most recent epoch with valid heatmap data (search backwards)
+    let latestIdx = epochs.length - 1;
+    let foundValidData = false;
+
+    for (let idx = epochs.length - 1; idx >= 0; idx--) {
+        // Check if this epoch has any valid heatmap data
+        let hasData = false;
+        for (let h = 0; h < hCycles && !hasData; h++) {
+            const key = `latent_delta_norm_h${h}_l0`;
+            const hKey = `latent_delta_norm_h${h}`;
+            if ((data[key] && data[key][idx] > 0) || (data[hKey] && data[hKey][idx] > 0)) {
+                hasData = true;
+            }
+        }
+        if (hasData) {
+            latestIdx = idx;
+            foundValidData = true;
+            break;
+        }
+    }
+
     const heatmapData = [];
 
     for (let h = 0; h < hCycles; h++) {
         const row = [];
         for (let l = 0; l < lCycles; l++) {
             const key = `latent_delta_norm_h${h}_l${l}`;
-            if (data[key] && data[key][latestIdx] !== undefined) {
+            if (data[key] && data[key][latestIdx] !== undefined && data[key][latestIdx] > 0) {
                 row.push(data[key][latestIdx]);
             } else {
                 // Fallback: use h-level data
@@ -1240,11 +1606,13 @@ function updatePhysicsTab() {
     const data = state.filteredData || state.trainingData;
     if (!data) return;
 
-    // Check if physics data available
-    const hasPhysicsData = ['G_momentum_mean', 'G_reversion_mean', 'G_volatility_mean', 'G_correlation_mean']
-        .some(k => data[k]);
+    // Check if physics data available (either G components OR learned params)
+    const hasGComponents = ['G_momentum_mean', 'G_reversion_mean', 'G_volatility_mean', 'G_correlation_mean']
+        .some(k => data[k] && data[k].some(v => v !== null && v !== 0));
+    const hasLearnedParams = ['physics_alpha_mean', 'physics_beta_mean', 'garch_persistence']
+        .some(k => data[k] && data[k].some(v => v !== null && v !== 0));
 
-    if (!hasPhysicsData) {
+    if (!hasGComponents && !hasLearnedParams) {
         document.getElementById('physics-no-data').style.display = 'block';
         document.getElementById('physics-info').style.display = 'none';
         return;
@@ -1357,16 +1725,73 @@ function updatePlanningTab() {
         state.charts.horizon.update('none');
     }
 
-    // MCTS calibration scatter
+    // MCTS calibration scatter with reference lines
     if (state.charts.mctsCalibration && data.mcts_root_value && data.reward) {
         const scatterData = [];
         const n = Math.min(data.mcts_root_value.length, data.reward.length);
+        let minVal = Infinity, maxVal = -Infinity;
+
         for (let i = 0; i < n; i++) {
             if (data.mcts_root_value[i] != null && data.reward[i] != null) {
                 scatterData.push({ x: data.mcts_root_value[i], y: data.reward[i] });
+                minVal = Math.min(minVal, data.mcts_root_value[i], data.reward[i]);
+                maxVal = Math.max(maxVal, data.mcts_root_value[i], data.reward[i]);
             }
         }
+
+        // Add margin to range
+        const margin = (maxVal - minVal) * 0.1;
+        minVal -= margin;
+        maxVal += margin;
+
+        // Ensure we have at least 3 datasets: scatter, perfect line, 80% zone bounds
+        while (state.charts.mctsCalibration.data.datasets.length < 4) {
+            state.charts.mctsCalibration.data.datasets.push({});
+        }
+
+        // Dataset 0: Scatter points
         state.charts.mctsCalibration.data.datasets[0].data = scatterData;
+        state.charts.mctsCalibration.data.datasets[0].type = 'scatter';
+        state.charts.mctsCalibration.data.datasets[0].order = 1; // On top
+
+        // Dataset 1: Perfect prediction line (y = x)
+        state.charts.mctsCalibration.data.datasets[1] = {
+            label: 'Perfect (y=x)',
+            data: [{ x: minVal, y: minVal }, { x: maxVal, y: maxVal }],
+            type: 'line',
+            borderColor: 'rgba(0, 255, 100, 0.8)',
+            borderWidth: 2,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            fill: false,
+            order: 3
+        };
+
+        // Dataset 2: Upper 80% bound (y = 1.2x)
+        state.charts.mctsCalibration.data.datasets[2] = {
+            label: '80% Zone Upper',
+            data: [{ x: minVal, y: minVal * 1.2 }, { x: maxVal, y: maxVal * 1.2 }],
+            type: 'line',
+            borderColor: 'rgba(0, 255, 100, 0.3)',
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            order: 4
+        };
+
+        // Dataset 3: Lower 80% bound (y = 0.8x) with fill to upper
+        state.charts.mctsCalibration.data.datasets[3] = {
+            label: '80% Zone',
+            data: [{ x: minVal, y: minVal * 0.8 }, { x: maxVal, y: maxVal * 0.8 }],
+            type: 'line',
+            borderColor: 'rgba(0, 255, 100, 0.3)',
+            borderWidth: 1,
+            pointRadius: 0,
+            backgroundColor: 'rgba(0, 255, 100, 0.1)',
+            fill: '-1', // Fill to previous dataset
+            order: 4
+        };
+
         state.charts.mctsCalibration.update('none');
     }
 
@@ -1403,6 +1828,7 @@ function updateInteractionsTab() {
         state.charts.lossContribution.data.datasets[2].data = normalize(data.reward_loss);
         state.charts.lossContribution.data.datasets[3].data = normalize(data.pred_loss);
         state.charts.lossContribution.data.datasets[4].data = normalize(data.physics_reg);
+        state.charts.lossContribution.data.datasets[5].data = normalize(data.value_cat);
         state.charts.lossContribution.update('none');
     }
 
@@ -1414,12 +1840,16 @@ function updateInteractionsTab() {
         state.charts.alignment.update('none');
     }
 
-    // Gradient Norms by Head
+    // Gradient Norms by Head (pre-clip solid, post-clip dashed)
     if (state.charts.gradientNorms) {
         state.charts.gradientNorms.data.labels = epochs;
         state.charts.gradientNorms.data.datasets[0].data = data.grad_norm_value || [];
         state.charts.gradientNorms.data.datasets[1].data = data.grad_norm_policy || [];
         state.charts.gradientNorms.data.datasets[2].data = data.grad_norm_dynamics || [];
+        // Encoder doesn't have pre-clip logged, use clipped
+        state.charts.gradientNorms.data.datasets[3].data = data.grad_norm_encoder_clipped || [];
+        state.charts.gradientNorms.data.datasets[4].data = data.grad_norm_value_clipped || [];
+        state.charts.gradientNorms.data.datasets[5].data = data.grad_norm_policy_clipped || [];
         state.charts.gradientNorms.update('none');
     }
 
@@ -1505,10 +1935,15 @@ function updateAnalysisTab() {
     (analysis.phases || []).forEach(phase => {
         const div = document.createElement('div');
         div.className = `phase-block phase-${phase.type}`;
+        // Show effective reward (mean_reward) and raw reward if available
+        const hasRaw = phase.mean_raw_reward != null && phase.mean_raw_reward !== phase.mean_reward;
+        const rewardDisplay = hasRaw
+            ? `Eff: ${phase.mean_reward?.toFixed(1) || '--'} (Raw: ${phase.mean_raw_reward?.toFixed(1)})`
+            : `Avg: ${phase.mean_reward?.toFixed(2) || '--'}`;
         div.innerHTML = `
             <span class="phase-type">${phase.type.toUpperCase()}</span>
             <span class="phase-range">Epochs ${phase.start}-${phase.end}</span>
-            <span class="phase-reward">Avg: ${phase.mean_reward?.toFixed(2) || '--'}</span>
+            <span class="phase-reward">${rewardDisplay}</span>
         `;
         phasesEl.appendChild(div);
     });
@@ -1527,6 +1962,65 @@ function updateAnalysisTab() {
         `;
         metricsEl.appendChild(div);
     });
+
+    // Adaptive Difficulty Section (TASK_058)
+    // (metrics already declared above)
+    const diffSection = document.getElementById('difficulty-analysis-section');
+    if (metrics.difficulty_current != null || metrics.effective_reward_current != null) {
+        diffSection.style.display = 'block';
+
+        const diffCurrent = document.getElementById('analysis-difficulty-current');
+        const diffMean = document.getElementById('analysis-difficulty-mean');
+        const effCurrent = document.getElementById('analysis-effective-current');
+        const effMean = document.getElementById('analysis-effective-mean');
+        const effMax = document.getElementById('analysis-effective-max');
+
+        if (diffCurrent) diffCurrent.textContent = metrics.difficulty_current != null
+            ? (metrics.difficulty_current * 100).toFixed(0) + '%' : '--';
+        if (diffMean) diffMean.textContent = metrics.difficulty_mean != null
+            ? (metrics.difficulty_mean * 100).toFixed(0) + '%' : '--';
+        if (effCurrent) effCurrent.textContent = metrics.effective_reward_current != null
+            ? metrics.effective_reward_current.toFixed(1) : '--';
+        if (effMean) effMean.textContent = metrics.effective_reward_mean != null
+            ? metrics.effective_reward_mean.toFixed(1) : '--';
+        if (effMax) effMax.textContent = metrics.effective_reward_max != null
+            ? metrics.effective_reward_max.toFixed(1) : '--';
+    } else {
+        diffSection.style.display = 'none';
+    }
+
+    // Curriculum Evaluation Section (TASK_059)
+    // Track last known eval values (eval only runs every N epochs)
+    if (!state.lastEval) state.lastEval = {};
+
+    // Update last known values if we have new eval data (non-zero)
+    if (metrics.eval_level && metrics.eval_level > 0) state.lastEval.level = metrics.eval_level;
+    if (metrics.eval_reward && metrics.eval_reward !== 0) state.lastEval.reward = metrics.eval_reward;
+    if (metrics.eval_alpha && metrics.eval_alpha !== 0) state.lastEval.alpha = metrics.eval_alpha;
+    if (metrics.eval_pct_hold && metrics.eval_pct_hold !== 0) state.lastEval.hold = metrics.eval_pct_hold;
+
+    const evalSection = document.getElementById('eval-analysis-section');
+    const hasEvalData = state.lastEval.level || state.lastEval.reward;
+
+    if (hasEvalData) {
+        evalSection.style.display = 'block';
+
+        const evalLevel = document.getElementById('analysis-eval-level');
+        const evalReward = document.getElementById('analysis-eval-reward');
+        const evalAlpha = document.getElementById('analysis-eval-alpha');
+        const evalHold = document.getElementById('analysis-eval-hold');
+
+        if (evalLevel) evalLevel.textContent = state.lastEval.level != null
+            ? `L${state.lastEval.level}` : '--';
+        if (evalReward) evalReward.textContent = state.lastEval.reward != null
+            ? state.lastEval.reward.toFixed(1) : '--';
+        if (evalAlpha) evalAlpha.textContent = state.lastEval.alpha != null
+            ? (state.lastEval.alpha >= 0 ? '+' : '') + state.lastEval.alpha.toFixed(1) + '%' : '--';
+        if (evalHold) evalHold.textContent = state.lastEval.hold != null
+            ? state.lastEval.hold.toFixed(1) + '%' : '--';
+    } else {
+        evalSection.style.display = 'none';
+    }
 
     // Health summary
     const healthEl = document.getElementById('health-summary');
@@ -1658,6 +2152,414 @@ function refreshLog() {
         loadLogContent(state.currentLogPath, name);
     }
 }
+
+// =============================================================================
+// Benchmark Analytics
+// =============================================================================
+
+let benchmarkCharts = {
+    alpha: null,
+    reward: null,
+    hold: null,
+    loss: null
+};
+
+let benchmarkData = null;
+
+async function loadBenchmarks() {
+    try {
+        const response = await fetch('/api/benchmarks');
+        if (!response.ok) {
+            console.error('Failed to load benchmarks');
+            return;
+        }
+
+        benchmarkData = await response.json();
+
+        // Populate model selector
+        const select = document.getElementById('benchmark-model-select');
+        select.innerHTML = '';
+
+        const modelNames = Object.keys(benchmarkData);
+        if (modelNames.length === 0) {
+            select.innerHTML = '<option value="">No benchmarks found</option>';
+            return;
+        }
+
+        modelNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        });
+
+        // Select first model and render
+        select.value = modelNames[0];
+        renderBenchmarkData(modelNames[0]);
+
+    } catch (error) {
+        console.error('Error loading benchmarks:', error);
+    }
+}
+
+function renderBenchmarkData(modelName) {
+    if (!benchmarkData || !benchmarkData[modelName]) return;
+
+    const data = benchmarkData[modelName];
+    const levels = data.levels;
+
+    // Update summary stats
+    document.getElementById('bench-levels').textContent = levels.length;
+
+    const avgBull = data.bull.alpha.filter(v => v != null);
+    const avgBear = data.bear.alpha.filter(v => v != null);
+    const avgSide = data.sideways.alpha.filter(v => v != null);
+
+    const meanBull = avgBull.length > 0 ? avgBull.reduce((a, b) => a + b, 0) / avgBull.length : 0;
+    const meanBear = avgBear.length > 0 ? avgBear.reduce((a, b) => a + b, 0) / avgBear.length : 0;
+    const meanSide = avgSide.length > 0 ? avgSide.reduce((a, b) => a + b, 0) / avgSide.length : 0;
+
+    document.getElementById('bench-alpha-bull').textContent = meanBull.toFixed(2) + '%';
+    document.getElementById('bench-alpha-bull').className = 'stat-value ' + (meanBull >= 0 ? 'positive' : 'negative');
+
+    document.getElementById('bench-alpha-bear').textContent = meanBear.toFixed(2) + '%';
+    document.getElementById('bench-alpha-bear').className = 'stat-value ' + (meanBear >= 0 ? 'positive' : 'negative');
+
+    document.getElementById('bench-alpha-side').textContent = meanSide.toFixed(2) + '%';
+    document.getElementById('bench-alpha-side').className = 'stat-value ' + (meanSide >= 0 ? 'positive' : 'negative');
+
+    // Find best level by avg alpha
+    let bestLevel = 0;
+    let bestAlpha = -Infinity;
+    data.avg.alpha.forEach((alpha, i) => {
+        if (alpha > bestAlpha) {
+            bestAlpha = alpha;
+            bestLevel = levels[i];
+        }
+    });
+    const bestLevelLabel = bestLevel >= 100 ? `H${String(bestLevel - 100).padStart(2, '0')}` : `L${bestLevel}`;
+    document.getElementById('bench-best-level').textContent = `${bestLevelLabel} (${bestAlpha.toFixed(1)}%)`;
+
+    // Render charts
+    renderBenchmarkCharts(data, levels);
+
+    // Render table
+    renderBenchmarkTable(data, levels);
+}
+
+function renderBenchmarkCharts(data, levels) {
+    // Format level labels: L0-L99 as "L#", 100+ as "H#" (100->H00, 104->H04)
+    const levelLabels = levels.map(l => l >= 100 ? `H${String(l - 100).padStart(2, '0')}` : `L${l}`);
+
+    // Destroy existing charts
+    Object.values(benchmarkCharts).forEach(chart => {
+        if (chart) chart.destroy();
+    });
+
+    // Alpha chart - multi-line for each period
+    const alphaCtx = document.getElementById('benchmark-alpha-chart').getContext('2d');
+    benchmarkCharts.alpha = new Chart(alphaCtx, {
+        type: 'line',
+        data: {
+            labels: levelLabels,
+            datasets: [
+                {
+                    label: 'Bull',
+                    data: data.bull.alpha,
+                    borderColor: '#22c55e',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'Bear',
+                    data: data.bear.alpha,
+                    borderColor: '#ef4444',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'Sideways',
+                    data: data.sideways.alpha,
+                    borderColor: '#f59e0b',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'FTX Crash',
+                    data: data.ftx_crash?.alpha || [],
+                    borderColor: '#a855f7',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                },
+                {
+                    label: 'ETF Approval',
+                    data: data.etf_approval?.alpha || [],
+                    borderColor: '#06b6d4',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                },
+                {
+                    label: 'Boring Week',
+                    data: data.boring_week?.alpha || [],
+                    borderColor: '#84cc16',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                },
+                {
+                    label: 'Average',
+                    data: data.avg.alpha,
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                    borderWidth: 3,
+                    tension: 0.3,
+                    fill: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { color: '#9ca3af', font: { size: 11 } }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                },
+                y: {
+                    ticks: { color: '#9ca3af', callback: v => v + '%' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                }
+            }
+        }
+    });
+
+    // Reward chart
+    const rewardCtx = document.getElementById('benchmark-reward-chart').getContext('2d');
+    benchmarkCharts.reward = new Chart(rewardCtx, {
+        type: 'line',
+        data: {
+            labels: levelLabels,
+            datasets: [
+                {
+                    label: 'Bull',
+                    data: data.bull.reward,
+                    borderColor: '#22c55e',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'Bear',
+                    data: data.bear.reward,
+                    borderColor: '#ef4444',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'Sideways',
+                    data: data.sideways.reward,
+                    borderColor: '#f59e0b',
+                    tension: 0.3,
+                    fill: false
+                },
+                {
+                    label: 'FTX Crash',
+                    data: data.ftx_crash?.reward || [],
+                    borderColor: '#a855f7',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                },
+                {
+                    label: 'ETF Approval',
+                    data: data.etf_approval?.reward || [],
+                    borderColor: '#06b6d4',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                },
+                {
+                    label: 'Boring Week',
+                    data: data.boring_week?.reward || [],
+                    borderColor: '#84cc16',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    hidden: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { color: '#9ca3af', font: { size: 11 } }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                },
+                y: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                }
+            }
+        }
+    });
+
+    // HOLD % chart
+    const holdCtx = document.getElementById('benchmark-hold-chart').getContext('2d');
+    benchmarkCharts.hold = new Chart(holdCtx, {
+        type: 'bar',
+        data: {
+            labels: levelLabels,
+            datasets: [
+                {
+                    label: 'Bull',
+                    data: data.bull.hold_pct,
+                    backgroundColor: 'rgba(34, 197, 94, 0.7)'
+                },
+                {
+                    label: 'Bear',
+                    data: data.bear.hold_pct,
+                    backgroundColor: 'rgba(239, 68, 68, 0.7)'
+                },
+                {
+                    label: 'Sideways',
+                    data: data.sideways.hold_pct,
+                    backgroundColor: 'rgba(245, 158, 11, 0.7)'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: { color: '#9ca3af', font: { size: 11 } }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                },
+                y: {
+                    ticks: { color: '#9ca3af', callback: v => v + '%' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' },
+                    max: 100
+                }
+            }
+        }
+    });
+
+    // Loss chart
+    const lossCtx = document.getElementById('benchmark-loss-chart').getContext('2d');
+    benchmarkCharts.loss = new Chart(lossCtx, {
+        type: 'line',
+        data: {
+            labels: levelLabels,
+            datasets: [
+                {
+                    label: 'Average Loss',
+                    data: data.avg.loss,
+                    borderColor: '#8b5cf6',
+                    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+                    tension: 0.3,
+                    fill: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                },
+                y: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                }
+            }
+        }
+    });
+}
+
+function renderBenchmarkTable(data, levels) {
+    const tbody = document.getElementById('benchmark-table-body');
+    tbody.innerHTML = '';
+
+    levels.forEach((level, i) => {
+        const row = document.createElement('tr');
+
+        const bullAlpha = data.bull.alpha[i];
+        const bearAlpha = data.bear.alpha[i];
+        const sideAlpha = data.sideways.alpha[i];
+        const avgAlpha = data.avg.alpha[i];
+        const holdPct = data.avg.hold_pct[i];
+        const entropy = data.avg.entropy[i];
+        const loss = data.avg.loss[i];
+
+        const levelLabel = level >= 100 ? `H${String(level - 100).padStart(2, '0')}` : `L${level}`;
+        row.innerHTML = `
+            <td class="level-cell">${levelLabel}</td>
+            <td class="${bullAlpha >= 0 ? 'positive' : 'negative'}">${bullAlpha?.toFixed(2) ?? '--'}%</td>
+            <td class="${bearAlpha >= 0 ? 'positive' : 'negative'}">${bearAlpha?.toFixed(2) ?? '--'}%</td>
+            <td class="${sideAlpha >= 0 ? 'positive' : 'negative'}">${sideAlpha?.toFixed(2) ?? '--'}%</td>
+            <td class="${avgAlpha >= 0 ? 'positive' : 'negative'}">${avgAlpha?.toFixed(2) ?? '--'}%</td>
+            <td>${holdPct?.toFixed(1) ?? '--'}%</td>
+            <td>${entropy?.toFixed(2) ?? '--'}</td>
+            <td>${loss?.toFixed(1) ?? '--'}</td>
+        `;
+
+        tbody.appendChild(row);
+    });
+}
+
+// Benchmark event listeners
+document.getElementById('benchmark-model-select')?.addEventListener('change', (e) => {
+    if (e.target.value) {
+        renderBenchmarkData(e.target.value);
+    }
+});
+
+document.getElementById('refresh-benchmarks')?.addEventListener('click', () => {
+    loadBenchmarks();
+});
+
+// Load benchmarks when benchmarks tab is clicked
+document.querySelector('[data-tab="benchmarks"]')?.addEventListener('click', () => {
+    if (!benchmarkData) {
+        loadBenchmarks();
+    }
+});
 
 // =============================================================================
 // Event Handlers

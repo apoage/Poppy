@@ -1,0 +1,13 @@
+{
+    "_comment": "Hot config for dojo_v3_historical.py - edit between runs",
+    "_mcts": "sims, sims-warmup, sims-min",
+    "_batch": "parallel-envs, batch-size",
+    "_lr": "lr",
+    "_exploration": "epsilon-greedy, entropy-coef, entropy-hold-threshold, entropy-boost-low, entropy-boost-high",
+    "_loss_weights": "prediction-loss-weight, atc-weight",
+    "_grad_clip": "clip-grad-value, clip-grad-policy, clip-grad-dynamics, clip-grad-encoder",
+    "_redo": "redo-interval, redo-threshold",
+    "_reward": "differential-reward, differential-weight, burning-money, burn-base-rate, burn-random-prob",
+    "sims": 32,
+    "db_effective_end_date": "2025-03-15"
+}

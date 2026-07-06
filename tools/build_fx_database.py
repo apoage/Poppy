@@ -84,6 +84,11 @@ class FxDatabaseBuilder:
             id_to_symbol: {1: 'BTC/USD', ...} (Normalized)
             symbol_to_id: {'BTC/USD': 1, ...}
         """
+        # Get data counts to resolve conflicts
+        logging.info("Fetching asset data counts...")
+        counts_df = pd.read_sql_query("SELECT asset_id, COUNT(*) as cnt FROM ohlcv GROUP BY asset_id", self.conn)
+        counts = dict(zip(counts_df['asset_id'], counts_df['cnt']))
+        
         query = "SELECT id, symbol FROM assets"
         df = pd.read_sql_query(query, self.conn)
         
@@ -179,8 +184,30 @@ class FxDatabaseBuilder:
                 if 'XBT' in norm_sym:
                     norm_sym = norm_sym.replace('XBT', 'BTC')
                     
-                id_to_symbol[aid] = norm_sym
-                symbol_to_id[norm_sym] = aid
+                # Conflict Resolution
+                if norm_sym in symbol_to_id:
+                    existing_id = symbol_to_id[norm_sym]
+                    cnt_existing = counts.get(existing_id, 0)
+                    cnt_new = counts.get(aid, 0)
+                    
+                    if cnt_new > cnt_existing:
+                        # New one is better
+                        # Remove old mapping from id_to_symbol to be clean
+                        # (Optional, but good for consistency)
+                        if existing_id in id_to_symbol and id_to_symbol[existing_id] == norm_sym:
+                             del id_to_symbol[existing_id]
+                             
+                        id_to_symbol[aid] = norm_sym
+                        symbol_to_id[norm_sym] = aid
+                        logging.info(f"Conflict resolution for {norm_sym}: Replacing {existing_id} ({cnt_existing}) with {aid} ({cnt_new})")
+                    else:
+                        logging.debug(f"Conflict resolution for {norm_sym}: Keeping {existing_id} ({cnt_existing}) over {aid} ({cnt_new})")
+                        # Do NOT add to id_to_symbol if we don't map it to this symbol
+                        # Actually we can map ID->Symbol, just not Symbol->ID
+                        pass
+                else:
+                    id_to_symbol[aid] = norm_sym
+                    symbol_to_id[norm_sym] = aid
             else:
                 logging.warning(f"Could not parse or verify symbol: {raw_sym}, ignoring.")
             
@@ -221,6 +248,12 @@ class FxDatabaseBuilder:
         logging.info(f"Pivoting {len(full_df)} rows...")
         pivot_df = full_df.pivot(index='timestamp', columns='asset_id', values='close')
         pivot_df.sort_index(inplace=True)
+        
+        # Forward fill to handle misaligned timestamps (e.g. sparse trading)
+        # Limit to 1440 minutes (24h) to handle early sparse data
+        logging.info("Forward-filling price data (limit=1440)...")
+        pivot_df.ffill(limit=1440, inplace=True)
+        
         return pivot_df
 
     def calculate_consensus_rate(self, candidates: List[Dict]) -> Tuple[float, str]:
@@ -352,6 +385,7 @@ class FxDatabaseBuilder:
                     bridge_target_ids[(bridge, target)] = aid
                     relevant_ids.add(aid)
         
+        
         logging.info(f"Identified {len(relevant_ids)} relevant assets for FX calculation.")
         
         # Load Data
@@ -411,6 +445,7 @@ class FxDatabaseBuilder:
             
             prev_rate = None
             
+            debug_failures = 0
             for ts in timestamps:
                 # 1. Direct
                 rate = None

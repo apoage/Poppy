@@ -49,7 +49,9 @@ def setup_cuda_env():
 
 CUDA_ENV = setup_cuda_env()
 
-def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs=None, steps=200, last_checkpoint=None, fee=26, slippage=5, sims=16, noise=0.3, noise_frac=0.25):
+def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs=None, steps=200,
+                     last_checkpoint=None, fee=26, slippage=5, sims=16, noise=0.3, noise_frac=0.25,
+                     adaptive_calibration=False, value_scale=1.0, model_size='small'):
     """Execute a single training run"""
     
     start_ts = period_data['start']
@@ -87,6 +89,7 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
     logging.info(f"Assets: {len(assets)} (First 5: {assets[:5]})")
     logging.info(f"Configuration: {actual_epochs} epochs, {steps} steps, Fee: {fee} bps, Slip: {slippage} bps")
     logging.info(f"MCTS: Sims={sims}, Noise={noise}, Frac={noise_frac}")
+    logging.info(f"Model: {model_size}, Calibration: adaptive={adaptive_calibration}, scale={value_scale}")
     
     # Create temporary config
     config = {
@@ -125,8 +128,15 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
         "--slippage", str(slippage),
         "--sims", str(sims),
         "--noise", str(noise),
-        "--noise-frac", str(noise_frac)
+        "--noise-frac", str(noise_frac),
+        "--model-size", model_size
     ]
+
+    # Adaptive calibration
+    if adaptive_calibration:
+        cmd.append("--adaptive-calibration")
+    if value_scale != 1.0:
+        cmd.extend(["--value-scale", str(value_scale)])
 
     if last_checkpoint:
         cmd.extend(["--load-checkpoint", last_checkpoint])
@@ -179,10 +189,18 @@ def run_training_run(period_idx, run_idx, period_data, run_data, db_path, epochs
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Scheduled Training Runner for Historical Data')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of runs (for testing)')
     parser.add_argument('--epochs', type=int, default=None, help='Epochs per run (default: duration of period)')
     parser.add_argument('--steps', type=int, default=200, help='Steps per episode')
+    parser.add_argument('--adaptive-calibration', action='store_true', help='Enable adaptive value calibration')
+    parser.add_argument('--value-scale', type=float, default=1.0, help='Initial value calibration scale')
+    parser.add_argument('--model-size', default='small', choices=['small', 'medium', 'large'], help='Model size')
+    parser.add_argument('--load-checkpoint', help='Initial checkpoint to load for first run')
+    parser.add_argument('--period', type=int, default=None, help='Train specific period only (1-indexed)')
+    parser.add_argument('--run', type=int, default=None, help='Train specific run within period only')
+    parser.add_argument('--start-fee', type=int, default=0, help='Starting fee in bps (0-26)')
+    parser.add_argument('--start-slip', type=int, default=0, help='Starting slippage in bps (0-5)')
     args = parser.parse_args()
 
     if not os.path.exists('training_schedule.json'):
@@ -198,38 +216,65 @@ def main():
     logging.info(f"Total planned runs: {total_runs}")
     
     db_path = schedule['database']
-    
+
     runs_completed = 0
     global_run_count = 0
-    last_checkpoint = None
-    
+    last_checkpoint = args.load_checkpoint  # Use provided checkpoint or None
+
     # Adaptive Difficulty State
-    current_fee = 0 
-    current_slippage = 0 # Start frictionless
+    current_fee = args.start_fee
+    current_slippage = args.start_slip
     target_fee = 26
     target_slippage = 5
-    
+    logging.info(f"Starting difficulty: Fee={current_fee}bps, Slip={current_slippage}bps")
+
     # Maniac Mode Configuration
     current_sims = 32
     current_noise = 0.5
     current_noise_frac = 0.5
-    
-    for p_idx, period in enumerate(schedule['periods'], start=1):
+
+    # Filter periods if --period specified
+    periods = schedule['periods']
+    if args.period is not None:
+        if args.period < 1 or args.period > len(periods):
+            logging.error(f"Period {args.period} out of range (1-{len(periods)})")
+            return
+        periods = [(args.period - 1, periods[args.period - 1])]
+        logging.info(f"Training only Period {args.period}")
+    else:
+        periods = list(enumerate(periods))
+
+    for p_idx_offset, period in periods:
+        p_idx = p_idx_offset + 1 if args.period is None else args.period
         logging.info(f"=== Processing Period {p_idx}/{len(schedule['periods'])} ===")
         
         runs = period.get('training_runs', [])
-        for r_idx, run_data in enumerate(runs, start=1):
+
+        # Filter runs if --run specified
+        if args.run is not None:
+            if args.run < 1 or args.run > len(runs):
+                logging.error(f"Run {args.run} out of range for period {p_idx} (1-{len(runs)})")
+                return
+            runs = [(args.run, runs[args.run - 1])]
+            logging.info(f"Training only Run {args.run}")
+        else:
+            runs = list(enumerate(runs, start=1))
+
+        for r_idx, run_data in runs:
             if args.limit and global_run_count >= args.limit:
                 logging.info(f"Limit of {args.limit} runs reached. Exiting.")
                 return
 
-            # Pass all parameters
+            # Pass all parameters including new calibration options
             latest_ckpt = run_training_run(
-                p_idx, r_idx, period, run_data, db_path, 
-                epochs=args.epochs, steps=args.steps, 
-                last_checkpoint=last_checkpoint, 
+                p_idx, r_idx, period, run_data, db_path,
+                epochs=args.epochs, steps=args.steps,
+                last_checkpoint=last_checkpoint,
                 fee=current_fee, slippage=current_slippage,
-                sims=current_sims, noise=current_noise, noise_frac=current_noise_frac
+                sims=current_sims, noise=current_noise, noise_frac=current_noise_frac,
+                adaptive_calibration=args.adaptive_calibration,
+                value_scale=args.value_scale,
+                model_size=args.model_size
             )
             
             if latest_ckpt:
@@ -241,31 +286,43 @@ def main():
                     with open('last_run_metrics.json', 'r') as f:
                         metrics = json.load(f)
                         avg_reward = metrics.get('avg_reward', 0.0)
-                        
+
                         logging.info(f"📊 Run Metrics: Avg Reward={avg_reward:.2f}%")
-                        
-                        if avg_reward > 5.0:
-                            # Level Up Logic: Slippage first, then Fee
+
+                        if avg_reward > 50.0:
+                            # TURBO: Model crushing it - jump to max difficulty
+                            old_fee, old_slip = current_fee, current_slippage
+                            current_fee = target_fee
+                            current_slippage = target_slippage
+                            logging.info(f"🚀 TURBO! Avg {avg_reward:.1f}% >> Jumping to max: Fee {old_fee}->{current_fee}, Slip {old_slip}->{current_slippage}")
+
+                        elif avg_reward > 20.0:
+                            # FAST: Model doing great - aggressive increase
+                            old_fee, old_slip = current_fee, current_slippage
+                            current_slippage = target_slippage  # Max slip immediately
+                            current_fee = min(target_fee, current_fee + 8)  # +8 fee per run
+                            logging.info(f"⚡ FAST! Avg {avg_reward:.1f}% >> Fee {old_fee}->{current_fee}, Slip {old_slip}->{current_slippage}")
+
+                        elif avg_reward > 5.0:
+                            # NORMAL: Level Up Logic - Slippage first, then Fee
                             if current_slippage < target_slippage:
-                                current_slippage += 1
-                                logging.info(f"📈 Level Up! Slippage increased: {current_slippage-1} -> {current_slippage} bps")
+                                current_slippage = min(target_slippage, current_slippage + 2)
+                                logging.info(f"📈 Level Up! Slippage -> {current_slippage} bps")
                             elif current_fee < target_fee:
                                 old_fee = current_fee
-                                current_fee = min(target_fee, current_fee + 2)
-                                logging.info(f"📈 Level Up! Fee increased: {old_fee} -> {current_fee} bps")
+                                current_fee = min(target_fee, current_fee + 4)
+                                logging.info(f"📈 Level Up! Fee {old_fee} -> {current_fee} bps")
                             else:
                                 logging.info(f"🏆 Max Difficulty Reached (Fee {current_fee}, Slip {current_slippage})")
-                                
+
                         elif avg_reward > 2.0:
-                             # Slower increase
-                             if current_slippage < target_slippage:
-                                 pass # Hold slippage
-                             elif current_fee < target_fee:
-                                 current_fee = min(target_fee, current_fee + 1)
-                                 logging.info(f"📈 Slow Progress. Fee increased: {current_fee-1} -> {current_fee} bps")
+                             # SLOW: Modest gains
+                             if current_fee < target_fee:
+                                 current_fee = min(target_fee, current_fee + 2)
+                                 logging.info(f"📈 Slow Progress. Fee -> {current_fee} bps")
                         else:
-                            logging.info(f"🐢 Reward low ({avg_reward:.2f}%), maintaining difficulty (Fee {current_fee}, Slip {current_slippage}).")
-                            
+                            logging.info(f"🐢 Reward low ({avg_reward:.2f}%), maintaining Fee={current_fee}, Slip={current_slippage}")
+
                 except Exception as e:
                     logging.warning(f"Could not load metrics to adjust difficulty: {e}")
                 

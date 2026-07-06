@@ -1,0 +1,15 @@
+[
+    {
+        "level": 3,
+        "generator": "noisy_trends",
+        "tactics": ["basic"],
+        "epochs": 2000,
+        "pass_threshold": 0.2,
+        "retry_epochs": 500,
+        "max_retries": 2,
+        "fee_bps": 26,
+        "n_assets": 64,
+        "n_steps": 10000,
+        "description": "Noisy trends - 2000 epochs with adaptive calibration"
+    }
+]

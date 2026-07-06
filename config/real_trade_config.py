@@ -42,7 +42,15 @@ RUN_HOURS = 6
 DRY_RUN = True 
 
 # --- Model & Data ---
-CHECKPOINT_DIR = os.path.abspath("jax_ckpt_fast/checkpoint_49750")
+CHECKPOINT_DIR = os.path.abspath("jax_ckpt_fast/poppy_v2_L0_phase_A")
 N_ASSETS = 64
 LOOKBACK = 60
-SIMULATIONS = 32
+SIMULATIONS = 24
+
+# --- Model Architecture (must match checkpoint) ---
+MODEL_SIZE = 'small'  # small=64, medium=96, large=160
+STATE_DIM = 64  # Must match MODEL_SIZE
+ACTION_SPACE_SIZE = 320  # N_ASSETS * 5 (sell/hold/buy/limit_sell/limit_buy)
+SUPPORT_SIZE = 401  # PopArt: [-10, +10] with 0.05 resolution
+USE_PREDICTION_HEAD = True  # Enable prediction head (trained with --use-prediction-loss)
+USE_POPART = True  # Enable PopArt normalization

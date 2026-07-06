@@ -230,7 +230,7 @@ class DS24TrainingHooks:
         logged_metrics = {}
 
         # Level 1+: Basic CSV metrics + Market baseline + Training config
-        self._log_market_baseline(trajectory)
+        self._log_market_baseline(trajectory, train_metrics)
         self._log_training_config(args)
 
         # Log ReDo and ATC stats if provided (TASK_042, TASK_043)
@@ -616,22 +616,39 @@ class DS24TrainingHooks:
             dynamics_grad_norm=train_metrics.get('grad_norm_dynamics')
         )
 
-    def _log_market_baseline(self, trajectory: Dict[str, Any]):
+    def _log_market_baseline(self, trajectory: Dict[str, Any], train_metrics: Optional[Dict[str, Any]] = None):
         """Level 1+: Log market baseline metrics (alpha, market/agent returns).
 
         Alpha = agent_return - market_return:
           - Positive: Agent beating buy-and-hold
           - Negative: Agent underperforming market
           - Zero: Agent matching market (no edge)
+
+        TASK_119: Also logs optimal hindsight path metrics if available:
+          - optimal_alpha: Maximum achievable alpha with perfect hindsight
+          - optimal_trades: Trade count in optimal path
+          - alpha_capture: agent_pnl / optimal_alpha (efficiency ratio)
         """
         alpha = trajectory.get('alpha')
         market_return = trajectory.get('market_return')
         agent_return = trajectory.get('agent_return')
 
+        # TASK_119: Extract optimal path metrics from train_metrics
+        optimal_alpha = None
+        optimal_trades = None
+        alpha_capture = None
+        if train_metrics is not None:
+            optimal_alpha = train_metrics.get('optimal_alpha')
+            optimal_trades = train_metrics.get('optimal_trades')
+            alpha_capture = train_metrics.get('alpha_capture')
+
         self.logger.log_market_baseline(
             alpha=alpha,
             market_return=market_return,
-            agent_return=agent_return
+            agent_return=agent_return,
+            optimal_alpha=optimal_alpha,
+            optimal_trades=optimal_trades,
+            alpha_capture=alpha_capture
         )
 
     def _log_training_config(self, args: Any):

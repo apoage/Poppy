@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSe - Easy Training Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1>DSe</h1>
+            <span class="subtitle">Easy Training Dashboard</span>
+        </div>
+        <div class="header-center">
+            <div class="status-bar">
+                <div class="status-item" id="status-easy" style="display:none;">
+                    <span class="status-label">Easy Training</span>
+                    <span class="status-value" id="status-easy-value">--</span>
+                </div>
+                <div class="status-item" id="status-a">
+                    <span class="status-label">Branch A (Bella)</span>
+                    <span class="status-value" id="status-a-value">--</span>
+                </div>
+                <div class="status-item" id="status-b">
+                    <span class="status-label">Branch B (Synth)</span>
+                    <span class="status-value" id="status-b-value">--</span>
+                </div>
+                <div class="status-item" id="status-merge">
+                    <span class="status-label">Merges</span>
+                    <span class="status-value" id="status-merge-value">--</span>
+                </div>
+                <div class="status-item" id="status-level">
+                    <span class="status-label">Level</span>
+                    <span class="status-value" id="status-level-value">--</span>
+                </div>
+            </div>
+        </div>
+        <div class="header-right">
+            <label class="auto-refresh">
+                <input type="checkbox" id="auto-refresh" checked>
+                Auto-refresh
+            </label>
+            <span id="last-update">--</span>
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+        <button class="tab active" data-tab="training">Training</button>
+        <button class="tab" data-tab="divergence">Divergence</button>
+        <button class="tab" data-tab="checkpoints">Checkpoints</button>
+        <button class="tab" data-tab="logs">Logs</button>
+    </nav>
+
+    <!-- Tab Content -->
+    <main class="content">
+        <!-- Training Tab -->
+        <div class="tab-content active" id="tab-training">
+            <div class="epoch-filter">
+                <span>Show epochs:</span>
+                <button class="epoch-btn" data-epochs="50">Last 50</button>
+                <button class="epoch-btn" data-epochs="100">Last 100</button>
+                <button class="epoch-btn active" data-epochs="200">Last 200</button>
+                <button class="epoch-btn" data-epochs="500">Last 500</button>
+                <button class="epoch-btn" data-epochs="0">All</button>
+                <input type="number" id="custom-epochs" placeholder="Custom" min="10" max="10000" style="width: 80px; margin-left: 10px;">
+                <button class="epoch-btn" id="custom-epochs-btn">Go</button>
+                <span style="margin-left: 1.5rem; border-left: 1px solid var(--border-color); padding-left: 1rem;">
+                    <label class="auto-refresh" style="font-size: 0.9rem;">
+                        <input type="checkbox" id="normalize-toggle">
+                        Normalize
+                    </label>
+                </span>
+            </div>
+            <div class="chart-grid">
+                <div class="chart-container full-width">
+                    <h3>Oracle Agreement</h3>
+                    <canvas id="chart-agreement"></canvas>
+                </div>
+                <div class="chart-container full-width">
+                    <h3>Trade Agreement (agree_trade)</h3>
+                    <canvas id="chart-trade-agree"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Training Loss</h3>
+                    <canvas id="chart-loss"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Validation Metrics</h3>
+                    <canvas id="chart-validation"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Gradient Norm</h3>
+                    <canvas id="chart-gradnorm"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Epoch Time</h3>
+                    <canvas id="chart-time"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Divergence Tab -->
+        <div class="tab-content" id="tab-divergence">
+            <div class="divergence-grid">
+                <div class="gauge-container">
+                    <h3>Cosine Similarity</h3>
+                    <div id="gauge-cosine"></div>
+                    <p class="gauge-label" id="cosine-label">--</p>
+                </div>
+                <div class="gauge-container">
+                    <h3>Loss Barrier</h3>
+                    <div id="gauge-barrier"></div>
+                    <p class="gauge-label" id="barrier-label">--</p>
+                </div>
+                <div class="merge-timeline-container full-width">
+                    <h3>Merge Timeline</h3>
+                    <div id="merge-timeline"></div>
+                </div>
+                <div class="chart-container full-width">
+                    <h3>Merge Effectiveness</h3>
+                    <canvas id="chart-effectiveness"></canvas>
+                </div>
+                <div class="merge-log-container full-width">
+                    <h3>Merge Decision Log</h3>
+                    <div id="merge-log"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Checkpoints Tab -->
+        <div class="tab-content" id="tab-checkpoints">
+            <div class="checkpoint-grid">
+                <div class="checkpoint-list">
+                    <h3>Checkpoints</h3>
+                    <div class="checkpoint-filters">
+                        <button class="filter-btn active" data-filter="all">All</button>
+                        <button class="filter-btn" data-filter="branch_a">Branch A</button>
+                        <button class="filter-btn" data-filter="branch_b">Branch B</button>
+                        <button class="filter-btn" data-filter="merged">Merged</button>
+                    </div>
+                    <div id="checkpoint-list"></div>
+                </div>
+                <div class="checkpoint-details">
+                    <h3>Checkpoint Details</h3>
+                    <div id="checkpoint-info">
+                        <p class="placeholder">Select a checkpoint to view details</p>
+                    </div>
+                    <div id="layer-stats"></div>
+                </div>
+                <div class="checkpoint-heatmap full-width">
+                    <h3>Weight Heatmap</h3>
+                    <select id="layer-select">
+                        <option value="">Select a layer...</option>
+                    </select>
+                    <div id="heatmap-container"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs Tab -->
+        <div class="tab-content" id="tab-logs">
+            <div class="logs-grid">
+                <div class="log-panel">
+                    <div class="log-header">
+                        <h3>Branch A (Bella)</h3>
+                        <label>
+                            <input type="checkbox" id="log-a-follow" checked>
+                            Follow
+                        </label>
+                    </div>
+                    <div class="log-content" id="log-a"></div>
+                </div>
+                <div class="log-panel">
+                    <div class="log-header">
+                        <h3>Branch B (Synthetic)</h3>
+                        <label>
+                            <input type="checkbox" id="log-b-follow" checked>
+                            Follow
+                        </label>
+                    </div>
+                    <div class="log-content" id="log-b"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+[
+    {
+        "level": 1,
+        "generator": "lagged",
+        "tactics": ["basic"],
+        "epochs": 1000,
+        "pass_threshold": 1.0,
+        "retry_epochs": 300,
+        "max_retries": 4,
+        "fee_bps": 5,
+        "n_assets": 64,
+        "n_steps": 10000,
+        "description": "Lagged pairs - learn correlation (low fees 5bps)"
+    },
+    {
+        "level": 2,
+        "generator": "dip",
+        "tactics": ["basic"],
+        "epochs": 1500,
+        "pass_threshold": 0.5,
+        "retry_epochs": 400,
+        "max_retries": 4,
+        "fee_bps": 13,
+        "n_assets": 64,
+        "n_steps": 10000,
+        "description": "Dip crashes - patience and timing (medium fees 13bps)"
+    },
+    {
+        "level": 3,
+        "generator": "noisy_trends",
+        "tactics": ["basic"],
+        "epochs": 2000,
+        "pass_threshold": 0.2,
+        "retry_epochs": 500,
+        "max_retries": 4,
+        "fee_bps": 26,
+        "n_assets": 64,
+        "n_steps": 10000,
+        "description": "Noisy trends - realistic fees (26bps) - NO SWAPS (action space change)"
+    }
+]

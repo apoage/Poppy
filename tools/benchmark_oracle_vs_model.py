@@ -175,11 +175,10 @@ def generate_validation_data(
             # Generate all episodes in one batched call
             key = jax.random.PRNGKey(seed)
             prices_batch = generate_bella_prices_on_device(
-                bella_gen, key, n_envs=n_episodes
+                bella_gen, key, n_envs=n_episodes,
+                ohlcv=False,  # TASK_703: oracle benchmark only needs close
             )
             # prices_batch: (n_episodes, seq_len, n_assets)
-
-            # Trim to total_length if Bella generates more
             prices_batch = prices_batch[:, :total_length, :]
 
             return np.array(prices_batch)
@@ -398,13 +397,13 @@ def simulate_oracle_pnl(
         mask = selections[t]
         k_count = max(np.sum(mask), 1)
 
-        # P&L from abs returns
-        # BUG-9 fix: Use raw sum (no /k_count) to match model P&L normalization
-        step_pnl = np.sum(np.abs(returns[t]) * mask)
+        # P&L from abs returns, normalized by n_assets for equal-weight portfolio
+        # TASK_705: Both oracle and model normalize by n_assets
+        step_pnl = np.sum(np.abs(returns[t]) * mask) / n_assets
 
-        # Transaction costs
+        # Transaction costs (normalized by n_assets for equal-weight portfolio)
         changes = np.sum(np.abs(mask - prev_mask) > 0.5)
-        step_pnl -= changes * transaction_cost
+        step_pnl -= changes * transaction_cost / n_assets
         trade_count += int(changes)
 
         total_pnl += step_pnl
@@ -433,6 +432,9 @@ def simulate_model_pnl(
     T, n_assets = returns.shape
     position = np.zeros(n_assets, dtype=np.float32)  # Start flat
 
+    # TASK_705: Equal-weight portfolio — each position is 1/n_assets of portfolio
+    txn_cost_norm = transaction_cost / n_assets
+
     for t in range(T):
         step_pnl = 0.0
 
@@ -444,28 +446,29 @@ def simulate_model_pnl(
                 if position[i] == -1:  # short → flat
                     position[i] = 0.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 elif position[i] == 0:  # flat → long
                     position[i] = 1.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 # if already long, stay long (no trade)
 
             elif actions[t, i] == 0:  # SELL → move toward short
                 if position[i] == 1:  # long → flat
                     position[i] = 0.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 elif position[i] == 0:  # flat → short
                     position[i] = -1.0
                     trade_count += 1
-                    step_pnl -= transaction_cost
+                    step_pnl -= txn_cost_norm
                 # if already short, stay short (no trade)
 
             # HOLD(1): maintain position (no change)
 
-        # P&L from position AFTER action
-        step_pnl += np.sum(position * returns[t])
+        # P&L from position AFTER action, normalized by n_assets
+        # TASK_705: Equal-weight portfolio normalization
+        step_pnl += np.sum(position * returns[t]) / n_assets
 
         total_pnl += step_pnl
 

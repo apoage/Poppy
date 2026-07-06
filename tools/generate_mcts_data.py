@@ -72,7 +72,8 @@ def generate_realistic_data(num_trajectories=100):
             rewards.append(reward)
 
             # Convert categorical value to scalar for storage
-            support = jnp.linspace(-10, 10, 601)
+            from mcts_trader.jax_agent import VALUE_SUPPORT_MIN, VALUE_SUPPORT_MAX, VALUE_SUPPORT_SIZE
+            support = jnp.linspace(VALUE_SUPPORT_MIN, VALUE_SUPPORT_MAX, VALUE_SUPPORT_SIZE)
             value_probs = jax.nn.softmax(output['value'][0])
             value_scalar = jnp.sum(value_probs * support)
             values.append(value_scalar)

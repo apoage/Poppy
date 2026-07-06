@@ -60,12 +60,12 @@ def run_generalization_eval(
     # Create evaluation environment
     eval_env = VectorBTTradingEnv(
         n_assets=n_assets,
-        window_size=64,
-        mode='MARGIN',
-        fee_bps=fee,
+        trading_fee_bps=fee,
         slippage_bps=slippage,
         synthetic_level=eval_level,
-        synthetic_steps=steps + 100,  # Extra buffer
+        synthetic_n_steps=steps + 100,  # Extra buffer
+        max_steps=steps,
+        allow_short=True,  # MARGIN mode
     )
 
     # Run single evaluation episode

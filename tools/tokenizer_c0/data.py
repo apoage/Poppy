@@ -71,25 +71,22 @@ def load_hourly_ohlc(asset_id):
     hi = {r[0]: r[3] for r in rows}
     lo = {r[0]: r[4] for r in rows}
 
-    # Pull open at first_ts and close at last_ts for all buckets in two queries.
-    fts = sorted(first_ts.values())
-    lts = sorted(last_ts.values())
+    # Pull open@first_ts and close@last_ts. A huge `timestamp IN (?,?,...)` blows
+    # past SQLite's variable limit on multi-year assets, so fetch all
+    # (ts, open, close) rows for the asset once and index them in Python.
+    fts_set = set(first_ts.values())
+    lts_set = set(last_ts.values())
     open_at = {}
     close_at = {}
     cur.execute(
-        f"SELECT timestamp, open, close FROM ohlcv WHERE asset_id=? AND timestamp IN "
-        f"({','.join('?' * len(fts))})",
-        (asset_id, *fts),
+        "SELECT timestamp, open, close FROM ohlcv WHERE asset_id=?",
+        (asset_id,),
     )
     for t, o, c in cur.fetchall():
-        open_at[t] = o
-    cur.execute(
-        f"SELECT timestamp, open, close FROM ohlcv WHERE asset_id=? AND timestamp IN "
-        f"({','.join('?' * len(lts))})",
-        (asset_id, *lts),
-    )
-    for t, o, c in cur.fetchall():
-        close_at[t] = c
+        if t in fts_set:
+            open_at[t] = o
+        if t in lts_set:
+            close_at[t] = c
     con.close()
 
     if not buckets:

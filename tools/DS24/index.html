@@ -80,6 +80,7 @@
             <button class="tab" data-tab="interactions">Component Interactions</button>
             <button class="tab" data-tab="analysis">Analysis</button>
             <button class="tab" data-tab="checkpoints">Checkpoints</button>
+            <button class="tab" data-tab="benchmarks">Benchmarks</button>
             <button class="tab" data-tab="logs">Logs</button>
         </nav>
 
@@ -115,6 +116,22 @@
                     <div class="stat-card">
                         <span class="stat-label">Epochs</span>
                         <span class="stat-value" id="stat-epochs">--</span>
+                    </div>
+                    <div class="stat-card stat-card-difficulty">
+                        <span class="stat-label">Difficulty</span>
+                        <span class="stat-value" id="stat-difficulty">--</span>
+                    </div>
+                    <div class="stat-card stat-card-effective">
+                        <span class="stat-label">Effective Rwd</span>
+                        <span class="stat-value" id="stat-effective-reward">--</span>
+                    </div>
+                    <div class="stat-card stat-card-fees">
+                        <span class="stat-label">Fee</span>
+                        <span class="stat-value" id="stat-fee-bps">--</span>
+                    </div>
+                    <div class="stat-card stat-card-fees">
+                        <span class="stat-label">Slippage</span>
+                        <span class="stat-value" id="stat-slippage-bps">--</span>
                     </div>
                 </div>
 
@@ -163,8 +180,14 @@
                         <canvas id="action-chart"></canvas>
                     </div>
                     <div class="chart-container">
-                        <h3>Value Calibration (MSE & Std)</h3>
+                        <h3>Value Calibration</h3>
+                        <p class="chart-description">MSE, Std, and average predicted value</p>
                         <canvas id="value-cal-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>PopArt Normalization</h3>
+                        <p class="chart-description">Running mean/std for value target normalization</p>
+                        <canvas id="popart-chart"></canvas>
                     </div>
                     <div class="chart-container">
                         <h3>Policy Entropy</h3>
@@ -173,6 +196,21 @@
                     <div class="chart-container">
                         <h3>Training Speed</h3>
                         <canvas id="speed-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Adaptive Difficulty</h3>
+                        <p class="chart-description">Difficulty level, effective reward, and reward EMA target</p>
+                        <canvas id="difficulty-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Noise Components</h3>
+                        <p class="chart-description">Individual noise levels controlled by adaptive difficulty</p>
+                        <canvas id="noise-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Adaptive Fees</h3>
+                        <p class="chart-description">Trading costs that scale up when reward exceeds threshold</p>
+                        <canvas id="fees-chart"></canvas>
                     </div>
                 </div>
             </section>
@@ -277,7 +315,7 @@
                     </div>
                     <div class="chart-container">
                         <h3>MCTS Root Value vs Actual Reward</h3>
-                        <p class="chart-description">Scatter plot comparing predicted vs realized returns.</p>
+                        <p class="chart-description">Note: Different scales (normalized vs raw). Use Horizon Error chart for accuracy.</p>
                         <canvas id="mcts-calibration-chart"></canvas>
                     </div>
                     <div class="chart-container">
@@ -357,6 +395,21 @@
                             <span class="metric-value" id="atc-neg-sim">-</span>
                         </div>
                     </div>
+
+                    <!-- BC Expert Imprinting Panel (TASK_125) -->
+                    <div class="chart-container" id="bc-panel">
+                        <h3>Expert Imprinting: BC Loss</h3>
+                        <p class="chart-description">Behavioral Cloning from hindsight-optimal actions (TASK_125).</p>
+                        <canvas id="bc-chart"></canvas>
+                        <div class="metric-row">
+                            <span class="metric-label">Demo Count:</span>
+                            <span class="metric-value" id="bc-demo-count">-</span>
+                            <span class="metric-label">BC Weight:</span>
+                            <span class="metric-value" id="bc-weight">-</span>
+                            <span class="metric-label">Action Agreement:</span>
+                            <span class="metric-value" id="bc-action-agreement">-</span>
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -384,6 +437,60 @@
                     </div>
                 </div>
 
+                <!-- Adaptive Difficulty Section (TASK_058) -->
+                <div class="analysis-section wide" id="difficulty-analysis-section">
+                    <h3>Adaptive Difficulty (TASK_058)</h3>
+                    <div class="difficulty-stats-grid" id="difficulty-stats">
+                        <div class="difficulty-stat">
+                            <span class="difficulty-label">Current Difficulty</span>
+                            <span class="difficulty-value" id="analysis-difficulty-current">--</span>
+                        </div>
+                        <div class="difficulty-stat">
+                            <span class="difficulty-label">Mean Difficulty</span>
+                            <span class="difficulty-value" id="analysis-difficulty-mean">--</span>
+                        </div>
+                        <div class="difficulty-stat effective">
+                            <span class="difficulty-label">Effective Reward (Current)</span>
+                            <span class="difficulty-value" id="analysis-effective-current">--</span>
+                        </div>
+                        <div class="difficulty-stat effective">
+                            <span class="difficulty-label">Effective Reward (Mean)</span>
+                            <span class="difficulty-value" id="analysis-effective-mean">--</span>
+                        </div>
+                        <div class="difficulty-stat effective">
+                            <span class="difficulty-label">Effective Reward (Max)</span>
+                            <span class="difficulty-value" id="analysis-effective-max">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Curriculum Evaluation Section -->
+                <div class="analysis-section wide" id="eval-analysis-section" style="display: none;">
+                    <h3>Curriculum Generalization Evaluation</h3>
+                    <div class="eval-stats-grid" id="eval-stats">
+                        <div class="eval-stat">
+                            <span class="eval-label">Eval Level</span>
+                            <span class="eval-value" id="analysis-eval-level">--</span>
+                        </div>
+                        <div class="eval-stat">
+                            <span class="eval-label">Eval Reward</span>
+                            <span class="eval-value" id="analysis-eval-reward">--</span>
+                        </div>
+                        <div class="eval-stat">
+                            <span class="eval-label">Eval Alpha</span>
+                            <span class="eval-value" id="analysis-eval-alpha">--</span>
+                        </div>
+                        <div class="eval-stat">
+                            <span class="eval-label">Eval HOLD %</span>
+                            <span class="eval-value" id="analysis-eval-hold">--</span>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Evaluation History</h3>
+                        <canvas id="eval-chart"></canvas>
+                    </div>
+                </div>
+
                 <div class="analysis-section wide">
                     <h3>Component Health Summary</h3>
                     <div id="health-summary" class="health-grid"></div>
@@ -401,6 +508,94 @@
                 <div class="checkpoint-details" id="checkpoint-details" style="display: none;">
                     <h3>Checkpoint Details</h3>
                     <div id="checkpoint-info"></div>
+                </div>
+            </section>
+
+            <!-- BENCHMARKS TAB -->
+            <section id="benchmarks-tab" class="tab-panel">
+                <div class="benchmarks-header">
+                    <h2>Benchmark Analytics</h2>
+                    <div class="benchmark-controls">
+                        <label>Model:
+                            <select id="benchmark-model-select">
+                                <option value="">Loading...</option>
+                            </select>
+                        </label>
+                        <button id="refresh-benchmarks" class="btn">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Summary Stats -->
+                <div class="benchmark-summary" id="benchmark-summary">
+                    <div class="stat-card">
+                        <span class="stat-label">Levels Completed</span>
+                        <span class="stat-value" id="bench-levels">--</span>
+                    </div>
+                    <div class="stat-card stat-card-alpha">
+                        <span class="stat-label">Avg Alpha (Bull)</span>
+                        <span class="stat-value" id="bench-alpha-bull">--</span>
+                    </div>
+                    <div class="stat-card stat-card-alpha">
+                        <span class="stat-label">Avg Alpha (Bear)</span>
+                        <span class="stat-value" id="bench-alpha-bear">--</span>
+                    </div>
+                    <div class="stat-card stat-card-alpha">
+                        <span class="stat-label">Avg Alpha (Sideways)</span>
+                        <span class="stat-value" id="bench-alpha-side">--</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Best Level</span>
+                        <span class="stat-value" id="bench-best-level">--</span>
+                    </div>
+                </div>
+
+                <!-- Charts Grid -->
+                <div class="benchmark-charts-grid">
+                    <div class="chart-card">
+                        <h3>Alpha by Market Period</h3>
+                        <div class="chart-container">
+                            <canvas id="benchmark-alpha-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Reward Evolution</h3>
+                        <div class="chart-container">
+                            <canvas id="benchmark-reward-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>HOLD % by Level</h3>
+                        <div class="chart-container">
+                            <canvas id="benchmark-hold-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Loss Evolution</h3>
+                        <div class="chart-container">
+                            <canvas id="benchmark-loss-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Table -->
+                <div class="benchmark-table-container">
+                    <h3>Detailed Results</h3>
+                    <table class="benchmark-table" id="benchmark-details-table">
+                        <thead>
+                            <tr>
+                                <th>Level</th>
+                                <th>Bull Alpha</th>
+                                <th>Bear Alpha</th>
+                                <th>Side Alpha</th>
+                                <th>Avg Alpha</th>
+                                <th>HOLD %</th>
+                                <th>Entropy</th>
+                                <th>Loss</th>
+                            </tr>
+                        </thead>
+                        <tbody id="benchmark-table-body">
+                        </tbody>
+                    </table>
                 </div>
             </section>
 

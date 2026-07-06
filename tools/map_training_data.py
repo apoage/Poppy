@@ -2,6 +2,8 @@
 """
 Training Data Mapper - Rainbow Table Generator
 Scans database to identify valid training periods and asset combinations.
+
+Outputs schedule compatible with dojo_v3_historical.py for TASK_062.
 """
 
 import sqlite3
@@ -11,11 +13,47 @@ import sys
 import random
 import time
 from datetime import datetime, timedelta
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
-# Add parent directory to path to import train_manager
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add orchestration directory to path to import train_manager
+sys.path.append(os.path.join(os.path.dirname(__file__), 'orchestration'))
 from train_manager import is_forex_pair
+
+
+def load_benchmark_periods(config_path: str = 'config/benchmark_periods.json') -> List[Dict]:
+    """Load benchmark periods to exclude from training."""
+    if not os.path.exists(config_path):
+        print(f"Warning: {config_path} not found, no periods excluded")
+        return []
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    periods = []
+    for p in config.get('periods', []):
+        start = datetime.fromisoformat(p['start_date']).timestamp()
+        end = datetime.fromisoformat(p['end_date']).timestamp()
+        periods.append({
+            'name': p['name'],
+            'start': int(start),
+            'end': int(end),
+            'start_date': p['start_date'],
+            'end_date': p['end_date']
+        })
+
+    print(f"Loaded {len(periods)} benchmark periods to exclude:")
+    for p in periods:
+        print(f"  - {p['name']}: {p['start_date']} → {p['end_date']}")
+
+    return periods
+
+
+def is_in_benchmark_period(timestamp: int, benchmark_periods: List[Dict]) -> bool:
+    """Check if timestamp falls within any benchmark period."""
+    for p in benchmark_periods:
+        if p['start'] <= timestamp <= p['end']:
+            return True
+    return False
 
 def find_initial_threshold(db_path: str, min_assets: int = 64) -> int:
     """
@@ -101,15 +139,17 @@ def map_valid_periods(
     min_duration_days: int = 30,
     max_duration_days: int = 180,
     coverage_threshold: float = 0.75,
-    tolerance: float = 0.1
+    tolerance: float = 0.1,
+    benchmark_periods: Optional[List[Dict]] = None
 ) -> List[Dict]:
     """
     Identify continuous periods where sufficient assets exist.
 
     A period ends when:
-    - â≥15 assets disappear (delisted/no data)
+    - ≥15 assets disappear (delisted/no data)
     - OR we reach end of database
     - OR max_duration_days is reached (to allow asset refresh)
+    - OR we hit a benchmark period (excluded from training)
 
     Args:
         db_path: Path to database
@@ -119,10 +159,13 @@ def map_valid_periods(
         max_duration_days: Max period length before forcing a split to refresh assets (default 180)
         coverage_threshold: Min fraction of assets that must have data at each timestamp
         tolerance: Allowed drop in asset count relative to min_assets (default 0.1 = 10%)
+        benchmark_periods: List of benchmark periods to exclude from training
 
     Returns:
         List of period dicts with start, end, duration, available_assets
     """
+    if benchmark_periods is None:
+        benchmark_periods = []
     conn = sqlite3.connect(db_path)
 
     # Get all timestamps in order
@@ -179,8 +222,13 @@ def map_valid_periods(
             # Check duration
             curr_duration = (ts - current_period_start) / (24 * 60 * 60)
 
+            # Check if we hit a benchmark period (must exclude from training)
+            if is_in_benchmark_period(ts, benchmark_periods):
+                should_end = True
+                end_reason = "Hit benchmark period (excluded)"
+
             # Check if we lost too many assets OR reached max duration
-            if len(current_period_assets) < drop_threshold:
+            elif len(current_period_assets) < drop_threshold:
                 should_end = True
                 end_reason = f"Assets dropped to {len(current_period_assets)} < {drop_threshold}"
             elif curr_duration >= max_duration_days:
@@ -211,7 +259,8 @@ def map_valid_periods(
                 # Do NOT skip to next iteration, allow logic below to restart immediately at this TS
 
         # Start new period if we have enough assets and not in a period
-        if current_period_start is None and asset_count >= min_assets:
+        # Skip if inside a benchmark period
+        if current_period_start is None and asset_count >= min_assets and not is_in_benchmark_period(ts, benchmark_periods):
             current_period_start = ts
             current_period_assets = assets_at_ts
             last_asset_count = asset_count
@@ -312,13 +361,30 @@ def generate_asset_combinations(
     print(f"  Generated {len(combinations)} asset combinations")
     return combinations
 
-def build_training_schedule(db_path: str, output_file: str = 'training_schedule.json'):
+def build_training_schedule(
+    db_path: str,
+    output_file: str = 'training_schedule.json',
+    days_per_epoch: int = 15,
+    epochs_per_block: int = 60
+):
     """
     Main function: Build complete training schedule.
+
+    Args:
+        db_path: Path to database
+        output_file: Output JSON file
+        days_per_epoch: Days per training epoch (default 15 for TASK_062)
+        epochs_per_block: Epochs per checkpoint block (default 60 = ~2.5 years)
     """
     print("="*70)
     print("TRAINING DATA MAPPER - Rainbow Table Generator")
     print("="*70)
+    print(f"Config: {days_per_epoch} days/epoch, {epochs_per_block} epochs/block")
+    print()
+
+    # Step 0: Load benchmark periods to exclude
+    print("[0/4] Loading benchmark periods...")
+    benchmark_periods = load_benchmark_periods()
     print()
 
     # Step 1: Find initial threshold
@@ -330,7 +396,7 @@ def build_training_schedule(db_path: str, output_file: str = 'training_schedule.
         return
     print()
 
-    # Step 2: Map valid periods
+    # Step 2: Map valid periods (excluding benchmarks)
     print("[2/4] Mapping valid training periods...")
     periods = map_valid_periods(
         db_path,
@@ -339,7 +405,8 @@ def build_training_schedule(db_path: str, output_file: str = 'training_schedule.
         min_duration_days=30,
         max_duration_days=180, # Force re-sampling every 6 months
         coverage_threshold=0.75,
-        tolerance=0.1
+        tolerance=0.1,
+        benchmark_periods=benchmark_periods
     )
     print()
 
@@ -371,20 +438,39 @@ def build_training_schedule(db_path: str, output_file: str = 'training_schedule.
                 'overlap_with_previous': round(overlap, 3)
             })
 
-        period['total_training_epochs'] = period['duration_days'] * len(combinations)
-        print(f"  → {len(combinations)} runs • {period['duration_days']} days = {period['total_training_epochs']} epochs")
+        # Calculate epochs: each run covers duration_days, split into days_per_epoch chunks
+        epochs_per_run = max(1, period['duration_days'] // days_per_epoch)
+        period['epochs_per_run'] = epochs_per_run
+        period['total_epochs'] = epochs_per_run * len(combinations)
+        period['total_training_days'] = period['duration_days'] * len(combinations)
+        print(f"  → {len(combinations)} runs × {epochs_per_run} epochs = {period['total_epochs']} epochs ({period['total_training_days']} days)")
     print()
 
     # Step 4: Generate summary and save
     print("[4/4] Generating schedule summary...")
+
+    total_epochs = sum(p['total_epochs'] for p in periods)
+    total_days = sum(p['total_training_days'] for p in periods)
+    total_runs = sum(len(p['training_runs']) for p in periods)
+
     schedule = {
         'generated_at': datetime.now().isoformat(),
         'database': db_path,
+        'config': {
+            'days_per_epoch': days_per_epoch,
+            'epochs_per_block': epochs_per_block,
+            'steps_per_day': 1440,  # 1-minute candles
+            'parallel_envs': 15     # TASK_062 recommendation
+        },
+        'benchmark_periods_excluded': [p['name'] for p in benchmark_periods],
         'periods': periods,
         'summary': {
             'total_periods': len(periods),
-            'total_unique_runs': sum(len(p['training_runs']) for p in periods),
-            'total_training_epochs_available': sum(p['total_training_epochs'] for p in periods),
+            'total_unique_runs': total_runs,
+            'total_epochs': total_epochs,
+            'total_training_days': total_days,
+            'total_training_years': round(total_days / 365, 1),
+            'checkpoint_blocks': total_epochs // epochs_per_block,
             'date_range': {
                 'start': datetime.fromtimestamp(periods[0]['start']).isoformat() if periods else "N/A",
                 'end': datetime.fromtimestamp(periods[-1]['end']).isoformat() if periods else "N/A"
@@ -406,9 +492,13 @@ def build_training_schedule(db_path: str, output_file: str = 'training_schedule.
     print("="*70)
     print("SUMMARY")
     print("="*70)
-    print(f"Periods found: {schedule['summary']['total_periods']}")
+    print(f"Benchmark periods excluded: {len(benchmark_periods)}")
+    print(f"Training periods found: {schedule['summary']['total_periods']}")
     print(f"Total training runs: {schedule['summary']['total_unique_runs']}")
-    print(f"Total epochs available: {schedule['summary']['total_training_epochs_available']:,}")
+    print(f"Total epochs: {schedule['summary']['total_epochs']:,}")
+    print(f"Total training days: {schedule['summary']['total_training_days']:,}")
+    print(f"Total training years: {schedule['summary']['total_training_years']}")
+    print(f"Checkpoint blocks (H01, H02, ...): {schedule['summary']['checkpoint_blocks']}")
     print(f"Date range: {schedule['summary']['date_range']['start']} to {schedule['summary']['date_range']['end']}")
     print("="*70)
 
