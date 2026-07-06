@@ -51,7 +51,7 @@ class MambaBlock(nn.Module):
     d_state: int = 16      # SSM state dimension - MED-004: Reduced from 64 to prevent OOM
     d_conv: int = 4        # Local convolution kernel size
     expand: int = 2        # Expansion factor
-    use_parallel_scan: bool = True
+    use_parallel_scan: bool = False  # CRIT-004 FIX: Default to sequential to avoid memory explosion
 
     @nn.compact
     def __call__(
@@ -113,7 +113,11 @@ class MambaBlock(nn.Module):
         # 6. Gated output
         y = y * nn.silu(x_gate)
 
-        # 7. FiLM conditioning (if provided)
+        # 7. Output projection (FIRST - reduces d_inner -> d_model)
+        y = nn.Dense(self.d_model, use_bias=False)(y)
+
+        # 8. FiLM conditioning (AFTER projection - CRIT-001 FIX)
+        # Now y has shape (batch, seq, d_model) matching gamma/beta dimensions
         if cond is not None:
             gamma, beta = cond
             # Broadcast to sequence if needed
@@ -121,9 +125,6 @@ class MambaBlock(nn.Module):
                 gamma = gamma[:, None, :]
                 beta = beta[:, None, :]
             y = y * (1 + gamma) + beta
-
-        # 8. Output projection
-        y = nn.Dense(self.d_model, use_bias=False)(y)
 
         return y
 

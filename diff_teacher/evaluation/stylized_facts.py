@@ -4,6 +4,8 @@ import numpy as np
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
+from ..constants import OHLCV_CLOSE
+
 
 @dataclass
 class StylizedFactsReport:
@@ -36,7 +38,8 @@ def compute_returns(prices: np.ndarray) -> np.ndarray:
     """Compute log returns from prices."""
     if prices.ndim == 3:
         # (timesteps, assets, features) - use close price
-        close_idx = min(3, prices.shape[-1] - 1)
+        # BUG-009 FIX: Use standardized OHLCV_CLOSE constant
+        close_idx = min(OHLCV_CLOSE, prices.shape[-1] - 1)
         close = prices[:, :, close_idx]
     else:
         close = prices
@@ -114,20 +117,32 @@ def volatility_clustering(returns: np.ndarray, lags: Tuple[int, ...] = (1, 5, 10
     volatility tend to cluster together.
 
     Args:
-        returns: Return series
+        returns: Return series (timesteps,) or (timesteps, assets)
         lags: Lags to compute ACF at
 
     Returns:
         Dictionary mapping lag -> ACF value
     """
-    returns_flat = returns.flatten()
-    squared_returns = returns_flat ** 2
-
-    result = {}
-    for lag in lags:
-        result[lag] = autocorrelation(squared_returns, lag)
-
-    return result
+    # BUG-005 FIX: Compute per-asset, then average to avoid boundary bleed
+    if returns.ndim == 2:
+        n_assets = returns.shape[1]
+        result = {lag: [] for lag in lags}
+        for asset_idx in range(n_assets):
+            asset_returns = returns[:, asset_idx]
+            squared_returns = asset_returns ** 2
+            for lag in lags:
+                acf_val = autocorrelation(squared_returns, lag)
+                if not np.isnan(acf_val):
+                    result[lag].append(acf_val)
+        # Average across assets
+        return {lag: np.mean(vals) if vals else np.nan for lag, vals in result.items()}
+    else:
+        # 1D case - original behavior
+        squared_returns = returns.flatten() ** 2
+        result = {}
+        for lag in lags:
+            result[lag] = autocorrelation(squared_returns, lag)
+        return result
 
 
 def leverage_effect(returns: np.ndarray, window: int = 20) -> float:
@@ -138,34 +153,65 @@ def leverage_effect(returns: np.ndarray, window: int = 20) -> float:
     (leverage effect). Should be negative (typically around -0.3).
 
     Args:
-        returns: Return series
+        returns: Return series (timesteps,) or (timesteps, assets)
         window: Window for volatility estimation
 
     Returns:
         Correlation coefficient
     """
-    returns_flat = returns.flatten()
-    returns_flat = returns_flat[~np.isnan(returns_flat)]
+    # BUG-005 FIX: Compute per-asset, then average to avoid boundary bleed
+    if returns.ndim == 2:
+        n_assets = returns.shape[1]
+        correlations = []
+        for asset_idx in range(n_assets):
+            asset_returns = returns[:, asset_idx]
+            asset_returns = asset_returns[~np.isnan(asset_returns)]
 
-    if len(returns_flat) < window + 10:
-        return np.nan
+            if len(asset_returns) < window + 10:
+                continue
 
-    # Compute rolling volatility
-    volatility = np.zeros(len(returns_flat) - window + 1)
-    for i in range(len(volatility)):
-        volatility[i] = np.std(returns_flat[i:i + window])
+            # Compute rolling volatility for this asset
+            volatility = np.zeros(len(asset_returns) - window + 1)
+            for i in range(len(volatility)):
+                volatility[i] = np.std(asset_returns[i:i + window])
 
-    # Align: return at t with volatility at t+1
-    returns_aligned = returns_flat[window - 1:-1]
-    vol_aligned = volatility[1:]
+            # Align: return at t with volatility at t+1
+            returns_aligned = asset_returns[window - 1:-1]
+            vol_aligned = volatility[1:]
 
-    if len(returns_aligned) < 10:
-        return np.nan
+            if len(returns_aligned) < 10:
+                continue
 
-    # Correlation
-    corr = np.corrcoef(returns_aligned, vol_aligned)[0, 1]
+            # Correlation for this asset
+            corr = np.corrcoef(returns_aligned, vol_aligned)[0, 1]
+            if not np.isnan(corr):
+                correlations.append(corr)
 
-    return corr
+        return np.mean(correlations) if correlations else np.nan
+    else:
+        # 1D case - original behavior
+        returns_flat = returns.flatten()
+        returns_flat = returns_flat[~np.isnan(returns_flat)]
+
+        if len(returns_flat) < window + 10:
+            return np.nan
+
+        # Compute rolling volatility
+        volatility = np.zeros(len(returns_flat) - window + 1)
+        for i in range(len(volatility)):
+            volatility[i] = np.std(returns_flat[i:i + window])
+
+        # Align: return at t with volatility at t+1
+        returns_aligned = returns_flat[window - 1:-1]
+        vol_aligned = volatility[1:]
+
+        if len(returns_aligned) < 10:
+            return np.nan
+
+        # Correlation
+        corr = np.corrcoef(returns_aligned, vol_aligned)[0, 1]
+
+        return corr
 
 
 def compute_stylized_facts(

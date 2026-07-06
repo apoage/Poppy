@@ -181,6 +181,7 @@ class ConvVelocityNet(nn.Module):
         x: jnp.ndarray,  # (batch, seq, input_dim)
         t: jnp.ndarray,  # (batch,) time in [0, 1]
         regime: Optional[jnp.ndarray] = None,  # (batch,) regime idx
+        skeleton_cond: Optional[Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = None,  # CRIT-002
         training: bool = False,
     ) -> jnp.ndarray:
         """
@@ -190,6 +191,7 @@ class ConvVelocityNet(nn.Module):
             x: (batch, seq, input_dim) noisy input at time t
             t: (batch,) time values
             regime: (batch,) optional regime conditioning
+            skeleton_cond: Optional (gamma, beta, h0) from skeleton encoder (CRIT-002)
             training: Whether in training mode
 
         Returns:
@@ -213,6 +215,15 @@ class ConvVelocityNet(nn.Module):
 
         # Combine conditioning
         cond = time_emb + regime_emb  # (batch, cond_dim)
+
+        # CRIT-002 FIX: Add skeleton conditioning if provided
+        if skeleton_cond is not None:
+            gamma_s, beta_s, h0_s = skeleton_cond
+            # Project skeleton conditioning to cond_dim if needed
+            if gamma_s.shape[-1] != self.cond_dim:
+                gamma_s = nn.Dense(self.cond_dim, name='skeleton_proj')(gamma_s)
+                beta_s = nn.Dense(self.cond_dim, name='skeleton_proj_beta')(beta_s)
+            cond = cond + gamma_s + beta_s
 
         # Dilated conv blocks with exponentially growing receptive field
         # Dilation pattern: 1, 2, 4, 8, 16, 32 covers ~64 step receptive field per cycle
@@ -316,6 +327,7 @@ class ConvFlowMatchingGenerator(nn.Module):
         t: jnp.ndarray,
         key: jax.Array,
         regime: Optional[jnp.ndarray] = None,
+        skeleton_cond: Optional[Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = None,  # CRIT-002
         training: bool = False,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
@@ -326,6 +338,7 @@ class ConvFlowMatchingGenerator(nn.Module):
             t: (batch,) time values
             key: Random key for noise
             regime: (batch,) optional regime conditioning
+            skeleton_cond: Optional (gamma, beta, h0) from skeleton encoder (CRIT-002)
             training: Whether in training mode
 
         Returns:
@@ -340,7 +353,7 @@ class ConvFlowMatchingGenerator(nn.Module):
         x_t, v_target = self.get_interpolation(x_0, x_1, t)
 
         # Predict velocity
-        v_pred = self.velocity_net(x_t, t, regime, training=training)
+        v_pred = self.velocity_net(x_t, t, regime, skeleton_cond, training=training)
 
         return v_pred, v_target, x_t
 
@@ -349,6 +362,7 @@ class ConvFlowMatchingGenerator(nn.Module):
         key: jax.Array,
         shape: Tuple[int, ...],
         regime: Optional[jnp.ndarray] = None,
+        skeleton_cond: Optional[Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = None,  # CRIT-002
         num_steps: int = 1,
     ) -> jnp.ndarray:
         """
@@ -358,6 +372,7 @@ class ConvFlowMatchingGenerator(nn.Module):
             key: Random key
             shape: Output shape (batch, seq, dim)
             regime: (batch,) optional regime conditioning
+            skeleton_cond: Optional (gamma, beta, h0) from skeleton encoder (CRIT-002)
             num_steps: Number of integration steps (1 = single step)
 
         Returns:
@@ -372,7 +387,7 @@ class ConvFlowMatchingGenerator(nn.Module):
 
         for i in range(num_steps):
             t = jnp.full((shape[0],), i * dt)
-            v = self.velocity_net(x, t, regime, training=False)
+            v = self.velocity_net(x, t, regime, skeleton_cond, training=False)
             x = x + dt * v
 
         return x
@@ -382,6 +397,7 @@ class ConvFlowMatchingGenerator(nn.Module):
         key: jax.Array,
         shape: Tuple[int, ...],
         regime: Optional[jnp.ndarray] = None,
+        skeleton_cond: Optional[Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]] = None,  # CRIT-002
     ) -> jnp.ndarray:
         """
         Generate samples with single step (fastest).
@@ -392,6 +408,7 @@ class ConvFlowMatchingGenerator(nn.Module):
             key: Random key
             shape: Output shape
             regime: Optional regime conditioning
+            skeleton_cond: Optional (gamma, beta, h0) from skeleton encoder (CRIT-002)
 
         Returns:
             Generated samples
@@ -401,7 +418,7 @@ class ConvFlowMatchingGenerator(nn.Module):
 
         # Single step at t=0
         t = jnp.zeros((shape[0],))
-        v = self.velocity_net(x_0, t, regime, training=False)
+        v = self.velocity_net(x_0, t, regime, skeleton_cond, training=False)
 
         # Move from t=0 to t=1 in one step
         x_1 = x_0 + v

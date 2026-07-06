@@ -84,8 +84,11 @@ class MarketGenerator:
         self.params = params
         self.config = config
 
-        # JIT compile generation
-        self._generate_jit = jax.jit(self._generate_impl)
+        # JIT compile generation with static shape args
+        self._generate_jit = jax.jit(
+            self._generate_impl,
+            static_argnums=(2, 3, 6)  # n_samples, seq_length, n_steps
+        )
 
     @classmethod
     def from_checkpoint(
@@ -133,7 +136,12 @@ class MarketGenerator:
         params = checkpoints.restore_checkpoint(str(checkpoint_path), target=None)
         if params is None:
             raise ValueError(f"Failed to load checkpoint from {checkpoint_path}")
+        # Handle nested params structure from training checkpoints
+        # Structure can be: {'params': ...} or {'params': {'params': ...}} or {'opt_state': ..., 'params': ...}
         if 'params' in params:
+            params = params['params']
+        # Check for double-nested params (from Flax TrainState)
+        if isinstance(params, dict) and 'params' in params:
             params = params['params']
         if params is None:
             raise ValueError(f"Checkpoint at {checkpoint_path} has no 'params' key")
@@ -145,6 +153,7 @@ class MarketGenerator:
         n_samples: int = 1,
         seq_length: Optional[int] = None,
         skeleton: Optional[MarketSkeleton] = None,
+        skeleton_cond: Optional[Tuple[Any, Any, Any]] = None,
         regime: Optional[Union[int, str]] = None,
         seed: int = 42,
         n_steps: Optional[int] = None,
@@ -155,7 +164,8 @@ class MarketGenerator:
         Args:
             n_samples: Number of samples to generate
             seq_length: Sequence length (default from config)
-            skeleton: Optional MarketSkeleton for conditioning
+            skeleton: Optional MarketSkeleton for conditioning (requires encoder params)
+            skeleton_cond: Optional pre-encoded (gamma, beta, h0) - CRIT-002 FIX
             regime: Optional regime (index or name)
             seed: Random seed
             n_steps: ODE integration steps (default from config)
@@ -175,6 +185,18 @@ class MarketGenerator:
         else:
             regime = None
 
+        # CRIT-002 FIX: Handle skeleton conditioning
+        # If skeleton_cond is pre-encoded, use it directly
+        # If skeleton is provided but not skeleton_cond, raise error (fail-safe)
+        # BUG-FIX: Changed from warning to ValueError to prevent silent unconditional generation
+        if skeleton is not None and skeleton_cond is None:
+            raise ValueError(
+                "skeleton provided but skeleton_cond is None. "
+                "Skeleton encoding requires SkeletonConditioner params. "
+                "Either pass pre-encoded skeleton_cond for conditioning, "
+                "or remove the skeleton argument for unconditional generation."
+            )
+
         # Generate
         key = jax.random.PRNGKey(seed)
         generated = self._generate_jit(
@@ -183,6 +205,7 @@ class MarketGenerator:
             n_samples,
             seq_length,
             regime,
+            skeleton_cond,
             n_steps,
         )
 
@@ -206,6 +229,7 @@ class MarketGenerator:
         n_samples: int,
         seq_length: int,
         regime: Optional[Array],
+        skeleton_cond: Optional[Tuple[Array, Array, Array]],  # CRIT-002 FIX
         n_steps: int,
     ) -> Array:
         """Internal generation implementation."""
@@ -216,16 +240,31 @@ class MarketGenerator:
         x = jax.random.normal(noise_key, (n_samples, seq_length, input_dim))
 
         # ODE integration (Euler method for straight paths)
+        # HIGH-005 FIX: Use lax.fori_loop instead of Python for loop
         dt = 1.0 / n_steps
 
-        for i in range(n_steps):
-            t = jnp.array([i * dt] * n_samples)
-
-            # Predict velocity
-            v = self.model.apply({'params': params}, x, t, regime)
-
+        def euler_step(i, x):
+            t = jnp.full((n_samples,), i * dt)
+            # Predict velocity using velocity_net submodule
+            # Conv model has velocity_net submodule, call it directly
+            if 'velocity_net' in params:
+                # ConvFlowMatchingGenerator: call velocity_net directly
+                from diff_teacher.conv_flow_matching import ConvVelocityNet
+                velocity_net = ConvVelocityNet(
+                    hidden_dim=self.config.hidden_dim,
+                    num_layers=self.config.num_layers,
+                )
+                v = velocity_net.apply(
+                    {'params': params['velocity_net']},
+                    x, t, regime, skeleton_cond, False  # training=False
+                )
+            else:
+                # Mamba or other: call model directly
+                v = self.model.apply({'params': params}, x, t, regime, skeleton_cond)
             # Euler step
-            x = x + v * dt
+            return x + v * dt
+
+        x = jax.lax.fori_loop(0, n_steps, euler_step, x)
 
         return x
 
@@ -233,20 +272,51 @@ class MarketGenerator:
         self,
         n_samples: int = 1,
         skeleton: Optional[MarketSkeleton] = None,
+        skeleton_cond: Optional[Tuple[Array, Array, Array]] = None,  # CRIT-002 FIX
         seed: int = 42,
+        regime: Optional[Union[int, str, Array]] = None,
+        invert_regime: bool = False,
     ) -> Array:
         """
         Generate directly on device (no CPU roundtrip).
 
+        Args:
+            n_samples: Number of samples to generate
+            skeleton: Optional skeleton conditioning
+            skeleton_cond: Pre-encoded skeleton conditioning
+            seed: Random seed
+            regime: Optional regime conditioning (int, str, or array of indices)
+            invert_regime: If True, swap crash↔rally for dual-branch diversity
+
         Returns JAX array on GPU for downstream JAX computation.
         """
         key = jax.random.PRNGKey(seed)
+
+        # Handle regime conditioning
+        regime_arr = None
+        if regime is not None:
+            if isinstance(regime, str):
+                from diff_teacher.skeleton.types import REGIME_TO_IDX
+                regime_idx = REGIME_TO_IDX.get(regime, 2)
+                regime_arr = jnp.array([regime_idx] * n_samples)
+            elif isinstance(regime, int):
+                regime_arr = jnp.array([regime] * n_samples)
+            else:
+                regime_arr = regime  # Already an array
+
+            # Invert directional regimes: crash(0)↔rally(1)
+            if invert_regime and regime_arr is not None:
+                # Swap 0↔1, keep 2,3,4 unchanged
+                regime_arr = jnp.where(regime_arr == 0, 1,
+                             jnp.where(regime_arr == 1, 0, regime_arr))
+
         return self._generate_jit(
             self.params,
             key,
             n_samples,
             self.config.seq_length,
-            None,
+            regime_arr,
+            skeleton_cond,  # CRIT-002 FIX
             self.config.n_steps,
         )
 

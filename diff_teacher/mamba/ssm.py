@@ -35,7 +35,8 @@ def selective_scan_sequential(
         x_t, delta_t, B_t, C_t = inputs
 
         # Discretize A: exp(delta * A)
-        delta_A = jnp.exp(delta_t[:, :, None] * A)  # (batch, d_inner, d_state)
+        # Clip to prevent overflow/underflow (consistent with parallel implementation)
+        delta_A = jnp.exp(jnp.clip(delta_t[:, :, None] * A, -20.0, 20.0))  # (batch, d_inner, d_state)
 
         # Discretize B: delta * B
         delta_B = delta_t[:, :, None] * B_t[:, None, :]  # (batch, d_inner, d_state)
@@ -139,7 +140,7 @@ def selective_scan(
     A: Array,
     B: Array,
     C: Array,
-    use_parallel: bool = True,
+    use_parallel: bool = False,  # CRIT-004 FIX: Default to sequential to avoid 4D tensor explosion
 ) -> Array:
     """
     Selective scan with implementation selection.
@@ -150,7 +151,9 @@ def selective_scan(
         A: State transition, shape (d_inner, d_state)
         B: Input projection, shape (batch, seq, d_state)
         C: Output projection, shape (batch, seq, d_state)
-        use_parallel: Use parallel associative scan (faster)
+        use_parallel: Use parallel associative scan (faster but memory-intensive).
+                     Default False to avoid 4D tensor (batch, seq, d_inner, d_state)
+                     memory explosion (~18GB+ for typical dimensions).
 
     Returns:
         Output, shape (batch, seq, d_inner)

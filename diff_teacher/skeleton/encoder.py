@@ -147,47 +147,119 @@ class RegimeEncoder(nn.Module):
 
 
 class EventEncoder(nn.Module):
-    """Encode sparse events."""
+    """
+    Encode sparse events.
+
+    MED-003 FIX: Refactored to use padded arrays instead of Python for loop.
+    Events are now passed as padded arrays for JIT compatibility.
+    """
     d_model: int
     n_event_types: int = 10
+    max_events: int = 32  # Maximum events to support
 
     @nn.compact
-    def __call__(self, events: list, n_timesteps: int) -> Array:
+    def __call__(
+        self,
+        event_times: Array,      # (max_events,) timestep indices, -1 for padding
+        event_types: Array,      # (max_events,) type indices
+        event_magnitudes: Array, # (max_events,) magnitudes
+        event_directions: Array, # (max_events,) directions
+        n_timesteps: int,
+    ) -> Array:
         """
+        MED-003 FIX: JIT-compatible event encoding using padded arrays.
+
         Args:
-            events: List of Event objects
+            event_times: (max_events,) timestep indices, -1 for invalid/padding
+            event_types: (max_events,) pre-hashed type indices in [0, n_event_types)
+            event_magnitudes: (max_events,) magnitude values
+            event_directions: (max_events,) direction values
             n_timesteps: Sequence length
+
         Returns:
             (n_timesteps, d_model) sparse event embeddings
         """
-        # Create sparse mask
-        event_mask = jnp.zeros((n_timesteps, self.d_model))
-
-        if not events:
-            return event_mask
-
         # Event type embedding
         type_embed = nn.Embed(num_embeddings=self.n_event_types, features=self.d_model // 2)
 
         # Magnitude projection
         mag_proj = nn.Dense(self.d_model // 2)
 
-        for event in events:
-            if event.time < n_timesteps:
-                # Deterministic hash (zlib.adler32 is stable across processes)
-                type_idx = (zlib.adler32(event.event_type.encode()) & 0xffffffff) % self.n_event_types
-                type_emb = type_embed(jnp.array(type_idx))
+        # Compute all embeddings in parallel (vectorized)
+        type_embs = type_embed(event_types)  # (max_events, d_model // 2)
 
-                # Magnitude embedding
-                mag_emb = mag_proj(jnp.array([event.magnitude, event.direction]))
+        # Stack magnitude and direction for projection
+        mag_dir = jnp.stack([event_magnitudes, event_directions], axis=-1)  # (max_events, 2)
+        mag_embs = mag_proj(mag_dir)  # (max_events, d_model // 2)
 
-                # Combine
-                event_emb = jnp.concatenate([type_emb, mag_emb])
+        # Combine type and magnitude embeddings
+        event_embs = jnp.concatenate([type_embs, mag_embs], axis=-1)  # (max_events, d_model)
 
-                # Add to mask (using at[] for traced computation)
-                event_mask = event_mask.at[event.time].set(event_emb)
+        # Create valid mask (times >= 0 and < n_timesteps)
+        valid_mask = (event_times >= 0) & (event_times < n_timesteps)  # (max_events,)
 
-        return event_mask
+        # Create output using scatter-like operation
+        # Initialize output
+        output = jnp.zeros((n_timesteps, self.d_model))
+
+        # Use segment_sum style: for each event, add its embedding to output at its time
+        # This is JIT-compatible using jax.ops.segment_sum
+        # But simpler: use at[].add with clipped indices and masking
+
+        # Clip times to valid range (invalid times go to index 0, will be masked)
+        safe_times = jnp.clip(event_times, 0, n_timesteps - 1)
+
+        # Mask invalid embeddings to zero
+        masked_embs = event_embs * valid_mask[:, None]
+
+        # Scatter-add each embedding to its timestep
+        # Using a loop here is fine since max_events is small and static
+        def add_event(output, idx):
+            time = safe_times[idx]
+            emb = masked_embs[idx]
+            return output.at[time].add(emb)
+
+        output = jax.lax.fori_loop(0, self.max_events, lambda i, o: add_event(o, i), output)
+
+        return output
+
+    @staticmethod
+    def prepare_events(events: list, n_event_types: int = 10, max_events: int = 32):
+        """
+        Helper to convert Event list to padded arrays for JIT-compatible encoding.
+
+        Call this OUTSIDE of JIT to prepare event data.
+
+        Args:
+            events: List of Event objects
+            n_event_types: Number of event type buckets
+            max_events: Maximum events to encode
+
+        Returns:
+            Tuple of (event_times, event_types, event_magnitudes, event_directions)
+        """
+        import numpy as np
+
+        n = min(len(events), max_events)
+
+        event_times = np.full(max_events, -1, dtype=np.int32)
+        event_types = np.zeros(max_events, dtype=np.int32)
+        event_magnitudes = np.zeros(max_events, dtype=np.float32)
+        event_directions = np.zeros(max_events, dtype=np.float32)
+
+        for i, event in enumerate(events[:n]):
+            event_times[i] = event.time
+            # Pre-hash event type
+            event_types[i] = (zlib.adler32(event.event_type.encode()) & 0xffffffff) % n_event_types
+            event_magnitudes[i] = event.magnitude
+            event_directions[i] = event.direction
+
+        return (
+            jnp.array(event_times),
+            jnp.array(event_types),
+            jnp.array(event_magnitudes),
+            jnp.array(event_directions),
+        )
 
 
 class SkeletonEncoder(nn.Module):
@@ -195,6 +267,8 @@ class SkeletonEncoder(nn.Module):
     Full skeleton encoder combining all components.
 
     Outputs FiLM parameters (gamma, beta) for conditioning.
+
+    HIGH-007 FIX: Now properly handles sequence embeddings instead of discarding them.
     """
     d_model: int
     n_clusters: int = 10
@@ -218,51 +292,103 @@ class SkeletonEncoder(nn.Module):
             beta: Shift parameter for FiLM (d_model,) or (n_timesteps, d_model)
             h0: Initial state for Mamba (d_model,)
         """
-        embeddings = []
+        global_embeddings = []
+        sequence_embeddings = []  # HIGH-007 FIX: Track sequence embeddings separately
 
         # Encode each component if present
         if skeleton.trend_direction is not None:
             trend_emb = TrendEncoder(self.d_model)(skeleton.trend_direction)
             if trend_emb.ndim == 1:
-                embeddings.append(trend_emb)
-            # For sequence, handle separately below
+                global_embeddings.append(trend_emb)
+            else:
+                # HIGH-007 FIX: Keep sequence embeddings
+                sequence_embeddings.append(trend_emb)
 
         if skeleton.vol_regime is not None:
             vol_emb = VolRegimeEncoder(self.d_model)(skeleton.vol_regime)
             if vol_emb.ndim == 1:
-                embeddings.append(vol_emb)
+                global_embeddings.append(vol_emb)
+            else:
+                # HIGH-007 FIX: Keep sequence embeddings
+                sequence_embeddings.append(vol_emb)
 
         if skeleton.correlation_clusters is not None:
             cluster_emb = ClusterEncoder(self.d_model, self.n_clusters)(
                 skeleton.correlation_clusters.astype(jnp.int32)
             )
-            embeddings.append(cluster_emb)
+            global_embeddings.append(cluster_emb)
+
+        if skeleton.alpha_shape is not None:
+            # HIGH-007 FIX: Include alpha shape (always sequence)
+            alpha_emb = AlphaShapeEncoder(self.d_model)(skeleton.alpha_shape)
+            sequence_embeddings.append(alpha_emb)
 
         if skeleton.regime_sequence is not None:
             regime_emb = RegimeEncoder(self.d_model, self.n_regimes)(
                 skeleton.regime_sequence.astype(jnp.int32)
             )
             if regime_emb.ndim == 1:
-                embeddings.append(regime_emb)
+                global_embeddings.append(regime_emb)
+            else:
+                # HIGH-007 FIX: Keep sequence embeddings
+                sequence_embeddings.append(regime_emb)
 
         # Combine global embeddings
-        if embeddings:
-            combined = jnp.stack(embeddings, axis=0).mean(axis=0)
+        if global_embeddings:
+            global_combined = jnp.stack(global_embeddings, axis=0).mean(axis=0)
         else:
-            combined = jnp.zeros(self.d_model)
+            global_combined = jnp.zeros(self.d_model)
 
-        # Generate FiLM parameters
-        film_mlp = nn.Sequential([
-            nn.Dense(self.d_model * 2),
-            nn.silu,
-            nn.Dense(self.d_model * 2),
-        ])
+        # HIGH-007 FIX: Combine sequence embeddings if present and return_sequence
+        # BUG-007 FIX: Proper per-timestep normalization (not just count of embedding types)
+        if return_sequence and sequence_embeddings:
+            # Stack and average sequence embeddings
+            # Need to handle potentially different lengths - use the skeleton's n_timesteps
+            n_timesteps = skeleton.n_timesteps
+            seq_combined = jnp.zeros((n_timesteps, self.d_model))
+            # BUG-007 FIX: Track contribution count per timestep
+            contribution_count = jnp.zeros(n_timesteps)
+            for seq_emb in sequence_embeddings:
+                # Truncate or pad to match n_timesteps
+                seq_len = seq_emb.shape[0]
+                if seq_len >= n_timesteps:
+                    seq_combined = seq_combined + seq_emb[:n_timesteps]
+                    contribution_count = contribution_count + 1.0
+                else:
+                    seq_combined = seq_combined.at[:seq_len].add(seq_emb)
+                    contribution_count = contribution_count.at[:seq_len].add(1.0)
+            # BUG-007 FIX: Normalize by actual contributions at each timestep
+            seq_combined = seq_combined / jnp.maximum(contribution_count[:, None], 1.0)
 
-        film_params = film_mlp(combined)
-        gamma, beta = jnp.split(film_params, 2, axis=-1)
+            # Combine with global embedding broadcast to sequence
+            combined_seq = seq_combined + global_combined[None, :]
 
-        # Initial state for Mamba
-        h0 = nn.Dense(self.d_model)(combined)
+            # Generate per-timestep FiLM parameters
+            film_mlp = nn.Sequential([
+                nn.Dense(self.d_model * 2),
+                nn.silu,
+                nn.Dense(self.d_model * 2),
+            ])
+            film_params = jax.vmap(film_mlp)(combined_seq)
+            gamma, beta = jnp.split(film_params, 2, axis=-1)
+        else:
+            # HIGH-007 FIX: If we have sequence data but not returning sequence,
+            # pool sequence embeddings into global
+            if sequence_embeddings:
+                seq_pooled = jnp.stack([s.mean(axis=0) for s in sequence_embeddings], axis=0).mean(axis=0)
+                global_combined = (global_combined + seq_pooled) / 2.0
+
+            # Generate global FiLM parameters
+            film_mlp = nn.Sequential([
+                nn.Dense(self.d_model * 2),
+                nn.silu,
+                nn.Dense(self.d_model * 2),
+            ])
+            film_params = film_mlp(global_combined)
+            gamma, beta = jnp.split(film_params, 2, axis=-1)
+
+        # Initial state for Mamba (always from global)
+        h0 = nn.Dense(self.d_model)(global_combined)
 
         return gamma, beta, h0
 
