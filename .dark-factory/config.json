@@ -1,0 +1,67 @@
+{
+  "project_name": "Trader",
+  "owner": "Lukas",
+
+  "commands": {
+    "test": "source trader_env/bin/activate && python -m trader selftest",
+    "lint": ["trader_env/bin/python -m py_compile {file}"],
+    "build": null,
+    "ui_test": null,
+    "ui_boot": null
+  },
+
+  "paths": {
+    "queue": "tasks/QUEUE.md",
+    "decisions": "tasks/DECISIONS.md",
+    "version_file": null,
+    "changelog": "CHANGELOG.md",
+    "fixture": "fixtures/trading_fixture.db",
+    "ui_playbook": null,
+    "design_principles": null,
+    "handoff_dir": "lore/"
+  },
+
+  "invariants": [
+    "Canon paths stay bit-identical: every new behavior is flag-gated, default OFF; parity vs canon proven before a task ships",
+    "trading_data.db (24GB) is the read-only source of record — never write to it, never DDL it; all verification runs against fixtures/trading_fixture.db (regenerate: fixtures/make_fixture.py)",
+    "Leak-free evaluation: no feature/label may read data beyond time t; performance claims are cost-honest (fees+slippage), per-decision H-strided Sharpe, and need >=3 seeds before any promotion claim",
+    "Never pre-generate training data to disk; no disk I/O inside training loops — memory hierarchy is VRAM > RAM > disk",
+    "GPU jobs are never launched bare: XLA_PYTHON_CLIENT_MEM_FRACTION=0.7, cgroup RAM cap (single job <=18G), at most ONE GPU job on the workstation",
+    "Never send live exchange orders, never read/print API keys or secrets; live-trading code paths run dry-run only without the operator in the loop",
+    "Expensive real-data validation (multi-hour training, full-timeline evals) is SCHEDULED (server/overnight one-shots), never polled inside the factory loop",
+    "JAX discipline: no lax.cond inside vmap (use jnp.where), guard divisions with jnp.maximum(x, 1e-10), static shapes in lax.scan, block_until_ready before device-to-host"
+  ],
+
+  "protected": [
+    "trading_data.db",
+    "trader_env/",
+    ".env",
+    "~/trader-live/"
+  ],
+
+  "ui": {
+    "enabled": false,
+    "engine": "chromium"
+  },
+
+  "lanes": {
+    "planner_owns": ["docs/", "lore/", ".claude/", ".dark-factory/"],
+    "shared": ["tasks/"],
+    "implementer_doc_exceptions": ["handoff", "validation"]
+  },
+
+  "guards": {
+    "allow_push": false,
+    "require_verdict": true,
+    "verdict_max_age_minutes": 60,
+    "halt_after_failures": 3
+  },
+
+  "verification": {
+    "risk_tiers": {
+      "low": ["judge:correctness"],
+      "medium": ["judge:correctness", "judge:regression", "flow-verifier"],
+      "high": ["judge:correctness", "judge:fail-closed", "judge:regression", "judge:security", "flow-verifier"]
+    }
+  }
+}

@@ -64,3 +64,8 @@ jax_ckpt_fast
 overnight_*.log.*
 *.backup.*
 benchmark_results.json
+
+# dark-factory runtime (never commit)
+.dark-factory/state.json
+.dark-factory/run-*.jsonl
+.dark-factory/verdicts/

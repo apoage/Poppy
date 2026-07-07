@@ -1,9 +1,0 @@
-{
-  "gemini":   { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.30 },
-  "claude":   { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.73 },
-  "glm":      { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.40 },
-  "kimi":     { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.35 },
-  "deepseek": { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.65 },
-  "openai":   { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.55 },
-  "minimax":  { "total": 0, "confirmed": 0, "false_positive": 0, "precision": 0.40 }
-}
