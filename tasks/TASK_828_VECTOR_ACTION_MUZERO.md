@@ -61,6 +61,17 @@ workstation 3090 under the correct-allocation contract (MEM_FRACTION=0.7, cgroup
 Sub-agents: commit + report, never deploy. Reference: Sampled MuZero (Hubert et al. 2021,
 arXiv:2104.06303) for the sampling/visit-correction math.
 
+## Factory notes (dark-factory execution contract, added 2026-07-07)
+- **Risk: high** at every stage (touches the canon env/search/training path) → full high-tier panel.
+- Queue rows = one stage each (`tasks/QUEUE.md`); banner per stage, do not roll stages together.
+- Verification data = `fixtures/trading_fixture.db` (51MB, full daily panel; regen
+  `fixtures/make_fixture.py`) — never the 24GB `trading_data.db`, never GPU-hours in the loop.
+- Canon gate per stage: with `--vector-action` OFF, existing behavior bit-identical (hash a short
+  scalar-path rollout before/after and diff). Stage-1 equivalence test: one `step_vector` ==
+  the equivalent sequence of scalar `step`s on the same state (allowing for the documented
+  simultaneous-rebalance fee/margin semantics — assert and document any intended divergence).
+- Stage-4 (real-data training/eval) is NOT a factory job — scheduled server run, gated in the queue.
+
 ## Relation to the closed planner
 TASK_821 closed the SCALAR planner cleanly. This does not reopen that — it changes the action space,
 a different architecture. If Stage 4 beats the linear book, the planner returns on the RIGHT
