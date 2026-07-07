@@ -1,3 +1,5 @@
+> **STATUS (2026-07-07): PARKED per DECISIONS D1/D4 — "interesting outview", non-binding; 828 is the focus. OHLC-only constraint stands (D4).**
+
 # TASK_824 — Server honest re-measurement queue (use the back-online GPUs on truth, not more model)
 
 **Status**: SPEC'D 2026-07-06. gpu-server is back online (4×3090, GPU 1/2/3 usable). The campaign

@@ -20,31 +20,33 @@ Component-specific facts live in per-directory CLAUDE.md files (auto-loaded when
 
 | Name | Role | Location | Subtree CLAUDE.md |
 |------|------|----------|-------------------|
-| Poppy | TRM + MuZero trader | `mcts_trader/` | [mcts_trader/CLAUDE.md](mcts_trader/CLAUDE.md) |
-| Bella | Market generator | `diff_teacher/` | [diff_teacher/CLAUDE.md](diff_teacher/CLAUDE.md) |
-| Foxglove | Stage-1 supervised imprint | `train_easy.py` + `tools/orchestration/e-dojo_v1.py` | [tools/orchestration/CLAUDE.md](tools/orchestration/CLAUDE.md) |
-| Yarrow | Multi-model code review (side project) | `yarrow/` | [yarrow/CLAUDE.md](yarrow/CLAUDE.md) |
+| Poppy | TRM + MuZero trader — ACTIVE BUILD: vector-action rebuild (TASK_828) | `mcts_trader/` | [mcts_trader/CLAUDE.md](mcts_trader/CLAUDE.md) |
+| Bella | Market generator (resident, not load-bearing — DECISIONS D5) | `diff_teacher/` | [diff_teacher/CLAUDE.md](diff_teacher/CLAUDE.md) |
+| Foxglove | Stage-1 supervised imprint — RETIRING (TASK_829, D5) | `train_easy.py` + `tools/orchestration/e-dojo_v1.py` | [tools/orchestration/CLAUDE.md](tools/orchestration/CLAUDE.md) |
+
+Dark factory runs this repo's implementation queue: `tasks/QUEUE.md` + `tasks/DECISIONS.md`,
+config `.dark-factory/config.json`. This interactive session = planner lane.
+Yarrow/bloom/prompt-lib were pruned 2026-07-07 (`lore/prune_2026-07-07.md`).
 
 ## Top-level layout
 
 ```
 train_jax_fast.py             # Poppy training entry (router)
-train_easy.py                 # Foxglove generator entry
-easy_trainer.py               # Foxglove trainer
+train_phase2.py               # Poppy phase-2 trainer
+train_easy.py                 # Foxglove entry (retiring — TASK_829)
 real_trade_jax.py             # Live trading
+trader/                       # numpy CTA engine (eval bar + factory test baseline)
 
 mcts_trader/                  # Poppy — see subtree CLAUDE.md
 diff_teacher/                 # Bella  — see subtree CLAUDE.md
-tools/orchestration/          # Dojos — see subtree CLAUDE.md
-yarrow/                       # Yarrow — see subtree CLAUDE.md
+tools/orchestration/          # Dojos (retiring — TASK_829)
 
 tools/DS24/                   # Training dashboard (localhost:8050)
-tools/DSe/                    # e-dojo dashboard (localhost:8052)
-tools/DS56/                   # Additional dashboard
 tools/benchmarks/             # Performance testing
+tools/benchmark_easy.py       # Canonical eval scorecard
 tools/map_training_data.py    # Visualize data coverage & gaps
 
-prompt-lib/                   # Reusable prompt templates
+fixtures/                     # dark-factory verification fixture (make_fixture.py)
 config/benchmark_periods.json # Test periods
 ```
 

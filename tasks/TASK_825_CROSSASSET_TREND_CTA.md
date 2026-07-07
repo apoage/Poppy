@@ -1,3 +1,5 @@
+> **STATUS (2026-07-07): PARKED per DECISIONS D1/D4 — "interesting outview", non-binding; 828 is the focus. OHLC-only constraint stands (D4).**
+
 # TASK_825 — Cross-asset-class trend CTA: attack the real ceiling (correlation, not model)
 
 **Status**: SPEC'D 2026-07-06. This is the honest strategic frontier now that the model surface is

@@ -3,7 +3,7 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-07**.
+**2026-07-07** (post D1–D5).
 
 ## Ready — take from the top
 
@@ -11,20 +11,26 @@ gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last
 |---|------|------|------|
 | 1 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 1) | M | vector env step `step_vector(state, action_vec)` in `mcts_trader/env/jax_trading_env.py`, flag-gated `--vector-action`, canon scalar path bit-identical; equivalence test = vector action == equivalent scalar-step sequence. Risk: high (touches the canon env). |
 | 2 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 2) | L | Sampled-MuZero search over K sampled action vectors from the factored policy head (`muzero_model.py:256`). Needs Stage 1 banner. Risk: high. |
-| 3 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets, `--vector-action` threaded through train_jax_fast.py/config/self_play. Needs Stage 2 banner. Risk: high. |
+| 3 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + action-conditional reward head (D2: the 827 substance — kill the 60× action-variance gap). Needs Stage 2 banner. Risk: high. |
 
 ## Filler — anytime, parallel-safe
 
-- (none groomed yet — repo prune 2026-07-07 cleared the hygiene backlog)
+- `tasks/TASK_829_RETIRE_FOXGLOVE.md` (S–M, risk medium) — decouple `train_phase2.py:484` +
+  `benchmark_easy.py:41` imports, then delete the Foxglove files. Disjoint from 828 Stage 1
+  (touches no env/search files); do NOT run concurrently with 828 Stage 3 (both touch
+  train_phase2.py's import surface).
 
 ## Gated — do NOT start (named gate must open first)
 
 | Task | Gate |
 |------|------|
 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped; real-data training/eval is a SCHEDULED server run, not a factory-loop job |
-| `tasks/TASK_824_SERVER_HONEST_REMEASURE.md` | server job (gpu-server), scheduled outside the factory; DECISIONS **D1** |
-| `tasks/TASK_825_CROSSASSET_TREND_CTA.md` | DECISIONS **D1** open |
-| `tasks/TASK_826_ONCHAIN_SIGNAL_PROBE.md` | DECISIONS **D1** + **D4** open; hosted-RPC/API key missing |
+
+## Parked (D1/D4, 2026-07-07 — non-binding "interesting outview"; not factory work)
+
+- `tasks/TASK_824_SERVER_HONEST_REMEASURE.md`, `tasks/TASK_825_CROSSASSET_TREND_CTA.md`,
+  `tasks/TASK_826_ONCHAIN_SIGNAL_PROBE.md` (D4: OHLC-only, live within the 24GB DB),
+  `tasks/TASK_823_VPS_MICROLIVE_CTA.md` (D0: rejected).
 
 ## Grooming rules
 Planner re-ranks after each factory run + banners; a row leaves this file only by shipping

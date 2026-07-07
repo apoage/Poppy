@@ -1,3 +1,5 @@
+> **STATUS (2026-07-07): PARKED per DECISIONS D1/D4 — "interesting outview", non-binding; 828 is the focus. OHLC-only constraint stands (D4).**
+
 # TASK_826 — On-chain signal probe: mine the node's real data, storage-light, before committing terabytes
 
 **Status**: SPEC'D 2026-07-06. The strategic insight (operator): the archive node's value is NOT

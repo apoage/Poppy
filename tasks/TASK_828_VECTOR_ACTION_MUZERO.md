@@ -38,7 +38,12 @@ vector as the action input (embed the vector, not a scalar index). Keep gumbel/q
 ### Stage 3 — training loop + targets
 Self-play emits vector-action trajectories. Policy target = the factored visit distribution over the
 sampled vectors (per-asset marginals or the sampled-set weighting). Value/reward targets unchanged
-(portfolio PnL). Thread `--vector-action` through `train_jax_fast.py` / config / env_factory /
+(portfolio PnL). **D2 carry (operator: promising, 2026-07-07):** the reward head must be
+ACTION-CONDITIONAL — the Stage-B head was measured action-blind (60× variance gap between state
+and action contributions). The dynamics/reward nets take the sampled action VECTOR as a real input
+(embedded, not a scalar index); verify post-training that reward predictions actually move with
+the action input (variance-attribution probe), or the search is planning over a reward model that
+ignores what it does. Thread `--vector-action` through `train_jax_fast.py` / config / env_factory /
 self_play. Default OFF = today's scalar path, bit-identical (canon gate at every stage).
 
 ### Stage 4 — evaluation vs the bar
