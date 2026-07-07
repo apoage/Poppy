@@ -1,3 +1,9 @@
+> **STATUS (2026-07-08): Stage 1 SHIPPED.** Vector env step `step_vector` landed flag-gated
+> (`EnvConfig.vector_action`, default OFF), canon scalar path proven bit-identical, full high-tier
+> verify panel green (13 tests + selftest 7/7). **Remainders:** Stage 2 (Sampled-MuZero search),
+> Stage 3 (training + action-conditional reward head), Stage 4 (eval) still OPEN. `--vector-action`
+> not yet threaded through training/search/env_factory. Next queue row: Stage 2, gated on this banner.
+
 # TASK_828 — Vector-action MuZero: one decision = the whole portfolio
 
 **Status**: ACTIVE 2026-07-06. Operator directive: THIS is the fix. TASK_821 closed the planner

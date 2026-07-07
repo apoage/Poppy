@@ -125,6 +125,10 @@ class EnvConfig:
     burn_random_limit: int = 10  # Max burns per episode
     # TASK_818 Tier B: action-attributable realized-PnL-on-close reward (default OFF = canon)
     reward_attributable: bool = False
+    # TASK_828 Stage 1: vector-action one-shot portfolio rebalance (default OFF = canon).
+    # Gate for step_vector(); the scalar step() path never reads this field, so with it
+    # OFF the canon path is bit-identical. Not yet wired through training/search (Stage 2/3).
+    vector_action: bool = False
 
 
 # =============================================================================
@@ -1317,6 +1321,303 @@ def step(state: TradingState, action: chex.Array,
 
 
 # =============================================================================
+# Vector-Action Step (TASK_828 Stage 1) — one-shot portfolio rebalance
+# =============================================================================
+
+def step_vector(state: TradingState, action_vec: chex.Array,
+                prices: chex.Array, config: EnvConfig
+                ) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """Execute one VECTOR-action step: all assets acted on simultaneously.
+
+    ``action_vec`` is ``(n_assets,)`` with each entry in ``{0..4}`` using the SAME
+    per-asset action codes as the scalar path (0=sell, 1=hold, 2=buy, 3=limit_sell,
+    4=limit_buy). Where the scalar ``step`` decodes a single ``action`` into one
+    ``(asset_idx, action_type)`` and touches one asset, ``step_vector`` applies every
+    asset's action_type in one step = a one-shot portfolio rebalance.
+
+    The per-asset fill/fee/margin/PnL math is the SAME as ``execute_sell``/``execute_hold``/
+    ``execute_buy``/``execute_limit_sell``/``execute_limit_buy``, just vectorised over all
+    assets with ``jnp.where`` selection keyed on ``action_vec`` (no ``lax.switch``/``lax.cond``,
+    so this is vmap-safe). Reward is the same whole-portfolio log-return formula as ``step``
+    (plus the optional ``--reward-attributable`` realized-PnL-on-close term, which now sums the
+    realized PnL of EVERY asset closed by this rebalance).
+
+    INTENDED simultaneous-rebalance divergence from an equivalent SEQUENCE of scalar steps
+    (documented, and asserted in tests/test_vector_env.py):
+      * All per-asset decisions are sized against ONE snapshot of ``cash`` /
+        ``compute_portfolio_value`` taken before any fill (a true simultaneous rebalance),
+        whereas sequential scalar steps re-read cash/portfolio after each fill. When several
+        buys/short-opens are requested at once their sizes therefore do not "see" each other's
+        cash consumption; combined demand can drive ``cash`` negative, which ``process_margin_call``
+        then resolves (liquidate longs / bankrupt) exactly as in the scalar path. The two agree
+        exactly whenever affordability never binds and portfolio value is invariant across the
+        rebalance (e.g. flat prices, ample cash, distinct assets, fee=0) — the equivalence test
+        constructs precisely that regime.
+      * A scalar SEQUENCE also advances ``current_step`` (and thus the price index / RNG) once
+        per asset; ``step_vector`` advances it once for the whole rebalance. The equivalence test
+        holds prices flat so the price index is immaterial and compares material state only.
+    """
+    # Get current prices (identical to scalar step)
+    current_prices = get_current_prices(
+        prices, state.current_step, state.episode_start_idx
+    )
+
+    # Split RNG (mirror scalar step so limit-fill / burn stochasticity is preserved)
+    rng_key, limit_order_key = jax.random.split(state.rng_key)
+
+    # 1. Process pending limit orders, 1b. margin, 2. tp/sl — same action-independent preamble
+    state = process_limit_orders(state, current_prices, config, limit_order_key)
+    state = state.replace(rng_key=rng_key)
+    state = process_margin_call(state, current_prices, config)
+    state = apply_tp_sl_closures(state, current_prices, config)
+
+    # Snapshot pre-action position state for realized-PnL attribution (same as scalar step).
+    prev_active_attr = state.pos_active
+    prev_side_attr   = state.pos_side
+    prev_entry_attr  = state.pos_entry
+
+    # ---- 3. Vectorised action execution (one-shot rebalance against a single snapshot) ----
+    n_assets = config.n_assets
+    fee_rate = config.fee_bps / 10000.0
+
+    has_position = state.pos_active
+    is_long  = state.pos_side == 1
+    is_short = state.pos_side == 2
+    cur_size  = state.pos_size
+    cur_entry = state.pos_entry
+
+    # ONE snapshot of cash / portfolio value (the simultaneity — see docstring divergence note).
+    snap_cash = state.cash
+    portfolio_value = compute_portfolio_value(state, current_prices)
+    ideal_trade_value = portfolio_value * config.position_size_pct
+    available_cash = snap_cash * 0.99  # 1% buffer, mirrors scalar execute_buy/sell
+    min_trade_value = 100.0
+    has_min_cash = snap_cash > min_trade_value
+
+    a_sell  = action_vec == 0
+    a_hold  = action_vec == 1
+    a_buy   = action_vec == 2
+    a_lsell = action_vec == 3
+    a_lbuy  = action_vec == 4
+
+    # --- BUY branch (mirror execute_buy) ---
+    buy_exec_price = apply_fee_and_slippage(current_prices, True, config.fee_bps, config.slippage_bps)
+    actual_cost = jnp.minimum(ideal_trade_value, available_cash)  # scalar
+    shares_to_buy = actual_cost / jnp.maximum(buy_exec_price, 1e-10)
+    short_proceeds_buy = cur_size * (2.0 * cur_entry - buy_exec_price)
+    fee_on_close_short = jnp.abs(short_proceeds_buy) * fee_rate
+    can_afford_buy = has_min_cash & (shares_to_buy > 0)
+    new_long_size = jnp.where(has_position & is_long, cur_size + shares_to_buy, shares_to_buy)
+    safe_divisor = jnp.maximum(new_long_size, 1e-10)
+    new_long_entry = jnp.where(has_position & is_long,
+                               (cur_size * cur_entry + shares_to_buy * buy_exec_price) / safe_divisor,
+                               buy_exec_price)
+    closing_short = has_position & is_short
+    opening_long  = (~has_position) & can_afford_buy
+    adding_long   = has_position & is_long & can_afford_buy
+    buy_change    = closing_short | opening_long | adding_long
+    buy_cash_delta = jnp.where(closing_short, short_proceeds_buy - fee_on_close_short,
+                     jnp.where(opening_long | adding_long, -actual_cost, 0.0))
+    buy_pos_active = jnp.where(closing_short, False,
+                     jnp.where(opening_long | adding_long, True, has_position))
+    buy_pos_side = jnp.where(closing_short, 0,
+                   jnp.where(opening_long | adding_long, 1, state.pos_side))
+    buy_pos_size = jnp.where(closing_short, 0.0,
+                   jnp.where(opening_long | adding_long, new_long_size, cur_size))
+    buy_pos_entry = jnp.where(closing_short, 0.0,
+                    jnp.where(opening_long | adding_long, new_long_entry, cur_entry))
+    buy_pos_sl = jnp.where(closing_short, 0.0,
+                 jnp.where(opening_long & config.tp_sl_enabled,
+                           buy_exec_price * (1.0 - config.default_stop_loss_pct), state.pos_sl))
+    buy_pos_tp = jnp.where(closing_short, 0.0,
+                 jnp.where(opening_long & config.tp_sl_enabled,
+                           buy_exec_price * (1.0 + config.default_take_profit_pct), state.pos_tp))
+
+    # --- SELL branch (mirror execute_sell) ---
+    sell_exec_price = apply_fee_and_slippage(current_prices, False, config.fee_bps, config.slippage_bps)
+    long_proceeds = cur_size * sell_exec_price
+    fee_on_close_long = long_proceeds * fee_rate
+    actual_short_cost = jnp.minimum(ideal_trade_value, available_cash)  # scalar
+    shares_to_sell = actual_short_cost / jnp.maximum(current_prices, 1e-10)
+    fee_on_open_short = actual_short_cost * fee_rate
+    can_afford_short = has_min_cash & (shares_to_sell > 0)
+    closing_long  = has_position & is_long
+    opening_short = (~has_position) & config.allow_short & can_afford_short
+    sell_cash_delta = jnp.where(closing_long, long_proceeds - fee_on_close_long,
+                      jnp.where(opening_short, -actual_short_cost - fee_on_open_short, 0.0))
+    sell_pos_active = jnp.where(closing_long, False,
+                      jnp.where(opening_short, True, has_position))
+    sell_pos_side = jnp.where(closing_long, 0,
+                    jnp.where(opening_short, 2, state.pos_side))
+    sell_pos_size = jnp.where(closing_long, 0.0,
+                    jnp.where(opening_short, shares_to_sell, cur_size))
+    sell_pos_entry = jnp.where(closing_long, 0.0,
+                     jnp.where(opening_short, sell_exec_price, cur_entry))
+    sell_pos_sl = jnp.where(closing_long, 0.0,
+                  jnp.where(opening_short & config.tp_sl_enabled,
+                            sell_exec_price * (1.0 + config.default_stop_loss_pct), state.pos_sl))
+    sell_pos_tp = jnp.where(closing_long, 0.0,
+                  jnp.where(opening_short & config.tp_sl_enabled,
+                            sell_exec_price * (1.0 - config.default_take_profit_pct), state.pos_tp))
+
+    # --- LIMIT SELL branch (mirror execute_limit_sell) ---
+    ls_limit_price = current_prices * (1.0 + config.limit_offset_pct)
+    ls_shares_for_short = ideal_trade_value / jnp.maximum(ls_limit_price, 1e-10)
+    ls_order_size = jnp.where(has_position & is_long, cur_size, ls_shares_for_short)
+    can_place_ls = ((has_position & is_long) | ((~has_position) & config.allow_short)) & (ls_order_size > 0)
+
+    # --- LIMIT BUY branch (mirror execute_limit_buy) ---
+    lb_limit_price = current_prices * (1.0 - config.limit_offset_pct)
+    lb_shares = ideal_trade_value / jnp.maximum(lb_limit_price, 1e-10)
+    can_place_lb = (~has_position) & (lb_shares > 0)
+
+    # --- Combine positions: default = unchanged (hold / limit branches don't move positions) ---
+    new_pos_active = jnp.where(a_buy, buy_pos_active,
+                     jnp.where(a_sell, sell_pos_active, state.pos_active))
+    new_pos_side = jnp.where(a_buy, buy_pos_side,
+                   jnp.where(a_sell, sell_pos_side, state.pos_side))
+    new_pos_size = jnp.where(a_buy, buy_pos_size,
+                   jnp.where(a_sell, sell_pos_size, state.pos_size))
+    new_pos_entry = jnp.where(a_buy, buy_pos_entry,
+                    jnp.where(a_sell, sell_pos_entry, state.pos_entry))
+    new_pos_sl = jnp.where(a_buy, buy_pos_sl,
+                 jnp.where(a_sell, sell_pos_sl, state.pos_sl))
+    new_pos_tp = jnp.where(a_buy, buy_pos_tp,
+                 jnp.where(a_sell, sell_pos_tp, state.pos_tp))
+
+    # --- Combine cash: sum per-asset deltas onto the single snapshot cash ---
+    cash_delta = jnp.where(a_buy, buy_cash_delta,
+                 jnp.where(a_sell, sell_cash_delta, 0.0))
+    new_cash = snap_cash + jnp.sum(cash_delta)
+
+    # --- Combine orders: market (buy/sell) cancels pending order_active (mirrors scalar);
+    #     limit_sell/limit_buy place a new order where allowed; hold leaves orders untouched. ---
+    market = a_buy | a_sell
+    place_ls = a_lsell & can_place_ls
+    place_lb = a_lbuy & can_place_lb
+    place_any = place_ls | place_lb
+    new_order_active = jnp.where(market, False,
+                       jnp.where(place_any, True, state.order_active))
+    new_order_side = jnp.where(place_ls, 2,
+                     jnp.where(place_lb, 1, state.order_side))
+    new_order_size = jnp.where(place_ls, ls_order_size,
+                     jnp.where(place_lb, lb_shares, state.order_size))
+    new_order_price = jnp.where(place_ls, ls_limit_price,
+                      jnp.where(place_lb, lb_limit_price, state.order_price))
+    new_order_reserved = jnp.where(place_any, 0.0, state.order_reserved)
+    new_order_created = jnp.where(place_any, state.current_step, state.order_created)
+    new_order_ttl = jnp.where(place_any, config.default_limit_order_ttl, state.order_ttl)
+
+    new_state = state.replace(
+        cash=new_cash,
+        pos_active=new_pos_active,
+        pos_side=new_pos_side,
+        pos_size=new_pos_size,
+        pos_entry=new_pos_entry,
+        pos_sl=new_pos_sl,
+        pos_tp=new_pos_tp,
+        order_active=new_order_active,
+        order_side=new_order_side,
+        order_size=new_order_size,
+        order_price=new_order_price,
+        order_reserved=new_order_reserved,
+        order_created=new_order_created,
+        order_ttl=new_order_ttl,
+    )
+
+    # 4. Margin call (short losses from the rebalance may have driven cash negative)
+    new_state = process_margin_call(new_state, current_prices, config)
+
+    # 5. Liquidation check (identical to scalar step)
+    new_portfolio_value = compute_portfolio_value(new_state, current_prices)
+    liquidation_threshold = config.initial_cash * config.liquidation_threshold_pct
+    is_liquidated = new_portfolio_value < liquidation_threshold
+
+    # TASK_055: borrow cost for shorts (identical to scalar step)
+    if config.borrow_rate_annual > 0:
+        borrow_rate_step = config.borrow_rate_annual / 100800.0
+        is_short_new = new_state.pos_active & (new_state.pos_side == 2)
+        short_values = jnp.where(is_short_new, new_state.pos_size * current_prices, 0.0)
+        total_short_value = jnp.sum(short_values)
+        borrow_cost = total_short_value * borrow_rate_step
+    else:
+        borrow_cost = 0.0
+
+    new_cash_after_borrow = new_state.cash - borrow_cost
+    new_state = new_state.replace(cash=new_cash_after_borrow)
+    new_portfolio_value = new_portfolio_value - borrow_cost
+
+    # 6. Reward: whole vector-step portfolio log-return (same base formula as scalar step)
+    safe_prev = jnp.maximum(state.prev_portfolio_value, 1e-8)
+    safe_new = jnp.maximum(new_portfolio_value, 1e-8)
+    log_return = jnp.log(safe_new / safe_prev) * 100.0
+    reward = jnp.where(is_liquidated, symlog(-50.0), symlog(log_return))
+
+    # Optional --reward-attributable term: realized log-PnL summed over EVERY asset this
+    # rebalance closed (True->False flip). Same math as scalar step; naturally multi-close here.
+    if config.reward_attributable:
+        closed     = prev_active_attr & (~new_state.pos_active)
+        safe_exit  = jnp.maximum(current_prices, 1e-8)
+        safe_entry = jnp.maximum(prev_entry_attr, 1e-8)
+        long_log   = jnp.log(safe_exit / safe_entry)
+        realized   = jnp.where(prev_side_attr == 1, long_log,
+                     jnp.where(prev_side_attr == 2, -long_log, 0.0))
+        realized   = jnp.where(closed, realized, 0.0)
+        realized_sum = jnp.sum(realized)
+        reward = reward + jnp.where(is_liquidated, 0.0, symlog(realized_sum * 100.0))
+
+    # TASK_051: burning money (identical to scalar step)
+    if config.burning_money:
+        cash_ratio = new_state.cash / jnp.maximum(new_portfolio_value, 1e-8)
+        cash_ratio = jnp.clip(cash_ratio, 0.0, 1.0)
+        burn = jnp.array(0.0)
+        if config.burn_market_linked:
+            step_idx = state.episode_start_idx + state.current_step
+            prev_step_idx = jnp.maximum(step_idx - 1, 0)
+            current_prices_step = prices[step_idx]
+            prev_prices_step = prices[prev_step_idx]
+            returns = (current_prices_step - prev_prices_step) / jnp.maximum(prev_prices_step, 1e-8)
+            market_return = jnp.mean(returns)
+            market_burn = jnp.maximum(market_return * cash_ratio, 0.0)
+            burn = burn + market_burn
+        base_burn = config.burn_base_rate * cash_ratio
+        burn = burn + base_burn
+        reward = reward - symlog(burn * 100.0)
+
+    # TASK_051: random burns (identical to scalar step)
+    rng_key, burn_key1, burn_key2 = jax.random.split(new_state.rng_key, 3)
+    new_state = new_state.replace(rng_key=rng_key)
+    if config.burn_random:
+        roll = jax.random.uniform(burn_key1, ())
+        burn_amount = jax.random.uniform(burn_key2, (), minval=0.0, maxval=config.burn_random_max)
+        should_burn = (roll < config.burn_random_prob) & (new_state.random_burns_remaining > 0)
+        actual_burn = jnp.where(should_burn, jnp.minimum(burn_amount, new_state.cash), 0.0)
+        new_cash = new_state.cash - actual_burn
+        new_state = new_state.replace(cash=new_cash)
+        new_burns_remaining = jnp.where(should_burn,
+                                        new_state.random_burns_remaining - 1,
+                                        new_state.random_burns_remaining)
+        new_state = new_state.replace(random_burns_remaining=new_burns_remaining)
+        burn_pct = actual_burn / jnp.maximum(new_portfolio_value, 1e-8) * 100.0
+        reward = reward - symlog(burn_pct)
+        new_portfolio_value = new_portfolio_value - actual_burn
+
+    # Update tracking / advance step (identical to scalar step)
+    new_cumulative_return = (new_portfolio_value / state.initial_portfolio_value - 1.0) * 100.0
+    new_step = state.current_step + 1
+    done = (new_step >= state.max_episode_steps) | is_liquidated
+
+    final_state = new_state.replace(
+        current_step=new_step,
+        prev_portfolio_value=new_portfolio_value,
+        cumulative_return=new_cumulative_return,
+    )
+
+    obs = compute_observation(final_state, prices, config)
+    return final_state, obs, reward, done
+
+
+# =============================================================================
 # Observation Construction
 # =============================================================================
 
@@ -1590,6 +1891,17 @@ def batch_step(states: TradingState, actions: chex.Array,
     return jax.vmap(lambda s, a: step(s, a, prices, config))(states, actions)
 
 
+def batch_step_vector(states: TradingState, action_vecs: chex.Array,
+                      prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """Vector-action step across a batch of envs (shared prices). TASK_828 Stage 1.
+
+    Args:
+        states: Batched TradingState
+        action_vecs: (n_envs, n_assets) per-asset action codes in {0..4}
+    """
+    return jax.vmap(lambda s, a: step_vector(s, a, prices, config))(states, action_vecs)
+
+
 # =============================================================================
 # Per-Env Unique Prices (each env has independent price data)
 # =============================================================================
@@ -1641,6 +1953,20 @@ def jit_step(state: TradingState, action: chex.Array,
              prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
     """JIT-compiled single environment step."""
     return step(state, action, prices, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_step_vector(state: TradingState, action_vec: chex.Array,
+                    prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """JIT-compiled single-env vector-action step. TASK_828 Stage 1."""
+    return step_vector(state, action_vec, prices, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_batch_step_vector(states: TradingState, action_vecs: chex.Array,
+                          prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """JIT-compiled batched vector-action step. TASK_828 Stage 1."""
+    return batch_step_vector(states, action_vecs, prices, config)
 
 
 @partial(jax.jit, static_argnames=['config'])
