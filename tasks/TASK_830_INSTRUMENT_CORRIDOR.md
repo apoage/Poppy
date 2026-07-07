@@ -1,3 +1,10 @@
+> **STATUS (2026-07-08): factory half SHIPPED.** `experiments/830_corridor/` runner + SPEC +
+> fixture smoke landed; panel-green (runner correct, zero diffs outside `experiments/`, env
+> byte-identical). Fixture floor does NOT reproduce the +0.97 bar within tol — verified as a
+> **replay-mapping artifact, NOT a `step_vector` bug** (see CHANGELOG / SPEC Attribution). Seeded
+> **DECISIONS D6** (official floor mapping). **Remainder:** real-panel corridor numbers = SCHEDULED
+> CPU run (24GB db read-only), not a factory-loop job — the load-bearing E0 verdict comes from there.
+
 # TASK_830 — Instrument corridor: linear book + oracle bound through the vector env (E0, R0)
 
 **Status**: GATED on 828 Stage 1 banner (needs `step_vector`).
