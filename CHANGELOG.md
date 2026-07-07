@@ -3,6 +3,14 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-07-08 — TASK_828 Stage 2 — Sampled-MuZero MCTS over joint action-vectors, flag-gated
+- `mcts_trader/jax_agent/sampled_search.py` (NEW) — `SampledMuZeroVectorSearch`: samples K action-vectors from the factored per-asset policy marginals (β=π on-policy), runs `mctx.gumbel_muzero_policy` over the reduced {0..K-1} set, returns `action_vec (B,n_assets)∈{0..4}` + `visit_probs (B,K)` + diagnostic `beta_hat`. Visit-count correction = uniform-per-slot empirical prior (importance weight π/β=1 because sampling is on-policy); hand-worked β̂ cases pinned.
+- `mcts_trader/jax_agent/muzero_model.py` — `VectorActionEmbedding` module + `dynamics_vector`/`recurrent_inference_vector` (reuse the canon dynamics MLP; embed the vector, not a scalar index), gated by `use_vector_action: bool = False` (+ `vector_n_actions_per_asset`). `mctx_search.py` untouched.
+- `tools/tests/test_sampled_search.py` (NEW) — 11 tests (shape/plumbing, sampling+β̂ correction, canon parity, search→`step_vector` integration).
+- Canon bit-identical when OFF: param tree byte-identical (202 params ON≡OFF), canon mctx-search rollout hash identical HEAD vs working-tree.
+- Verified by full high-tier panel: Sampled-MuZero math confirmed correct (β=π empirically verified); no correctness/regression/fail-closed findings; flow-verifier confirmed the search demonstrably uses its value net.
+- **Stage 3 wire-up carry-notes (from the panel):** (1) `sampled_search` has NO `action_mask` param — masking must be applied by pre-setting invalid per-asset logits to −inf before the search; (2) the model must be built with the 320-wide factored head (asset-major `idx=asset*A+action`); a mismatch is a loud reshape crash, not a silent mis-slice; (3) for deterministic eval (Stage 4) select via `visit_probs` argmax or lower `gumbel_scale` — at default `gumbel_scale=1.0` the single returned `action_vec` is exploration-dominated; (4) interior-node depth-reuse of the root's K vectors is a documented simplification — per-node resampling is the follow-up. Unrelated footgun: `MuZeroNetworks.action_space_size` default 192 vs production 320 (overridden everywhere; planner cleanup candidate).
+
 ## 2026-07-08 — TASK_830 — E0 instrument corridor (factory half): linear-book floor + oracle ceiling through the vector env
 - `experiments/830_corridor/`: `SPEC.md` (pre-registered ±0.10 Sharpe tolerance + attribution note), `corridor.py` runner (replays the 819 linear book as `action_vec`s through `step_vector` for the floor; per-asset `path_solver` oracle for the ceiling — instrument only, H5 respected), `results_fixture_smoke.json`.
 - `experiments/LEDGER.md`: E0 fixture-smoke row, real-panel verdict PENDING the scheduled CPU run.

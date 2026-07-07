@@ -1,8 +1,21 @@
-> **STATUS (2026-07-08): Stage 1 SHIPPED.** Vector env step `step_vector` landed flag-gated
-> (`EnvConfig.vector_action`, default OFF), canon scalar path proven bit-identical, full high-tier
-> verify panel green (13 tests + selftest 7/7). **Remainders:** Stage 2 (Sampled-MuZero search),
-> Stage 3 (training + action-conditional reward head), Stage 4 (eval) still OPEN. `--vector-action`
-> not yet threaded through training/search/env_factory. Next queue row: Stage 2, gated on this banner.
+> **STATUS (2026-07-08): Stages 1 & 2 SHIPPED.**
+> — **Stage 1**: vector env step `step_vector` flag-gated (`EnvConfig.vector_action`, default OFF),
+>   canon bit-identical, panel-green (13 tests).
+> — **Stage 2**: `SampledMuZeroVectorSearch` (`mcts_trader/jax_agent/sampled_search.py`) + gated
+>   `VectorActionEmbedding`/`dynamics_vector` in the model (`use_vector_action`, default OFF),
+>   `mctx_search.py` untouched, canon param-tree + search hash bit-identical, full high-tier panel
+>   green — Sampled-MuZero math verified (β=π on-policy ⇒ uniform-per-slot prior exact); search
+>   confirmed to use its value net (11 tests).
+> **Stage 3 wire-up carry-notes (panel-surfaced — honor these when threading self-play):**
+>   (1) mask via −inf per-asset logits BEFORE the search (`sampled_search` takes no `action_mask` arg);
+>   (2) build the model with the 320-wide asset-major factored head (`idx=asset*A+action`);
+>   (3) deterministic eval selects via `visit_probs` argmax / lower `gumbel_scale` (default returned
+>   `action_vec` is exploration-dominated); (4) interior depth-reuse of root K vectors is a documented
+>   simplification (per-node resampling = follow-up); the **action-conditional reward head (D2) + E3
+>   variance-attribution probe is the hard gate inside Stage 3**.
+> **Remainders:** Stage 3 (training loop + factored targets + action-conditional reward head — CODE
+> may land but TRAINING LAUNCH waits on TASK_831 E1 PASS), Stage 4 (scheduled eval). `use_vector_action`
+> not yet threaded through training/self-play/`env_factory`/`train_jax_fast.py`.
 
 # TASK_828 — Vector-action MuZero: one decision = the whole portfolio
 

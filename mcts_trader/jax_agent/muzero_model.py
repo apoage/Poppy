@@ -272,6 +272,48 @@ class PerAssetPolicyHead(nn.Module):
         return logits.reshape(batch, -1).astype(jnp.float32)
 
 
+class VectorActionEmbedding(nn.Module):
+    """TASK_828 Stage 2: embed a per-asset action VECTOR into the dynamics
+    action-input space (state_dim), replacing the scalar action-index embedding
+    on the vector-action path ONLY.
+
+    Input: ``action_vec`` (B, n_assets) int in {0..n_actions_per_asset-1} — the
+    per-asset action-type for a one-shot portfolio rebalance (same codes as the
+    scalar path: 0=sell,1=hold,2=buy,3=limit_sell,4=limit_buy).
+
+    Design (smallest defensible, FLAGGED for panel): one-hot each asset's action
+    → (B, n_assets, A) → flatten to (B, n_assets*A) → a single Dense → (B,
+    state_dim). This Dense is exactly ``Σ_asset E[asset, action_of_asset]`` (a
+    learnable per-(asset,action) embedding summed over assets), so it spans the
+    same joint 5^n_assets action structure the scalar path encoded as a 320-way
+    index — without a 5^n_assets embedding table. The produced (B, state_dim)
+    embedding is concatenated with the latent and fed to the SHARED, canon
+    ``dynamics_dense1/ln/dense2/state_norm`` MLP (the learned dynamics core is
+    reused unchanged; only the action-embedding differs).
+
+    NOT zero-init: this is a NEW architecture variant (use_vector_action=True),
+    not a residual on the canon path, so there is no byte-identical-load
+    requirement for it. When use_vector_action is False this module is never
+    constructed → no params → the canon scalar path is byte-identical.
+    """
+    n_assets: int = 64
+    n_actions_per_asset: int = 5
+    out_dim: int = 64  # state_dim
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+
+    @nn.compact
+    def __call__(self, action_vec: jnp.ndarray) -> jnp.ndarray:
+        # action_vec: (B, n_assets) int → one-hot (B, n_assets, A)
+        onehot = jax.nn.one_hot(action_vec, self.n_actions_per_asset,
+                                dtype=self.dtype)
+        batch = onehot.shape[0]
+        flat = onehot.reshape(batch, -1)  # (B, n_assets * A)
+        emb = nn.Dense(features=self.out_dim, dtype=self.dtype,
+                       param_dtype=self.param_dtype, name='vec_act_proj')(flat)
+        return emb.astype(self.dtype)
+
+
 class PolicyDirectionRefiner(nn.Module):
     """TASK_728: Project per-asset direction logits into policy-logit space as a
     residual bias. Zero-init ensures checkpoint compatibility — initial behavior
@@ -393,6 +435,14 @@ class MuZeroNetworks(nn.Module):
     token_dynamics_vocab_size: int = 0   # candle-language vocab (V); 0 ⇒ head off
     token_dynamics_factor_dim: int = 16  # E' — factorized per-asset bottleneck
     token_dynamics_hidden_dim: int = 256
+
+    # TASK_828 Stage 2 (Vector-action MuZero): embed a per-asset action VECTOR
+    # as the dynamics/reward/value action input (Sampled-MuZero joint planning).
+    # Default OFF ⇒ no VectorActionEmbedding params, canon scalar path
+    # byte-identical. When ON, an ADDITIVE flag-selected input path is added;
+    # the scalar dynamics() call signature and params are untouched.
+    use_vector_action: bool = False
+    vector_n_actions_per_asset: int = 5
 
     # TASK_749 (Titans-MAG): Plumbed-through TRM/encoder Titans config.
     use_titans_memory: bool = False
@@ -558,6 +608,20 @@ class MuZeroNetworks(nn.Module):
                 param_dtype=self.param_dtype,
             )
 
+        # TASK_828 Stage 2: per-asset action-vector embedding for the vector
+        # dynamics path. Guarded by use_vector_action ⇒ no params when OFF ⇒
+        # canon scalar path byte-identical. Reuses the canon dynamics MLP
+        # (dynamics_dense1/ln/dense2/state_norm); only the action embedding
+        # differs from the scalar action_embedding.
+        if self.use_vector_action:
+            self.vector_action_embedding = VectorActionEmbedding(
+                n_assets=self.n_assets,
+                n_actions_per_asset=self.vector_n_actions_per_asset,
+                out_dim=self.state_dim,
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+            )
+
         # TASK_802: Token-grounded dynamics — next-token shape-class head.
         if self.use_token_dynamics and self.token_dynamics_vocab_size > 0:
             self.next_token_head = NextTokenHead(
@@ -698,6 +762,76 @@ class MuZeroNetworks(nn.Module):
         reward = reward.astype(jnp.float32)
 
         return next_state, reward
+
+    def dynamics_vector(
+        self,
+        latent_state: jnp.ndarray,
+        action_vec: jnp.ndarray,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """TASK_828 Stage 2: dynamics for a per-asset action VECTOR.
+
+        Identical to ``dynamics`` except the action input is a per-asset action
+        VECTOR ``action_vec`` (B, n_assets) ∈ {0..A-1}, embedded by
+        ``vector_action_embedding`` (→ (B, state_dim)) instead of the scalar
+        ``action_embedding`` index lookup. The concatenation width
+        (state_dim + state_dim) and the downstream MLP
+        (dynamics_dense1/ln/dense2/state_norm) are the SAME learned modules as
+        the scalar path — the reward/value dynamics core is shared; only the
+        action encoding differs. Requires use_vector_action=True (else the
+        embedding submodule does not exist).
+
+        Args:
+            latent_state: (batch, state_dim)
+            action_vec: (batch, n_assets) integer per-asset action-types
+        Returns:
+            next_latent_state: (batch, state_dim)
+            reward: (batch, support_size)
+        """
+        latent_state = latent_state.astype(self.dtype)
+
+        # Embed the action VECTOR (not a scalar index) → (B, state_dim).
+        action_emb = self.vector_action_embedding(action_vec).astype(self.dtype)
+
+        # Concatenate state and action — same width as the scalar path
+        # (state_dim + state_dim) so the shared dynamics MLP applies unchanged.
+        x = jnp.concatenate([latent_state, action_emb], axis=-1)
+
+        x = self.dynamics_dense1(x)
+        x = self.dynamics_ln(x)
+        x = nn.gelu(x)
+        out = self.dynamics_dense2(x)
+
+        next_state = out[:, :self.state_dim]
+        reward = out[:, self.state_dim:]
+
+        next_state = self.dynamics_state_norm(next_state)
+
+        next_state = next_state.astype(jnp.float32)
+        reward = reward.astype(jnp.float32)
+
+        return next_state, reward
+
+    def recurrent_inference_vector(
+        self,
+        latent_state: jnp.ndarray,
+        action_vec: jnp.ndarray,
+    ) -> Dict[str, jnp.ndarray]:
+        """TASK_828 Stage 2: recurrent inference under a per-asset action VECTOR.
+
+        Mirrors ``recurrent_inference`` (Dynamics + Prediction, BUG-017
+        stop-gradient preserved) but expands the tree with a vector action via
+        ``dynamics_vector``. Used by the Sampled-MuZero vector search
+        (sampled_search.py). Returns the same keys as ``recurrent_inference``.
+        """
+        next_latent_state, reward = self.dynamics_vector(latent_state, action_vec)
+        policy_logits, value = self.prediction(
+            jax.lax.stop_gradient(next_latent_state))
+        return {
+            'latent_state': next_latent_state,
+            'policy_logits': policy_logits,
+            'value': value,
+            'reward': reward,
+        }
 
     def initial_inference(
         self,
@@ -1100,6 +1234,16 @@ class MuZeroNetworks(nn.Module):
             # Use latent state from init for recurrent
             self.recurrent_inference(out_init['latent_state'], action)
 
+            # TASK_828 Stage 2: initialize the vector-action dynamics path so the
+            # vector_action_embedding params are created. Reuses the already-init
+            # dynamics MLP; only the new embedding submodule gets fresh params.
+            if self.use_vector_action:
+                batch_size = observation.shape[0]
+                dummy_action_vec = jnp.zeros((batch_size, self.n_assets),
+                                             dtype=jnp.int32)
+                self.recurrent_inference_vector(
+                    out_init['latent_state'], dummy_action_vec)
+
             # Initialize prediction head if enabled
             if self.use_prediction_head:
                 dummy_features = jnp.zeros((observation.shape[0], self.n_features))
@@ -1145,6 +1289,11 @@ class MuZeroNetworks(nn.Module):
             # When called from mctx, the first positional arg (mapped to 'observation')
             # is actually the embedding/latent_state
             return self.recurrent_inference(observation, action)
+        elif mode == 'recurrent_inference_vector':
+            # TASK_828 Stage 2: vector-action tree expansion. First positional
+            # arg (observation) is the latent embedding; action is the per-asset
+            # action VECTOR (batch, n_assets).
+            return self.recurrent_inference_vector(observation, action)
         elif mode == 'initial_inference_with_intermediates':
             # Explicit mode for DS24 dashboard logging
             return self.initial_inference(observation, return_intermediates=True)
