@@ -183,7 +183,7 @@ python train_jax_fast.py --synthetic-level=0 --epochs=5 --use-prediction-loss --
 
 **Observation**: Without `--adaptive-entropy`, policy entropy collapses rapidly even on simple L0 patterns.
 
-**Analogy**: Adaptive entropy is like "cocaine for a real trader" - the model becomes addicted to having exploration pumped in. Without it, the model gets overconfident too quickly and locks into suboptimal policies (usually HOLD-dominant).
+**Analysis**: Adaptive entropy is essential for maintaining exploration. Without it, the model converges to suboptimal policies (usually HOLD-dominant) due to value function learning faster than policy exploration.
 
 **Why it's necessary (for now)**:
 - Static entropy coef (0.01) insufficient once model starts learning

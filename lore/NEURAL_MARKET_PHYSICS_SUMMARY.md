@@ -153,7 +153,7 @@ print(f"Learned α: {model.α.item():.3f}")
 | U-Net (pure AI) | 0.923 | 1.436 | 1.719 | 1.886 |
 | FourCastNet | 0.959 | 1.424 | 2.433 | **3.332** |
 
-**Critical Finding**: Pure AI model (FourCastNet) **diverges catastrophically** at 120 days (2.1× worse than NeuralOGCM)
+**Critical Finding**: Pure AI model (FourCastNet) **diverges significantly** at 120 days (2.1× worse than NeuralOGCM)
 
 ### Visual Quality (90-day rollout)
 

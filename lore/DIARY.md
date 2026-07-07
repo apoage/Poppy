@@ -46,7 +46,7 @@ dynamics_hidden = state_dim * 4    # 256, 384, 640
 
 **Rationale**: AlphaGo used 20M params for 362 actions, we have 384+. More capacity → better portfolio tactics discovery.
 
-**Status**: TASK_03 fully documented and ready for Gemini implementation
+**Status**: TASK_03 fully documented and ready for implementation
 
 **Files Updated**:
 - `tasks/TASK_03_SCALE_MODEL_TO_25M.md` - Comprehensive scaling guide with 36M target
@@ -64,13 +64,13 @@ dynamics_hidden = state_dim * 4    # 256, 384, 640
 6. ✅ Created `tests/test_model_sizes.py` for regression testing
 
 **Verified Parameter Counts**:
-- Small (state_dim=64, H/L=4/6, hidden=1024): **7.25M params**
-- Medium (state_dim=96, H/L=4/6, hidden=1536): **14.77M params**
-- Large (state_dim=160, H/L=4/6, hidden=2560): **37.58M params**
+- Small (state_dim=64, H/L=4/6, hidden=1024): 7.25M params
+- Medium (state_dim=96, H/L=4/6, hidden=1536): 14.77M params
+- Large (state_dim=160, H/L=4/6, hidden=2560): 37.58M params
 
 **VRAM Verified**: All sizes fit in 24GB with auto-adjusted batch sizes
 
-**Status**: ✅ COMPLETE - Model properly scales to 37M parameters
+**Status**: COMPLETE - Model properly scales to 37M parameters
 
 ### NeuralOGCM Discovery: Hybrid Physics-AI for Market Prediction
 
@@ -104,7 +104,7 @@ dp/dt = α·velocity              # Momentum (learned α)
 1. **Prediction Head** (TASK_05): Add to MuZero latent space for auxiliary price prediction
 2. **Environment Augmentation**: Provide agent with physics-predicted future states
 
-**Status**: Design document created (`lore/NEURAL_MARKET_PHYSICS_DESIGN.md`)
+**Status**: Design document created (lore/NEURAL_MARKET_PHYSICS_DESIGN.md)
 
 **Next**: Consider as TASK_07 after current scaling work complete
 
@@ -124,16 +124,16 @@ dp/dt = α·velocity              # Momentum (learned α)
 - VRAM usage analysis
 
 **Key Findings**:
-1. ✅ Worker pool is functional (4 workers running)
-2. ❌ Speedup is minimal (~1.2×, not 3-4×)
-3. ✅ **VRAM usage is tiny: 537MB / 24GB = 2.2% utilization**
-4. 🎯 **Can run 16 parallel 7M model instances!**
+1. Worker pool is functional (4 workers running)
+2. Speedup is minimal (1.2×, not 3-4× target)
+3. VRAM usage is small: 537MB / 24GB = 2.2% utilization
+4. Can run 16 parallel 7M model instances
 
-**Critical Discovery**: We have **17× more VRAM** than we're using!
+**Critical Discovery**: Significant unused VRAM capacity available
 
-**Recommendation**: **Multi-instance training strategy** (not worker pool optimization)
+**Recommendation**: Multi-instance training strategy (not worker pool optimization)
 - Launch 4-6 parallel training processes on same GPU
-- Expected speedup: 4-6× (guaranteed linear scaling)
+- Expected speedup: 4-6× (linear scaling)
 - Implementation effort: 30 minutes
 - No code changes needed
 
@@ -211,11 +211,11 @@ python train_jax_fast.py --state-dim 96 --sims 64 --batch-size 512
 - state_dim=128: 25M params
 
 **Dual-Instance Training Discovery**:
-- ✅ 2 instances saturate GPU to **96%** (up from 65%)
-- ✅ VRAM: 2 × 9.2GB = 18.4GB / 24GB (77% utilization)
-- ✅ 5.6 GB headroom for bigger models
-- ⚠️ Not useful on single GPU (no speedup, just better saturation)
-- ✅ Would be useful with multi-GPU setup
+- 2 instances saturate GPU to 96% (up from 65%)
+- VRAM: 2 × 9.2GB = 18.4GB / 24GB (77% utilization)
+- 5.6 GB headroom for bigger models
+- Not useful on single GPU (no speedup, improved saturation)
+- Would be useful with multi-GPU setup
 
 **Files Modified**:
 - `tasks/TASK_03_SCALE_MODEL_TO_25M.md` - Updated with current status, detailed fix instructions
@@ -469,7 +469,7 @@ python train_jax_fast.py --state-dim 96 --sims 64 --batch-size 512
 - Implemented `is_forex_pair()` to identify and exclude fiat pairs
 - Prevents model from learning forex-specific behaviors
 
-**Status**: ✅ Implementation complete and tested
+**Status**: Implementation complete and tested
 - JAX acceleration: ~1.4s per epoch (200 steps)
 - Rewards: Positive (+11.79 SPOT, +0.49 MARGIN)
 

@@ -9,22 +9,22 @@ overtook as workstation main agent. Found BOTH flagship bets stuck: 780 Phase-A 
 seeds (never trained 1 epoch), 775 had a hung s7 + all 3 evals failed (launched before ckpts
 existed). Operator ran Phase 0 (kill hang, relaunch 775, boot 780 with `--bella` DROPPED).
 **Discovered the `--bella` drop did NOT fix 780** — it re-OOM'd all 3 seeds at the identical
-11.6 GiB. Built + shipped **TASK_786** (the real OOM fix), deployed, and **780 trained past E0
-for the first time ever WITH `--bella` restored**. Built 3 self-advancing tmux orchestrators
+11.6 GiB. Built + shipped **TASK_786** (the OOM fix), deployed, and **780 trained past E0
+WITH `--bella` restored**. Built 3 self-advancing tmux orchestrators
 that own the entire remaining pipeline. Workstation going down → all live state is server-side.
 
 ## Confirmed rubric
 
 ```
 KEEP IN FULL:
-- TASK_786 IS the real 780 OOM fix. The 11.6 GiB (12457304672 B) allocation was the single
+- TASK_786 is the 780 OOM fix. The 11.6 GiB (12457304672 B) allocation was the single
   batched initial_inference on obs_flat=(B*(K+1),C,64,64)=(1536,...) at batch_size=256 — NOT
   the multipass tensor (~0.5 GiB). Dropping --bella only freed generator VRAM to fit the
   UNCHANGED peak; it re-OOM'd identically. Fix: bridge_trainer._encode_obs_chunked chunks the
   B*T encoder forward over its leading axis (lax.map + jax.checkpoint remat), peak → encode_chunk
   rows. Math-identical: smoke worst rel Δ=2.2e-05. Commit b8560dc. Deployed server tip 7575fac.
-- 780 NOW TRAINS past E0 WITH --bella + chunked (MEM_FRACTION=0.9, GPU3 ~22 GB). First time.
-- *** WATCH: 780A_s7 LOSS DIVERGED E2→E11 (Loss 8.3 → 151.7). *** Phase-A may FAIL its sanity
+- 780 now trains past E0 WITH --bella + chunked (MEM_FRACTION=0.9, GPU3 ~22 GB).
+- WATCH: 780A_s7 LOSS DIVERGED E2→E11 (Loss 8.3 → 151.7). Phase-A may FAIL its sanity
   gate. If all 3 seeds diverge, the bridge trainer needs a STABILITY fix (grad_clip / LR /
   value_scale / lower n_passes), not a memory fix. 786 unblocked the OOM; stability is separate.
 - 3 self-advancing tmux sessions on gpu-server (all survive workstation-off):

@@ -174,7 +174,7 @@ tail -100 logs/train_manager.log
 | Phase 2 Fine-Tuning | ~50 minutes | Adapted to recent market |
 | **Total** | **~5 hours** | Production-ready model |
 
-Much faster than originally estimated (2-4 days) thanks to JAX optimization! 🚀
+Faster than originally estimated (2-4 days) due to JAX optimization.
 
 ---
 
@@ -186,4 +186,4 @@ Much faster than originally estimated (2-4 days) thanks to JAX optimization! �
 4. ⏸️ Test on held-out data
 5. ⏸️ Deploy to live paper trading
 
-Good luck! 🎯
+Good luck.

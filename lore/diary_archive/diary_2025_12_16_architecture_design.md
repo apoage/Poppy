@@ -471,4 +471,4 @@ If the model learns to:
 
 **Vision**: A portfolio manager that thinks like AlphaGo, manages like a quant fund, and discovers tactics humans can't imagine.
 
-Let's build it. 🚀
+Let's build it.

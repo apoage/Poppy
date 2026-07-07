@@ -604,6 +604,6 @@ The **NeuralOGCM paradigm** is a perfect fit for financial markets:
 - **Learnable parameters**: Discover optimal market dynamics from data
 - **End-to-end training**: Both components co-optimize
 
-This approach could be the **breakthrough** needed for stable long-term market prediction, combining the best of physics-based models (stability, interpretability) and neural networks (flexibility, pattern recognition).
+This approach combines the best of physics-based models (stability, interpretability) and neural networks (flexibility, pattern recognition) for stable long-term market prediction.
 
 **Recommendation**: Prototype this as TASK_07 after completing current model scaling work.

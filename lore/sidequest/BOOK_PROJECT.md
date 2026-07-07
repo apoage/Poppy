@@ -1,16 +1,14 @@
 # The Book: Poppy & Bella
 
-**Status:** Ground Zero Required
-**Type:** Narrative Technical Hardcore
-**Vibe:** "The Soul of a New Machine" meets ML trading, wrapped in apothecary lore
+**Status:** Requires source material
+**Type:** Technical documentation with project history
+**Scope:** Building an AI trading system with system architecture and decision narrative
 
 ---
 
-## What This Is
+## Project
 
-A book about building an AI trading system - not a tutorial, not a memoir, but both woven together. Technical content that doesn't shy from the math. Narrative that doesn't shy from the 3am sessions. Fiction corners where the lore breathes. Factual corners where the architecture speaks.
-
-The apothecary naming isn't decoration - it's the lens. Medicinal plants, careful work with powerful tools, dosage matters, side effects are real.
+A documentation project covering the design and build of an AI trading system. Technical content sufficient to support reproducibility. Historical narrative of design decisions, experiments, and outcomes. Apothecary theme used as organizational structure for component naming.
 
 ---
 
@@ -247,13 +245,9 @@ The apothecary naming isn't decoration - it's the lens. Medicinal plants, carefu
 
 ---
 
-## Notes
+## Structure
 
-*The codebase is the artifact. The book is the story of why it exists.*
-
-*This isn't documentation. Documentation explains what. This explains why, how it felt, and what it cost.*
-
-*The apothecary theme: we work with powerful substances. Dosage matters. Side effects are real. The goal is healing, but the tools are dangerous.*
+The codebase is the primary artifact. The documentation captures design rationale, experimental results, and lessons from iterations.
 
 ---
 
@@ -428,5 +422,4 @@ Who was right (so far):
 
 ---
 
-*Ground Zero archaeology started. Old notes pending.*
-*The path from brainfuck to Mamba makes sense if you're the person who walked it.*
+Ground Zero archaeology in progress. Timeline and old notes pending.

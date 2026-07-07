@@ -1,6 +1,6 @@
 # Future Enhancements - MCTS Trading Agent
 
-⚠️ **STALE WARNING**: This file may be out of date.
+**STALE WARNING**: This file may be out of date.
 
 **Authoritative source**: See `CURRENT_STATE.md` for what's ACTUALLY implemented.
 

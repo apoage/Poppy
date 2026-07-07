@@ -1,7 +1,7 @@
 # Double Safeguard Stop Loss System
 
 **Created**: Dec 20, 2025
-**Priority**: 🚨 CRITICAL - Safety First
+**Priority**: CRITICAL - Safety First
 **Status**: Design Spec (Not Yet Implemented)
 
 ---
@@ -105,10 +105,10 @@ class AlgorithmicStopLoss:
 ```
 
 **Advantages**:
-- ✅ Always active (can't be disabled by model)
-- ✅ Simple, testable, auditable
-- ✅ Protects against catastrophic failures
-- ✅ Works even if model outputs NaNs or crashes
+- Always active (can't be disabled by model)
+- Simple, testable, auditable
+- Protects against catastrophic failures
+- Works even if model outputs NaNs or crashes
 
 **Disadvantages**:
 - Less adaptive (same 5% stop in calm and volatile markets)
@@ -161,9 +161,9 @@ class SafePortfolioManager(PortfolioManager):
         if algo_triggered and not agent_triggered:
             log_critical("⚠️ ALGO STOP TRIGGERED (Agent failed to protect capital!)")
         elif agent_triggered and not algo_triggered:
-            log_info("✅ Agent stop triggered (before hard limit)")
+            log_info("Agent stop triggered (before hard limit)")
         elif agent_triggered and algo_triggered:
-            log_warning("⚠️ Both stops triggered (position deteriorated rapidly)")
+            log_warning("Both stops triggered (position deteriorated rapidly)")
 ```
 
 ---
@@ -178,7 +178,7 @@ Agent sets stop_loss: $48,000 (-4%)
 Hard limit: $47,500 (-5%)
 
 Price drops to $48,100 → Agent closes position (-3.8% loss)
-Hard limit never triggers → ✅ Agent did its job
+Hard limit never triggers → Agent protected capital as designed
 ```
 
 ### Scenario 2: Agent Failure (Algo Saves)
@@ -189,7 +189,7 @@ Agent sets stop_loss: $40,000 (-20% 😱 BAD AGENT!)
 Hard limit: $47,500 (-5%)
 
 Price drops to $47,600 → Hard limit triggers → Position closed (-4.8% loss)
-Agent's stop never reached → 🚨 ALGO SAVED US from -20% loss
+Agent's stop never reached → Hard limit prevented -20% loss
 ```
 
 ### Scenario 3: Flash Crash (Algo Saves)
@@ -202,7 +202,7 @@ Hard limit: $47,500 (-5%)
 Flash crash: BTC drops to $40,000 in 1 minute (volatility spike)
 Algo detects extreme volatility → Force close at $49,500 (-1% loss)
 Agent's stop would have triggered at $48k (-4% loss)
-Algo was faster → 🚨 SAVED 3% by detecting volatility spike early
+Algo detected earlier → Prevented additional 3% loss
 ```
 
 ### Scenario 4: Agent Goes Degenerate (Algo Saves)
@@ -214,7 +214,7 @@ One position: ETH @ $2000 → drops to $1600 (-20%)
 
 Agent does nothing (degenerate policy)
 Hard limit triggers at -5% → Position closed at $1900 (-5% loss)
-🚨 ALGO SAVED US from -20% loss
+Hard limit prevented -20% loss despite agent failure
 ```
 
 ### Scenario 5: Portfolio Meltdown (Circuit Breaker)
@@ -227,8 +227,8 @@ SOL: -15%
 Portfolio: -10.5% total
 
 Portfolio-level circuit breaker triggers → CLOSE ALL POSITIONS
-Agent doesn't even get a chance to react
-🚨 CIRCUIT BREAKER prevents further losses
+Agent doesn't get a chance to react
+Circuit breaker prevents further losses
 ```
 
 ---

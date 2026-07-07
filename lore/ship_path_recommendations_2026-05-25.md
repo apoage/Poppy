@@ -415,11 +415,11 @@ The highest-impact salvage candidates are **(1) adversarial market generator** (
 
 ---
 
-## No-rewrite verdict (the honest version)
+## Assessment without rewrite
 
 **Under the constraint that single-mechanism class is closed AND the eval-MCTS sims=16 joint scorecard is the deploy-truthful target:**
 
-A small-perturbation candidate from the table above (#1, #2, #3, #5, #7, #8, #10) *might* ship. The honest prior, given the campaign's 14 evaluations 0 promotions and the eval-MCTS recal asymmetric-lift finding, is that each has 10-30% individual probability of clearing +3pp. None are slam-dunks. The **combinations** (#2 rs050+entropy and #5 rs050+767) are the most prior-favorable because both legs were independently zero-to-positive.
+A small-perturbation candidate from the table above (#1, #2, #3, #5, #7, #8, #10) could ship. Given the campaign's record of 14 evaluations with 0 promotions and the eval-MCTS recal asymmetric-lift finding, each has estimated 10-30% individual probability of clearing +3pp. The **combinations** (#2 rs050+entropy and #5 rs050+767) are more prior-favorable because both legs showed zero-to-positive individual results.
 
 If none of the small candidates ship, the project is at a structural choice:
 - **TASK_722 Bella rollouts** is the smallest *rewrite* on the table — already-designed unrun mechanism.
@@ -427,7 +427,7 @@ If none of the small candidates ship, the project is at a structural choice:
 - **Phase 3 ExIt closed-loop** (combining candidate #1 + candidate #4) is the design `docs/easy_mode.md` originally specified; the project has never implemented its own final phase.
 - **Self-play dojo** (`lore/SELF_PLAY_DOJO_VISION.md`) is the AlphaZero-aligned rewrite.
 
-**Rewrite identified**: **the rewrite is Phase 3 / ExIt closed-loop, with the oracle-mask aux head as its gating prerequisite**. Every other "rewrite" candidate on this list is a partial step toward Phase 3. The project's original 3-phase design has only ever shipped Phases 1 and 2; Phase 3 — the mechanism that distinguishes ExIt-based training from supervised + RL — is unbuilt. If small-perturbation candidates close null, that is the path. Cost of the experiment after build is the same as any candidate (~12 h paired 3-seed).
+**If small-perturbation candidates close null**: Phase 3 / ExIt closed-loop with the oracle-mask aux head as gating prerequisite would be the remaining option. Every other "rewrite" candidate on this list is a partial step toward Phase 3. The project's original 3-phase design has shipped Phases 1 and 2; Phase 3 is unbuilt. Cost of the experiment after build is ~12 h paired 3-seed.
 
 The "no rewrite, ship from small candidate" path is real but its probability mass is concentrated in the combinations (#2, #5) not the standalone retries. Recommend running those first as the cheap last small-mechanism probes before committing to Phase 3 ExIt build.
 
