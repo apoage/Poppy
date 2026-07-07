@@ -451,7 +451,7 @@ Not perfect tactics, but strong supervision signal.
 - Validate on held-out time periods
 - Monitor for overfitting to specific regimes
 
-**Astronomical upside:**
+**Significant upside:**
 - Current: agent explores randomly, hopes to find good paths
 - With oracle: agent sees what good paths LOOK LIKE
 - Difference between "find needle in haystack" vs "here's what needles look like"

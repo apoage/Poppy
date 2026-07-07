@@ -500,7 +500,7 @@ epoch_in_period = epoch // 4
 - `epoch_in_period`: progress within current period (0-14)
 - `data_coverage`: % of current period touched so far
 
-**Lesson learned:** Causality is a bitch. Random sampling destroys it. Took 2 hours to get the allocation strategy right.
+**Lesson learned:** Causality is fundamental. Random sampling destroys it. Took 2 hours to get the allocation strategy right.
 
 **The Iceberg (what seemed simple vs reality):**
 ```

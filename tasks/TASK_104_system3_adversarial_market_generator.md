@@ -6,7 +6,7 @@
 
 A co-evolutionary training system where a **market generator** (GPU 1) creates increasingly complex market scenarios while a **trading model** (GPU 0) learns to handle them. The generator adapts to keep the model in the "zone of proximal development" (0-5% alpha) - always challenging but learnable.
 
-This is **self-play for markets** - instead of playing against yourself (AlphaGo), you play against an adaptive environment that learns your weaknesses.
+This is **self-play for markets** - instead of playing against itself (AlphaGo), the model plays against an adaptive environment that learns to challenge it.
 
 ## Problem Statement
 

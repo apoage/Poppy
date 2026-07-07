@@ -6,10 +6,10 @@ Master ordering of upcoming experiment SPECs, batched for the
 
 ## Status legend
 
-- ✅ executable (SPEC ready, code wired, prerequisites met)
-- 🟡 executable with caveat (e.g. needs precompute step first)
-- 🔴 requires code implementation before becoming executable
-- ⛔ blocked (missing artifact / data)
+- DONE / READY — executable (SPEC ready, code wired, prerequisites met)
+- CAVEAT — executable with caveat (e.g. needs precompute step first)
+- NEEDS CODE — requires code implementation before becoming executable
+- BLOCKED — blocked (missing artifact / data)
 
 ## Queue
 
@@ -17,7 +17,7 @@ Master ordering of upcoming experiment SPECs, batched for the
 
 | ID | SPEC | Status | Result |
 |---|---|---|---|
-| 743 | `experiments/743_no_aux_multiseed/SPEC.md` | ✅ DONE | **AVG Alpha +3.61%, range -4.4 to +7.8 (12.2pp spread).** `no_aux_solo` NOT reliably better than a1b1 baseline. Single-seed +6.21% was upward outlier. See `lore/notes_2026-05-13.md` §99. |
+| 743 | `experiments/743_no_aux_multiseed/SPEC.md` | DONE | **AVG Alpha +3.61%, range -4.4 to +7.8 (12.2pp spread).** `no_aux_solo` NOT reliably better than a1b1 baseline. Single-seed +6.21% was upward outlier. See `lore/notes_2026-05-13.md` §99. |
 
 **Decision (2026-05-14):** `no_aux_solo` is **deprecated** as "new
 canonical Stage-B best". Revert canonical baseline to **a1b1**
@@ -41,11 +41,11 @@ the shared baseline for delta analysis.
 
 | ID | SPEC | Status | Wall time | Notes |
 |---|---|---|---|---|
-| 741 | `experiments/741_mint/SPEC.md` | 🔴 DONE — REGRESSION | 6 runs × 2.5h = ~7.5h (2-wide) | Mint xs paired 3-seed: **mean ΔAlpha −6.98pp, all 3 negative**. Better classifier (+3.29pp Bal.Acc) but worse trader. **Mint xs abandoned.** See `runs/741_mint/result.md` + `lore/notes_2026-05-13.md` §106. Baseline at seeds {7,13,23} still shared by Tier-2 SPECs. |
-| 739 | `experiments/739_dense_sign/SPEC.md` | 🔴 DONE — INCONCLUSIVE | 3 runs × 2.5h = ~3.75h | **mean Δα −2.63pp**, 2/3 positive but s7 outlier (−11.46pp). dir_acc 0.569 — **TASK_733 ceiling hypothesis closed regardless**. See `runs/739_dense_sign/result.md` + `lore/notes_2026-05-15.md` §108. Optional 5-seed extension low priority. |
-| 734 | `experiments/734_flow_matching/SPEC.md` | 🔴 DONE — 5-seed REVERSAL | 3+2 runs × 2.5h | 3-seed mean Δα +3.38pp looked promising, but **5-seed extension (s31 +3.56, s42 −12.71pp) drops mean to +0.20pp**. Pattern matches TASK_743 reversal of TASK_737: positive 3-seed → outlier reveals on 5-seed. **NOT PROMOTED.** Canonical Stage-B stays a1b1. See `lore/notes_2026-05-16.md` §115. |
-| 738 | `experiments/738_legacy_27ch/SPEC.md` | 🔴 DONE — REGRESSION | 3 runs × 2.5h = ~3.75h | **mean Δα −18.44pp**, all 3 seeds, all 6 periods negative. Same over-trading collapse signature as 741_mint. **TASK_732 cross-sectional channels confirmed load-bearing.** See `lore/notes_2026-05-15.md` §107. |
-| 740 | `experiments/740_bella_distill/SPEC.md` | 🟢 READY (SPEC refreshed 2026-05-16) | 3 runs × 3h = ~4.5h (2-wide) | Bella precompute COMPLETE (270/270 shards, server). SPEC refreshed to paired 3-seed with screening + 5-seed promotion protocol. **Top server priority.** |
+| 741 | `experiments/741_mint/SPEC.md` | NEEDS CODE — REGRESSION | 6 runs × 2.5h = ~7.5h (2-wide) | Mint xs paired 3-seed: **mean ΔAlpha −6.98pp, all 3 negative**. Better classifier (+3.29pp Bal.Acc) but worse trader. **Mint xs abandoned.** See `runs/741_mint/result.md` + `lore/notes_2026-05-13.md` §106. Baseline at seeds {7,13,23} still shared by Tier-2 SPECs. |
+| 739 | `experiments/739_dense_sign/SPEC.md` | NEEDS CODE — INCONCLUSIVE | 3 runs × 2.5h = ~3.75h | **mean Δα −2.63pp**, 2/3 positive but s7 outlier (−11.46pp). dir_acc 0.569 — **TASK_733 ceiling hypothesis closed regardless**. See `runs/739_dense_sign/result.md` + `lore/notes_2026-05-15.md` §108. Optional 5-seed extension low priority. |
+| 734 | `experiments/734_flow_matching/SPEC.md` | NEEDS CODE — 5-seed REVERSAL | 3+2 runs × 2.5h | 3-seed mean Δα +3.38pp looked promising, but **5-seed extension (s31 +3.56, s42 −12.71pp) drops mean to +0.20pp**. Pattern matches TASK_743 reversal of TASK_737: positive 3-seed → outlier reveals on 5-seed. **NOT PROMOTED.** Canonical Stage-B stays a1b1. See `lore/notes_2026-05-16.md` §115. |
+| 738 | `experiments/738_legacy_27ch/SPEC.md` | NEEDS CODE — REGRESSION | 3 runs × 2.5h = ~3.75h | **mean Δα −18.44pp**, all 3 seeds, all 6 periods negative. Same over-trading collapse signature as 741_mint. **TASK_732 cross-sectional channels confirmed load-bearing.** See `lore/notes_2026-05-15.md` §107. |
+| 740 | `experiments/740_bella_distill/SPEC.md` | READY (SPEC refreshed 2026-05-16) | 3 runs × 3h = ~4.5h (2-wide) | Bella precompute COMPLETE (270/270 shards, server). SPEC refreshed to paired 3-seed with screening + 5-seed promotion protocol. **Top server priority.** |
 
 ### Priority 2b — Tier-3 planning-side wave (queued, 2026-05-15)
 
@@ -53,10 +53,10 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 
 | ID | SPEC | Status | Wall time | Notes |
 |---|---|---|---|---|
-| 746 | `experiments/746_value_oracle/SPEC.md` | 🟡 DONE — 5-seed all positive, NOT promoted | 5 runs × 3h | **3-seed mean Δα +2.54pp** → **5-seed mean Δα +2.23pp, STD 2.28, ALL 5 seeds positive**. First all-positive 5-seed seen on this stack. Below +3pp promotion bar but qualitatively the strongest non-anti-correlated signal. See `runs/746_value_oracle/result.md`. |
-| 747 | `experiments/747_value_td0/SPEC.md` | 🔴 DONE — FLAT | 3 runs × 3h | **mean Δα +0.16pp**, no signal. Value-target roadmap CLOSED (oracle inconclusive, td0 flat → nstep stays canonical). See `lore/notes_2026-05-16.md` §114. |
-| 748 | `experiments/748_flow_velsweep/SPEC.md` | 🔴 DONE — vw=0.8 ROBUST | 2 runs × 3h | vw=0.5 Δα −7.84pp, vw=1.0 Δα −2.47pp (both single-seed vs vw=0.8 reference). 0.8 default is robust to ±0.3 perturbation, both directions worse. Now academic since 734 didn't promote. See `lore/notes_2026-05-16.md` §114. |
-| 749 | `experiments/749_titans_mag/SPEC.md` | 🔴 DONE — SECOND OOM, DEPRIORITIZED | 6 runs × ~1.5h = ~9h (2-wide) | **Two OOMs.** First-pass default-batch: 42.66 GB request, all 3 seeds OOM. b128 relaunch (2026-05-17): 21.33 GB request, all 3 variant seeds OOM (baselines trained fine). Structural memory pressure from truncated-BPTT scan retaining inner-MLP activations. **Titans-MAG deprioritized at this stack's production batch.** See `runs/749_titans_mag/result.md` (b128 verdict section). 750/751/749-x5 CANCELLED. |
+| 746 | `experiments/746_value_oracle/SPEC.md` | CAVEAT — 5-seed all positive, NOT promoted | 5 runs × 3h | **3-seed mean Δα +2.54pp** → **5-seed mean Δα +2.23pp, STD 2.28, ALL 5 seeds positive**. First all-positive 5-seed seen on this stack. Below +3pp promotion bar but qualitatively the strongest non-anti-correlated signal. See `runs/746_value_oracle/result.md`. |
+| 747 | `experiments/747_value_td0/SPEC.md` | NEEDS CODE — FLAT | 3 runs × 3h | **mean Δα +0.16pp**, no signal. Value-target roadmap CLOSED (oracle inconclusive, td0 flat → nstep stays canonical). See `lore/notes_2026-05-16.md` §114. |
+| 748 | `experiments/748_flow_velsweep/SPEC.md` | NEEDS CODE — vw=0.8 ROBUST | 2 runs × 3h | vw=0.5 Δα −7.84pp, vw=1.0 Δα −2.47pp (both single-seed vs vw=0.8 reference). 0.8 default is robust to ±0.3 perturbation, both directions worse. Now academic since 734 didn't promote. See `lore/notes_2026-05-16.md` §114. |
+| 749 | `experiments/749_titans_mag/SPEC.md` | NEEDS CODE — SECOND OOM, DEPRIORITIZED | 6 runs × ~1.5h = ~9h (2-wide) | **Two OOMs.** First-pass default-batch: 42.66 GB request, all 3 seeds OOM. b128 relaunch (2026-05-17): 21.33 GB request, all 3 variant seeds OOM (baselines trained fine). Structural memory pressure from truncated-BPTT scan retaining inner-MLP activations. **Titans-MAG deprioritized at this stack's production batch.** See `runs/749_titans_mag/result.md` (b128 verdict section). 750/751/749-x5 CANCELLED. |
 
 ### Priority 2c — Overnight followup wave (RE-PLANNED 2026-05-17 after 749 OOM)
 
@@ -64,9 +64,9 @@ Three new SPECs added this evening to use idle GPUs 1+2 after 734-x5 finishes (~
 
 | ID | SPEC | Status | Plan |
 |---|---|---|---|
-| 750 | `experiments/750_titans_hero/SPEC.md` | ❌ CANCELLED 2026-05-18 | Titans-MAG deprioritized post-OOM. SPEC retained for reference if Titans ever revisited at smaller stack. |
-| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | ❌ CANCELLED 2026-05-18 | Same reason. |
-| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | 🟢 READY — TOP PRIORITY 2026-05-18 | a1b1 baselines at s31, s42 to convert 746 5-seed proxy Δα (+2.23pp) to true paired Δα. Sequential on one GPU, ~6h. **Highest-value next action** — 746 is now the only campaign result with positive shape and 752 firms it up. |
+| 750 | `experiments/750_titans_hero/SPEC.md` | BLOCKED — CANCELLED 2026-05-18 | Titans-MAG deprioritized post-OOM. SPEC retained for reference if Titans ever revisited at smaller stack. |
+| 751 | `experiments/751_titans_lr_sweep/SPEC.md` | BLOCKED — CANCELLED 2026-05-18 | Same reason. |
+| 752 | `experiments/752_value_oracle_baseline_pair/SPEC.md` | READY — TOP PRIORITY 2026-05-18 | a1b1 baselines at s31, s42 to convert 746 5-seed proxy Δα (+2.23pp) to true paired Δα. Sequential on one GPU, ~6h. **Highest-value next action** — 746 is now the only campaign result with positive shape and 752 firms it up. |
 
 ### Priority 2d — Resolved 2026-05-18: Titans OOM #2 → pivot to 746/Bella v2
 
@@ -102,14 +102,14 @@ Single-mechanism class CLOSED 2026-05-20 (`[[single-mechanism-exhausted]]`): eve
 
 | ID | SPEC | Status | Wall | Notes |
 |---|---|---|---|---|
-| 760 | `experiments/760_train_mcts_sims/SPEC.md` | ✅ DONE — **NULL** | ~22h | Train-time MCTS sims=64 vs 32. mean Δα **+0.35pp**, worst −0.17pp. Phase-3 gate failed. Train-time search saturates at sims=32; the 759 eval-MCTS lift is purely eval-side. `runs/760_train_mcts_sims/result.md`. Produced the a1b1 sims=32 baselines now shared by 762/763/767. |
-| 762 | `experiments/762_reward_shaping/SPEC.md` | 🟢 **IN FLIGHT — Wave 2** | ~15-21h | Direction 1. **Wave 1 (reward_scale sweep) DONE**: mechanism gate PASS — best cell rs050 (`reward_scale=50`) Δα **+0.27pp**, Δtrade-rate −0.243%; standard +3pp gate FAIL; rs200 a clear regression (−1.33pp). **Wave 2 (`fee_penalty_bps ∈ {2,5,10}` at rs050) authorized 2026-05-22** — `runs/762_reward_shaping/AUTHORIZATION_WAVE2_2026-05-22.md`. F1 fix (`bbcb4b0`/`5ba4071`) makes Wave 2 a real test. |
-| 769 | `experiments/769_value_clip/SPEC.md` | 🔴 **NEEDS CODE** (~30 lines, flag-gated) | ~12h + ~3h code | **F2 fix** — PopArt pre-clip reorder. 762 Wave 1's rs200 regression (−1.33pp) confirmed the bughunt's F2: `[−10,10]` clips on reward/value targets sit *before* PopArt normalization, censoring the range PopArt absorbs. Variant clips post-normalization. Tests if the fix rescues rs200 + un-blocks the `reward_scale` lever. Flag-gated default-OFF → deploys safe mid-campaign. Run after 762 Wave 2 (the reward-shaping conclusion). See `lore/notes_2026-05-22.md` §163. |
-| 767 | `experiments/767_action_space/SPEC.md` | 🔴 **NEEDS CODE** (~40 lines) | ~12h + ~4h code | Gemini addition (`TASK_767`, 2nd-highest EV/hr). Drop limit orders: 320-dim → 192-dim. Oracle audit cleared (0% limit usage — `path_solver.py:406,473`). Code: action mask + **MCTS expansion guard** (load-bearing) + config/CLI. Runs after 762. |
-| 763 | `experiments/763_entropy_reg/SPEC.md` | 🟢 **READY** (code shipped `b4e0158`) | ~19-24h | Direction 2. Policy `entropy_coef` sweep {0.005…0.1}. Mechanism gate: Δ-Bal.Acc < 0 AND Δα > 0. Runs after 767. |
-| 764 | `tasks/TASK_764_ORACLE_K_REFORMULATION.md` | 🟡 DRAFT — **breaks Phase-1 contract** | ~35h | Direction 3. Oracle k=4 → 8/12, requires Phase-1 re-imprint. SPEC not yet under `experiments/`. Last CLI-side direction. Phase-1 sanity gate (bull Bal.Acc +5pp) before Phase 2. |
-| 765 | `tasks/TASK_765_INCOMPATIBLE_DATASET.md` | ⛔ **DATA-BLOCKED** | ~300h+ | Direction 4. Iris-DEX block-level (12s) OHLCV. Pipeline not ready. Reframe as a bridge experiment (isolate data variable) per `TASK_766` §1. |
-| 768 | `tasks/TASK_768_BASE_MODEL_REFRESH.md` | 🟡 DRAFT/ROADMAP — activates after 762/767/763 | TBD | **New base model** = Phase-1 imprint refresh **+ channel-architecture redesign**. Motivation: the cross-sectional channel mixing (TASK_732) bakes the 64-asset universe into the input → blocks variable-universe / per-asset / transfer approaches. Naive scale-up rejected (VRAM allows it but `[[classifier-alpha-anticorrelation]]` contraindicates). Folds in TASK_764 (oracle axis). Needs channel-architecture deep-dive + operator decisions before executable. |
+| 760 | `experiments/760_train_mcts_sims/SPEC.md` | DONE — **NULL** | ~22h | Train-time MCTS sims=64 vs 32. mean Δα **+0.35pp**, worst −0.17pp. Phase-3 gate failed. Train-time search saturates at sims=32; the 759 eval-MCTS lift is purely eval-side. `runs/760_train_mcts_sims/result.md`. Produced the a1b1 sims=32 baselines now shared by 762/763/767. |
+| 762 | `experiments/762_reward_shaping/SPEC.md` | READY — IN FLIGHT — Wave 2 | ~15-21h | Direction 1. **Wave 1 (reward_scale sweep) DONE**: mechanism gate PASS — best cell rs050 (`reward_scale=50`) Δα **+0.27pp**, Δtrade-rate −0.243%; standard +3pp gate FAIL; rs200 a clear regression (−1.33pp). **Wave 2 (`fee_penalty_bps ∈ {2,5,10}` at rs050) authorized 2026-05-22** — `runs/762_reward_shaping/AUTHORIZATION_WAVE2_2026-05-22.md`. F1 fix (`bbcb4b0`/`5ba4071`) makes Wave 2 a real test. |
+| 769 | `experiments/769_value_clip/SPEC.md` | NEEDS CODE — (~30 lines, flag-gated) | ~12h + ~3h code | **F2 fix** — PopArt pre-clip reorder. 762 Wave 1's rs200 regression (−1.33pp) confirmed the bughunt's F2: `[−10,10]` clips on reward/value targets sit *before* PopArt normalization, censoring the range PopArt absorbs. Variant clips post-normalization. Tests if the fix rescues rs200 + un-blocks the `reward_scale` lever. Flag-gated default-OFF → deploys safe mid-campaign. Run after 762 Wave 2 (the reward-shaping conclusion). See `lore/notes_2026-05-22.md` §163. |
+| 767 | `experiments/767_action_space/SPEC.md` | NEEDS CODE — (~40 lines) | ~12h + ~4h code | Gemini addition (`TASK_767`, 2nd-highest EV/hr). Drop limit orders: 320-dim → 192-dim. Oracle audit cleared (0% limit usage — `path_solver.py:406,473`). Code: action mask + **MCTS expansion guard** (load-bearing) + config/CLI. Runs after 762. |
+| 763 | `experiments/763_entropy_reg/SPEC.md` | READY (code shipped `b4e0158`) | ~19-24h | Direction 2. Policy `entropy_coef` sweep {0.005…0.1}. Mechanism gate: Δ-Bal.Acc < 0 AND Δα > 0. Runs after 767. |
+| 764 | `tasks/TASK_764_ORACLE_K_REFORMULATION.md` | CAVEAT — DRAFT — **breaks Phase-1 contract** | ~35h | Direction 3. Oracle k=4 → 8/12, requires Phase-1 re-imprint. SPEC not yet under `experiments/`. Last CLI-side direction. Phase-1 sanity gate (bull Bal.Acc +5pp) before Phase 2. |
+| 765 | `tasks/TASK_765_INCOMPATIBLE_DATASET.md` | BLOCKED — DATA-BLOCKED | ~300h+ | Direction 4. Iris-DEX block-level (12s) OHLCV. Pipeline not ready. Reframe as a bridge experiment (isolate data variable) per `TASK_766` §1. |
+| 768 | `tasks/TASK_768_BASE_MODEL_REFRESH.md` | CAVEAT — DRAFT/ROADMAP — activates after 762/767/763 | TBD | **New base model** = Phase-1 imprint refresh **+ channel-architecture redesign**. Motivation: the cross-sectional channel mixing (TASK_732) bakes the 64-asset universe into the input → blocks variable-universe / per-asset / transfer approaches. Naive scale-up rejected (VRAM allows it but `[[classifier-alpha-anticorrelation]]` contraindicates). Folds in TASK_764 (oracle axis). Needs channel-architecture deep-dive + operator decisions before executable. |
 
 ### Priority 3 — followups
 

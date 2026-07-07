@@ -293,7 +293,7 @@ if iteration % BC_UPDATE_FREQUENCY == 0:
 
 ## Conclusion
 
-**This is the lowest-hanging fruit.**
+**This is a high-impact, low-effort optimization.**
 
 - 1 line change
 - 100+ seconds saved per epoch

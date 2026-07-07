@@ -2,11 +2,7 @@
 
 ## CRITICAL SAFETY FEATURE
 
-This is not optional. This is life-safety critical.
-
-> "Recently because Binance implemented stop loss about 10 people suicided themselves cause automatic stop loss didn't work."
-
-Stop loss must work. Period. Multiple independent layers ensure that if ANY single layer fails, others execute.
+Stop loss functionality is essential and must be reliable. Multiple independent layers ensure that if any single layer fails, others execute.
 
 ## Principle: Defense in Depth
 
@@ -60,7 +56,7 @@ LAYER 1: MODEL LEVEL (advisory, but LISTEN TO IT FIRST)
 # deploy on: AWS Lambda, Google Cloud Function, separate VPS, Raspberry Pi at home
 # ANYWHERE that is NOT the main trading server
 #
-# external_monitor.py - DEAD SIMPLE, no dependencies on main system
+# external_monitor.py - simple, no dependencies on main system
 
 import time
 import ccxt
@@ -101,9 +97,9 @@ def send_alert(message):
 
 def main():
     """
-    SIMPLE LOOP. No fancy logic. Just:
+    Simple monitoring loop:
     1. Check equity
-    2. If drawdown > threshold, CLOSE EVERYTHING
+    2. If drawdown > threshold, close all positions
     3. Repeat
     """
     exchange = ccxt.binance({
@@ -149,9 +145,9 @@ if __name__ == '__main__':
 - Friend's server in different country
 
 **Key properties:**
-- NO dependency on main trading system
-- NO shared infrastructure
-- Dead simple code (< 100 lines)
+- No dependency on main trading system
+- No shared infrastructure
+- Simple code (< 100 lines)
 - Can be audited in 5 minutes
 - Read-only API key for monitoring, separate trade key for closing
 
@@ -249,8 +245,8 @@ class IndependentStopLossMonitor:
         return self.client.fetch_positions()
 
     def close_all_positions(self, reason: str):
-        """Emergency close all positions with market orders."""
-        print(f"!!! EMERGENCY CLOSE: {reason} !!!")
+        """Close all positions with market orders."""
+        print(f"Closing all positions: {reason}")
 
         positions = self.get_positions()
         for pos in positions:
@@ -266,7 +262,7 @@ class IndependentStopLossMonitor:
                     )
                     print(f"  Closed {pos['symbol']}: {pos['size']}")
                 except Exception as e:
-                    print(f"  FAILED to close {pos['symbol']}: {e}")
+                    print(f"  Failed to close {pos['symbol']}: {e}")
                     # Try again, try different method, alert human
 
     def run_forever(self):
@@ -292,8 +288,8 @@ class IndependentStopLossMonitor:
                         self.close_all_positions(
                             f"Drawdown {drawdown:.2%} > {self.max_drawdown:.2%}"
                         )
-                        # Don't exit - keep monitoring in case positions reopened
-                        self.peak_equity = equity  # Reset peak after emergency close
+                        # Do not exit - continue monitoring in case positions are reopened
+                        self.peak_equity = equity  # Reset peak after position closure
 
                 time.sleep(self.check_interval)
 
@@ -379,7 +375,7 @@ def start_trading_system(config):
         config.exchange,
         max_drawdown=config.max_drawdown
     )
-    assert monitor_process.is_alive(), "Monitor failed to start!"
+    assert monitor_process.is_alive(), "Monitor failed to start"
 
     # LAYER 2: Initialize safety wrapper
     print("Initializing Layer 2: Safety wrapper...")
@@ -449,12 +445,12 @@ def send_critical_alert(message: str):
         pass
 
     # Log regardless
-    print(f"CRITICAL ALERT: {message}")
+    print(f"Alert: {message}")
 
 
 # In monitor
 if drawdown > max_drawdown:
-    send_critical_alert(f"STOP LOSS TRIGGERED: {drawdown:.2%} drawdown")
+    send_critical_alert(f"Stop loss triggered: {drawdown:.2%} drawdown")
     close_all_positions()
 ```
 
@@ -532,4 +528,4 @@ def test_multi_layer_stop_loss():
 
 ## Priority: CRITICAL
 
-This must be implemented and tested before any live trading with real money.
+This system must be implemented and tested before any live trading with real money.

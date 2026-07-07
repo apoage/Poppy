@@ -4,7 +4,7 @@ A high-performance cryptocurrency trading agent powered by **JAX**, **MuZero**, 
 
 ---
 
-## 🚀 Setup & Installation
+## Setup & Installation
 
 ### 1. Prerequisites
 - Linux Environment
@@ -33,7 +33,7 @@ To enable live data fetching and trading, you must configure your Kraken API key
 
 ---
 
-## 🧠 Training Models
+## Training Models
 
 We support training specialized models for different market conditions (Spot vs. Margin, High Fee vs. Low Fee).
 
@@ -57,7 +57,7 @@ python train_jax_fast.py --name research_v1 --mode MARGIN --fee 0
 
 ---
 
-## 📉 Paper Trading
+## Paper Trading
 
 Simulate trading with live Kraken data without risking real funds.
 
@@ -77,7 +77,7 @@ python paper_trade_jax.py --margin
 
 ---
 
-## 💸 Real Trading
+## Real Trading
 
 **⚠️ WARNING: This script trades REAL MONEY.**
 
@@ -101,7 +101,7 @@ The `RealPortfolioManager` includes several critical safety mechanisms:
 
 ---
 
-## 📊 Analysis Tools
+## Analysis Tools
 
 ### Replay Trades
 Re-calculate PnL from logs with accurate historical FX rates (crucial for cross-currency pairs like ETH/BTC or LINK/EUR).
@@ -117,7 +117,7 @@ python tools/replay_trades.py logs/my_trade_log.csv 1000.0
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 Trader/
@@ -138,5 +138,5 @@ Trader/
 └── tools/                 # Utilities (Replay, Debug, Profiling)
 ```
 
-## 📜 License
+## License
 Private / Proprietary.

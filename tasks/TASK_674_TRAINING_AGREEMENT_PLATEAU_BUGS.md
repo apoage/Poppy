@@ -19,7 +19,7 @@ With default `batch_size=256`, `N_BUFFER=16`: `samples_per_window = min(256//16 
 
 With larger batch sizes (e.g. 1024): `samples_per_window = min(1024//16 + 1, 20) = 20`, giving 4000 samples per episode (20× over-sampling).
 
-**Effect**: Catastrophic for generalization. With 16 episodes in the buffer and ~3400 samples each, the model trains on the same 16 episodes for `16 × 3400 / 256 ≈ 213` batches before seeing anything new. The model memorizes specific episodes instead of learning general patterns.
+**Effect**: Severe degradation of generalization. With 16 episodes in the buffer and ~3400 samples each, the model trains on the same 16 episodes for `16 × 3400 / 256 ≈ 213` batches before seeing anything new. The model memorizes specific episodes instead of learning general patterns.
 
 **Post-fix consideration**: After fixing, `SAMPLES_PER_EPISODE=200` with `take_count=17` means only ~11 visits per episode before exhaustion (200/17 ≈ 11.7). The buffer refills ~17× more frequently. **Monitor CPU data generation throughput** — `_refill_buffer()` runs the oracle via `_generate_batch_episodes()`. If CPU generation can't keep up, GPU may stall waiting for new data. Watch for increased idle time in `nvidia-smi`.
 
