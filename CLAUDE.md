@@ -26,6 +26,8 @@ Component-specific facts live in per-directory CLAUDE.md files (auto-loaded when
 
 Dark factory runs this repo's implementation queue: `tasks/QUEUE.md` + `tasks/DECISIONS.md`,
 config `.dark-factory/config.json`. This interactive session = planner lane.
+Research line design: `docs/pathway.md` (rung ladder of experiments; verdicts →
+`experiments/LEDGER.md`; rung verdicts gate GPU spend).
 Yarrow/bloom/prompt-lib were pruned 2026-07-07 (`lore/prune_2026-07-07.md`).
 
 ## Top-level layout

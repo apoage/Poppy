@@ -66,6 +66,12 @@ workstation 3090 under the correct-allocation contract (MEM_FRACTION=0.7, cgroup
 Sub-agents: commit + report, never deploy. Reference: Sampled MuZero (Hubert et al. 2021,
 arXiv:2104.06303) for the sampling/visit-correction math.
 
+## Pathway wiring (2026-07-08)
+This build is the SPINE of `docs/pathway.md`, not the whole pathway. Rung experiments interleave
+the stages: Stage 1 → TASK_830 (E0 corridor) → Stage 2 → TASK_831 (E1/E2 search probe) →
+Stage 3 (E3 probe inside) → TASK_832 (E5 imprint) → Stage 4. Code may land ahead of verdicts;
+GPU spend may not — Stage-3 training launch waits on 831's E1 PASS.
+
 ## Factory notes (dark-factory execution contract, added 2026-07-07)
 - **Risk: high** at every stage (touches the canon env/search/training path) → full high-tier panel.
 - Queue rows = one stage each (`tasks/QUEUE.md`); banner per stage, do not roll stages together.
