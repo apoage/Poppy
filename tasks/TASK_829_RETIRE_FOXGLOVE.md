@@ -1,3 +1,11 @@
+> **STATUS (2026-07-08): SHIPPED (tag `task829-retire-foxglove`).** One import retargeted
+> (`SegmentPool` → `mcts_trader.data.segment_pool`, proven identical class), 15 Foxglove files
+> deleted, `easy_config.py` + the non-Foxglove `tools/orchestration/` lineage kept. Zero behavior
+> change; panel-green (no LIVE missed couplings, selftest 7/7, benchmark_easy intact). The panel's
+> one finding (orphaned `reset_dual_dojo.sh`) was swept in-task. **Remainder:** stale doc pointers
+> in `CLAUDE.md`/`SERVER.md`/`tools/orchestration/CLAUDE.md` (planner-lane doc hygiene). `train_phase2.py`
+> import surface is now clean for Stage 3.
+
 # TASK_829 — Retire Foxglove (decouple, then delete)
 
 **Status**: READY 2026-07-07 (DECISIONS D5). Foxglove = the stage-1 supervised oracle-imprint

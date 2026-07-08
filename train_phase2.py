@@ -481,7 +481,7 @@ def load_segment_pool(config: Phase2Config, periods_file: str, db_path: str,
         n_slots: Number of concurrent segments in RAM. 17 = one per regime (default).
         max_runs_per_group: Cap runs per date range (1 = one asset set per regime).
     """
-    from train_easy import SegmentPool
+    from mcts_trader.data.segment_pool import SegmentPool
 
     with open(periods_file) as f:
         periods_data = json.load(f)
