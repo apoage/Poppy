@@ -1,0 +1,126 @@
+{
+  "task": "TASK_837",
+  "smoke": true,
+  "db": "fixtures/trading_fixture.db",
+  "generated": "2026-07-08T22:22:53+00:00",
+  "smoke_folds": {
+    "root": "experiments/837_walkforward/folds/smoke",
+    "n_checks": 34,
+    "all_pass": true,
+    "n_checks_with_corridor": 36
+  },
+  "smoke_corridors": {
+    "smokefold1": {
+      "0": {
+        "floor_inenv": 2.1085658756865486,
+        "reference": 2.5393950359556365,
+        "ceiling": 38.83888918213353
+      },
+      "21": {
+        "floor_inenv": 1.8691316571107026,
+        "reference": 2.434063948917787,
+        "ceiling": 36.88161307856242
+      }
+    },
+    "smokefold2": {
+      "0": {
+        "floor_inenv": -3.9665453869536806,
+        "reference": -6.8807848597096575,
+        "ceiling": 81.95436732049076
+      },
+      "21": {
+        "floor_inenv": -4.34451513993709,
+        "reference": -7.068755560342396,
+        "ceiling": 77.79079673667641
+      }
+    }
+  },
+  "smoke_aggregate": {
+    "pooled": {
+      "n_folds": 2,
+      "n_folds_graded": 2,
+      "mean_net21": 0.04999999999999999,
+      "min_net21": -0.2,
+      "worst_graded_fold": "smokefold2",
+      "all_beat_floor": false,
+      "all_beat_reference": false,
+      "note": "pooled view \u2014 NEVER read without the per-fold rows above (TASK_837: no pooled Sharpe without the per-fold view)"
+    },
+    "ledger_row": "| 837/R4 | 2026-07-09 | H1 (learned) | Walk-forward (fixture-smoke-stub): per-fold eval vs each window's OWN corridor (smokefold1 + smokefold2) | smokefold1 net@21 +0.300 in [+1.869, +36.882] (ref +2.434, pos -0.045) \u00b7 smokefold2 net@21 -0.200 in [-4.345, +77.791] (ref -7.069, pos +0.050); pooled mean +0.050 min -0.200 over 2/2 folds. FIXTURE-SMOKE with STUB scorecards \u2014 plumbing proof only, no verdict. | per-fold positions above (never pooled alone) | experiments/837_walkforward/folds/smoke/walkforward_summary.json |"
+  },
+  "negative_control": {
+    "case": "control_noop",
+    "clean": true,
+    "n_checks": 36
+  },
+  "negative_tests": [
+    {
+      "case": "train_into_eval",
+      "rejected": true,
+      "targeted_check": "ASSERT-1",
+      "named_in_rejection": true,
+      "message": "[smokefold1] ASSERT-1 train/eval windows disjoint: parsed train end 2025-11-15 (<= 1763164800) vs eval start 2025-11-01 (>= 1761951600); loader bounds are end-INCLUSIVE (vectorbt_env.py:584)"
+    },
+    {
+      "case": "tampered_pit_universe",
+      "rejected": true,
+      "targeted_check": "ASSERT-2 PIT universe re-derivation",
+      "named_in_rejection": true,
+      "message": "[smokefold2] ASSERT-2 PIT universe re-derivation: as_of==2025-11-30: True; re-derived 8 symbols MISMATCH \u2014 tampered or derived with post-train-end data"
+    },
+    {
+      "case": "train_job_on_eval_file",
+      "rejected": true,
+      "targeted_check": "references a fold TRAIN periods-file",
+      "named_in_rejection": true,
+      "message": "[smokefold1] train job 837_smokefold1_cost0_s0 references a fold TRAIN periods-file: --periods-file experiments/837_walkforward/folds/smoke/_negative/train_job_on_eval_file/smokefold1/period_eval.json: membership in the fold's train files=False; parsed window 2025-11-01..2025-11-30 ends before eval start 2025-11-01=False"
+    },
+    {
+      "case": "consistent_universe_retamper",
+      "rejected": true,
+      "targeted_check": "POLICY-PIN universe rule",
+      "named_in_rejection": true,
+      "message": "[smokefold1] POLICY-PIN universe rule: artifact rule cap=3 min_days=180 == pre-registered 8/180 (re-derivation params are PINNED, never read from the artifact)"
+    },
+    {
+      "case": "eval_job_on_leaky_universe",
+      "rejected": true,
+      "targeted_check": "references the fold's eval_pit file",
+      "named_in_rejection": true,
+      "message": "[smokefold1] eval job 837_smokefold1_eval_s0 references the fold's eval_pit file: --periods-file experiments/837_walkforward/folds/smoke/_negative/eval_job_on_leaky_universe/smokefold1/period_eval_leaky.json: identity==files.eval_pit (experiments/837_walkforward/folds/smoke/_negative/eval_job_on_leaky_universe/smokefold1/period_eval.json)=False; window 2025-11-01..2025-11-30==['2025-11-01', '2025-11-30']=True; assets==universe_pit symbols=False"
+    }
+  ],
+  "real_folds": {
+    "root": "experiments/837_walkforward/folds/real",
+    "n_checks": 36,
+    "all_pass": true,
+    "corridors": {
+      "fold1": {
+        "0": {
+          "floor_inenv": 0.41843485395678726,
+          "reference": 0.05512456677320909,
+          "ceiling": 39.05608906772787
+        },
+        "21": {
+          "floor_inenv": 0.057090103405805795,
+          "reference": -0.22601675442819463,
+          "ceiling": 36.77375936906938
+        }
+      },
+      "fold2": {
+        "0": {
+          "floor_inenv": 0.07299929080493334,
+          "reference": 0.20361796860853304,
+          "ceiling": 37.48835408981218
+        },
+        "21": {
+          "floor_inenv": -0.29094400991719205,
+          "reference": -0.0003018272031247864,
+          "ceiling": 35.40966479471792
+        }
+      }
+    },
+    "universe_note": "PIT universes from the fixture's FULL ohlcv_daily panel (fixture daily == db daily, LEDGER 830/E0-REAL); scheduled re-materialization vs trading_data.db must reproduce them content-identically (M4 contract: volatile fields excluded \u2014 SPEC \u00a7PIT)."
+  },
+  "verdict": "PASS \u2014 folds materialized with correct window boundaries; leak asserts + POLICY pre-registration PIN enforced IN CODE (good folds pass, the UNMUTATED control clone validates CLEAN, and all 5 corrupted folds are REJECTED each BY ITS TARGETED gate); corridors eval-slice-bounded; aggregation emits per-fold-first summary + LEDGER row. Plumbing proof \u2014 no training, no promotion claims."
+}

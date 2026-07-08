@@ -1,0 +1,48 @@
+{
+  "task": "TASK_837",
+  "fold_id": "fold2",
+  "eval_window": [
+    "2025-01-01",
+    "2025-09-01"
+  ],
+  "panel_window": [
+    "2024-01-01",
+    "2025-09-01"
+  ],
+  "pad_days": 366,
+  "panel_last_day_ts": 1756598400,
+  "db": "fixtures/trading_fixture.db",
+  "n_assets": 273,
+  "n_days": 609,
+  "warm": 31,
+  "n_eval_decisions_env": 242,
+  "n_eval_decisions_engine": 242,
+  "position_size_pct": 0.0018315018315018315,
+  "oracle_gross_alpha_panel": 25.988719940185547,
+  "per_tier": {
+    "0": {
+      "floor_inenv": 0.07299929080493334,
+      "reference": 0.20361796860853304,
+      "ceiling": 37.48835408981218
+    },
+    "21": {
+      "floor_inenv": -0.29094400991719205,
+      "reference": -0.0003018272031247864,
+      "ceiling": 35.40966479471792
+    }
+  },
+  "bh_eval": -1.531976434666058,
+  "floor_diag": {
+    "0": {
+      "final_pv_panel": 108308.828125,
+      "bankrupt_at": -1
+    },
+    "21": {
+      "final_pv_panel": 94511.96875,
+      "bankrupt_at": -1
+    }
+  },
+  "provenance": "830 corridor machinery (importlib, unmodified) on a 366d-back-padded panel; ALL numbers are eval-slice only; universe = 830-pattern liquidity-filtered daily panel (NOT the fold's 64) \u2014 same yardstick caveat as 835 SPEC #10. Daily source: fixture daily == db daily (LEDGER 830/E0-REAL).",
+  "slice_convention": "corridor slice = backtest half-open [eval_start, eval_end) on UTC-midnight day_ts; the daily panel load is end-EXCLUSIVE, so the last graded corridor decision is eval_end-2d (the final panel row only labels the previous decision). The 835 fold scorecard's minute loader is end-INCLUSIVE at LOCAL midnight and consumes window_size (60) rows of the eval panel for obs warmup: its graded decisions run ~eval_start+60d .. ~eval_end-1d. SIGN of the mismatch: the corridor covers ~60 MORE daily decisions at the LEFT edge and ~1 FEWER at the RIGHT edge (tz skew <=1d). Neither instrument ever touches data past eval_end. Documented (SPEC \u00a7corridor), not tuned.",
+  "generated": "2026-07-08T22:23:07+00:00"
+}

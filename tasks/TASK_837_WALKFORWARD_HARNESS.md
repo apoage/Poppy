@@ -1,3 +1,17 @@
+> **STATUS (2026-07-09): SHIPPED as `task837-walkforward`.**
+> `experiments/837_walkforward/` — fold rails (pre-registered 2021-23→24 / 2021-24→25-09), PIT
+> universes derived module-side (**`build_pit_universe` verified NON-PIT** — unbounded coverage counts;
+> deviation loudly SPEC'd, counts on `ohlcv_daily` ≤ train-end; fold1 64-of-219, fold2 64-of-263),
+> per-fold corridors via 830 machinery (fold1 net@21 [+0.057, +36.774] ref −0.226; fold2 [−0.291,
+> +35.410] ref −0.000), manifests consumable by run_queue.sh + 835. Medium panel: temporal-leak core
+> CLEAN; **3 MAJOR gate-coverage roots crossval-CONFIRMED and FIXED**: validate now POLICY-PINS every
+> parsed window/universe-rule param to pre-registered constants (an internally-consistent tamper or an
+> honest `--min-days` typo is now rejected); eval-job gate enforces file IDENTITY + assets (a leaky-
+> universe swap can no longer become the graded number); negative battery de-confounded (no-op control
+> must validate CLEAN; 5 negatives each rejected by their NAMED gate). **Remainders (scheduled):** fold
+> trainings + the R4 verdict (phase-2+ decision); server pre-flight = `validate --db trading_data.db`
+> (read-only) BEFORE any run_queue.sh launch — the minute-ingest assert only gains teeth there.
+
 # TASK_837 — Walk-forward split harness (the R4 graduation instrument)
 
 **Status**: READY 2026-07-08. **Size: M. Risk: medium** (produces the promotion-deciding

@@ -1,0 +1,94 @@
+{
+  "task": "TASK_837",
+  "fold_set": "real",
+  "generated": "2026-07-08T22:23:01+00:00",
+  "universe_db": "fixtures/trading_fixture.db",
+  "jobs_db": "trading_data.db",
+  "n_assets": 64,
+  "min_days": 180,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "folds": [
+    {
+      "fold_id": "fold1",
+      "train_window": [
+        "2021-01-01",
+        "2023-12-31"
+      ],
+      "eval_window": [
+        "2024-01-01",
+        "2024-12-31"
+      ],
+      "files": {
+        "universe": "experiments/837_walkforward/folds/real/fold1/universe_pit.json",
+        "train_pit": "experiments/837_walkforward/folds/real/fold1/period_train.json",
+        "eval_pit": "experiments/837_walkforward/folds/real/fold1/period_eval.json",
+        "train_leaky": "experiments/837_walkforward/folds/real/fold1/period_train_leaky.json",
+        "eval_leaky": "experiments/837_walkforward/folds/real/fold1/period_eval_leaky.json"
+      },
+      "universe": {
+        "as_of": "2023-12-31",
+        "n_selected": 64,
+        "n_qualifying": 219
+      },
+      "jobs": {
+        "train": [
+          "837_fold1_cost0_s0",
+          "837_fold1_cost0_s1",
+          "837_fold1_cost0_s2"
+        ],
+        "eval": [
+          "837_fold1_eval_s0",
+          "837_fold1_eval_s1",
+          "837_fold1_eval_s2"
+        ]
+      }
+    },
+    {
+      "fold_id": "fold2",
+      "train_window": [
+        "2021-01-01",
+        "2024-12-31"
+      ],
+      "eval_window": [
+        "2025-01-01",
+        "2025-09-01"
+      ],
+      "files": {
+        "universe": "experiments/837_walkforward/folds/real/fold2/universe_pit.json",
+        "train_pit": "experiments/837_walkforward/folds/real/fold2/period_train.json",
+        "eval_pit": "experiments/837_walkforward/folds/real/fold2/period_eval.json",
+        "train_leaky": "experiments/837_walkforward/folds/real/fold2/period_train_leaky.json",
+        "eval_leaky": "experiments/837_walkforward/folds/real/fold2/period_eval_leaky.json"
+      },
+      "universe": {
+        "as_of": "2024-12-31",
+        "n_selected": 64,
+        "n_qualifying": 263
+      },
+      "jobs": {
+        "train": [
+          "837_fold2_cost0_s0",
+          "837_fold2_cost0_s1",
+          "837_fold2_cost0_s2"
+        ],
+        "eval": [
+          "837_fold2_eval_s0",
+          "837_fold2_eval_s1",
+          "837_fold2_eval_s2"
+        ]
+      }
+    }
+  ],
+  "manifests": {
+    "train": "experiments/837_walkforward/folds/real/train_jobs.manifest",
+    "eval": "experiments/837_walkforward/folds/real/eval_jobs.manifest"
+  },
+  "notes": [
+    "validate with: python experiments/837_walkforward/walkforward.py validate --fold-root experiments/837_walkforward/folds/real --db <db>",
+    "REAL-fold universes derived from the fixture's full ohlcv_daily panel (fixture daily == db daily, LEDGER 830/E0-REAL); the scheduled re-materialization against trading_data.db must reproduce them content-identically (M4 identity contract, SPEC \u00a7PIT: periods-files byte-identical; universe_pit.json identical on the derivation fields, volatile generated/db/minute_coverage_check excluded)."
+  ]
+}

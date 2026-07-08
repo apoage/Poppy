@@ -1,0 +1,48 @@
+{
+  "task": "TASK_837",
+  "fold_id": "fold1",
+  "eval_window": [
+    "2024-01-01",
+    "2024-12-31"
+  ],
+  "panel_window": [
+    "2022-12-31",
+    "2024-12-31"
+  ],
+  "pad_days": 366,
+  "panel_last_day_ts": 1735516800,
+  "db": "fixtures/trading_fixture.db",
+  "n_assets": 223,
+  "n_days": 731,
+  "warm": 31,
+  "n_eval_decisions_env": 364,
+  "n_eval_decisions_engine": 364,
+  "position_size_pct": 0.002242152466367713,
+  "oracle_gross_alpha_panel": 28.08587074279785,
+  "per_tier": {
+    "0": {
+      "floor_inenv": 0.41843485395678726,
+      "reference": 0.05512456677320909,
+      "ceiling": 39.05608906772787
+    },
+    "21": {
+      "floor_inenv": 0.057090103405805795,
+      "reference": -0.22601675442819463,
+      "ceiling": 36.77375936906938
+    }
+  },
+  "bh_eval": -0.22552966383077638,
+  "floor_diag": {
+    "0": {
+      "final_pv_panel": 153573.609375,
+      "bankrupt_at": -1
+    },
+    "21": {
+      "final_pv_panel": 129694.90625,
+      "bankrupt_at": -1
+    }
+  },
+  "provenance": "830 corridor machinery (importlib, unmodified) on a 366d-back-padded panel; ALL numbers are eval-slice only; universe = 830-pattern liquidity-filtered daily panel (NOT the fold's 64) \u2014 same yardstick caveat as 835 SPEC #10. Daily source: fixture daily == db daily (LEDGER 830/E0-REAL).",
+  "slice_convention": "corridor slice = backtest half-open [eval_start, eval_end) on UTC-midnight day_ts; the daily panel load is end-EXCLUSIVE, so the last graded corridor decision is eval_end-2d (the final panel row only labels the previous decision). The 835 fold scorecard's minute loader is end-INCLUSIVE at LOCAL midnight and consumes window_size (60) rows of the eval panel for obs warmup: its graded decisions run ~eval_start+60d .. ~eval_end-1d. SIGN of the mismatch: the corridor covers ~60 MORE daily decisions at the LEFT edge and ~1 FEWER at the RIGHT edge (tz skew <=1d). Neither instrument ever touches data past eval_end. Documented (SPEC \u00a7corridor), not tuned.",
+  "generated": "2026-07-08T22:23:04+00:00"
+}
