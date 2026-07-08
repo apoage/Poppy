@@ -8,7 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
-| _(none)_ | | | |
+| DEC-2 | TASK_832 (E5, R2): pre-register ε — how far ABOVE the in-env hold-shares floor must the POST-ExIt policy sit (net@21 Sharpe, held slices, ≥3 seeds) to count as "reasoning beats its valid teacher"? And: sign off the imprint/held-slice METHODOLOGY (BC on 830-replay vector trajectories; which held slices; corridor grading) — this is R2 research design, not implementer scope. | **ε = +0.10 net@21 Sharpe beyond the 830 corridor noise band** (matches the pre-registered ±0.10 corridor tolerance; PASS = floor + 0.10, not merely inside noise); held slices = the 830/831 regime windows; ≥3 seeds. Ratify or override, then the factory can ship the 832 runner+SPEC+fixture-smoke (harness is ε-independent — ε is a run-time interpretation parameter, per the DEC-1 precedent). Real verdict = the scheduled ≤1-GPU-day run. | Surfaced by factory run 3: Stage-3 shipped (`task828-stage3`) opened 832's gate, but 832's PASS criterion is unset and its methodology is planner-lane. Blocks the 832 factory-half's PASS interpretation, NOT the Stage-3 training run. |
 
 ## DECIDED
 
