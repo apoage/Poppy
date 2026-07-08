@@ -14,7 +14,9 @@ warm-start supersede it; it activates only if phase 2 also collapses (named in
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| _(empty — all rows shipped; next work needs the planner: 3-arm diagnostic verdict → battery relaunch → scheduled runs use the shipped 834/835/832 instruments)_ | | | |
+| 1 | `tasks/TASK_836_E4_VALUE_RANKING_PROBE.md` | S–M | the missing R2 instrument: value-net rank quality vs momentum baseline, per window, on checkpoints. Reuse 834's restore guards. Runs on phase-1 snapshots the moment they exist. Risk: low-medium. |
+| 2 | `tasks/TASK_837_WALKFORWARD_HARNESS.md` | M | the R4 graduation instrument: pre-registered folds (2021-23→24, 2021-24→25), PIT universes (`build_pit_universe` — the pinned-64 universe is survivorship-LEAKY for folds), per-fold corridors, leak asserts as code. Nothing today can produce an unseen-years number. Risk: medium. |
+| 3 | `tasks/TASK_838_PERNODE_RESAMPLING.md` | M | Stage-2 panel's named follow-up: per-node action resampling, flag-gated default-OFF bit-identical, true-model acceptance probe (831 pattern). Canon-adjacent → full high-tier panel. Take LAST. Risk: high. |
 
 _Shipped 2026-07-08 factory run 4 (parallel-lane batch, all zero-canon-diff instrument modules,
 each medium-panel verified with adversarial crossval + fix re-verify):_
