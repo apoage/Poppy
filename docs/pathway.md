@@ -34,6 +34,7 @@ HOLD collapse. Rule derived from that record:
 | H3 | **Cross-asset structure**: joint action exploits correlation/lead-lag the per-asset rule ignores | factored head + joint value already in the net | joint-action ablation == independent-per-asset ablation |
 | H4 | **Cost-aware planning**: multi-step search nets trades, cuts turnover → wins after costs | search sees fees in the dynamics; rule pays every rebalance | planner turnover/cost ≥ rule's at equal gross |
 | H5 | **Teacher validity**: valid imprint = the linear book / self-play; oracle = measurement instrument ONLY | oracle-as-teacher = diagnosed disease vector (anti-correlation, bull-blindness) | linear-book imprint also anti-correlates (would implicate BC itself, not the teacher) |
+| H6 | _(candidate — armed by D6, fires only on measurement)_ **Action granularity**: the {0..4} per-asset set is too coarse to express the shippable book → weight-ladder actions | fixture replay: discrete actions can't hit continuous weight targets | real-panel expressibility gap (best in-env replay vs +0.97 engine bar) ≤0.2 net@21 Sharpe → H6 never activates |
 
 ## The rung ladder
 
@@ -50,14 +51,24 @@ R4 graduation   walk-forward unseen years · cost stress · Bella regime stress 
                 gate ladder to paper
 ```
 
-- **R0 — E0 (TASK_830)**: replay the 819 linear book through `step_vector` → must reproduce its
-  Sharpe (env validity + in-env baseline); compute the per-asset oracle bound under the same cost
-  model (corridor top). Every later result is reported as a position inside **[linear, oracle]**.
+- **R0 — E0 (TASK_830)**: replay the 819 linear book through `step_vector` → env validity +
+  in-env baseline; compute the per-asset oracle bound under the same cost model (corridor top).
+  Every later result is reported as a position inside **[linear, oracle]**.
+  **D6 corridor semantics (2026-07-08)**: DUAL FLOOR — rung experiments grade against the
+  env-native hold-shares in-env floor (same action space the agent lives in); the **+0.97 engine
+  bar is unchanged as the R4 graduation bar**. The real-panel run reports both plus the
+  EXPRESSIBILITY GAP; a gap >0.2 net@21 Sharpe activates H6 (action granularity).
 - **R1 — E1/E2 (TASK_831)**: run Sampled-MuZero search with the SIMULATOR as dynamics + true
   reward (no learned nets). Isolates search capacity from learning: if K-sample search can't find
   ≥ linear with a *perfect* model, Stage-3 training is pointless until the sampler is fixed.
   E2 ablates the sampling scheme (independent per-asset draws vs linear-prior mixture vs dithered
   current book; K ∈ {8,16,32}).
+  **Reinterpretation (831 fixture smoke, 2026-07-08)**: E1 measures PROPOSAL CAPACITY only —
+  with a perfect value even the uniform sampler reaches the floor at K≥16, so PASS is
+  necessary-but-not-sufficient and its kill-power targets a catastrophically-broken sampler.
+  The load-bearing R1 deliverable is the **E2 scheme×K ranking** (fixture cheapest reacher:
+  dithered-book|K8). The discriminative "can a LEARNED selector find it" question lives at
+  E5/R3, as designed.
 - **R2 — E3/E4/E5**: E3 = the D2 variance-attribution probe (reward head must MOVE with the
   action input; the Stage-B head was 60× action-blind) — hard gate inside 828 Stage 3. E4 = does
   the value net rank states above a momentum baseline. E5 (TASK_832) = imprint from the LINEAR
@@ -100,3 +111,9 @@ allocation contract. Leak-free, cost-honest, ≥3 seeds for any promotion claim 
 828 St1 → **E0** → 828 St2 → **E1/E2** → 828 St3 (E3 inside, E4 alongside) → **E5** → 828 St4
 → R4. Queue rows in `tasks/QUEUE.md`; specs TASK_830/831/832 + TASK_828 stages; ledger at
 `experiments/LEDGER.md`.
+
+**Position (2026-07-08, post factory run 1)**: 828 S1+S2 SHIPPED (tags `task828-stage1/2`);
+830/831 factory halves SHIPPED, fixture-smoked (E1 fixture PASS, cheapest dithered-book|K8).
+R0/R1 real verdicts = two scheduled runs (830 CPU corridor, 831 single-GPU sweep); the real
+E1 PASS opens the Stage-3 TRAINING gate. Next factory rows: 829 (retire Foxglove), then
+Stage-3 CODE.
