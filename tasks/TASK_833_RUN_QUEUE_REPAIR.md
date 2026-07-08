@@ -1,3 +1,11 @@
+> **STATUS (2026-07-08): SHIPPED (tag `task833-run-queue-repair`).** All 5 findings fixed +
+> first-tracked, with a committable mock harness (16 scenarios, real systemd scopes). Verify panel
+> found 3 defects IN the fixes — N1 (MEDIUM: per-sweep flock overclaimed cross-instance safety →
+> host-global `runs/.locks/`), N2/N3 (LOW: CPU jobs skipped on GPU timeout; unbounded CPU wait) —
+> all fixed + independently re-verified (two-sweep no-double-book proven; N2/N3 bounded/fail-loud;
+> selftest 7/7). **Remainder (planner/main session, NOT factory):** redeploy to gpu-server via
+> `deploy.sh` to replace the broken live-but-inert copy; until then the server copy is DO-NOT-INVOKE.
+
 # TASK_833 — Repair tools/deploy/run_queue.sh (multi-GPU job scheduler)
 
 **Status**: READY 2026-07-08 (queue row 1). **Size: S. Risk: medium** — this is the fail-closed
