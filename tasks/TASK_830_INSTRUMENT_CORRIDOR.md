@@ -1,9 +1,10 @@
-> **STATUS (2026-07-08): factory half SHIPPED.** `experiments/830_corridor/` runner + SPEC +
-> fixture smoke landed; panel-green (runner correct, zero diffs outside `experiments/`, env
-> byte-identical). Fixture floor does NOT reproduce the +0.97 bar within tol — verified as a
-> **replay-mapping artifact, NOT a `step_vector` bug** (see CHANGELOG / SPEC Attribution). Seeded
-> **DECISIONS D6** (official floor mapping). **Remainder:** real-panel corridor numbers = SCHEDULED
-> CPU run (24GB db read-only), not a factory-loop job — the load-bearing E0 verdict comes from there.
+> **STATUS (2026-07-08): COMPLETE — E0 official.** Real-panel run done (safe_run CPU, db
+> read-only, 279 assets × 1704 bars 2021-01-01..2025-09-01): net@21 corridor **[floor_inenv
+> +0.424, ceiling +29.698]**, engine ref **+0.751**; BEAR22 floor −0.143/ref +1.049. Identical
+> to the fixture smoke ⇒ fixture daily==db daily confirmed. Gap |floor−ref|=0.327>0.2 ⇒ **H6
+> ARMED** (per D6; conditional — see LEDGER 830/E0-REAL). Floor leverage-invariant. `step_vector`
+> re-cleared. Artifacts: `experiments/830_corridor/results_real_panel.json`,
+> `runs/830_corridor/run_real.log`. D6 = DECIDED (dual floor).
 
 # TASK_830 — Instrument corridor: linear book + oracle bound through the vector env (E0, R0)
 

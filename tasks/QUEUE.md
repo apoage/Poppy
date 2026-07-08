@@ -17,8 +17,8 @@ factory halves shipped; D6 decided — dual floor).
 
 | Run | What | Where | Status |
 |-----|------|-------|--------|
-| 830 real corridor | full-panel floor(both mappings per D6)+ceiling+expressibility gap, `trading_data.db` read-only | CPU (tmux, resource-isolated) | launching 2026-07-08 |
-| 831 real E1/E2 sweep | 9 scheme×K combos, ≤1 GPU-day, seeds ≥2 | single verified-idle GPU (tmux) | launching 2026-07-08 — its E1 verdict opens the Stage-3 training gate |
+| 830 real corridor | full-panel floors+ceiling+expressibility gap, `trading_data.db` read-only | workstation CPU (screen+safe_run) | **DONE 2026-07-08** — corridor official [+0.424, +29.698] net@21, ref +0.751; H6 armed; LEDGER 830/E0-REAL |
+| 831 real E1/E2 sweep | 9 scheme×K combos, full panel, seeds 0,1,2 | workstation **CPU** (GPUs ceded to factory; script is CPU-default) | pilot running 2026-07-08 → full sweep on projection — its E1 verdict opens the Stage-3 training gate |
 
 ## Gated — do NOT start (named gate must open first)
 

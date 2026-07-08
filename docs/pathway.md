@@ -34,7 +34,7 @@ HOLD collapse. Rule derived from that record:
 | H3 | **Cross-asset structure**: joint action exploits correlation/lead-lag the per-asset rule ignores | factored head + joint value already in the net | joint-action ablation == independent-per-asset ablation |
 | H4 | **Cost-aware planning**: multi-step search nets trades, cuts turnover → wins after costs | search sees fees in the dynamics; rule pays every rebalance | planner turnover/cost ≥ rule's at equal gross |
 | H5 | **Teacher validity**: valid imprint = the linear book / self-play; oracle = measurement instrument ONLY | oracle-as-teacher = diagnosed disease vector (anti-correlation, bull-blindness) | linear-book imprint also anti-correlates (would implicate BC itself, not the teacher) |
-| H6 | _(candidate — armed by D6, fires only on measurement)_ **Action granularity**: the {0..4} per-asset set is too coarse to express the shippable book → weight-ladder actions | fixture replay: discrete actions can't hit continuous weight targets | real-panel expressibility gap (best in-env replay vs +0.97 engine bar) ≤0.2 net@21 Sharpe → H6 never activates |
+| H6 | **ARMED 2026-07-08** (measured gap 0.327 > 0.2) — **Action granularity**: the {0..4} per-asset set can't express the book's continuous weights → weight-ladder actions. CONDITIONAL: the +29.7 ceiling lives in the same discrete space, so discreteness doesn't cap the agent below the bar — becomes a build task only if the trained agent plateaus inside [floor_inenv +0.42, ref +0.75] | 830/E0-REAL: in-env replay floor +0.424 vs engine ref +0.751 | trained agent clears the engine ref without weight-ladder actions |
 
 ## The rung ladder
 
@@ -112,8 +112,11 @@ allocation contract. Leak-free, cost-honest, ≥3 seeds for any promotion claim 
 → R4. Queue rows in `tasks/QUEUE.md`; specs TASK_830/831/832 + TASK_828 stages; ledger at
 `experiments/LEDGER.md`.
 
-**Position (2026-07-08, post factory run 1)**: 828 S1+S2 SHIPPED (tags `task828-stage1/2`);
-830/831 factory halves SHIPPED, fixture-smoked (E1 fixture PASS, cheapest dithered-book|K8).
-R0/R1 real verdicts = two scheduled runs (830 CPU corridor, 831 single-GPU sweep); the real
-E1 PASS opens the Stage-3 TRAINING gate. Next factory rows: 829 (retire Foxglove), then
-Stage-3 CODE.
+**Position (2026-07-08, post factory run 1 + scheduled 830)**: 828 S1+S2 SHIPPED (tags
+`task828-stage1/2`); factory claims independently re-verified (selftest, 13+11 tests, defaults
+OFF, ledger↔JSON). **R0 DONE**: official corridor net@21 **[+0.424, +29.698]**, engine ref
++0.751 (this window), BEAR22 ref +1.049; fixture daily==db daily confirmed; H6 armed
+(conditional). R1 real sweep = CPU/scheduled (GPUs ceded to the factory); its E1 verdict opens
+the Stage-3 TRAINING gate. Next factory rows: 829 (retire Foxglove), then Stage-3 CODE.
+Stage-4 grading note: "beat the bar" = beat the ENGINE REF on the eval window (the +0.97 was
+819's window; this window's ref is +0.751 net@21).
