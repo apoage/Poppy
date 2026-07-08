@@ -112,6 +112,15 @@ allocation contract. Leak-free, cost-honest, ≥3 seeds for any promotion claim 
 → R4. Queue rows in `tasks/QUEUE.md`; specs TASK_830/831/832 + TASK_828 stages; ledger at
 `experiments/LEDGER.md`.
 
+**Position update (2026-07-08 evening, post factory run 2 + 831-EXT)**: TASK_833 shipped
+(run_queue.sh repaired + redeployed — server scheduler cleared) and TASK_829 shipped (Foxglove
+retired). **831-EXT battery (gpu-server) hardened every Stage-3 input**: sampler dithered-book|K16
+confirmed #1 at 10 seeds; K>32 measured net-negative (turnover tax) — budget K≤32; value-quality
+bar LOW (R=1 already beats the rule ref; accuracy at horizon ~3 is the target); **4/4 regime
+windows: perfect-model search +6..+10 while the rule's in-env floor is ≤0 in two of them — the
+regime-robustness case for planning is now measured** (H2 signal, perfect-model caveat). LEDGER
+831x/A–D. Stage 3 is queue row 1; its training run is the next scheduled server job.
+
 **Position (2026-07-08, post factory run 1 + scheduled R0/R1)**: 828 S1+S2 SHIPPED (tags
 `task828-stage1/2`); factory claims independently re-verified. **R0 DONE**: official corridor
 net@21 **[+0.424, +29.698]**, engine ref +0.751 (this window), BEAR22 ref +1.049; fixture
