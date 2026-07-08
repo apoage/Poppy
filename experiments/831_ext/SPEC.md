@@ -11,6 +11,12 @@ it hardens the Stage-3 design inputs (sampler choice, K, value-horizon requireme
   top-2 of the net@21 grid means. FAIL ⇒ carried-scheme choice reopens (planner regroom, not a
   silent swap).
 - **B `bear22/bull23/y2024/y2025`** — dithered-book, K{8,16,32}, seeds 0–9, per-regime windows.
+  **AMENDED 2026-07-08 before any regime result was seen**: the panel loader's liquidity filter
+  (`trader/data.py:82`, `min_active=365` in-window) zeroes the universe on windows <366 days —
+  `bear22`/`bull23`/`y2025` crashed at launch (ZeroDivision, A=0); leap-year `y2024` scraped
+  through. Re-run cells widen each window to ≥380 days around the regime core, renamed
+  `bear22w` (2021-12-15..2023-01-15), `bull23w` (2022-12-15..2024-01-15), `recent`
+  (2024-06-01..2025-09-01). Constraint-driven accommodation, not selection.
   Report per-window corridors [floor, ceiling] + search position. Soft check: dithered net@21 ≥
   the per-window in-env floor in ≥3/4 windows. (H2 signal: where in the regime map perfect-model
   search wins/loses — informative for Stage-3, not a verdict.)
