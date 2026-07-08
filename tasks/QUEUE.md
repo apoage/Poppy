@@ -10,9 +10,10 @@ factory halves shipped; D6 decided — dual floor).
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_833_RUN_QUEUE_REPAIR.md` | S | fix `tools/deploy/run_queue.sh` (untracked; first commit in-task): subshell BLOCKER at ~:162 + 4 MAJORs — full findings list + gates persisted in the task file (the finding session's patches were NOT persisted; re-derive). Mock-based empirical re-verify required. Redeploy to srv is planner's follow-up. Risk: medium. |
-| 2 | `tasks/TASK_829_RETIRE_FOXGLOVE.md` | S–M | decouple `train_phase2.py:484` + `benchmark_easy.py:41` imports, then delete the Foxglove files. PROMOTED ahead of Stage 3: both touch train_phase2.py's import surface, so retire Foxglove FIRST on a clean base. Risk: medium. |
-| 3 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + ACTION-CONDITIONAL reward head (D2; E3 variance-attribution probe = hard gate). Honor the Stage-2 panel carry-notes in the 828 banner (−inf pre-search masking, 320-wide asset-major head, visit_probs argmax for deterministic eval). Self-play proposal scheme = **dithered-book\|K16** (E2 carried; K8 budget fallback). Needs 829 shipped first. **TRAINING GATE OPEN** (real 831 E1 PASS, 2026-07-08); training itself is still a scheduled run, not factory-loop. Risk: high. |
+| 1 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + ACTION-CONDITIONAL reward head (D2; E3 variance-attribution probe = hard gate). Honor the Stage-2 panel carry-notes in the 828 banner (−inf pre-search masking, 320-wide asset-major head, visit_probs argmax for deterministic eval). Self-play proposal scheme = **dithered-book\|K16** (E2 carried; CONFIRMED #1 at 10 seeds by 831-EXT; K>16 measured NET-NEGATIVE — don't scale K). **TRAINING GATE OPEN** (real 831 E1 PASS); training itself is still a scheduled run, not factory-loop. Risk: high. |
+
+_Shipped 2026-07-08 factory run 2: TASK_833 (`task833-run-queue-repair` — repaired scheduler
+redeployed to srv same day) and TASK_829 (Foxglove retired, `40afa14`)._
 
 ## Scheduled runs — owner: planner/main session (NOT factory-loop jobs)
 
@@ -21,7 +22,8 @@ factory halves shipped; D6 decided — dual floor).
 831 cell ran end-to-end in 18s); **minute-bar tables are still Jan-2026 vintage** — full
 `sync-db.sh` required before any minute-bar job. Server code current (vector-action spine
 deployed); the 7 drifted server files are STASHED there (`git stash list`), not discarded.
-Stage-3 training destination = gpu-server GPUs 1/2/3 AFTER the run_queue.sh repair ships.
+Stage-3 training destination = gpu-server GPUs 1/2/3 — run_queue.sh REPAIRED (TASK_833) and
+redeployed 2026-07-08; the scheduler is cleared for use.
 
 | Run | What | Where | Status |
 |-----|------|-------|--------|
