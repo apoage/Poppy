@@ -1,3 +1,13 @@
+> **STATUS (2026-07-08): SHIPPED as `task834-e3-runner`.**
+> `experiments/834_e3_probe/` — checkpoint-loading DEC-1 runner (R_model vs R_true, calibrated
+> verdict + flagged fallback). Fixture smoke green (post-fix: R_model 0.928 / R_true 0.503, 0
+> illegal probe vectors, cap binds); selftest 7/7; zero canon diffs. Medium panel found 2 MAJORs
+> (legality mask omitted from proposal sampling; silent fresh-init measurement — crossval reproduced
+> a FALSE DEC-1 PASS on a missing snapshot path) + 2 MINORs — ALL fixed + adversarially re-verified
+> (fail-loud guards attacked 3 ways, all refuse). **Remainder (scheduled/planner):** apply the DEC-1
+> threshold to real battery snapshots (pass the run's `--config-json`; hold-bias/dither must match
+> the operator actually launched — the 3-arm diagnostic may change it).
+
 # TASK_834 — E3/DEC-1 attribution runner (checkpoint-loading R_model vs R_true)
 
 **Status**: READY 2026-07-08 (queue row 1 — the running Stage-3 battery needs it within hours,

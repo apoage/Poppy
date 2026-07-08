@@ -1,0 +1,73 @@
+{
+ "task": "TASK_834 E3/DEC-1 attribution probe",
+ "mode": "fixture-smoke",
+ "checkpoint": "fresh-init (fixture smoke; saved+reloaded via trainer.save_checkpoint/load_checkpoint)",
+ "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+ "window": [
+  "2025-09-14",
+  "2025-12-11"
+ ],
+ "panel_rows": 427,
+ "n_states": 16,
+ "n_states_collected": 16,
+ "n_states_excluded_post_done": 0,
+ "m_actions": 8,
+ "n_envs": 2,
+ "burn_in": 6,
+ "seed": 0,
+ "restored_step_count": 0,
+ "sampling": {
+  "state_method": "env-walk: create_jax_env_historical reset + zero-logit dithered-book proposal actions, legality-masked per state (jit_batch_compute_action_mask, self_play.py operator) \u2014 snapshot-independent, seed-fixed",
+  "action_method": "M i.i.d. draws/state from SampledMuZeroVectorSearch._build_proposal on policy logits + per-state legality mask (one dither draw per state, canon root behavior)",
+  "proposal_base": "policy",
+  "proposal_scheme": "dithered-book",
+  "hold_bias": 3.0,
+  "dither_scale": 1.0,
+  "mask_max_positions": 16,
+  "mask_min_cash_threshold": 100.0,
+  "mask_frac_illegal_slots": 0.25312500000000004,
+  "probe_actions_illegal_vector_frac": 0.0,
+  "orders_per_state_mean": 12.75,
+  "orders_per_state_max": 16,
+  "pct_hold_probe_actions": 0.693359375,
+  "walk_first_done_step": -1
+ },
+ "config": {
+  "model_size": "small",
+  "state_dim": 64,
+  "h_cycles": 4,
+  "l_cycles": 6,
+  "n_assets": 16,
+  "fee_bps": 16.0,
+  "slippage_bps": 5.0,
+  "max_steps": 96,
+  "window_size": 60,
+  "bar_minutes": 60,
+  "reward_attributable": true,
+  "reward_hybrid": true,
+  "vector_action": true
+ },
+ "r_model": {
+  "R": 0.9281865358352661,
+  "e_book_var_action": 0.0023327853996306658,
+  "var_book_e_action": 0.0025132722221314907
+ },
+ "r_true": {
+  "R": 0.503082811832428,
+  "e_book_var_action": 0.23942570388317108,
+  "var_book_e_action": 0.47591710090637207
+ },
+ "r_true_error": null,
+ "ratio_model_over_true": 1.8449975113529342,
+ "dec1": {
+  "rule": "R_model >= 0.5 * R_true (calibrated primary, DEC-1); fallback: absolute R_model >= 0.5, FLAGGED, if the R_true leg is unavailable",
+  "threshold_applied": false,
+  "fallback_used": false,
+  "passed": null,
+  "verdict": "SMOKE (untrained fresh-init model) \u2014 plumbing proof only; DEC-1 threshold NOT applied to the untrained case (per TASK_834). Real verdict = scheduled run on the 828s3 mid/late snapshots."
+ },
+ "stage_b_baseline_R": 0.016666666666666666,
+ "stage_b_note": "Stage-B reward head measured ~60x action-blind (R ~ 1/60) \u2014 distance-travelled reference, project_stageb_reward_head_diseased",
+ "jax_version": "0.6.2",
+ "timestamp": "2026-07-08T23:10:00"
+}
