@@ -1,3 +1,12 @@
+> **STATUS (2026-07-08): factory half SHIPPED.** `experiments/831_search_probe/` runner + SPEC +
+> fixture smoke landed; panel-green (E1 gate logic verified sound — floor-vs-search apples-to-apples).
+> Fixture smoke: floor net@21 +5.59, **E1=PASS** (8/9 scheme×K reach floor), cheapest reacher
+> dithered-book|K8. **E1 measures PROPOSAL CAPACITY** — PASS is necessary-but-not-sufficient for
+> Stage-3; the real deliverable is the E2 scheme×K ranking. **Remainder:** the load-bearing E1/E2
+> verdict = SCHEDULED single-GPU sweep (≤1 GPU-day, verified-idle GPU) — NOT a factory-loop job;
+> its **real E1 PASS gates the 828 Stage-3 TRAINING launch** (pathway R1). Kill logic: E1 FAIL across
+> all E2 schemes ⇒ proposal mechanism is the defect ⇒ Stage-3 does not launch, planner respecs sampler.
+
 # TASK_831 — True-model search probe: can Sampled-MuZero FIND the book at all? (E1/E2, R1)
 
 **Status**: GATED on 828 Stage 2 banner (needs the sampled-vector search machinery) + TASK_830

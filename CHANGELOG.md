@@ -3,6 +3,13 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-07-08 — TASK_831 — E1/E2 true-model search-capacity probe (factory half)
+- `experiments/831_search_probe/`: `SPEC.md`, `search_probe.py` (true-model sampled search — env `step_vector` as dynamics + true reward, no learned nets; value = truncated R=3 env-rollout; reuses the Stage-2 sampler's `_sample_action_vectors`/`_empirical_prior`, reimplements the search loop because canon `_search` requires a learned `model_apply_fn`), `results_fixture_smoke.json`, `.gitignore`.
+- **E1 (capacity)**: does K-sample search with a perfect model reach the 830 corridor floor? PASS/FAIL is measured floor-vs-search on the SAME first-N rows/cost tier (apples-to-apples). Fixture smoke: floor net@21 +5.59, **E1=PASS** (8/9 scheme×K reach it). E1 measures PROPOSAL CAPACITY — FAIL⇒proposal defect⇒Stage-3 no-launch (sound kill); PASS is necessary-but-not-sufficient (weak PASS-detector under a perfect value; real deliverable = the E2 ranking).
+- **E2 (sampling ablation)**: independent / linear-prior-mixture / dithered-book × K∈{8,16,32}, proposals injected via per-asset `policy_logits` (no model code). Fixture cheapest floor-reacher: dithered-book|K8 — carried as the Stage-3 sampler hint. Net<gross tracks turnover.
+- Verified by medium panel (correctness E1-validity + regression + flow-verifier). Post-fix: window-consistent oracle ceiling, SPEC honesty (dropped an inaccurate 1e-3 rationale; PASS reframed), `.gitignore` for `__pycache__`, performance-aware cheapest-reacher tiebreak.
+- Remainder: real E1/E2 verdict = SCHEDULED single-GPU sweep (verified-idle GPU, ≤1 GPU-day); this ships the runner + fixture smoke. **The real E1 PASS gates the 828 Stage-3 training launch (pathway R1).**
+
 ## 2026-07-08 — TASK_828 Stage 2 — Sampled-MuZero MCTS over joint action-vectors, flag-gated
 - `mcts_trader/jax_agent/sampled_search.py` (NEW) — `SampledMuZeroVectorSearch`: samples K action-vectors from the factored per-asset policy marginals (β=π on-policy), runs `mctx.gumbel_muzero_policy` over the reduced {0..K-1} set, returns `action_vec (B,n_assets)∈{0..4}` + `visit_probs (B,K)` + diagnostic `beta_hat`. Visit-count correction = uniform-per-slot empirical prior (importance weight π/β=1 because sampling is on-policy); hand-worked β̂ cases pinned.
 - `mcts_trader/jax_agent/muzero_model.py` — `VectorActionEmbedding` module + `dynamics_vector`/`recurrent_inference_vector` (reuse the canon dynamics MLP; embed the vector, not a scalar index), gated by `use_vector_action: bool = False` (+ `vector_n_actions_per_asset`). `mctx_search.py` untouched.

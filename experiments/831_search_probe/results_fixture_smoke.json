@@ -1,0 +1,288 @@
+{
+  "tag": "fixture-smoke",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2021-01-01",
+    "2025-09-01"
+  ],
+  "n_assets": 279,
+  "n_days": 1704,
+  "warm": 31,
+  "n_decisions": 60,
+  "position_size_pct": 0.0017921146953405018,
+  "seeds": [
+    0,
+    1
+  ],
+  "discount": 0.997,
+  "value_rollout_steps": 3,
+  "proposal_bias": 3.0,
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "value_heuristic": "truncated_env_rollout(R=3, HOLD, disc=0.997)",
+  "floor": {
+    "0": 5.720902822069601,
+    "21": 5.5912276689593545
+  },
+  "ceiling": {
+    "0": 43.96194063207768,
+    "21": 42.18313973324647
+  },
+  "oracle_gross_alpha": 75.52146911621094,
+  "grid": {
+    "independent|K8": {
+      "scheme": "independent",
+      "K": 8,
+      "n_evals_per_decision": 32,
+      "sharpe_mean": {
+        "0": 11.352791088650363,
+        "21": 5.232205885062504
+      },
+      "sharpe_seeds": {
+        "0": [
+          10.572797445147552,
+          12.132784732153176
+        ],
+        "21": [
+          3.3052023302448057,
+          7.159209439880201
+        ]
+      },
+      "diag": {
+        "final_pv": 111296.4609375,
+        "avg_long": 91.38333333333334,
+        "avg_short": 92.98333333333333,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "independent|K16": {
+      "scheme": "independent",
+      "K": 16,
+      "n_evals_per_decision": 64,
+      "sharpe_mean": {
+        "0": 14.142732842713674,
+        "21": 8.548790097742597
+      },
+      "sharpe_seeds": {
+        "0": [
+          14.51615679871961,
+          13.769308886707735
+        ],
+        "21": [
+          7.713476785054999,
+          9.384103410430193
+        ]
+      },
+      "diag": {
+        "final_pv": 111537.984375,
+        "avg_long": 88.06666666666666,
+        "avg_short": 96.05,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "independent|K32": {
+      "scheme": "independent",
+      "K": 32,
+      "n_evals_per_decision": 128,
+      "sharpe_mean": {
+        "0": 17.753941225324702,
+        "21": 11.71129432740355
+      },
+      "sharpe_seeds": {
+        "0": [
+          17.433724124940678,
+          18.074158325708723
+        ],
+        "21": [
+          10.32464747187419,
+          13.097941182932908
+        ]
+      },
+      "diag": {
+        "final_pv": 113396.6328125,
+        "avg_long": 91.81666666666666,
+        "avg_short": 93.31666666666666,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "linear-prior|K8": {
+      "scheme": "linear-prior",
+      "K": 8,
+      "n_evals_per_decision": 32,
+      "sharpe_mean": {
+        "0": 8.173887680146759,
+        "21": 6.728165384399462
+      },
+      "sharpe_seeds": {
+        "0": [
+          7.0901592893770715,
+          9.257616070916448
+        ],
+        "21": [
+          5.939403909664478,
+          7.516926859134447
+        ]
+      },
+      "diag": {
+        "final_pv": 116867.640625,
+        "avg_long": 48.93333333333333,
+        "avg_short": 18.3,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "linear-prior|K16": {
+      "scheme": "linear-prior",
+      "K": 16,
+      "n_evals_per_decision": 64,
+      "sharpe_mean": {
+        "0": 8.865501178111767,
+        "21": 7.838669776793621
+      },
+      "sharpe_seeds": {
+        "0": [
+          8.01733555666157,
+          9.713666799561965
+        ],
+        "21": [
+          7.071372289838563,
+          8.605967263748678
+        ]
+      },
+      "diag": {
+        "final_pv": 118273.90625,
+        "avg_long": 47.21666666666667,
+        "avg_short": 19.283333333333335,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "linear-prior|K32": {
+      "scheme": "linear-prior",
+      "K": 32,
+      "n_evals_per_decision": 128,
+      "sharpe_mean": {
+        "0": 10.481043600984368,
+        "21": 8.989637998216665
+      },
+      "sharpe_seeds": {
+        "0": [
+          9.337057752356587,
+          11.625029449612148
+        ],
+        "21": [
+          8.232648147342543,
+          9.746627849090789
+        ]
+      },
+      "diag": {
+        "final_pv": 120351.9375,
+        "avg_long": 47.46666666666667,
+        "avg_short": 17.7,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "dithered-book|K8": {
+      "scheme": "dithered-book",
+      "K": 8,
+      "n_evals_per_decision": 32,
+      "sharpe_mean": {
+        "0": 9.3995323789986,
+        "21": 8.235756890453661
+      },
+      "sharpe_seeds": {
+        "0": [
+          7.942662631629827,
+          10.856402126367373
+        ],
+        "21": [
+          6.762200561283489,
+          9.709313219623834
+        ]
+      },
+      "diag": {
+        "final_pv": 108720.0234375,
+        "avg_long": 89.55,
+        "avg_short": 81.26666666666667,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "dithered-book|K16": {
+      "scheme": "dithered-book",
+      "K": 16,
+      "n_evals_per_decision": 64,
+      "sharpe_mean": {
+        "0": 11.530666122212164,
+        "21": 10.084776130813694
+      },
+      "sharpe_seeds": {
+        "0": [
+          11.074043923190338,
+          11.987288321233988
+        ],
+        "21": [
+          9.313845979580261,
+          10.855706282047125
+        ]
+      },
+      "diag": {
+        "final_pv": 106905.828125,
+        "avg_long": 89.31666666666666,
+        "avg_short": 81.46666666666667,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    },
+    "dithered-book|K32": {
+      "scheme": "dithered-book",
+      "K": 32,
+      "n_evals_per_decision": 128,
+      "sharpe_mean": {
+        "0": 14.770879235632414,
+        "21": 12.460882623510361
+      },
+      "sharpe_seeds": {
+        "0": [
+          13.700315018519982,
+          15.841443452744846
+        ],
+        "21": [
+          10.94571940303086,
+          13.97604584398986
+        ]
+      },
+      "diag": {
+        "final_pv": 110154.4375,
+        "avg_long": 83.25,
+        "avg_short": 82.46666666666667,
+        "bankrupt_at": -1,
+        "n": 60
+      }
+    }
+  },
+  "e1": {
+    "floor_net21": 5.5912276689593545,
+    "reached_floor": {
+      "independent|K8": false,
+      "independent|K16": true,
+      "independent|K32": true,
+      "linear-prior|K8": true,
+      "linear-prior|K16": true,
+      "linear-prior|K32": true,
+      "dithered-book|K8": true,
+      "dithered-book|K16": true,
+      "dithered-book|K32": true
+    },
+    "verdict": "PASS",
+    "cheapest_reacher": "dithered-book|K8",
+    "smoke": true,
+    "note": "FIXTURE-SMOKE signal only \u2014 real E1 verdict PENDING the scheduled single-GPU full-panel sweep. Kill logic: E1 FAIL across ALL schemes \u21d2 proposal mechanism is the defect \u21d2 828 Stage 3 does NOT launch."
+  }
+}

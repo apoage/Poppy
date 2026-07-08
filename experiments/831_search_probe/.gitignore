@@ -1,0 +1,3 @@
+# Compiled artifacts — the importlib load of 830's corridor.py writes bytecode here.
+__pycache__/
+*.pyc
