@@ -1,0 +1,331 @@
+{
+ "task": "TASK_836 E4 value-ranking probe",
+ "mode": "fixture-smoke",
+ "checkpoint": "fresh-init (fixture smoke; saved+reloaded via trainer.save_checkpoint/load_checkpoint)",
+ "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+ "window": [
+  "2025-09-14",
+  "2025-12-11"
+ ],
+ "panel": {
+  "n_rows": 427,
+  "n_assets": 16,
+  "warm": 60,
+  "n_decisions": 96,
+  "n_loaded_symbols": 8,
+  "padded": true
+ },
+ "seed": 0,
+ "burn_in": 8,
+ "restored_step_count": 0,
+ "walk": {
+  "action_rule": "zero-logit dithered-book proposal, seed-fixed, legality-masked per state (834 precedent) \u2014 checkpoint-independent; single env, fixed start at the first obs-valid row (835 pattern)",
+  "hold_bias": 3.0,
+  "dither_scale": 1.0,
+  "proposal_scheme": "dithered-book",
+  "fee_bps": 16.0,
+  "slippage_bps": 5.0,
+  "mask_max_positions": 16,
+  "mask_min_cash_threshold": 100.0,
+  "n_exec": 96,
+  "first_done": -1,
+  "pct_hold_walk_actions": 0.767578125,
+  "orders_per_state_mean": 12.15625,
+  "orders_per_state_max": 16,
+  "illegal_action_steps": 0,
+  "final_pv": 89276.265625
+ },
+ "momentum": {
+  "m_bars": 21,
+  "primary": "book: current holdings revalued at rows t-1 vs t-1-m (compute_portfolio_value at two price rows; positions/cash/entries frozen \u2014 holdings-weighted trailing asset momentum, NOT the trailing walk PV)",
+  "secondary": "market: equal-weight cross-asset mean trailing return, rows t-1 vs t-1-m (padded columns double-count \u2014 diagnostic only)",
+  "walk_pv": "walk_pv: pv_pre[t]/pv_pre[t-m]-1 on the walk PV series \u2014 the true trailing-PV time-mirror of the realized leg (rows <= t, the realized-leg mark convention, never beyond t; requires t >= m, earlier states excluded from this leg only; secondary/diagnostic \u2014 the pre-registered PRIMARY stays the book baseline)",
+  "why_m21": "~1 month at the canonical daily bars \u2014 the standard time-series-momentum lookback; < warm=window_size so it is always computable without leaving the panel"
+ },
+ "horizons": {
+  "all": [
+   1,
+   3,
+   6
+  ],
+  "primary_k": 3,
+  "realized": "pv_pre[t+k]/pv_pre[t] - 1 along the SAME deterministic walk \u2014 the k-decision continuation under the same pre-registered rule, computed by the true env (jit_batch_step_vector); CONDITIONAL on the walk rule, not the trained policy",
+  "p_caveat": "p-values assume independent samples; k>1 forward windows overlap by k-1 steps (effective n ~ n/k), making p anti-conservative \u2014 treat p as descriptive only; the interpretation rule uses rho comparisons exclusively"
+ },
+ "leak_check": {
+  "value_obs_rows": "[t-60, t-1] (window_starts+window_size==price_idx)",
+  "momentum_rows": "[t-1-21, t-1] (never beyond t-1)",
+  "momentum_walk_pv_rows": "[t-21, t] \u2014 rows <= t, the realized-leg mark convention (never beyond t)",
+  "realized_rows": "[t, t+k] \u2014 FUTURE relative to the state (its purpose)",
+  "warm_equals_window_size": true,
+  "warm_minus_1_minus_m_nonneg": true
+ },
+ "spearman_source": "scipy.stats.spearmanr",
+ "min_n_for_correlation": 8,
+ "windows": {
+  "full": {
+   "window": [
+    "2025-09-14",
+    "2025-12-11"
+   ],
+   "source": "panel",
+   "per_horizon": {
+    "1": {
+     "n": 88,
+     "value": {
+      "n": 88,
+      "rho": 0.12990032052410977,
+      "p": 0.22771408521457964
+     },
+     "momentum_book": {
+      "n": 88,
+      "rho": -0.14973054841322955,
+      "p": 0.16380833305457504
+     },
+     "momentum_market": {
+      "n": 88,
+      "rho": -0.08759818252263042,
+      "p": 0.4170464503774861
+     },
+     "momentum_walk_pv": {
+      "n": 75,
+      "rho": -0.16273115220483642,
+      "p": 0.16303382725783513
+     },
+     "value_beats_primary": true,
+     "realized_std": 0.0021862479403583304
+    },
+    "3": {
+     "n": 86,
+     "value": {
+      "n": 86,
+      "rho": 0.10431624133213831,
+      "p": 0.33915093792535855
+     },
+     "momentum_book": {
+      "n": 86,
+      "rho": -0.1773574225199302,
+      "p": 0.10233092030308398
+     },
+     "momentum_market": {
+      "n": 86,
+      "rho": -0.14599745271003348,
+      "p": 0.1798191466465294
+     },
+     "momentum_walk_pv": {
+      "n": 73,
+      "rho": -0.19196593854128102,
+      "p": 0.10373285948939616
+     },
+     "value_beats_primary": true,
+     "realized_std": 0.0035886316526726803
+    },
+    "6": {
+     "n": 83,
+     "value": {
+      "n": 83,
+      "rho": -0.02579656605516141,
+      "p": 0.8169324399198894
+     },
+     "momentum_book": {
+      "n": 83,
+      "rho": -0.13798749002980562,
+      "p": 0.2134916398180973
+     },
+     "momentum_market": {
+      "n": 83,
+      "rho": -0.11628395113555265,
+      "p": 0.29515158848818945
+     },
+     "momentum_walk_pv": {
+      "n": 70,
+      "rho": -0.19604584025894498,
+      "p": 0.1038369774853746
+     },
+     "value_beats_primary": true,
+     "realized_std": 0.004997033184385958
+    }
+   }
+  },
+  "bear22w": {
+   "window": [
+    "2021-12-15",
+    "2023-01-15"
+   ],
+   "source": "runs/831_ext/bear22w.json",
+   "per_horizon": {
+    "1": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "3": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "6": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    }
+   }
+  },
+  "bull23w": {
+   "window": [
+    "2022-12-15",
+    "2024-01-15"
+   ],
+   "source": "runs/831_ext/bull23w.json",
+   "per_horizon": {
+    "1": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "3": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "6": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    }
+   }
+  },
+  "y2024": {
+   "window": [
+    "2024-01-01",
+    "2025-01-01"
+   ],
+   "source": "runs/831_ext/y2024.json",
+   "per_horizon": {
+    "1": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "3": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "6": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    }
+   }
+  },
+  "recent": {
+   "window": [
+    "2024-06-01",
+    "2025-09-01"
+   ],
+   "source": "runs/831_ext/recent.json",
+   "per_horizon": {
+    "1": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "3": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    },
+    "6": {
+     "n": 0,
+     "value": null,
+     "momentum_book": null,
+     "momentum_market": null,
+     "momentum_walk_pv": null,
+     "value_beats_primary": null,
+     "realized_std": null
+    }
+   }
+  }
+ },
+ "interpretation": {
+  "rule_verbatim": "value beats momentum's correlation on \u22653/5 windows = the value net carries signal beyond the obvious; below-momentum everywhere = the value net is the bottleneck (feeds the phase-2 postmortem either way \u2014 this probe is DIAGNOSTIC, it gates nothing by itself)",
+  "primary_horizon_k": 3,
+  "primary_baseline": "momentum_book_m21",
+  "n_windows_total": 5,
+  "n_windows_evaluable": 1,
+  "windows_evaluable": [
+   "full"
+  ],
+  "n_windows_value_beats_momentum": 1,
+  "windows_value_beats_momentum": [
+   "full"
+  ],
+  "value_leg_notes": null,
+  "applied": false,
+  "reading": "FIXTURE-SMOKE (untrained fresh-init model) \u2014 plumbing proof only; interpretation NOT applied. Real reading = scheduled run on the phase-1 cost0 snapshots."
+ },
+ "config": {
+  "model_size": "small",
+  "state_dim": 64,
+  "h_cycles": 4,
+  "l_cycles": 6,
+  "n_assets": 16,
+  "value_scale": 1.0,
+  "value_shift": 0.0,
+  "bar_minutes": 60,
+  "window_size": 60,
+  "reward_attributable": true,
+  "vector_action": true,
+  "obs_is_price_only_27ch": true
+ },
+ "jax_version": "0.6.2",
+ "timestamp": "2026-07-09T00:12:22",
+ "out_name": "results_fixture_smoke.json",
+ "out_pointer": "experiments/836_value_ranking/results_fixture_smoke.json",
+ "ledger_row": "| 836/E4 | 2026-07-09 | H1/H2 | Does the learned root VALUE rank states above trailing momentum (m=21)? fresh-init (fixture smoke; saved+reloaded via trainer.save_checkpoint/load_checkpoint): deterministic zero-logit walk 2025-09-14..2025-12-11, realized = true-env k-step walk continuation, k=3 primary (k=1/6 in JSON) | value>momentum in 1/1 evaluable windows @k=3: full \u03c1v +0.104 vs \u03c1m -0.177 (n=86); bear22w \u03c1v n/a vs \u03c1m n/a (n=0); bull23w \u03c1v n/a vs \u03c1m n/a (n=0); y2024 \u03c1v n/a vs \u03c1m n/a (n=0); recent \u03c1v n/a vs \u03c1m n/a (n=0). FIXTURE-SMOKE \u2014 plumbing proof, untrained model, interpretation not applied; real numbers come from the scheduled run. | n/a (diagnostic instrument \u2014 no corridor claim) | experiments/836_value_ranking/results_fixture_smoke.json |"
+}

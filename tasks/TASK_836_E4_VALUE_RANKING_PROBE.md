@@ -1,3 +1,14 @@
+> **STATUS (2026-07-09): SHIPPED as `task836-e4-rank-probe`.**
+> `experiments/836_value_ranking/` — checkpoint value-net rank probe: Spearman(predicted root value,
+> realized k-step true-env forward return) vs THREE momentum baselines (primary frozen-book m=21;
+> secondary market + true walk-PV time-mirror), per 831-EXT window + full, k=3 primary. Deterministic
+> legality-masked zero-logit walk (checkpoint-independent states); 834 fail-loud restore guards reused.
+> Medium panel: **0 BLOCKER/MAJOR** (index alignment traced clean, canon decode, both deviations
+> judged valid); 3 MINORs + 3 NITs fixed with bit-identical-baseline proof (time-mirror relabel +
+> momentum_walk_pv column; overlap p-caveat; degenerate-value reading distinguished from coverage
+> failure). **Remainder (scheduled/planner):** run on real phase-1 snapshots with the launched run's
+> config — DIAGNOSTIC only (feeds the phase-2 postmortem; gates nothing alone).
+
 # TASK_836 — E4 value-ranking probe (does the learned value rank states above momentum?)
 
 **Status**: READY 2026-07-08. **Size: S–M. Risk: low-medium** (read-only instrument, zero canon
