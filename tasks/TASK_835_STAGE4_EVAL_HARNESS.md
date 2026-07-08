@@ -1,3 +1,14 @@
+> **STATUS (2026-07-08): SHIPPED as `task835-stage4-eval`.**
+> `experiments/835_stage4_eval/` — checkpoint → deterministic full-timeline vector rollout (visit-argmax
+> through the SHIPPED search) → 830/831-convention corridor scorecard (net@21+gross as SEPARATE
+> fee-aware rollouts, 4 loaded 831-EXT regime windows, HOLD-collapse counters, LEDGER row). Medium
+> panel: **0 BLOCKER/MAJOR** — fidelity verified line-level against self_play/corridor conventions;
+> determinism independently confirmed (bit-identical re-runs). 3 MINORs fixed (LEDGER pointer follows
+> the real out_dir; partial-rollout guard withholds corridor booleans; docs/provenance) with EXACT smoke
+> reproduction proving the fixes are reporting-only. **Remainder (scheduled/planner):** the Stage-4
+> verdict run — MUST pass the operator flags of the battery actually launched (3-arm diagnostic may
+> change hold-bias/dither from the manifest defaults).
+
 # TASK_835 — Stage-4 faithful vector eval harness (checkpoint → corridor scorecard)
 
 **Status**: READY 2026-07-08. **Size: M. Risk: medium** (it produces the numbers the promotion
