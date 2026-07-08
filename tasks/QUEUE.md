@@ -10,10 +10,18 @@ factory halves shipped; D6 decided — dual floor).
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_829_RETIRE_FOXGLOVE.md` | S–M | decouple `train_phase2.py:484` + `benchmark_easy.py:41` imports, then delete the Foxglove files. PROMOTED ahead of Stage 3: both touch train_phase2.py's import surface, so retire Foxglove FIRST on a clean base. Risk: medium. |
-| 2 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + ACTION-CONDITIONAL reward head (D2; E3 variance-attribution probe = hard gate). Honor the Stage-2 panel carry-notes in the 828 banner (−inf pre-search masking, 320-wide asset-major head, visit_probs argmax for deterministic eval). Self-play proposal scheme = **dithered-book\|K16** (E2 carried; K8 budget fallback). Needs 829 shipped first. **TRAINING GATE OPEN** (real 831 E1 PASS, 2026-07-08); training itself is still a scheduled run, not factory-loop. Risk: high. |
+| 1 | `run_queue.sh` repair (authorized 2026-07-08) | S | fix the DO-NOT-SHIP findings: acquire_idle_gpu subshell BLOCKER (FREE_GPUS mutation discarded → every job pins GPU 1) + 4 MAJORs (VRAM TOCTOU, no cleanup trap, dropped manifest lines, unbounded idle-wait). Patch lands on WORKSTATION master, re-verify, then REDEPLOY to gpu-server (broken copy is live-but-inert there). Scope = the verified findings only. Risk: medium (fail-closed scheduler for unattended GPU training). |
+| 2 | `tasks/TASK_829_RETIRE_FOXGLOVE.md` | S–M | decouple `train_phase2.py:484` + `benchmark_easy.py:41` imports, then delete the Foxglove files. PROMOTED ahead of Stage 3: both touch train_phase2.py's import surface, so retire Foxglove FIRST on a clean base. Risk: medium. |
+| 3 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + ACTION-CONDITIONAL reward head (D2; E3 variance-attribution probe = hard gate). Honor the Stage-2 panel carry-notes in the 828 banner (−inf pre-search masking, 320-wide asset-major head, visit_probs argmax for deterministic eval). Self-play proposal scheme = **dithered-book\|K16** (E2 carried; K8 budget fallback). Needs 829 shipped first. **TRAINING GATE OPEN** (real 831 E1 PASS, 2026-07-08); training itself is still a scheduled run, not factory-loop. Risk: high. |
 
 ## Scheduled runs — owner: planner/main session (NOT factory-loop jobs)
+
+**Server status (2026-07-08)**: gpu-server cleared for **DAILY-panel jobs only** — `ohlcv_daily`
++ `assets` synced to workstation parity (table-level; verified 499,430 rows, quick_check ok,
+831 cell ran end-to-end in 18s); **minute-bar tables are still Jan-2026 vintage** — full
+`sync-db.sh` required before any minute-bar job. Server code current (vector-action spine
+deployed); the 7 drifted server files are STASHED there (`git stash list`), not discarded.
+Stage-3 training destination = gpu-server GPUs 1/2/3 AFTER the run_queue.sh repair ships.
 
 | Run | What | Where | Status |
 |-----|------|-------|--------|

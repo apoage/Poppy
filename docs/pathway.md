@@ -119,6 +119,7 @@ daily==db daily confirmed; H6 armed (conditional). **R1 DONE**: real E1 **PASS 9
 TRAINING GATE OPEN**; E2 carried scheme **dithered-book|K16** (K8 fallback); linear-prior
 proposals rejected (pin search to the rule's neighborhood); perfect-model search +5.29 vs rule
 +0.75 = wide learnable corridor. Next factory rows: 829 (retire Foxglove), then Stage-3 CODE;
-next scheduled run: Stage-3 training (server preferred — pending operator: server tree reset +
-db sync). Stage-4 grading note: "beat the bar" = beat the ENGINE REF on the eval window (the
+next scheduled run: Stage-3 training on gpu-server (server READY for daily-panel jobs
+2026-07-08 — table-level db parity + current code; gate: run_queue.sh repair ships first;
+minute-bar jobs still need a full db sync). Stage-4 grading note: "beat the bar" = beat the ENGINE REF on the eval window (the
 +0.97 was 819's window; this window's ref is +0.751 net@21).
