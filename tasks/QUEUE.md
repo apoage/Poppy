@@ -3,8 +3,12 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-08 post factory run 1** (828 S1+S2 shipped `task828-stage1`/`task828-stage2`; 830/831
-factory halves shipped; D6 decided — dual floor).
+**2026-07-08 ~23:30** — factory runs 2-4 all shipped (833/829/828-S3/834/835/832); pre-flight
+collapse finding (LEDGER 828s3/preflight) rejected fee16-from-scratch; **Stage-3 phase-1 cost0
+battery RUNNING on srv**; Ready empty pending phase-1 verdicts. Exploration-design contingency
+(proposal-bias annealing) deliberately NOT seeded — the cost0→fee16 curriculum + 832 imprint
+warm-start supersede it; it activates only if phase 2 also collapses (named in
+`experiments/828_stage3_train/SPEC.md` amendment 2).
 
 ## Ready — take from the top
 
