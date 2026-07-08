@@ -285,6 +285,8 @@ def setup_jax_environment(config: TrainingConfig, seed: int = None):
         burn_random_limit=getattr(config, 'burn_random_limit', 10),
         # TASK_818 Tier B (covers both **common_kwargs call sites)
         reward_attributable=getattr(config, 'reward_attributable', False),
+        # TASK_828 Stage 3 (covers both **common_kwargs call sites)
+        vector_action=getattr(config, 'vector_action', False),
     )
 
     # Choose between shared prices (faster) or unique prices per env (more diversity)
@@ -461,6 +463,10 @@ def setup_model_and_trainer(config: TrainingConfig, n_assets: int) -> Tuple[MuZe
         pred_mlp_dim=pred_cfg['mlp_dim'],
         pred_n_factors=pred_cfg['n_factors'],
         dtype=compute_dtype,
+        # TASK_828 Stage 3: vector-action embedding (default OFF ⇒ no params,
+        # canon scalar path byte-identical). action_space_size stays n_assets*5.
+        use_vector_action=getattr(config, 'vector_action', False),
+        vector_n_actions_per_asset=5,
     )
 
     prediction_config = None
@@ -532,6 +538,8 @@ def setup_model_and_trainer(config: TrainingConfig, n_assets: int) -> Tuple[MuZe
         reward_scale=config.reward_scale,
         # --reward-hybrid: PopArt-normalized target + hybrid reward loss (default OFF)
         reward_hybrid=getattr(config, 'reward_hybrid', False),
+        # TASK_828 Stage 3: vector-action training path (default OFF = canon).
+        vector_action=getattr(config, 'vector_action', False),
         alpha_target=config.alpha_target,
         beta_target=config.beta_target,
         sigma_target=config.sigma_target,

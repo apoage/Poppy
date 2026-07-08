@@ -187,7 +187,11 @@ def _clip_gradients_per_head(
             value_keys.append(key)
         elif 'output_refiner' in key_lower or 'trmreasoning' in key_lower:
             policy_keys.append(key)
-        elif 'dynamics' in key_lower or 'action_embedding' in key_lower:
+        elif ('dynamics' in key_lower or 'action_embedding' in key_lower
+              # TASK_828: VectorActionEmbedding is a dynamics-path action encoder →
+              # clip with the dynamics bucket, NOT the un-clipped 'other' bucket.
+              # ('action_embedding' already substring-matches; explicit for clarity.)
+              or 'vector_action_embedding' in key_lower):
             dynamics_keys.append(key)
         elif 'encoder' in key_lower or 'cnn' in key_lower:
             encoder_keys.append(key)

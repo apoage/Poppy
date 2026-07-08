@@ -74,6 +74,10 @@ class SampledMuZeroVectorSearch:
         gumbel_scale: float = 1.0,
         value_scale: float = 1.0,
         value_shift: float = 0.0,
+        # TASK_828 Stage 3: dithered-book proposal knobs (D-2/D-3).
+        hold_bias: float = 0.0,             # additive bias on the book (HOLD) slot
+        dither_scale: float = 1.0,          # Gumbel dither scale on the proposal
+        proposal_scheme: str = 'dithered-book',  # 'dithered-book' | 'iid-beta'
     ):
         self.model_apply_fn = model_apply_fn
         self.n_assets = n_assets
@@ -87,6 +91,10 @@ class SampledMuZeroVectorSearch:
         self.gumbel_scale = gumbel_scale
         self.value_scale = value_scale
         self.value_shift = value_shift
+        # Proposal (sampling-distribution) knobs — static, captured at trace.
+        self.hold_bias = hold_bias
+        self.dither_scale = dither_scale
+        self.proposal_scheme = proposal_scheme
 
         self.search_fn = jax.jit(self._search)
 
@@ -160,13 +168,65 @@ class SampledMuZeroVectorSearch:
 
     # ---- search --------------------------------------------------------------
 
+    def _build_proposal(
+        self,
+        policy_logits: jnp.ndarray,
+        action_mask: jnp.ndarray,
+        book: jnp.ndarray,
+        dither_rng: chex.PRNGKey,
+    ) -> jnp.ndarray:
+        """TASK_828 Stage 3: dithered-book proposal (D-2/D-3).
+
+        Start from the factored policy logits (asset-major (B, n_assets*A)),
+        reshape → (B, n_assets, A), then:
+          * add a constant ``hold_bias`` to the book slot per asset (v1: HOLD=1,
+            DEC-3 HOLD-maintains-position; HOLD is always legal),
+          * add independent Gumbel dither (× ``dither_scale``) per (asset, slot),
+          * mask illegal per-asset slots to a large negative so softmax(·) → ~0.
+        The K candidate vectors are then sampled from ``softmax(proposal, -1)`` per
+        asset. The Sampled-MuZero visit correction is proposal-independent (the
+        samples ARE drawn from this proposal), so ``_empirical_prior`` stays
+        uniform-1/K.
+        """
+        B = policy_logits.shape[0]
+        n_assets, A = self.n_assets, self.n_actions_per_asset
+        proposal = policy_logits.reshape(B, n_assets, A)
+
+        if self.proposal_scheme == 'dithered-book':
+            if book is not None:
+                # Bias the maintain-action slot per asset (v1 book = HOLD=1).
+                book_oh = jax.nn.one_hot(book.astype(jnp.int32), A,
+                                         dtype=proposal.dtype)   # (B, n_assets, A)
+                proposal = proposal + self.hold_bias * book_oh
+            else:
+                # No explicit book → bias the HOLD slot (index 1) directly.
+                proposal = proposal.at[..., 1].add(self.hold_bias)
+            proposal = proposal + self.dither_scale * jax.random.gumbel(
+                dither_rng, proposal.shape, dtype=proposal.dtype)
+        # 'iid-beta' (or any other scheme) → sample from the raw factored marginals
+        # (no book bias / dither); mask still applies below.
+
+        if action_mask is not None:
+            mask_bool = action_mask.reshape(B, n_assets, A).astype(bool)
+            proposal = jnp.where(mask_bool, proposal, -1e9)
+        return proposal
+
     def _search(
         self,
         params: dict,
         rng: chex.PRNGKey,
         observation: jnp.ndarray,
+        action_mask: jnp.ndarray = None,
+        book: jnp.ndarray = None,
+        deterministic: bool = False,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """Run Sampled-MuZero vector search.
+
+        Args:
+            action_mask: (B, n_assets*A) legal-action mask (asset-major), or None.
+            book: (B, n_assets) int per-asset maintain-action (v1: HOLD=1), or None.
+            deterministic: True → select the applied vector via visit-argmax
+                (eval); False → the gumbel-selected candidate (exploration).
 
         Returns:
             action_vec:   (B, n_assets) int32 — selected candidate vector
@@ -174,7 +234,7 @@ class SampledMuZeroVectorSearch:
             visit_probs:  (B, K) — visit distribution over the sampled set
             search_stats: dict
         """
-        sample_rng, search_rng = jax.random.split(rng)
+        sample_rng, dither_rng, search_rng = jax.random.split(rng, 3)
 
         # 1. Root inference → factored policy, value, latent.
         root_out = self.model_apply_fn(
@@ -184,8 +244,13 @@ class SampledMuZeroVectorSearch:
         latent = root_out['latent_state']                    # (B, state_dim)
         root_value = self._categorical_to_scalar(root_out['value'])  # (B,)
 
-        # 2. Sample K candidate action-vectors from the per-asset marginals.
-        sampled_vecs = self._sample_action_vectors(sample_rng, policy_logits)  # (B,K,A_n)
+        # 2. Build the dithered-book proposal and sample K candidate vectors from it.
+        proposal = self._build_proposal(policy_logits, action_mask, book, dither_rng)
+        samples = jax.random.categorical(
+            sample_rng, proposal, axis=-1,
+            shape=(self.num_samples, observation.shape[0], self.n_assets),
+        )
+        sampled_vecs = jnp.transpose(samples, (1, 0, 2)).astype(jnp.int32)  # (B,K,A_n)
 
         # 3. Sampled-MuZero corrected prior over the K slots (uniform 1/K).
         prior_logits, beta_hat = self._empirical_prior(sampled_vecs)  # (B,K),(B,K)
@@ -234,8 +299,14 @@ class SampledMuZeroVectorSearch:
             gumbel_scale=self.gumbel_scale,
         )
 
-        selected_idx = policy_output.action                  # (B,)
+        gumbel_idx = policy_output.action                    # (B,) exploration pick
         visit_probs = policy_output.action_weights           # (B, K)
+
+        # deterministic=True (eval) → select via visit-count argmax (carry-note 3:
+        # the default gumbel-selected action is exploration-dominated). Traced bool
+        # → jnp.where (no lax.cond in a jitted/scan context).
+        argmax_idx = jnp.argmax(visit_probs, axis=-1).astype(gumbel_idx.dtype)  # (B,)
+        selected_idx = jnp.where(deterministic, argmax_idx, gumbel_idx)         # (B,)
 
         # 5. Map the selected candidate index back to its action VECTOR.
         sel = selected_idx.astype(jnp.int32)[:, None, None]  # (B,1,1)
@@ -255,18 +326,24 @@ class SampledMuZeroVectorSearch:
         params: dict,
         rng: chex.PRNGKey,
         observation: jnp.ndarray,
+        action_mask: jnp.ndarray = None,
+        book: jnp.ndarray = None,
+        deterministic: bool = False,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """JIT-compiled Sampled-MuZero vector search."""
-        return self.search_fn(params, rng, observation)
+        return self.search_fn(params, rng, observation, action_mask, book, deterministic)
 
     def raw_search(
         self,
         params: dict,
         rng: chex.PRNGKey,
         observation: jnp.ndarray,
+        action_mask: jnp.ndarray = None,
+        book: jnp.ndarray = None,
+        deterministic: bool = False,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """Non-JIT search (for use inside an outer lax.scan / debugging)."""
-        return self._search(params, rng, observation)
+        return self._search(params, rng, observation, action_mask, book, deterministic)
 
 
 def create_sampled_vector_search(model, **kwargs):

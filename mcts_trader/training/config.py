@@ -206,6 +206,16 @@ class TrainingConfig:
     reward_attributable: bool = False
     # TASK_818-freq: resample historical 1-min closes to K-minute bars (1 = canon 1-min)
     bar_minutes: int = 1
+
+    # TASK_828 Stage 3: vector-action MuZero (per-asset action VECTOR each step).
+    # Default OFF = today's scalar path, canon bit-identical. The single owner flag;
+    # fans out to EnvConfig/MuZeroNetworks/JAXReplayBuffer/MuZeroTrainer + search.
+    vector_action: bool = False
+    vector_k: int = 16                       # K sampled candidate action-vectors / root
+    vector_hold_bias: float = 0.0            # additive HOLD-slot bias in the proposal
+    vector_dither_scale: float = 1.0         # Gumbel dither scale on the sampling proposal
+    vector_gumbel_scale_eval: float = 0.5    # (reserved) lower gumbel scale for eval
+    vector_proposal_scheme: str = 'dithered-book'  # 'dithered-book' | 'iid-beta'
     burning_money: bool = False
     burn_market_linked: bool = True
     burn_base_rate: float = 0.00005

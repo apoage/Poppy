@@ -15,6 +15,9 @@ from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
 # Action space: 5 actions per asset [Sell, Hold, Buy, Limit Sell, Limit Buy]
 N_ACTIONS_PER_ASSET = 5
 
+# TASK_828 Stage 3: emit the vector-action eval-skip warning only ONCE per process.
+_VECTOR_EVAL_WARNED = False
+
 
 def run_generalization_eval(
     eval_level: int,
@@ -27,6 +30,7 @@ def run_generalization_eval(
     n_assets: int = 64,
     fee: int = 0,
     slippage: int = 0,
+    vector_action: bool = False,  # TASK_828 Stage 3 (default OFF = canon scalar eval)
 ) -> Dict[str, float]:
     """Run evaluation episode on a different synthetic level to test generalization.
 
@@ -57,6 +61,25 @@ def run_generalization_eval(
             - eval_level: The level evaluated on
             - steps: Number of steps completed
     """
+    # TASK_828 Stage 3: the in-loop generalization eval runs on the LEGACY
+    # VectorBTTradingEnv, which steps a scalar action index and caps a multi-action
+    # list to ``action_points`` (<< 64) in ascending asset-index order — for a
+    # per-asset action VECTOR that silently drops most assets and is index-biased.
+    # Rather than write a systematically-biased approximation into the same
+    # eval_reward/eval_alpha fields as a faithful scalar eval, SKIP it (fail-closed)
+    # and emit a one-time warning. The faithful per-asset eval is the scheduled
+    # JAX-env run (TASK_828 Stage 4). Returns no reward/alpha → the caller leaves
+    # those CSV columns ABSENT for skipped rows (no fabricated number).
+    if vector_action:
+        global _VECTOR_EVAL_WARNED
+        if not _VECTOR_EVAL_WARNED:
+            print("[EVAL] vector-action mode: in-loop generalization eval SKIPPED — "
+                  "the legacy VectorBTTradingEnv is action_points-capped/index-biased "
+                  "for vector actions; the faithful per-asset eval is the scheduled "
+                  "JAX-env run (TASK_828 Stage 4).")
+            _VECTOR_EVAL_WARNED = True
+        return {'skipped': True, 'eval_level': eval_level, 'steps': 0}
+
     # Create evaluation environment
     eval_env = VectorBTTradingEnv(
         n_assets=n_assets,

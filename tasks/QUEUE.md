@@ -10,8 +10,12 @@ factory halves shipped; D6 decided — dual floor).
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 3) | L | training loop + factored policy targets + ACTION-CONDITIONAL reward head (D2; E3 variance-attribution probe = hard gate). Honor the Stage-2 panel carry-notes in the 828 banner (−inf pre-search masking, 320-wide asset-major head, visit_probs argmax for deterministic eval). Self-play proposal scheme = **dithered-book\|K16** (E2 carried; CONFIRMED #1 at 10 seeds by 831-EXT; K>16 measured NET-NEGATIVE — don't scale K). **TRAINING GATE OPEN** (real 831 E1 PASS); training itself is still a scheduled run, not factory-loop. Risk: high. |
+| 1 | `tasks/TASK_832_LINEAR_IMPRINT_EXIT.md` (E5 linear imprint) | ? | Gate SATISFIED 2026-07-08: 828 Stage 3 shipped (`task828-stage3`, 831 E1 PASS ✓). Planner to confirm scope/size before the factory takes it — verify it is a CODE build (imprint teacher wiring) and not a scheduled GPU run before starting. |
 
+_Shipped 2026-07-08 factory run 3: **TASK_828 Stage 3** (`task828-stage3` — vector-action training
+loop + D2 action-conditional reward head + factored-marginal targets; parity MATCH==PINNED, E3 probe
+green, full high-tier panel 0 BLOCKER/MAJOR + 1 MINOR fixed). Stage-3 TRAINING itself is the scheduled
+gpu-server GPU run below, not a factory-loop job._
 _Shipped 2026-07-08 factory run 2: TASK_833 (`task833-run-queue-repair` — repaired scheduler
 redeployed to srv same day) and TASK_829 (Foxglove retired, `40afa14`)._
 
@@ -29,13 +33,15 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 |-----|------|-------|--------|
 | 830 real corridor | full-panel floors+ceiling+expressibility gap, `trading_data.db` read-only | workstation CPU (screen+safe_run) | **DONE 2026-07-08** — corridor official [+0.424, +29.698] net@21, ref +0.751; H6 armed; LEDGER 830/E0-REAL |
 | 831 real E1/E2 sweep | 9 scheme×K combos, full panel, seeds 0,1,2 | workstation CPU (screen+safe_run, ~7 min) | **DONE 2026-07-08** — E1 PASS 9/9 ⇒ Stage-3 training gate OPEN; carried scheme dithered-book\|K16; LEDGER 831/E1-REAL + E2-REAL |
+| 828 Stage-3 training | multi-epoch `--vector-action` train to convergence + the real E3 R-attribution PASS (DEC-1 `R_model ≥ 0.5×R_true`) on a mid/late model; ≥3 seeds; scheme dithered-book\|K16 | gpu-server GPUs 1/2/3 via run_queue.sh (tmux) | **READY TO SCHEDULE 2026-07-08** — CODE shipped `task828-stage3`, gates green. NOTE: minute-bar tables on srv are Jan-2026 vintage; a daily-panel training run is fine, but confirm data vintage vs the run's needs (full `sync-db.sh` before any minute-bar dependence). |
 
 ## Gated — do NOT start (named gate must open first)
 
 | Task | Gate |
 |------|------|
-| `tasks/TASK_832_LINEAR_IMPRINT_EXIT.md` (E5 linear imprint) | 828 Stage 3 banner (831 E1 PASS ✓ satisfied 2026-07-08) |
-| `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped + rung verdicts green; SCHEDULED server run, not a factory-loop job |
+| `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped ✓ (2026-07-08) + Stage-3 training run's rung verdicts green; SCHEDULED server run, not a factory-loop job |
+
+_TASK_832 (E5 linear imprint) moved to Ready 2026-07-08 — its gate (828 Stage 3 banner) is now satisfied._
 
 ## Parked (D1/D4, 2026-07-07 — non-binding "interesting outview"; not factory work)
 

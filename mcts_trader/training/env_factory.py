@@ -48,6 +48,8 @@ def create_jax_env_and_prices(
     # behavior (unseeded RandomState → OS entropy). Set only when --seed is given, so
     # two runs with the same --seed generate identical synthetic prices.
     price_seed: Optional[int] = None,
+    # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
+    vector_action: bool = False,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment states and synthetic prices.
 
@@ -139,6 +141,8 @@ def create_jax_env_and_prices(
         burn_random_limit=burn_random_limit,
         # TASK_818 Tier B
         reward_attributable=reward_attributable,
+        # TASK_828 Stage 3
+        vector_action=vector_action,
     )
 
     # Initialize batched environment states
@@ -175,6 +179,8 @@ def create_jax_env_unique_prices(
     burn_random_limit: int = 10,
     # TASK_818 Tier B: realized-PnL-on-close attributable reward (default OFF = canon)
     reward_attributable: bool = False,
+    # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
+    vector_action: bool = False,
     n_workers: int = 8,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX env with UNIQUE prices per env (multithreaded generation).
@@ -269,6 +275,8 @@ def create_jax_env_unique_prices(
         burn_random_limit=burn_random_limit,
         # TASK_818 Tier B
         reward_attributable=reward_attributable,
+        # TASK_828 Stage 3
+        vector_action=vector_action,
     )
 
     # Initialize batched environment states with unique prices
@@ -303,6 +311,8 @@ def create_jax_env_historical(
     reward_attributable: bool = False,
     # TASK_818-freq: resample 1-min closes to K-minute bars (1 = canon 1-min)
     bar_minutes: int = 1,
+    # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
+    vector_action: bool = False,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment with HISTORICAL prices from database.
 
@@ -388,6 +398,8 @@ def create_jax_env_historical(
         burn_random_limit=burn_random_limit,
         # TASK_818 Tier B
         reward_attributable=reward_attributable,
+        # TASK_828 Stage 3
+        vector_action=vector_action,
     )
 
     # Initialize batched environment states

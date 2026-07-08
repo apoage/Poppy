@@ -578,6 +578,7 @@ def run_self_play_jax(
     max_positions: int = 16,
     min_cash_threshold: float = 100.0,
     on_episode_complete: Optional[Callable[[Dict, float], None]] = None,  # TASK_125
+    vector_action: bool = False,  # TASK_828 Stage 3 (captured STATICALLY at trace)
 ) -> Tuple[List[Dict], List[float]]:
     """Fully GPU-accelerated self-play using lax.scan to eliminate Python loop overhead.
 
@@ -605,6 +606,7 @@ def run_self_play_jax(
     """
     from mcts_trader.env.jax_trading_env import (
         jit_batch_step, jit_batch_step_unique,
+        jit_batch_step_vector, jit_batch_step_vector_unique,  # TASK_828 Stage 3
         compute_observation_27ch,
         compute_portfolio_value, get_current_prices,
         jit_batch_compute_action_mask,
@@ -663,42 +665,75 @@ def run_self_play_jax(
 
         # B. Neural MCTS Search (GPU)
         key, step_rng = jax.random.split(key)
-        actions, policies, stats = search_fn(params, step_rng, obs, mask)
+        if vector_action:
+            # TASK_828 Stage 3: Sampled-MuZero vector search. Derive the v1 book
+            # (HOLD=1 everywhere per DEC-3 HOLD-maintains-position); pass the same
+            # asset-major legal mask; deterministic=False (exploration in self-play).
+            book = jnp.ones((n_envs, n_assets), dtype=jnp.int32)
+            action_vec, sampled_vecs, visit_probs, stats = search_fn(
+                params, step_rng, obs, mask, book)
+            # C. Value Extraction (root_value is always present in stats)
+            values = stats['root_value']
+        else:
+            actions, policies, stats = search_fn(params, step_rng, obs, mask)
 
-        # C. Value Extraction (root_value is always present in stats)
-        values = stats['root_value']
+            # C. Value Extraction (root_value is always present in stats)
+            values = stats['root_value']
 
-        # D. Confidence Gating (GPU-native via jnp.where)
-        # Note: confidence_threshold is captured as static value at trace time
-        if confidence_threshold > 0:
-            max_probs = jnp.max(policies, axis=-1)
-            low_conf = max_probs < confidence_threshold
-            hold_actions = (actions // N_ACTIONS_PER_ASSET) * N_ACTIONS_PER_ASSET + 1
-            actions = jnp.where(low_conf, hold_actions, actions)
+            # D. Confidence Gating (GPU-native via jnp.where)
+            # Note: confidence_threshold is captured as static value at trace time.
+            # Scalar HOLD-force (actions//5) has no vector analogue → guarded off.
+            if confidence_threshold > 0:
+                max_probs = jnp.max(policies, axis=-1)
+                low_conf = max_probs < confidence_threshold
+                hold_actions = (actions // N_ACTIONS_PER_ASSET) * N_ACTIONS_PER_ASSET + 1
+                actions = jnp.where(low_conf, hold_actions, actions)
 
-            # Update policy to match forced HOLD
-            base_p = 0.1 / (n_actions - 1)
-            synth_p = jnp.ones_like(policies) * base_p
-            synth_p = synth_p.at[jnp.arange(n_envs), hold_actions].set(0.9)
-            policies = jnp.where(low_conf[:, None], synth_p, policies)
+                # Update policy to match forced HOLD
+                base_p = 0.1 / (n_actions - 1)
+                synth_p = jnp.ones_like(policies) * base_p
+                synth_p = synth_p.at[jnp.arange(n_envs), hold_actions].set(0.9)
+                policies = jnp.where(low_conf[:, None], synth_p, policies)
 
         # E. Environment Step (GPU)
-        if unique_prices_mode:
-            new_state, _, rewards, dones = jit_batch_step_unique(state, actions, prices, jax_env_config)
+        if vector_action:
+            if unique_prices_mode:
+                new_state, _, rewards, dones = jit_batch_step_vector_unique(state, action_vec, prices, jax_env_config)
+            else:
+                new_state, _, rewards, dones = jit_batch_step_vector(state, action_vec, prices, jax_env_config)
         else:
-            new_state, _, rewards, dones = jit_batch_step(state, actions, prices, jax_env_config)
+            if unique_prices_mode:
+                new_state, _, rewards, dones = jit_batch_step_unique(state, actions, prices, jax_env_config)
+            else:
+                new_state, _, rewards, dones = jit_batch_step(state, actions, prices, jax_env_config)
 
         # Pack step data for accumulation
         # NOTE: Don't store observations (4.4GB!) - store window_starts instead
         # and reconstruct observations on CPU
-        step_data = {
-            'window_starts': window_starts,  # (n_envs,) int32 - tiny!
-            'actions': actions,
-            'rewards': rewards,
-            'values': values,
-            'policy_probs': policies.astype(jnp.float16),
-            'dones': dones,
-        }
+        if vector_action:
+            # Factored policy target = per-asset visit MARGINALS (D-1): marginalize
+            # HERE (do NOT emit sampled_vecs/visit_probs to the buffer).
+            # policy_marginals[b,i,a] = Σ_k visit_probs[b,k]·1{sampled_vecs[b,k,i]==a}
+            # → (B, n_assets, A) asset-major; each asset-row sums to 1.
+            onehot = jax.nn.one_hot(sampled_vecs, N_ACTIONS_PER_ASSET, dtype=jnp.float32)  # (B,K,n_assets,A)
+            policy_marginals = jnp.einsum('bk,bkna->bna', visit_probs, onehot)             # (B,n_assets,A)
+            step_data = {
+                'window_starts': window_starts,       # (n_envs,) int32 - tiny!
+                'action_vecs': action_vec,            # (n_envs, n_assets)
+                'rewards': rewards,
+                'values': values,
+                'policy_marginals': policy_marginals.astype(jnp.float16),
+                'dones': dones,
+            }
+        else:
+            step_data = {
+                'window_starts': window_starts,  # (n_envs,) int32 - tiny!
+                'actions': actions,
+                'rewards': rewards,
+                'values': values,
+                'policy_probs': policies.astype(jnp.float16),
+                'dones': dones,
+            }
 
         return (new_state, key), step_data
 
@@ -720,11 +755,16 @@ def run_self_play_jax(
 
     # Fetch small arrays from GPU
     cpu_window_starts = fetch(trajectory_batch['window_starts'])  # (n_envs, steps) - tiny
-    cpu_actions = fetch(trajectory_batch['actions'])
     cpu_rewards = fetch(trajectory_batch['rewards'])
     cpu_values = fetch(trajectory_batch['values'])
-    cpu_policies = fetch(trajectory_batch['policy_probs'])
     cpu_dones = fetch(trajectory_batch['dones'])
+    if vector_action:
+        # TASK_828 Stage 3: per-asset action VECTORS + factored policy marginals.
+        cpu_action_vecs = fetch(trajectory_batch['action_vecs'])          # (n_envs, steps, n_assets)
+        cpu_policy_marginals = fetch(trajectory_batch['policy_marginals'])  # (n_envs, steps, n_assets, A)
+    else:
+        cpu_actions = fetch(trajectory_batch['actions'])
+        cpu_policies = fetch(trajectory_batch['policy_probs'])
     cpu_prices = np.array(prices)  # Fetch once
 
     # Observations will be reconstructed lazily per-env by the caller
@@ -839,10 +879,8 @@ def run_self_play_jax(
         result = {
             # 'observations': REMOVED (Lazy reconstruction)
             'window_starts': env_window_starts, # Store for reconstruction
-            'actions': cpu_actions[i, :n_steps_i],
             'rewards': rewards_arr,
             'values': returns,  # TASK_022: MC or GAE returns
-            'policy_probs': cpu_policies[i, :n_steps_i].astype(np.float32),
             'dones': dones_arr,
             'mcts_root_values': mcts_root_values,
             'horizon_returns': horizon_returns,
@@ -851,6 +889,15 @@ def run_self_play_jax(
             'alpha': final_return - market_return,
             'episode_optimal_alpha': episode_optimal_alpha,  # TASK_126: Oracle on same data
         }
+
+        # TASK_828 Stage 3: emit vector keys (action_vecs / policy_marginals) in
+        # vector mode; the scalar path keeps actions / policy_probs (byte-identical).
+        if vector_action:
+            result['action_vecs'] = cpu_action_vecs[i, :n_steps_i]
+            result['policy_marginals'] = cpu_policy_marginals[i, :n_steps_i].astype(np.float32)
+        else:
+            result['actions'] = cpu_actions[i, :n_steps_i]
+            result['policy_probs'] = cpu_policies[i, :n_steps_i].astype(np.float32)
 
         # Add prices for prediction loss and DS24 physics logging
         if collect_prices and n_steps_i > 0 and end_idx <= len(cpu_prices):

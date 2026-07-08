@@ -133,6 +133,10 @@ class MuZeroTrainer:
         # --reward-hybrid: mirror the value head's recipe for the reward head
         # (PopArt-normalized target + hybrid Huber/categorical loss). Default OFF.
         reward_hybrid: bool = False,
+        # TASK_828 Stage 3: vector-action training path. Static Python bool → JIT
+        # specializes (like reward_hybrid). Default OFF = canon scalar path,
+        # bit-identical (every vector branch DCE'd by XLA when OFF).
+        vector_action: bool = False,
         alpha_target: float = 0.05,
         beta_target: float = 0.03,
         sigma_target: float = 0.01,
@@ -225,6 +229,13 @@ class MuZeroTrainer:
             self.reward_popart = PopArtNormalizer(beta=popart_beta)
         else:
             self.reward_popart = None
+
+        # TASK_828 Stage 3: vector-action training path (per-asset action VECTOR).
+        # A=n_actions_per_asset (5) and n_assets read from the model; only consumed
+        # on the ON path (Python ints → no effect on the OFF graph / no param leaves).
+        self.vector_action = vector_action
+        self.vec_n_actions_per_asset = getattr(self.model, 'vector_n_actions_per_asset', 5)
+        self.vec_n_assets = getattr(self.model, 'n_assets', 64)
         self.batch_size = batch_size
         self.unroll_steps = unroll_steps
         self.td_steps = td_steps
@@ -384,6 +395,34 @@ class MuZeroTrainer:
         support = get_value_support()
         probs = jax.nn.softmax(logits, axis=-1)
         return jnp.sum(probs * support, axis=-1)
+
+    # ------------------------------------------------------------------
+    # TASK_828 Stage 3: vector-action (factored per-asset) policy helpers.
+    # The factored 320-way policy is asset-major (idx = asset*A + action), so
+    # (B, n_assets*A) reshapes to (B, n_assets, A). Cross-entropy / entropy are
+    # computed per-asset (over A) and MEAN-reduced over assets → (B,) — MEAN not
+    # SUM (D-5) so the policy-loss scale matches the portfolio value/reward heads
+    # (a SUM over 64 assets would be a ~64× blowup). ln(5)≈1.61 is the per-asset
+    # uniform-entropy ceiling.
+    # ------------------------------------------------------------------
+    def _vector_policy_ce(self, policy_logits: jnp.ndarray,
+                          target_marginals: jnp.ndarray) -> jnp.ndarray:
+        """Per-sample factored policy cross-entropy → (B,), MEAN over assets."""
+        B = policy_logits.shape[0]
+        n_assets, A = self.vec_n_assets, self.vec_n_actions_per_asset
+        logits = policy_logits.reshape(B, n_assets, A)
+        targets = target_marginals.reshape(B, n_assets, A)
+        ce = optax.softmax_cross_entropy(logits, targets)  # (B, n_assets)
+        return jnp.mean(ce, axis=-1)                        # (B,)
+
+    def _vector_policy_entropy(self, policy_logits: jnp.ndarray) -> jnp.ndarray:
+        """Per-sample factored policy entropy → (B,), MEAN over assets."""
+        B = policy_logits.shape[0]
+        n_assets, A = self.vec_n_assets, self.vec_n_actions_per_asset
+        logits = policy_logits.reshape(B, n_assets, A)
+        probs = jax.nn.softmax(logits, axis=-1)             # (B, n_assets, A)
+        ent = -jnp.sum(probs * jnp.log(probs + 1e-10), axis=-1)  # (B, n_assets)
+        return jnp.mean(ent, axis=-1)                       # (B,)
 
     def _hybrid_value_loss(
         self,
@@ -575,7 +614,10 @@ class MuZeroTrainer:
         features = batch.get('features', jnp.zeros((batch_size, self.model.n_features)))
 
         # Get action sequence (first unroll_steps actions)
-        actions = batch.get('actions')
+        # TASK_828: scalar-only consumer — the prediction head takes scalar action
+        # indices. Vector mode passes action_sequence=None (batch has no 'actions'
+        # key anyway); guard explicitly so a stray key can't feed a vector here.
+        actions = None if self.vector_action else batch.get('actions')
         if actions is not None and actions.ndim == 2:
             # (batch, sequence_length) -> take first multi_step_k
             action_sequence = actions[:, :config.multi_step_k]
@@ -799,7 +841,16 @@ class MuZeroTrainer:
             metrics: Dict of metrics
         """
         observations = batch['observations']  # (batch, unroll_steps, 27, 64, 64)
-        actions = batch['actions']  # (batch, unroll_steps)
+        # TASK_828 Stage 3: vector mode reads the per-asset action VECTORS
+        # (batch, unroll, n_assets) + factored policy marginals (batch, unroll,
+        # n_assets, A) under distinct keys; the scalar OFF path reads the scalar
+        # action index + flat policy probs exactly as canon (static-guarded).
+        if self.vector_action:
+            actions = batch['action_vecs']           # (batch, unroll_steps, n_assets)
+            target_policies = batch['policy_marginals']  # (batch, unroll, n_assets, A)
+        else:
+            actions = batch['actions']  # (batch, unroll_steps)
+            target_policies = batch['policy_probs']  # (batch, unroll_steps, 320)
         rewards = batch['rewards']  # (batch, unroll_steps)
         # --reward-hybrid (default OFF): host-side PopArt-normalized reward target,
         # stashed in batch['rewards_norm'] before the jit step (see training loop).
@@ -807,7 +858,6 @@ class MuZeroTrainer:
         if self.reward_hybrid:
             rewards_norm = batch['rewards_norm']  # (batch, unroll_steps)
         target_values = batch['values']  # (batch, unroll_steps)
-        target_policies = batch['policy_probs']  # (batch, unroll_steps, 192)
 
         # TASK_118: Alpha-relative reward normalization
         # BUG-033 FIX: Must apply symlog to max_alpha to match reward space
@@ -860,15 +910,23 @@ class MuZeroTrainer:
         )
 
         # BUG_002 FIX: Per-sample policy loss, masked before averaging
-        per_sample_policy = optax.softmax_cross_entropy(
-            initial_output['policy_logits'],
-            target_policies[:, 0]
-        )
+        # TASK_828: vector → factored per-asset CE (mean over assets); scalar canon.
+        if self.vector_action:
+            per_sample_policy = self._vector_policy_ce(
+                initial_output['policy_logits'], target_policies[:, 0])
+        else:
+            per_sample_policy = optax.softmax_cross_entropy(
+                initial_output['policy_logits'],
+                target_policies[:, 0]
+            )
         policy_loss = jnp.sum(per_sample_policy * valid_mask_float) / num_valid
 
         # Compute policy entropy for regularization (prevent collapse)
-        policy_probs = jax.nn.softmax(initial_output['policy_logits'], axis=-1)
-        per_sample_entropy = -jnp.sum(policy_probs * jnp.log(policy_probs + 1e-10), axis=-1)
+        if self.vector_action:
+            per_sample_entropy = self._vector_policy_entropy(initial_output['policy_logits'])
+        else:
+            policy_probs = jax.nn.softmax(initial_output['policy_logits'], axis=-1)
+            per_sample_entropy = -jnp.sum(policy_probs * jnp.log(policy_probs + 1e-10), axis=-1)
         policy_entropy = jnp.sum(per_sample_entropy * valid_mask_float) / num_valid
 
         reward_loss = jnp.array(0.0)  # No reward at root
@@ -887,12 +945,23 @@ class MuZeroTrainer:
 
         for t in range(1, unroll_steps):
             # Recurrent inference
-            recurrent_output = self.model.apply(
-                {'params': params},
-                latent_state,
-                actions[:, t - 1],
-                mode='recurrent_inference'
-            )
+            # TASK_828: vector → action-conditional reward head via the vector
+            # dynamics (recurrent_inference_vector, D2); actions[:, t-1] is the
+            # per-asset action VECTOR (B, n_assets). Same output keys as scalar.
+            if self.vector_action:
+                recurrent_output = self.model.apply(
+                    {'params': params},
+                    latent_state,
+                    actions[:, t - 1],
+                    mode='recurrent_inference_vector'
+                )
+            else:
+                recurrent_output = self.model.apply(
+                    {'params': params},
+                    latent_state,
+                    actions[:, t - 1],
+                    mode='recurrent_inference'
+                )
 
             # Update latent state
             predicted_latent = recurrent_output['latent_state']
@@ -924,10 +993,15 @@ class MuZeroTrainer:
             total_value_cat += step_value_cat
 
             # BUG_002 FIX: Per-sample policy loss, masked
-            per_sample_step_policy = optax.softmax_cross_entropy(
-                recurrent_output['policy_logits'],
-                target_policies[:, t]
-            )
+            # TASK_828: vector → factored per-asset CE (mean over assets); scalar canon.
+            if self.vector_action:
+                per_sample_step_policy = self._vector_policy_ce(
+                    recurrent_output['policy_logits'], target_policies[:, t])
+            else:
+                per_sample_step_policy = optax.softmax_cross_entropy(
+                    recurrent_output['policy_logits'],
+                    target_policies[:, t]
+                )
             policy_loss += jnp.sum(per_sample_step_policy * valid_mask_float) / num_valid
 
             # BUG_001 FIX: Reward target must match action index (t-1, not t)
@@ -966,8 +1040,12 @@ class MuZeroTrainer:
             reward_loss += jnp.sum(per_sample_reward * valid_mask_float) / num_valid
 
             # Accumulate entropy (masked)
-            step_policy_probs = jax.nn.softmax(recurrent_output['policy_logits'], axis=-1)
-            per_sample_step_entropy = -jnp.sum(step_policy_probs * jnp.log(step_policy_probs + 1e-10), axis=-1)
+            # TASK_828: vector → per-asset entropy (mean over assets); scalar canon.
+            if self.vector_action:
+                per_sample_step_entropy = self._vector_policy_entropy(recurrent_output['policy_logits'])
+            else:
+                step_policy_probs = jax.nn.softmax(recurrent_output['policy_logits'], axis=-1)
+                per_sample_step_entropy = -jnp.sum(step_policy_probs * jnp.log(step_policy_probs + 1e-10), axis=-1)
             policy_entropy += jnp.sum(per_sample_step_entropy * valid_mask_float) / num_valid
 
         # Average over unroll steps
@@ -981,11 +1059,22 @@ class MuZeroTrainer:
         consistency_loss /= max(unroll_steps - 1, 1)
 
         # Adaptive entropy bonus - stronger push when entropy drops too low
-        # Target entropy ~4.0 (near-uniform over 192 actions = ln(192) ≈ 5.26)
+        # Target entropy ~3.0 (near-uniform over 320 actions = ln(320) ≈ 5.77)
         # TASK_066: Use configurable min_entropy threshold
+        # TASK_828: in vector mode the entropy is a MEAN-over-assets per-asset
+        # entropy with ceiling ln(A)=ln(5)≈1.61 (vs the scalar ln(320)≈5.77), so a
+        # 3.0 threshold would exceed the ceiling and push constantly. Rescale the
+        # threshold by ln(5)/ln(320) to keep the SAME fraction-of-ceiling target.
+        # Python float → OFF path uses self.min_entropy verbatim (canon-identical).
+        if self.vector_action:
+            import math as _math
+            eff_min_entropy = self.min_entropy * (
+                _math.log(self.vec_n_actions_per_asset) / _math.log(320.0))
+        else:
+            eff_min_entropy = self.min_entropy
         adaptive_bonus = jnp.where(
-            policy_entropy < self.min_entropy,
-            entropy_coef * 5.0 * (self.min_entropy - policy_entropy),  # 5x stronger push when too low
+            policy_entropy < eff_min_entropy,
+            entropy_coef * 5.0 * (eff_min_entropy - policy_entropy),  # 5x stronger push when too low
             0.0
         )
 
@@ -1068,7 +1157,9 @@ class MuZeroTrainer:
 
                 # TASK_119: Optimal action imprint (stabilization)
                 # Soft policy loss toward hindsight-optimal actions
-                if self.amax_imprint_weight > 0:
+                # TASK_828: scalar-only — targets/agent policy are over the flat 320
+                # action space; skip in vector mode (default OFF for vector runs).
+                if self.amax_imprint_weight > 0 and not self.vector_action:
                     from .path_solver import optimal_path_to_policy, compute_imprint_loss
 
                     # Convert optimal path to policy targets
@@ -1188,7 +1279,9 @@ class MuZeroTrainer:
         # ================================================================
         bc_loss_total = jnp.array(0.0)
         bc_config = self.expert_bc_config
-        if bc_config.enabled and 'expert_batch' in batch:
+        # TASK_828: expert BC imprints scalar 320-index optimal actions; skip in
+        # vector mode (default OFF for vector runs — no expert_batch is emitted).
+        if bc_config.enabled and 'expert_batch' in batch and not self.vector_action:
             expert_batch = batch['expert_batch']
 
             # Expert batch contains pre-encoded observations

@@ -185,6 +185,21 @@ def parse_args() -> TrainingConfig:
                              'reward (action-attributable, multi-step). Default OFF = canon.')
     parser.add_argument('--bar-minutes', type=int, default=1,
                         help='Resample historical 1-min closes to K-minute bars (1=canon 1-min)')
+    # TASK_828 Stage 3: vector-action MuZero. Default OFF = canon scalar path.
+    # Dest names == TrainingConfig field names, so the cli.py:397 hasattr filter
+    # auto-flows them (no explicit copy line needed).
+    parser.add_argument('--vector-action', action='store_true', dest='vector_action',
+                        help='TASK_828: per-asset action VECTOR each step (Sampled-MuZero '
+                             'joint planning). Default OFF = canon scalar path.')
+    parser.add_argument('--vector-k', type=int, default=16, dest='vector_k',
+                        help='TASK_828: K sampled candidate action-vectors per root (default 16)')
+    parser.add_argument('--vector-hold-bias', type=float, default=0.0, dest='vector_hold_bias',
+                        help='TASK_828: additive HOLD-slot bias in the sampling proposal')
+    parser.add_argument('--vector-dither-scale', type=float, default=1.0, dest='vector_dither_scale',
+                        help='TASK_828: Gumbel dither scale on the sampling proposal')
+    parser.add_argument('--vector-proposal-scheme', type=str, default='dithered-book',
+                        choices=['dithered-book', 'iid-beta'], dest='vector_proposal_scheme',
+                        help='TASK_828: proposal distribution for action-vector sampling')
     parser.add_argument('--differential-baseline', type=str, default='market', choices=['market', 'zero'])
     parser.add_argument('--differential-weight', type=float, default=1.0)
     parser.add_argument('--burning-money', action='store_true')

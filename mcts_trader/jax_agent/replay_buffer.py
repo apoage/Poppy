@@ -26,22 +26,27 @@ class JAXReplayBuffer:
         self,
         capacity: int,
         observation_shape: Tuple[int, ...] = (27, 64, 64),
-        action_size: int = 192,  # n_assets * 3
+        action_size: int = 320,  # n_assets * 5 (5-action space)
         sequence_length: int = 5,
         batch_size: int = 256,
         # NEW: Auxiliary data parameters
         n_assets: int = 64,
         n_features: int = 10,
+        # TASK_828 Stage 3: vector-action buffer (default OFF = canon scalar path).
+        vector_action: bool = False,
     ):
         """
         Args:
             capacity: Maximum number of trajectories to store
             observation_shape: Shape of observations
-            action_size: Number of possible actions (n_assets * 3)
+            action_size: Number of possible actions (n_assets * 5)
             sequence_length: Length of unroll sequences
             batch_size: Training batch size
             n_assets: Number of tradeable assets (for prediction model)
             n_features: Number of external features (for prediction model)
+            vector_action: TASK_828 — store per-asset action VECTORS + factored
+                policy marginals instead of scalar action indices + flat policy
+                probs. Default False = canon scalar path (byte-identical allocs).
         """
         self.capacity = capacity
         self.batch_size = batch_size
@@ -50,6 +55,9 @@ class JAXReplayBuffer:
         self.action_size = action_size
         self.n_assets = n_assets
         self.n_features = n_features
+        # TASK_828 Stage 3
+        self.vector_action = vector_action
+        self.n_actions_per_asset = 5
 
         # Pre-allocate buffers (using float32 for observations to prevent Inf overflow)
         self.observations = jnp.zeros((capacity, *observation_shape), dtype=jnp.float32)
@@ -58,6 +66,13 @@ class JAXReplayBuffer:
         self.values = jnp.zeros((capacity,), dtype=jnp.float32)
         self.policy_probs = jnp.zeros((capacity, action_size), dtype=jnp.float32)
         self.dones = jnp.zeros((capacity,), dtype=jnp.float32)
+
+        # TASK_828 Stage 3: NEW arrays allocated ONLY when vector mode is ON, so the
+        # OFF alloc order / dtype / tree is byte-unchanged (parity hash depends on it).
+        if self.vector_action:
+            self.action_vecs = jnp.zeros((capacity, n_assets), dtype=jnp.int32)
+            self.policy_marginals = jnp.zeros(
+                (capacity, n_assets, self.n_actions_per_asset), dtype=jnp.float32)
 
         # NEW: Auxiliary fields for prediction loss (LOG-SPACE)
         # Use numpy arrays for storage (faster CPU writes), convert to JAX on sample
@@ -123,14 +138,31 @@ class JAXReplayBuffer:
         
         end_pos = self.position + traj_length
 
+        # TASK_828 Stage 3: in vector mode the positional ``actions`` carries a
+        # per-asset VECTOR (T, n_assets) and ``policy_probs`` carries the factored
+        # marginals (T, n_assets, A); route them to the vector arrays. Axis-0
+        # scatter indexing carries the trailing dims unchanged. OFF path writes
+        # self.actions/self.policy_probs in the exact original order (byte-identical).
+        if self.vector_action:
+            assert actions.ndim == 2 and actions.shape[-1] == self.n_assets, \
+                f"vector add_trajectory expects action_vecs (T,{self.n_assets}), got {actions.shape}"
+            assert policy_probs.ndim == 3, \
+                f"vector add_trajectory expects policy_marginals (T,{self.n_assets},A), got {policy_probs.shape}"
+
         if end_pos <= self.capacity:
             # Linear add - use JIT helper for efficient in-place updates
             indices = jnp.arange(self.position, end_pos)
             self.observations = _update_buffer_slice(self.observations, indices, observations)
-            self.actions = _update_buffer_slice(self.actions, indices, actions)
+            if self.vector_action:
+                self.action_vecs = _update_buffer_slice(self.action_vecs, indices, actions)
+            else:
+                self.actions = _update_buffer_slice(self.actions, indices, actions)
             self.rewards = _update_buffer_slice(self.rewards, indices, rewards)
             self.values = _update_buffer_slice(self.values, indices, values)
-            self.policy_probs = _update_buffer_slice(self.policy_probs, indices, policy_probs)
+            if self.vector_action:
+                self.policy_marginals = _update_buffer_slice(self.policy_marginals, indices, policy_probs)
+            else:
+                self.policy_probs = _update_buffer_slice(self.policy_probs, indices, policy_probs)
             self.dones = _update_buffer_slice(self.dones, indices, dones)
         else:
             # Wrap around - use JIT helper for both parts
@@ -138,20 +170,32 @@ class JAXReplayBuffer:
             # First part
             indices1 = jnp.arange(self.position, self.capacity)
             self.observations = _update_buffer_slice(self.observations, indices1, observations[:split])
-            self.actions = _update_buffer_slice(self.actions, indices1, actions[:split])
+            if self.vector_action:
+                self.action_vecs = _update_buffer_slice(self.action_vecs, indices1, actions[:split])
+            else:
+                self.actions = _update_buffer_slice(self.actions, indices1, actions[:split])
             self.rewards = _update_buffer_slice(self.rewards, indices1, rewards[:split])
             self.values = _update_buffer_slice(self.values, indices1, values[:split])
-            self.policy_probs = _update_buffer_slice(self.policy_probs, indices1, policy_probs[:split])
+            if self.vector_action:
+                self.policy_marginals = _update_buffer_slice(self.policy_marginals, indices1, policy_probs[:split])
+            else:
+                self.policy_probs = _update_buffer_slice(self.policy_probs, indices1, policy_probs[:split])
             self.dones = _update_buffer_slice(self.dones, indices1, dones[:split])
 
             # Second part
             remaining = traj_length - split
             indices2 = jnp.arange(0, remaining)
             self.observations = _update_buffer_slice(self.observations, indices2, observations[split:])
-            self.actions = _update_buffer_slice(self.actions, indices2, actions[split:])
+            if self.vector_action:
+                self.action_vecs = _update_buffer_slice(self.action_vecs, indices2, actions[split:])
+            else:
+                self.actions = _update_buffer_slice(self.actions, indices2, actions[split:])
             self.rewards = _update_buffer_slice(self.rewards, indices2, rewards[split:])
             self.values = _update_buffer_slice(self.values, indices2, values[split:])
-            self.policy_probs = _update_buffer_slice(self.policy_probs, indices2, policy_probs[split:])
+            if self.vector_action:
+                self.policy_marginals = _update_buffer_slice(self.policy_marginals, indices2, policy_probs[split:])
+            else:
+                self.policy_probs = _update_buffer_slice(self.policy_probs, indices2, policy_probs[split:])
             self.dones = _update_buffer_slice(self.dones, indices2, dones[split:])
 
         # Record trajectory metadata (scalar updates - use direct .at[] as JIT helper expects arrays)
@@ -328,10 +372,17 @@ class JAXReplayBuffer:
 
             # Always fetch data (indexing is cheap)
             obs = self.observations[physical_data_indices]
-            acts = self.actions[physical_data_indices]
+            # TASK_828 Stage 3: vector mode fetches the per-asset action VECTORS +
+            # factored marginals and returns them under distinct keys; the scalar
+            # OFF path fetches self.actions/self.policy_probs exactly as canon.
+            if self.vector_action:
+                acts = self.action_vecs[physical_data_indices]         # (seq, n_assets)
+                pols = self.policy_marginals[physical_data_indices]     # (seq, n_assets, A)
+            else:
+                acts = self.actions[physical_data_indices]
+                pols = self.policy_probs[physical_data_indices]
             rews = self.rewards[physical_data_indices]
             vals = self.values[physical_data_indices]
-            pols = self.policy_probs[physical_data_indices]
             dons = self.dones[physical_data_indices]
 
             # Fetch auxiliary data (LOG-SPACE)
@@ -342,12 +393,10 @@ class JAXReplayBuffer:
 
             # Return data with validity flag (don't zero - let loss function mask instead)
             # This preserves gradients for valid samples only
-            return {
+            seq = {
                 'observations': obs,
-                'actions': acts,
                 'rewards': rews,
                 'values': vals,
-                'policy_probs': pols,
                 'dones': dons,
                 # Auxiliary data for prediction loss
                 'log_price_sequence': log_p,
@@ -357,6 +406,13 @@ class JAXReplayBuffer:
                 # Validity mask for loss computation
                 'valid': is_valid,
             }
+            if self.vector_action:
+                seq['action_vecs'] = acts
+                seq['policy_marginals'] = pols
+            else:
+                seq['actions'] = acts
+                seq['policy_probs'] = pols
+            return seq
 
         # Vectorize sampling
         rngs = jax.random.split(rng, self.batch_size)

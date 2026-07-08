@@ -1,3 +1,18 @@
+> **STATUS (2026-07-08): Stage 3 SHIPPED as `task828-stage3`.**
+> — Vector-action training loop threaded end-to-end (`--vector-action`, default OFF = canon scalar,
+>   parity hash == PINNED `a0627ce…4754`). Item K landed: the **D2 action-conditional reward head**
+>   (`recurrent_inference_vector` embeds the per-step action vector into the dynamics MLP), factored
+>   per-asset **marginal policy targets** (asset-major CE, MEAN over assets), per-asset entropy (ln5).
+> — 3 CPU gates green (orchestrator-run): parity MATCH==PINNED; flag-ON e2e smoke; **E3 reward-vs-action
+>   probe** (sensitivity/control ratio 6.16e9, single-slot flip moves reward → the head is genuinely
+>   action-conditional). selftest 7/7. Full high-tier panel: 0 BLOCKER/MAJOR; 1 MINOR (vector eval was
+>   an `action_points`-capped legacy-env approximation logged as faithful → now fail-closed SKIP) fixed
+>   + re-verified. DEC-5 confirmed (base 320 head asset-major).
+> **Remainders (SCHEDULED gpu-server GPU run, NOT factory-loop):** real E3 R-threshold PASS (DEC-1
+>   `R_model ≥ 0.5×R_true`), multi-epoch convergence, ≥3-seed sweeps, Stage-4 full-timeline eval vs the
+>   +0.97 bar. Non-blocking: `vector_gumbel_scale_eval` reserved/unwired; DS24 visit-entropy 0.0 in
+>   vector mode (cosmetic); `jit_batch_step_vector_unique` not gate-exercised. **Unblocks TASK_832.**
+>
 > **STATUS (2026-07-08): Stages 1 & 2 SHIPPED.**
 > — **Stage 1**: vector env step `step_vector` flag-gated (`EnvConfig.vector_action`, default OFF),
 >   canon bit-identical, panel-green (13 tests).

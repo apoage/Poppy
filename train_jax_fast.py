@@ -256,6 +256,8 @@ def main():
                 burn_random_limit=getattr(config, 'burn_random_limit', 10),
                 reward_attributable=getattr(config, 'reward_attributable', False),
                 bar_minutes=getattr(config, 'bar_minutes', 1),
+                # TASK_828 Stage 3: vector-action env step (default OFF = canon).
+                vector_action=getattr(config, 'vector_action', False),
                 # TASK_821: explicit rng_key when --seed given (deterministic episode-start
                 # sampling in jit_batch_reset). None (default) preserves the existing
                 # time-seeded fallback in env_factory.py::create_jax_env_historical.
@@ -364,7 +366,24 @@ def main():
     model, trainer = setup_model_and_trainer(config, n_assets)
 
     # 5. Initialize Search and Buffer
-    search_obj = create_mctx_search(model, num_simulations=config.sims, use_gumbel=True)
+    # TASK_828 Stage 3: vector-action → Sampled-MuZero vector search + factored
+    # planning; default OFF = the canon single-categorical mctx search VERBATIM.
+    vector_action = getattr(config, 'vector_action', False)
+    if vector_action:
+        from mcts_trader.jax_agent.sampled_search import create_sampled_vector_search
+        _vk = getattr(config, 'vector_k', 16)
+        search_obj = create_sampled_vector_search(
+            model, n_assets=n_assets, n_actions_per_asset=5,
+            num_samples=_vk, num_simulations=config.sims,
+            max_num_considered_actions=min(_vk, 16), discount=config.discount,
+            gumbel_scale=config.gumbel_scale, value_scale=config.value_scale,
+            value_shift=config.value_shift,
+            hold_bias=getattr(config, 'vector_hold_bias', 0.0),
+            dither_scale=getattr(config, 'vector_dither_scale', 1.0),
+            proposal_scheme=getattr(config, 'vector_proposal_scheme', 'dithered-book'),
+        )
+    else:
+        search_obj = create_mctx_search(model, num_simulations=config.sims, use_gumbel=True)
     search = jax.jit(search_obj)  # JITted for non-JAX paths
     # For JAX self-play with lax.scan, use raw_search to allow XLA fusion
     search_raw = search_obj.raw_search
@@ -374,8 +393,18 @@ def main():
         observation_shape=(27, n_assets, n_assets),
         action_size=action_space_size,
         batch_size=config.batch_size,
-        n_assets=n_assets
+        n_assets=n_assets,
+        vector_action=vector_action,  # TASK_828 Stage 3
     )
+
+    # TASK_828 Stage 3 startup assert: the single flag must be threaded identically
+    # everywhere (env / model / buffer / trainer). Vector mode requires the JAX env.
+    if vector_action:
+        assert use_jax_env, "TASK_828: --vector-action requires the JAX env (--jax-env)"
+        assert jax_env_config.vector_action, "TASK_828: env_config.vector_action mismatch"
+        assert model.use_vector_action, "TASK_828: model.use_vector_action mismatch"
+        assert replay_buffer.vector_action, "TASK_828: buffer.vector_action mismatch"
+        assert trainer.vector_action, "TASK_828: trainer.vector_action mismatch"
 
     # TASK_125: Initialize Expert Buffer for Causal Expert Imprinting
     # TASK_135: Eliminated disk-based price_cache - stores prices in RAM
@@ -456,6 +485,7 @@ def main():
             gae_lambda=getattr(config, 'gae_lambda', 0.95),
             max_positions=getattr(config, 'max_positions', 16),
             min_cash_threshold=getattr(config, 'min_cash_threshold', 100.0),
+            vector_action=vector_action,  # TASK_828 Stage 3
         )
     else:
         _, _ = run_self_play(
@@ -1021,6 +1051,7 @@ def main():
                     max_positions=getattr(config, 'max_positions', 16),
                     min_cash_threshold=getattr(config, 'min_cash_threshold', 100.0),
                     on_episode_complete=imprint_callback,  # TASK_125: Causal Expert Imprinting
+                    vector_action=vector_action,  # TASK_828 Stage 3
                 )
                 score = np.mean(scores)
 
@@ -1089,15 +1120,29 @@ def main():
             eps_now = float(eps_schedule(epoch)) if eps_schedule is not None else float(getattr(config, 'epsilon_greedy', 0.0))
             _vis_ent = []
             for traj in trajectories:
-                _pp = np.asarray(traj['policy_probs'], dtype=np.float32)  # (n_steps, n_actions)
-                if _pp.ndim == 2 and _pp.shape[0] > 0:
-                    _p = np.clip(_pp, 1e-12, 1.0)
-                    _vis_ent.append(float(np.mean(-np.sum(_p * np.log(_p), axis=-1))))
-                    if eps_now > 0.0:
-                        _n = _pp.shape[-1]
-                        _mixed = (1.0 - eps_now) * _pp + eps_now * (1.0 / _n)
-                        _mixed = _mixed / np.maximum(_mixed.sum(axis=-1, keepdims=True), 1e-12)
-                        traj['policy_probs'] = _mixed.astype(_pp.dtype)
+                if vector_action:
+                    # TASK_828 Stage 3: factored policy target (n_steps, n_assets, A).
+                    # Entropy = per-asset (over A), meaned over assets+steps; the
+                    # epsilon-mix is a per-asset-block uniform over A (replicated).
+                    _pm = np.asarray(traj['policy_marginals'], dtype=np.float32)
+                    if _pm.ndim == 3 and _pm.shape[0] > 0:
+                        _p = np.clip(_pm, 1e-12, 1.0)
+                        _vis_ent.append(float(np.mean(-np.sum(_p * np.log(_p), axis=-1))))
+                        if eps_now > 0.0:
+                            _A = _pm.shape[-1]
+                            _mixed = (1.0 - eps_now) * _pm + eps_now * (1.0 / _A)
+                            _mixed = _mixed / np.maximum(_mixed.sum(axis=-1, keepdims=True), 1e-12)
+                            traj['policy_marginals'] = _mixed.astype(_pm.dtype)
+                else:
+                    _pp = np.asarray(traj['policy_probs'], dtype=np.float32)  # (n_steps, n_actions)
+                    if _pp.ndim == 2 and _pp.shape[0] > 0:
+                        _p = np.clip(_pp, 1e-12, 1.0)
+                        _vis_ent.append(float(np.mean(-np.sum(_p * np.log(_p), axis=-1))))
+                        if eps_now > 0.0:
+                            _n = _pp.shape[-1]
+                            _mixed = (1.0 - eps_now) * _pp + eps_now * (1.0 / _n)
+                            _mixed = _mixed / np.maximum(_mixed.sum(axis=-1, keepdims=True), 1e-12)
+                            traj['policy_probs'] = _mixed.astype(_pp.dtype)
             mcts_visit_entropy = float(np.mean(_vis_ent)) if _vis_ent else 0.0
 
             # Buffer update
@@ -1111,11 +1156,21 @@ def main():
                         traj, n_assets=n_assets, window_size=60
                     )
 
-                replay_buffer.add_trajectory(
-                    jnp.array(traj['observations']), jnp.array(traj['actions']),
-                    jnp.array(traj['rewards']), jnp.array(traj['values']),
-                    jnp.array(traj['policy_probs']), jnp.array(traj['dones'])
-                )
+                if vector_action:
+                    # TASK_828 Stage 3: route the per-asset action VECTORS + factored
+                    # marginals through the same add_trajectory (buffer stores them in
+                    # its vector arrays; positional actions/policy_probs carry vectors).
+                    replay_buffer.add_trajectory(
+                        jnp.array(traj['observations']), jnp.array(traj['action_vecs']),
+                        jnp.array(traj['rewards']), jnp.array(traj['values']),
+                        jnp.array(traj['policy_marginals']), jnp.array(traj['dones'])
+                    )
+                else:
+                    replay_buffer.add_trajectory(
+                        jnp.array(traj['observations']), jnp.array(traj['actions']),
+                        jnp.array(traj['rewards']), jnp.array(traj['values']),
+                        jnp.array(traj['policy_probs']), jnp.array(traj['dones'])
+                    )
                 # Add auxiliary data for prediction loss or amax features
                 needs_auxiliary = config.use_prediction_loss or getattr(config, 'amax', None)
                 if needs_auxiliary and 'prices' in traj:
@@ -1135,7 +1190,13 @@ def main():
             # Action stats from trajectories
             all_actions = []
             for traj in trajectories:
-                all_actions.extend(traj['actions'])
+                if vector_action:
+                    # TASK_828 Stage 3: action_vecs entries ARE per-asset action-types
+                    # in {0..4}; flatten so the `% N_ACTIONS_PER_ASSET` histogram below
+                    # is meaningful (identity on 0..4). Scalar path uses flat indices.
+                    all_actions.extend(np.asarray(traj['action_vecs']).reshape(-1).tolist())
+                else:
+                    all_actions.extend(traj['actions'])
             actions_arr = np.array(all_actions)
             total_actions = max(len(actions_arr), 1)
 
@@ -1187,7 +1248,7 @@ def main():
 
             # Fee (from env or config)
             fee_bps = getattr(env, 'trading_fee_bps', 0) if env else config.fee
-            steps = len(trajectory.get('actions', []))
+            steps = len(trajectory.get('actions', trajectory.get('action_vecs', [])))  # TASK_828: vector traj has action_vecs
             reward_ma20 = np.mean(all_rewards[-20:]) if len(all_rewards) >= 20 else np.mean(all_rewards) if all_rewards else score
 
             # PopArt stats (if available)
@@ -1641,16 +1702,24 @@ def main():
                     n_assets=n_assets,
                     fee=config.fee,
                     slippage=config.slippage,
+                    vector_action=vector_action,  # TASK_828 Stage 3
                 )
                 eval_time = time.time() - eval_start
                 # Update csv_row with eval results
                 csv_row['eval_level'] = getattr(config, 'eval_level', 4)
-                csv_row['eval_reward'] = eval_result.get('reward', 0.0)
-                csv_row['eval_alpha'] = eval_result.get('alpha', 0.0)
-                csv_row['eval_pct_hold'] = eval_result.get('pct_hold', 0.0)
-                print(f"  [EVAL L{config.eval_level}] Reward={eval_result['reward']:+.2f}% | "
-                      f"alpha={eval_result['alpha']:+.2f}% | HOLD={eval_result['pct_hold']:.0f}% | "
-                      f"Time: {eval_time:.1f}s")
+                if eval_result.get('skipped'):
+                    # TASK_828 Stage 3: vector-action eval is skipped (see evaluator.py).
+                    # Leave eval_reward/eval_alpha/eval_pct_hold ABSENT for this row —
+                    # no fabricated value — and print no stale/None eval line. The
+                    # one-time skip warning is emitted by run_generalization_eval.
+                    pass
+                else:
+                    csv_row['eval_reward'] = eval_result.get('reward', 0.0)
+                    csv_row['eval_alpha'] = eval_result.get('alpha', 0.0)
+                    csv_row['eval_pct_hold'] = eval_result.get('pct_hold', 0.0)
+                    print(f"  [EVAL L{config.eval_level}] Reward={eval_result['reward']:+.2f}% | "
+                          f"alpha={eval_result['alpha']:+.2f}% | HOLD={eval_result['pct_hold']:.0f}% | "
+                          f"Time: {eval_time:.1f}s")
 
             # Write row
             csv_writer.writerow(csv_row)

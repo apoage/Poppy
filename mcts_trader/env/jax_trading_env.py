@@ -1937,6 +1937,27 @@ def batch_step_unique(states: TradingState, actions: chex.Array,
     return jax.vmap(lambda s, a, p: step(s, a, p, config))(states, actions, prices)
 
 
+def batch_step_vector_unique(states: TradingState, action_vecs: chex.Array,
+                             prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """Vector-action step with UNIQUE prices per env. TASK_828 Stage 3.
+
+    Mirrors ``batch_step_unique`` (per-env 3-D prices) but calls ``step_vector``
+    so a per-asset action VECTOR is executed against each env's own price data.
+    Without this, vector mode on unique-price batches would silently run the
+    SCALAR ``step`` on a vector action and corrupt trajectories (DEC-2).
+
+    Args:
+        states: Batched TradingState
+        action_vecs: (n_envs, n_assets) per-asset action codes in {0..4}
+        prices: (n_envs, n_steps, n_assets) — each env has its own price data
+        config: Environment config
+
+    Returns:
+        (new_states, observations, rewards, dones)
+    """
+    return jax.vmap(lambda s, a, p: step_vector(s, a, p, config))(states, action_vecs, prices)
+
+
 # =============================================================================
 # JIT-Compiled Versions
 # =============================================================================
@@ -1988,6 +2009,13 @@ def jit_batch_step_unique(states: TradingState, actions: chex.Array,
                           prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
     """JIT-compiled batched step with unique prices per env."""
     return batch_step_unique(states, actions, prices, config)
+
+
+@partial(jax.jit, static_argnames=['config'])
+def jit_batch_step_vector_unique(states: TradingState, action_vecs: chex.Array,
+                                 prices: chex.Array, config: EnvConfig) -> Tuple[TradingState, chex.Array, chex.Array, chex.Array]:
+    """JIT-compiled batched vector-action step with unique prices per env. TASK_828 Stage 3."""
+    return batch_step_vector_unique(states, action_vecs, prices, config)
 
 
 @partial(jax.jit, static_argnames=['config'])
