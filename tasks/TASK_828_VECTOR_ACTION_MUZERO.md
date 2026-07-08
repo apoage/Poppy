@@ -16,6 +16,11 @@
 > **Remainders:** Stage 3 (training loop + factored targets + action-conditional reward head — CODE
 > may land but TRAINING LAUNCH waits on TASK_831 E1 PASS), Stage 4 (scheduled eval). `use_vector_action`
 > not yet threaded through training/self-play/`env_factory`/`train_jax_fast.py`.
+> **GATE UPDATE (2026-07-08, planner): real-panel 831 E1 = PASS ⇒ Stage-3 TRAINING GATE OPEN.**
+> E2 carried proposal scheme for Stage-3 self-play: **dithered-book|K16** (budget fallback K8);
+> linear-prior proposals rejected (pin search to the rule's neighborhood). Corridor for Stage-4
+> grading: net@21 [floor_inenv +0.424, ceil +29.698], engine ref +0.751 on 2021-01-01..2025-09-01
+> (LEDGER 830/E0-REAL, 831/E1-REAL, 831/E2-REAL).
 
 # TASK_828 — Vector-action MuZero: one decision = the whole portfolio
 

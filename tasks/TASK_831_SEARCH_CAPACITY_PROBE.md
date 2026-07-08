@@ -1,11 +1,11 @@
-> **STATUS (2026-07-08): factory half SHIPPED.** `experiments/831_search_probe/` runner + SPEC +
-> fixture smoke landed; panel-green (E1 gate logic verified sound — floor-vs-search apples-to-apples).
-> Fixture smoke: floor net@21 +5.59, **E1=PASS** (8/9 scheme×K reach floor), cheapest reacher
-> dithered-book|K8. **E1 measures PROPOSAL CAPACITY** — PASS is necessary-but-not-sufficient for
-> Stage-3; the real deliverable is the E2 scheme×K ranking. **Remainder:** the load-bearing E1/E2
-> verdict = SCHEDULED single-GPU sweep (≤1 GPU-day, verified-idle GPU) — NOT a factory-loop job;
-> its **real E1 PASS gates the 828 Stage-3 TRAINING launch** (pathway R1). Kill logic: E1 FAIL across
-> all E2 schemes ⇒ proposal mechanism is the defect ⇒ Stage-3 does not launch, planner respecs sampler.
+> **STATUS (2026-07-08): COMPLETE — real E1/E2 OFFICIAL.** Full-panel sweep done same day
+> (workstation CPU under safe_run — GPU unneeded; ~7 min wall; 279 assets, ~1670 decisions,
+> seeds {0,1,2}). **E1 = PASS, 9/9 reach floor ⇒ Stage-3 TRAINING GATE OPEN.** E2 carried
+> scheme: **dithered-book|K16** (+5.29 net@21, per-seed [4.18, 5.94, 5.76]); budget fallback
+> dith|K8. linear-prior pins search to the rule's neighborhood (≤+2.19, near-zero seed
+> variance) — rejected as proposal scheme. Perfect-model search +5.29 vs rule ref +0.75:
+> wide learnable corridor. Proposal-capacity caveat stands. LEDGER 831/E1-REAL + E2-REAL;
+> artifacts `runs/831_search_probe/`.
 
 # TASK_831 — True-model search probe: can Sampled-MuZero FIND the book at all? (E1/E2, R1)
 

@@ -112,11 +112,13 @@ allocation contract. Leak-free, cost-honest, ≥3 seeds for any promotion claim 
 → R4. Queue rows in `tasks/QUEUE.md`; specs TASK_830/831/832 + TASK_828 stages; ledger at
 `experiments/LEDGER.md`.
 
-**Position (2026-07-08, post factory run 1 + scheduled 830)**: 828 S1+S2 SHIPPED (tags
-`task828-stage1/2`); factory claims independently re-verified (selftest, 13+11 tests, defaults
-OFF, ledger↔JSON). **R0 DONE**: official corridor net@21 **[+0.424, +29.698]**, engine ref
-+0.751 (this window), BEAR22 ref +1.049; fixture daily==db daily confirmed; H6 armed
-(conditional). R1 real sweep = CPU/scheduled (GPUs ceded to the factory); its E1 verdict opens
-the Stage-3 TRAINING gate. Next factory rows: 829 (retire Foxglove), then Stage-3 CODE.
-Stage-4 grading note: "beat the bar" = beat the ENGINE REF on the eval window (the +0.97 was
-819's window; this window's ref is +0.751 net@21).
+**Position (2026-07-08, post factory run 1 + scheduled R0/R1)**: 828 S1+S2 SHIPPED (tags
+`task828-stage1/2`); factory claims independently re-verified. **R0 DONE**: official corridor
+net@21 **[+0.424, +29.698]**, engine ref +0.751 (this window), BEAR22 ref +1.049; fixture
+daily==db daily confirmed; H6 armed (conditional). **R1 DONE**: real E1 **PASS 9/9 ⇒ Stage-3
+TRAINING GATE OPEN**; E2 carried scheme **dithered-book|K16** (K8 fallback); linear-prior
+proposals rejected (pin search to the rule's neighborhood); perfect-model search +5.29 vs rule
++0.75 = wide learnable corridor. Next factory rows: 829 (retire Foxglove), then Stage-3 CODE;
+next scheduled run: Stage-3 training (server preferred — pending operator: server tree reset +
+db sync). Stage-4 grading note: "beat the bar" = beat the ENGINE REF on the eval window (the
++0.97 was 819's window; this window's ref is +0.751 net@21).
