@@ -200,6 +200,10 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--vector-proposal-scheme', type=str, default='dithered-book',
                         choices=['dithered-book', 'iid-beta'], dest='vector_proposal_scheme',
                         help='TASK_828: proposal distribution for action-vector sampling')
+    parser.add_argument('--vector-per-node-resample', action='store_true',
+                        dest='vector_per_node_resample',
+                        help='TASK_838: resample K action-vectors at each expanded interior '
+                             'node (default OFF = root-reuse, canon bit-identical)')
     parser.add_argument('--differential-baseline', type=str, default='market', choices=['market', 'zero'])
     parser.add_argument('--differential-weight', type=float, default=1.0)
     parser.add_argument('--burning-money', action='store_true')

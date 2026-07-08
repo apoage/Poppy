@@ -216,6 +216,9 @@ class TrainingConfig:
     vector_dither_scale: float = 1.0         # Gumbel dither scale on the sampling proposal
     vector_gumbel_scale_eval: float = 0.5    # (reserved) lower gumbel scale for eval
     vector_proposal_scheme: str = 'dithered-book'  # 'dithered-book' | 'iid-beta'
+    # TASK_838: resample K vectors at each expanded interior node (default OFF =
+    # root-reuse, bit-identical to the shipped Stage-2/3 vector search).
+    vector_per_node_resample: bool = False
     burning_money: bool = False
     burn_market_linked: bool = True
     burn_base_rate: float = 0.00005

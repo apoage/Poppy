@@ -381,6 +381,8 @@ def main():
             hold_bias=getattr(config, 'vector_hold_bias', 0.0),
             dither_scale=getattr(config, 'vector_dither_scale', 1.0),
             proposal_scheme=getattr(config, 'vector_proposal_scheme', 'dithered-book'),
+            # TASK_838: per-node action resampling (default OFF = root-reuse).
+            per_node_resampling=getattr(config, 'vector_per_node_resample', False),
         )
     else:
         search_obj = create_mctx_search(model, num_simulations=config.sims, use_gumbel=True)

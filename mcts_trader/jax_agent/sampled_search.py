@@ -31,11 +31,26 @@ the K candidate vectors (B, K, n_assets), and the visit distribution over the
 sampled set (B, K) — the raw material for the Stage-3 factored policy target.
 
 Design calls flagged for the verify panel / operator (see task Factory notes):
-  * DEPTH / tree reuse: interior nodes reuse the ROOT's K sampled vectors as
-    their action set (mctx requires a fixed action space across depth). Full
-    per-node resampling is a documented follow-up. With num_simulations modest
-    the search is dominated by root Sequential-Halving over the sampled set
-    (Sampled-MuZero root planning), which is the load-bearing behavior here.
+  * DEPTH / tree reuse: by DEFAULT interior nodes reuse the ROOT's K sampled
+    vectors as their action set (mctx requires a fixed NUMBER of actions across
+    depth). With num_simulations modest the search is dominated by root
+    Sequential-Halving over the sampled set (Sampled-MuZero root planning),
+    which is the load-bearing behavior here.
+    TASK_838: ``per_node_resampling=True`` (flag, default OFF = bit-identical
+    root-reuse) resamples K vectors from the factored policy at EACH expanded
+    interior node's latent — the mctx embedding pytree carries
+    ``{'latent', 'cand_vecs'}`` so slot k at a node maps to the k-th vector
+    sampled AT that node (fixed K per node keeps shapes static). The
+    Sampled-MuZero correction stays exact PER NODE: each node's K slots are
+    drawn i.i.d. from that node's own proposal β, so the sample-based prior
+    β̂(a)=n_a/K is again the uniform-1/K slot prior (Hubert et al. 2021,
+    arXiv:2104.06303 — the correction is local to the node that sampled).
+    Interior rng: deterministic derivation from the expand rng mctx passes to
+    recurrent_fn — ``fold_in(rng, 838)`` then split into (dither, sample); no
+    top-level rng consumption changes, ON or OFF. Interior book/mask: the
+    latent does not carry a book, so the per-node proposal uses the HOLD-book
+    (book=None → hold_bias on the HOLD slot, DEC-3 v1 semantics) and no
+    action_mask (interior vectors are planning candidates, never executed).
   * PRIOR: uniform-per-slot empirical prior at ALL depths (the samples ARE the
     prior; the model policy enters only via the sampling proposal). Alternative:
     importance-weighted per-candidate logp(vec) interior priors — not used, to
@@ -78,6 +93,9 @@ class SampledMuZeroVectorSearch:
         hold_bias: float = 0.0,             # additive bias on the book (HOLD) slot
         dither_scale: float = 1.0,          # Gumbel dither scale on the proposal
         proposal_scheme: str = 'dithered-book',  # 'dithered-book' | 'iid-beta'
+        # TASK_838: resample K vectors at each expanded interior node (default
+        # OFF = root-reuse, bit-identical to the shipped Stage-2/3 behavior).
+        per_node_resampling: bool = False,
     ):
         self.model_apply_fn = model_apply_fn
         self.n_assets = n_assets
@@ -95,6 +113,10 @@ class SampledMuZeroVectorSearch:
         self.hold_bias = hold_bias
         self.dither_scale = dither_scale
         self.proposal_scheme = proposal_scheme
+        # TASK_838 — static Python bool, captured at construction/trace time:
+        # OFF ⇒ the per-node branches below are never traced (XLA DCE like every
+        # prior stage) and the rng stream is untouched.
+        self.per_node_resampling = per_node_resampling
 
         self.search_fn = jax.jit(self._search)
 
@@ -255,39 +277,105 @@ class SampledMuZeroVectorSearch:
         # 3. Sampled-MuZero corrected prior over the K slots (uniform 1/K).
         prior_logits, beta_hat = self._empirical_prior(sampled_vecs)  # (B,K),(B,K)
 
-        root = mctx.RootFnOutput(
-            prior_logits=prior_logits,
-            value=root_value,
-            embedding=latent,
-        )
-
         B = observation.shape[0]
 
-        def recurrent_fn(params_, rng_, action, embedding):
-            # action: (B,) index into the K sampled candidates. Gather each
-            # batch element's chosen action-VECTOR and expand via the vector
-            # dynamics path (embeds the vector, not a scalar index).
-            idx = action.astype(jnp.int32)[:, None, None]          # (B,1,1)
-            vec = jnp.take_along_axis(sampled_vecs, idx, axis=1)[:, 0, :]  # (B,A_n)
-            out = self.model_apply_fn(
-                {'params': params_}, embedding, vec,
-                mode='recurrent_inference_vector'
+        # TASK_838: static dispatch on ``per_node_resampling`` (Python bool
+        # captured at construction ⇒ decided at trace time; the untaken branch
+        # is never traced). The OFF branch is the shipped Stage-2/3 code
+        # VERBATIM — bit-identity pinned by tools/tests/test_pernode_parity.py.
+        if self.per_node_resampling:
+            # ON: the mctx embedding pytree carries, per node, the latent AND
+            # the K vectors sampled AT that node, so slot k at a node maps to
+            # that node's own k-th candidate (at the root: the root's samples).
+            root = mctx.RootFnOutput(
+                prior_logits=prior_logits,
+                value=root_value,
+                embedding={'latent': latent, 'cand_vecs': sampled_vecs},
             )
-            reward = self._reward_to_scalar(out['reward'])
-            value = self._categorical_to_scalar(out['value'])
-            # Interior prior over the (reused) K sampled slots = same empirical
-            # uniform prior (documented simplification — see module docstring).
-            interior_prior = jnp.zeros((B, self.num_samples), dtype=jnp.float32)
-            recurrent_output = mctx.RecurrentFnOutput(
-                reward=reward,
-                discount=jnp.full_like(reward, self.discount),
-                prior_logits=interior_prior,
-                value=value,
+
+            # GUARD (TASK_838): per_node_resampling correctness requires
+            # max_depth unset/== num_simulations on the mctx call below — a
+            # smaller max_depth makes mctx RE-EXPAND already-visited nodes at
+            # the depth cutoff, which would re-roll that node's cand_vecs while
+            # its children's slot statistics still refer to the OLD samples.
+            def recurrent_fn(params_, rng_, action, embedding):
+                # Gather the chosen vector from the PARENT node's own set.
+                idx = action.astype(jnp.int32)[:, None, None]      # (B,1,1)
+                vec = jnp.take_along_axis(
+                    embedding['cand_vecs'], idx, axis=1)[:, 0, :]  # (B,A_n)
+                out = self.model_apply_fn(
+                    {'params': params_}, embedding['latent'], vec,
+                    mode='recurrent_inference_vector'
+                )
+                reward = self._reward_to_scalar(out['reward'])
+                value = self._categorical_to_scalar(out['value'])
+                # Resample K vectors from the factored policy at the CHILD's
+                # latent — same dithered-book machinery as the root; interior
+                # book = HOLD-book, no interior mask (module docstring).
+                # Deterministic per-node rng: mctx hands recurrent_fn a fresh
+                # expand rng per simulation; fold_in(·, 838) namespaces it,
+                # then split → (dither, sample). Seed-reproducible, and the
+                # top-level rng stream is untouched.
+                node_rng = jax.random.fold_in(rng_, 838)
+                node_dither_rng, node_sample_rng = jax.random.split(node_rng)
+                child_proposal = self._build_proposal(
+                    out['policy_logits'], None, None, node_dither_rng)
+                child_samples = jax.random.categorical(
+                    node_sample_rng, child_proposal, axis=-1,
+                    shape=(self.num_samples, B, self.n_assets),
+                )
+                child_vecs = jnp.transpose(
+                    child_samples, (1, 0, 2)).astype(jnp.int32)    # (B,K,A_n)
+                # β=π holds PER NODE: the child's K slots are drawn i.i.d.
+                # from the child's OWN proposal, so the Sampled-MuZero
+                # sample-based prior β̂(a)=n_a/K is again the uniform-1/K slot
+                # prior at this node (Hubert et al. 2021, arXiv:2104.06303 §3
+                # — the correction is local to the node that sampled).
+                interior_prior = jnp.zeros((B, self.num_samples), dtype=jnp.float32)
+                recurrent_output = mctx.RecurrentFnOutput(
+                    reward=reward,
+                    discount=jnp.full_like(reward, self.discount),
+                    prior_logits=interior_prior,
+                    value=value,
+                )
+                return recurrent_output, {'latent': out['latent_state'],
+                                          'cand_vecs': child_vecs}
+        else:
+            root = mctx.RootFnOutput(
+                prior_logits=prior_logits,
+                value=root_value,
+                embedding=latent,
             )
-            return recurrent_output, out['latent_state']
+
+            def recurrent_fn(params_, rng_, action, embedding):
+                # action: (B,) index into the K sampled candidates. Gather each
+                # batch element's chosen action-VECTOR and expand via the vector
+                # dynamics path (embeds the vector, not a scalar index).
+                idx = action.astype(jnp.int32)[:, None, None]          # (B,1,1)
+                vec = jnp.take_along_axis(sampled_vecs, idx, axis=1)[:, 0, :]  # (B,A_n)
+                out = self.model_apply_fn(
+                    {'params': params_}, embedding, vec,
+                    mode='recurrent_inference_vector'
+                )
+                reward = self._reward_to_scalar(out['reward'])
+                value = self._categorical_to_scalar(out['value'])
+                # Interior prior over the (reused) K sampled slots = same empirical
+                # uniform prior (documented simplification — see module docstring).
+                interior_prior = jnp.zeros((B, self.num_samples), dtype=jnp.float32)
+                recurrent_output = mctx.RecurrentFnOutput(
+                    reward=reward,
+                    discount=jnp.full_like(reward, self.discount),
+                    prior_logits=interior_prior,
+                    value=value,
+                )
+                return recurrent_output, out['latent_state']
 
         # 4. Gumbel-MuZero search / Sequential Halving over the K candidates —
         #    the same gumbel + qtransform machinery as the canon scalar search.
+        #    GUARD (TASK_838): per_node_resampling correctness requires max_depth
+        #    unset/== num_simulations; a smaller max_depth re-expands visited
+        #    nodes and orphans their children's slot statistics (today: no
+        #    max_depth is passed → mctx defaults it to num_simulations — safe).
         policy_output = mctx.gumbel_muzero_policy(
             params=params,
             rng_key=search_rng,
@@ -319,6 +407,14 @@ class SampledMuZeroVectorSearch:
             'visit_entropy': -jnp.sum(
                 visit_probs * jnp.log(jnp.maximum(visit_probs, 1e-10)), axis=-1),
         }
+        if self.per_node_resampling:
+            # TASK_838 ON-only diagnostics (static branch ⇒ the OFF stats dict
+            # is byte-identical to canon): per-node candidate sets, per-node
+            # slot priors and visit counts straight from the search tree.
+            tree = policy_output.search_tree
+            search_stats['tree_cand_vecs'] = tree.embeddings['cand_vecs']      # (B,N,K,A_n)
+            search_stats['tree_children_prior_logits'] = tree.children_prior_logits  # (B,N,K)
+            search_stats['tree_node_visits'] = tree.node_visits                # (B,N)
         return action_vec, sampled_vecs, visit_probs, search_stats
 
     def __call__(
@@ -349,6 +445,7 @@ class SampledMuZeroVectorSearch:
 def create_sampled_vector_search(model, **kwargs):
     """Factory: build a SampledMuZeroVectorSearch from a MuZeroNetworks model.
 
-    The model MUST be built with use_vector_action=True.
+    The model MUST be built with use_vector_action=True. All constructor knobs
+    (incl. TASK_838 ``per_node_resampling``, default OFF) pass through **kwargs.
     """
     return SampledMuZeroVectorSearch(model_apply_fn=model.apply, **kwargs)

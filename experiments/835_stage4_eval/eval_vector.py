@@ -297,7 +297,7 @@ def load_checkpoint_into(trainer, ckpt_path):
 
 
 def build_search(model, args, n_assets):
-    """Mirror of train_jax_fast.py:375-384 — the shipped Stage-2/3 search operator.
+    """Mirror of train_jax_fast.py:375-385 — the shipped Stage-2/3 search operator.
     ``vector_gumbel_scale_eval`` is reserved/unwired upstream and is NOT touched here."""
     return create_sampled_vector_search(
         model, n_assets=n_assets, n_actions_per_asset=N_ACTIONS_PER_ASSET,
@@ -308,6 +308,10 @@ def build_search(model, args, n_assets):
         hold_bias=args.vector_hold_bias,
         dither_scale=args.vector_dither_scale,
         proposal_scheme=args.vector_proposal_scheme,
+        # TASK_838: eval operator must match the training operator — a checkpoint
+        # trained with --vector-per-node-resample must be evaluated with the SAME
+        # flag or the measurement is train/eval-asymmetric (default OFF = canon).
+        per_node_resampling=args.vector_per_node_resample,
     )
 
 
@@ -489,6 +493,7 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
             "vector_k": args.vector_k, "sims": args.sims,
             "hold_bias": args.vector_hold_bias, "dither_scale": args.vector_dither_scale,
             "proposal_scheme": args.vector_proposal_scheme,
+            "per_node_resampling": args.vector_per_node_resample,  # TASK_838
             "gumbel_scale": args.gumbel_scale,
             "max_num_considered_actions": min(args.vector_k, 16),
             "deterministic": True, "selection": "visit_probs argmax",
@@ -750,6 +755,11 @@ def main():
                     help="battery value 3.0 (TrainingConfig CLI default 0.0 is the known trap)")
     ap.add_argument("--vector-dither-scale", type=float, default=1.0)
     ap.add_argument("--vector-proposal-scheme", default="dithered-book")
+    ap.add_argument("--vector-per-node-resample", action="store_true",
+                    dest="vector_per_node_resample",
+                    help="TASK_838: per-node action resampling in the search operator — "
+                         "MUST match the flag the checkpoint was trained with "
+                         "(default OFF = root-reuse, the shipped operator)")
     ap.add_argument("--discount", type=float, default=0.997)
     ap.add_argument("--gumbel-scale", type=float, default=3.0)
     ap.add_argument("--value-scale", type=float, default=1.0)

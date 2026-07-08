@@ -1,0 +1,99 @@
+{
+  "tag": "fixture-smoke",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2021-01-01",
+    "2025-09-01"
+  ],
+  "n_assets": 279,
+  "n_days": 1704,
+  "warm": 31,
+  "n_decisions": 60,
+  "position_size_pct": 0.0017921146953405018,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "K": 8,
+  "sims": 32,
+  "discount": 0.997,
+  "value_rollout_steps": 3,
+  "hold_bias": 3.0,
+  "dither_scale": 1.0,
+  "proposal_scheme": "dithered-book",
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "value_heuristic": "truncated_env_rollout(R=3, HOLD, disc=0.997), two-hot 401-bin encode",
+  "floor": {
+    "0": 5.720902822069601,
+    "21": 5.5912276689593545
+  },
+  "arms": {
+    "off_root_reuse": {
+      "per_node_resampling": false,
+      "K": 8,
+      "sims": 32,
+      "sharpe_mean": {
+        "0": 7.700460113300356,
+        "21": 6.420734499297562
+      },
+      "sharpe_seeds": {
+        "0": [
+          10.542344629423797,
+          4.711070915938186,
+          7.847964794539088
+        ],
+        "21": [
+          7.092846049569312,
+          5.958976182392439,
+          6.210381265930936
+        ]
+      },
+      "diag": {
+        "final_pv": 105631.71875,
+        "avg_long": 92.66666666666667,
+        "avg_short": 84.81666666666666,
+        "n": 60
+      }
+    },
+    "on_per_node": {
+      "per_node_resampling": true,
+      "K": 8,
+      "sims": 32,
+      "sharpe_mean": {
+        "0": 6.4933852465625606,
+        "21": 3.634107035100947
+      },
+      "sharpe_seeds": {
+        "0": [
+          6.03867115095332,
+          6.224474932026918,
+          7.217009656707441
+        ],
+        "21": [
+          2.9123886854486782,
+          2.427310481161522,
+          5.56262193869264
+        ]
+      },
+      "diag": {
+        "final_pv": 105716.78125,
+        "avg_long": 87.36666666666666,
+        "avg_short": 91.76666666666667,
+        "n": 60
+      }
+    }
+  },
+  "acceptance": {
+    "delta_net21_on_minus_off": -2.786627464196615,
+    "delta_gross_on_minus_off": -1.2070748667377957,
+    "on_seed_wins_net21": "0/3",
+    "preregistered_criterion": "ON >= OFF (mean net@21)",
+    "observed_read": "OFF > ON (mean net@21)",
+    "smoke": true,
+    "note": "FIXTURE-SMOKE, true-model (constant policy) \u2014 tests the fresh-candidate-diversity-at-depth mechanism only; a TIE here is a FINDING (pre-registered), not a failure. Default stays OFF; the trained-policy answer is the scheduled Stage-3/4 stream."
+  }
+}
