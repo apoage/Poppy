@@ -1,0 +1,6 @@
+# Compiled artifacts — the importlib load of 830's corridor.py writes bytecode here.
+__pycache__/
+*.pyc
+# Imprint checkpoints (flax checkpoint dirs; smoke + scheduled-run outputs stay local).
+ckpt_smoke/
+ckpt_imprint/

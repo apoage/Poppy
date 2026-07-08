@@ -1,3 +1,15 @@
+> **STATUS (2026-07-08): factory half SHIPPED as `task832-linear-imprint`.**
+> `experiments/832_linear_imprint/` — buffer-injection BC runner: 830-book teacher trajectories
+> walked ON the TRAINING panel (PIN b verified — no off-by-one vs the self-play obs rule), one-hot
+> marginals through `JAXReplayBuffer(vector_action=True)` (the shipped factored CE IS the BC loss),
+> ExIt half = the existing `--load-checkpoint --reset-optimizer --clear-buffer` flags (anchors
+> verified). Smoke: CE 2.60→0.299 decreasing, teacher agreement 0.873. Medium panel: 1 MAJOR
+> (imprint entropy_coef=0.001 leaked into the ExIt half via `trainer_metadata.json` — CLI override
+> ineffective) — FIXED (`--ckpt-entropy-coef` default canon 0.01, proven with an adversarial-constructor
+> restore probe) + re-verified. **Remainder (scheduled ≤1-GPU-day run, DEC-2):** the imprint-sanity
+> verdict, the post-ExIt corridor position, and the ε=+0.10 PASS with the per-window consistency leg.
+> Operator: verify the `Restored entropy_coef: 0.01` log line at ExIt launch (SPEC PIN c).
+
 # TASK_832 — Linear-book imprint: can search beat its own (valid) teacher? (E5, R2)
 
 **Status**: GATED on 828 Stage 3 banner + TASK_831 E1 PASS.
