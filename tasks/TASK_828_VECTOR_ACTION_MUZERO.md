@@ -37,6 +37,20 @@
 > grading: net@21 [floor_inenv +0.424, ceil +29.698], engine ref +0.751 on 2021-01-01..2025-09-01
 > (LEDGER 830/E0-REAL, 831/E1-REAL, 831/E2-REAL).
 
+> **SCHEDULED-RUN LOG (planner, 2026-07-08 — battery pre-flight; to be folded into
+> `experiments/828_stage3_train/SPEC.md` when the factory disarms).**
+> Smoke #1 (fee16, hold-bias 3.0, 40 ep, srv GPU 2): env/losses/timing PASS (~10.6 s/ep steady
+> ⇒ ~6h/seed @2000 ep) but **pct_hold FAILED** — 94.7→99.97%, policy entropy 0.19→0.005, visit
+> entropy 0.0009 (the 821 collapse signature at epoch 40). Diagnosis: hold-bias 3.0 was tuned
+> under a PERFECT value (831-EXT); with an untrained value the 3.0 logit gap (Gumbel σ≈1.28)
+> makes all K candidates ~90%-HOLD clones — search can't diversify, the self-play book never
+> grows, dithered-book has no book to dither. **BATTERY NOT LAUNCHED on a failed criterion.**
+> Pre-registered 3-arm diagnostic (80 ep, GPUs 1/2/3): A hb0.0/d1.0 · B hb1.0/d1.0 · C hb3.0/d2.0.
+> Arm PASS = ep80 pct_hold <99 AND < its ep40 value AND policy_entropy ≥0.05. Selection among
+> passers: pct_hold ∈ [60,95] preferred; tie → closest to carried scheme (C > B > A). All arms
+> fail ⇒ STOP, no battery — structural finding (exploration under learned values needs its own
+> design, e.g. proposal-bias annealing), escalate to the pathway.
+
 # TASK_828 — Vector-action MuZero: one decision = the whole portfolio
 
 **Status**: ACTIVE 2026-07-06. Operator directive: THIS is the fix. TASK_821 closed the planner
