@@ -14,9 +14,18 @@ warm-start supersede it; it activates only if phase 2 also collapses (named in
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_836_E4_VALUE_RANKING_PROBE.md` | S–M | the missing R2 instrument: value-net rank quality vs momentum baseline, per window, on checkpoints. Reuse 834's restore guards. Runs on phase-1 snapshots the moment they exist. Risk: low-medium. |
-| 2 | `tasks/TASK_837_WALKFORWARD_HARNESS.md` | M | the R4 graduation instrument: pre-registered folds (2021-23→24, 2021-24→25), PIT universes (`build_pit_universe` — the pinned-64 universe is survivorship-LEAKY for folds), per-fold corridors, leak asserts as code. Nothing today can produce an unseen-years number. Risk: medium. |
-| 3 | `tasks/TASK_838_PERNODE_RESAMPLING.md` | M | Stage-2 panel's named follow-up: per-node action resampling, flag-gated default-OFF bit-identical, true-model acceptance probe (831 pattern). Canon-adjacent → full high-tier panel. Take LAST. Risk: high. |
+| _(empty — factory run 5 shipped all three rows; next rows come from phase-1 verdicts / planner grooming)_ | | | |
+
+_Shipped 2026-07-09 factory run 5 (836+837 parallel lanes, then 838 canon-adjacent solo):_
+- _**TASK_836** (`task836-e4-rank-probe`) — E4 value-vs-momentum rank probe; 0 MAJOR; 3 MINORs fixed
+  (honest baseline labels + true walk-PV mirror, overlap p-caveat, degenerate-value reading)._
+- _**TASK_837** (`task837-walkforward`) — R4 walk-forward rails; `build_pit_universe` verified NON-PIT
+  → module-side PIT; 3 MAJOR gate-coverage roots fixed (POLICY-PIN to pre-registered constants,
+  eval-file identity, de-confounded 5-negative battery + no-op control)._
+- _**TASK_838** (`task838-pernode-resample`) — flag-gated per-node resampling, OFF bit-identical
+  (pin 22b0c7f5 MATCH, provenance independently reproduced); 1 MAJOR fixed (835 threads the flag —
+  train/eval operator symmetry); **acceptance FINDING: OFF > ON under an uninformed policy
+  (Δnet@21 −2.79) — any ON run must re-measure with a trained policy first; default stays OFF**._
 
 _Shipped 2026-07-08 factory run 4 (parallel-lane batch, all zero-canon-diff instrument modules,
 each medium-panel verified with adversarial crossval + fix re-verify):_
