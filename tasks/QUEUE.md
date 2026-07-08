@@ -10,9 +10,16 @@ factory halves shipped; D6 decided — dual floor).
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_834_E3_ATTRIBUTION_RUNNER.md` | S | checkpoint-loading E3/DEC-1 runner (R_model vs R_true) — the RUNNING Stage-3 battery needs it when mid/late snapshots exist (~hours). New module `experiments/834_e3_probe/`, zero canon diffs. Risk: low-medium. |
-| 2 | `tasks/TASK_835_STAGE4_EVAL_HARNESS.md` | M | faithful vector eval: checkpoint → deterministic full-timeline rollout (visit_probs argmax) → corridor scorecard incl. regime windows + HOLD-collapse counters. The battery has NO in-training eval (fail-closed) — this is the only instrument that can grade it. New module `experiments/835_stage4_eval/`, zero canon diffs. Risk: medium. |
-| 3 | `tasks/TASK_832_LINEAR_IMPRINT_EXIT.md` (E5 linear imprint) | M | SCOPE CONFIRMED (planner 2026-07-08): pure CODE build — `experiments/832_linear_imprint/imprint.py` runner + SPEC + fixture smoke; **buffer-injection** of on-the-fly teacher trajectories (one-hot marginals through `JAXReplayBuffer(vector_action=True).add_trajectory` — the shipped factored CE IS the BC loss). **Reject scope creep into the monsters**: `amax_imprint`/`expert_bc` are scalar-only by design, do NOT extend them; no trainer/env edits. Pin in SPEC: (a) reduced entropy_coef/min_entropy for the imprint phase (the adaptive entropy push fights one-hot targets); (b) **panel consistency** — teacher trajectories walk the TRAINING env panel (`create_jax_env_historical`, 1-min→daily resample), with book signs computed on that same panel, NOT the corridor's daily-close panel (obs-distribution mismatch evaporates the warm start); (c) ExIt half = `--load-checkpoint --reset-optimizer --clear-buffer` (already shipped). ε and verdicts = DEC-2, scheduled run. Risk: medium. |
+| _(empty — all rows shipped; next work needs the planner: 3-arm diagnostic verdict → battery relaunch → scheduled runs use the shipped 834/835/832 instruments)_ | | | |
+
+_Shipped 2026-07-08 factory run 4 (parallel-lane batch, all zero-canon-diff instrument modules,
+each medium-panel verified with adversarial crossval + fix re-verify):_
+- _**TASK_834** (`task834-e3-runner`) — checkpoint E3/DEC-1 runner; 2 MAJORs found+fixed (legality
+  mask on both proposal legs; fail-loud vs flax silent fresh-init restore — a reproduced FALSE PASS)._
+- _**TASK_835** (`task835-stage4-eval`) — faithful Stage-4 vector eval; 0 MAJOR; 3 MINORs fixed
+  (LEDGER pointer, partial-rollout guard, provenance)._
+- _**TASK_832** (`task832-linear-imprint`) — E5 buffer-injection BC runner; 1 MAJOR found+fixed
+  (imprint entropy_coef leaking into the ExIt half via checkpoint metadata)._
 
 _Shipped 2026-07-08 factory run 3: **TASK_828 Stage 3** (`task828-stage3` — vector-action training
 loop + D2 action-conditional reward head + factored-marginal targets; parity MATCH==PINNED, E3 probe
