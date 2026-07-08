@@ -26,6 +26,27 @@ Two passes × 3 seeds, all with the 831-EXT-carried operator — dithered-book, 
    s/epoch measurement. **Pre-registered budget rule**: if s/epoch × 2000 > 20h/seed, cut
    `--epochs` to fit ≤20h/seed (snapshots every 100 keep partials usable) — recorded, not tuned.
 
+## Pre-flight amendment 2 (2026-07-08, post 3-arm diagnostic — REVISED BATTERY)
+Smoke #1 (hold-bias 3.0): pct_hold 94.7→99.97, entropy→0.005 — FAILED. 3-arm diagnostic
+(80 ep, fee16 from scratch): **B hb1.0/d1.0 COLLAPSED** (99.4%, ent 0.05); **C hb3.0/d2.0
+letter-pass only** (97.0%, ent 0.26→0.18 sliding — slow collapse); **A hb0.0/d1.0 the only
+live policy** (ent 0.74) but hold rising 17→55→80% while fees bleed it (α ≈ −100%).
+**Structural finding**: fee16-from-scratch punishes exploration before the value learns —
+proposals only set collapse speed. Stop condition applied in spirit: NO fee16-from-scratch
+battery. **Revised design (pre-registered)**:
+- **Phase 1 (launched)**: cost0 ×3 seeds from scratch, proposals **hb0.0/d1.0** (the
+  empirically-alive arm; the fee-punishment driver is absent at cost0). 2000 ep, snapshots
+  every 100. Deviation from the 831-EXT carried hb3.0 RECORDED — E2 measured search quality
+  under a true value; training exploration is a different regime.
+- **Phase 2 (design gate: phase-1 snapshots + 832 imprint sanity)**: fee16 as CONTINUATION,
+  two arms — (a) warm-start from cost0 checkpoints (cost curriculum), (b) warm-start from the
+  832 linear-book imprint (E5 promoted: the book exists from epoch 0, dithered-book has a real
+  book to dither, value learns on sensible trajectories). `--load-checkpoint
+  --reset-optimizer --clear-buffer` (shipped, 832-verified); verify the `Restored
+  entropy_coef: 0.01` line (832 PIN c).
+- Instruments (834 E3 probe / 835 eval) must be invoked with the flags ACTUALLY launched:
+  phase 1 = `--vector-hold-bias 0.0 --vector-dither-scale 1.0`, cost0.
+
 ## Monitoring & verdicts
 - In-loop generalization eval is fail-closed SKIPPED in vector mode (panel finding) — monitor
   `logs/training_<name>.csv`: reward/alpha, per-asset action histograms, pct_hold,

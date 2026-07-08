@@ -42,7 +42,8 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 |-----|------|-------|--------|
 | 830 real corridor | full-panel floors+ceiling+expressibility gap, `trading_data.db` read-only | workstation CPU (screen+safe_run) | **DONE 2026-07-08** — corridor official [+0.424, +29.698] net@21, ref +0.751; H6 armed; LEDGER 830/E0-REAL |
 | 831 real E1/E2 sweep | 9 scheme×K combos, full panel, seeds 0,1,2 | workstation CPU (screen+safe_run, ~7 min) | **DONE 2026-07-08** — E1 PASS 9/9 ⇒ Stage-3 training gate OPEN; carried scheme dithered-book\|K16; LEDGER 831/E1-REAL + E2-REAL |
-| 828 Stage-3 training | fee16 ×3 seeds (primary) + cost0 ×3 (diagnostic), dithered-book\|K16 **hold-bias 3.0**, snapshots every 100; SPEC+manifest `experiments/828_stage3_train/` | gpu-server GPUs 1/2/3 via run_queue.sh (tmux `q_828s3`) | **LAUNCHING 2026-07-08** — pre-flight: deploy → minute-vintage check (`MAX(ts) ohlcv ≥ 1764543600` — the training path READS THE 1-MIN TABLE, recon-verified) → 40-epoch GPU smoke → battery. E3 verdict via TASK_834 runner on snapshots. |
+| 828 Stage-3 training **phase 1** | cost0 ×3 seeds from scratch, dithered-book\|K16 **hb0.0/d1.0** (3-arm diagnostic winner; fee16-from-scratch REJECTED — collapse finding, LEDGER 828s3/preflight), snapshots every 100; `jobs_phase1.manifest` | gpu-server GPUs 1/2/3 via run_queue.sh (tmux `q_828s3`) | **RUNNING 2026-07-08 ~23:30** (~6h/seed) — E3 verdict via 834 runner + 835 eval on snapshots WITH the phase-1 flags |
+| 828 Stage-3 **phase 2** | fee16 CONTINUATION: (a) warm-start from cost0 ckpts, (b) warm-start from 832 imprint (E5 → critical path) | gpu-server | GATED on phase-1 snapshots + 832 imprint-sanity run |
 
 ## Gated — do NOT start (named gate must open first)
 
