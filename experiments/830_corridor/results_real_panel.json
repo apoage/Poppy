@@ -1,0 +1,88 @@
+{
+  "tag": "real-panel",
+  "db": "/home/lukas/Trader/trading_data.db",
+  "window": [
+    "2021-01-01",
+    "2025-09-01"
+  ],
+  "n_assets": 279,
+  "n_days": 1704,
+  "warm": 31,
+  "panel_info": {
+    "n_skipped_source": 0,
+    "n_skipped_nonusd": 13,
+    "n_skipped_empty": 0,
+    "source_filter": "kraken_rest",
+    "n_dead_included": 35,
+    "include_dead": true
+  },
+  "position_size_pct": 0.0017921146953405018,
+  "tolerance": 0.1,
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "oracle_gross_alpha": 75.52146911621094,
+  "floors": {
+    "0": {
+      "full": 0.7532467397811813,
+      "per_regime": {
+        "BULL21": 2.302950133328965,
+        "BEAR22": 0.22490697598746007,
+        "REC23": 1.7892212225268902,
+        "BULL24": 0.3150853050662293,
+        "CHOP25": 0.053495849559102936,
+        "FULL": 0.7532467397811813
+      },
+      "final_pv": 172002.03125,
+      "avg_long": 71.51196172248804,
+      "avg_short": 104.97846889952153,
+      "bankrupt_at": -1
+    },
+    "21": {
+      "full": 0.4237793380446761,
+      "per_regime": {
+        "BULL21": 2.1093279159075045,
+        "BEAR22": -0.14259604849809757,
+        "REC23": 1.4343375893981725,
+        "BULL24": -0.04656229675721126,
+        "CHOP25": -0.31168046548149986,
+        "FULL": 0.4237793380446761
+      },
+      "final_pv": 131517.0625,
+      "avg_long": 71.51196172248804,
+      "avg_short": 104.97846889952153,
+      "bankrupt_at": -1
+    }
+  },
+  "corridor": {
+    "0": {
+      "floor_inenv": 0.7532467397811813,
+      "reference": 0.9557594651716449,
+      "ceiling": 31.36710570497202,
+      "bear22_floor": 0.22490697598746007,
+      "bear22_reference": 1.217952010752052,
+      "bear22_ceiling": 28.647007389902726
+    },
+    "21": {
+      "floor_inenv": 0.4237793380446761,
+      "reference": 0.7509887330376795,
+      "ceiling": 29.69798287600358,
+      "bear22_floor": -0.14259604849809757,
+      "bear22_reference": 1.0488461775229416,
+      "bear22_ceiling": 27.06142660884495
+    }
+  },
+  "validity": {
+    "0": {
+      "delta": -0.2025127253904636,
+      "within_tol": false
+    },
+    "21": {
+      "delta": -0.32720939499300344,
+      "within_tol": false
+    }
+  },
+  "reproduces_within_tol": false,
+  "finding": "tolerance MISS attributed to the replay MAPPING, NOT a step_vector defect. The env reproduces an independent from-scratch cash-account sim to 3-4 sig figs (finalPV to the dollar). Dominant negative term = fixed-weight 0.5/A vs the 819 book's renormalized 1/n_present weighting (pure-numpy decomposition: gross 0.956 -> 0.612); flip-lag HELPS (+0.14); fixed-weight+flip-lag ~= 0.740, so step_vector adds only +0.013 over the pure mapping. Floor is leverage-invariant over pct=0.1/A .. 0.5/A (only 1.0/A bankrupts). BEAR22 gap = faithful hold-shares de-leveraging vs the 819 book's daily constant-dollar rebalance (different book, correctly simulated). Real verdict PENDING the scheduled real-panel run; NOT filed vs 828 Stage 1; number NOT tuned. WHICH mapping defines the official corridor floor is a pending planner DECISIONS row."
+}
