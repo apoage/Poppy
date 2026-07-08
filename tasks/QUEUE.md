@@ -10,7 +10,8 @@ factory halves shipped; D6 decided — dual floor).
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_832_LINEAR_IMPRINT_EXIT.md` (E5 linear imprint) | ? | Gate SATISFIED 2026-07-08: 828 Stage 3 shipped (`task828-stage3`, 831 E1 PASS ✓). Planner to confirm scope/size before the factory takes it — verify it is a CODE build (imprint teacher wiring) and not a scheduled GPU run before starting. |
+| 1 | `tasks/TASK_834_E3_ATTRIBUTION_RUNNER.md` | S | checkpoint-loading E3/DEC-1 runner (R_model vs R_true) — the RUNNING Stage-3 battery needs it when mid/late snapshots exist (~hours). New module `experiments/834_e3_probe/`, zero canon diffs. Risk: low-medium. |
+| 2 | `tasks/TASK_832_LINEAR_IMPRINT_EXIT.md` (E5 linear imprint) | M | SCOPE CONFIRMED (planner 2026-07-08): pure CODE build — `experiments/832_linear_imprint/imprint.py` runner + SPEC + fixture smoke; **buffer-injection** of on-the-fly teacher trajectories (one-hot marginals through `JAXReplayBuffer(vector_action=True).add_trajectory` — the shipped factored CE IS the BC loss). **Reject scope creep into the monsters**: `amax_imprint`/`expert_bc` are scalar-only by design, do NOT extend them; no trainer/env edits. Pin in SPEC: (a) reduced entropy_coef/min_entropy for the imprint phase (the adaptive entropy push fights one-hot targets); (b) **panel consistency** — teacher trajectories walk the TRAINING env panel (`create_jax_env_historical`, 1-min→daily resample), with book signs computed on that same panel, NOT the corridor's daily-close panel (obs-distribution mismatch evaporates the warm start); (c) ExIt half = `--load-checkpoint --reset-optimizer --clear-buffer` (already shipped). ε and verdicts = DEC-2, scheduled run. Risk: medium. |
 
 _Shipped 2026-07-08 factory run 3: **TASK_828 Stage 3** (`task828-stage3` — vector-action training
 loop + D2 action-conditional reward head + factored-marginal targets; parity MATCH==PINNED, E3 probe
@@ -33,7 +34,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 |-----|------|-------|--------|
 | 830 real corridor | full-panel floors+ceiling+expressibility gap, `trading_data.db` read-only | workstation CPU (screen+safe_run) | **DONE 2026-07-08** — corridor official [+0.424, +29.698] net@21, ref +0.751; H6 armed; LEDGER 830/E0-REAL |
 | 831 real E1/E2 sweep | 9 scheme×K combos, full panel, seeds 0,1,2 | workstation CPU (screen+safe_run, ~7 min) | **DONE 2026-07-08** — E1 PASS 9/9 ⇒ Stage-3 training gate OPEN; carried scheme dithered-book\|K16; LEDGER 831/E1-REAL + E2-REAL |
-| 828 Stage-3 training | multi-epoch `--vector-action` train to convergence + the real E3 R-attribution PASS (DEC-1 `R_model ≥ 0.5×R_true`) on a mid/late model; ≥3 seeds; scheme dithered-book\|K16 | gpu-server GPUs 1/2/3 via run_queue.sh (tmux) | **READY TO SCHEDULE 2026-07-08** — CODE shipped `task828-stage3`, gates green. NOTE: minute-bar tables on srv are Jan-2026 vintage; a daily-panel training run is fine, but confirm data vintage vs the run's needs (full `sync-db.sh` before any minute-bar dependence). |
+| 828 Stage-3 training | fee16 ×3 seeds (primary) + cost0 ×3 (diagnostic), dithered-book\|K16 **hold-bias 3.0**, snapshots every 100; SPEC+manifest `experiments/828_stage3_train/` | gpu-server GPUs 1/2/3 via run_queue.sh (tmux `q_828s3`) | **LAUNCHING 2026-07-08** — pre-flight: deploy → minute-vintage check (`MAX(ts) ohlcv ≥ 1764543600` — the training path READS THE 1-MIN TABLE, recon-verified) → 40-epoch GPU smoke → battery. E3 verdict via TASK_834 runner on snapshots. |
 
 ## Gated — do NOT start (named gate must open first)
 
