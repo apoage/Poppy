@@ -16,7 +16,7 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_839_BUDGET_VECTOR_STEP.md` | M | **Take the moment D7 is ratified** (recommendation seeded — one-word answer). The env-wall fix: budget-constrained vector sizing, flag-gated default-OFF, 838-pattern parity discipline. If D7 is still OPEN when the factory arms, this row is a WALL — stop, do not guess past it. |
+| 1 | `tasks/TASK_839_BUDGET_VECTOR_STEP.md` | M | **D7 RATIFIED option (a) 2026-07-09 — no wall, take it.** The env-wall fix: budget-constrained equal-split vector sizing, flag-gated `--vector-budget-step` default-OFF, 838-pattern parity discipline, acceptance = the 834-repro walk survives + E1-pattern probe ON ≥ OFF − 0.10. |
 
 _Shipped 2026-07-09 factory run 5 (836+837 parallel lanes, then 838 canon-adjacent solo):_
 - _**TASK_836** (`task836-e4-rank-probe`) — E4 value-vs-momentum rank probe; 0 MAJOR; 3 MINORs fixed

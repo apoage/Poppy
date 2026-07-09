@@ -1,7 +1,7 @@
 # TASK_839 — Budget-constrained vector step (the env-wall fix)
 
-**Status**: READY 2026-07-09 — GATED on D7 ratification (recommendation = option (a); if the
-operator ratifies as recommended, take from the top).
+**Status**: READY 2026-07-09 — **D7 RATIFIED option (a)** (operator, 2026-07-09). Take from
+the top.
 **Size: M. Risk: high** (touches `mcts_trader/env/jax_trading_env.py` `step_vector` — canon-adjacent;
 full flag-gate + parity discipline, the 838 pattern).
 **Pathway**: unblocks R2/R3 — every phase-1 instrument and phase-2 training is gated behind this.
