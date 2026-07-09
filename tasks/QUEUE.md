@@ -45,11 +45,11 @@ redeployed to srv same day) and TASK_829 (Foxglove retired, `40afa14`)._
 
 ## Scheduled runs — owner: planner/main session (NOT factory-loop jobs)
 
-**Server status (2026-07-08)**: gpu-server cleared for **DAILY-panel jobs only** — `ohlcv_daily`
-+ `assets` synced to workstation parity (table-level; verified 499,430 rows, quick_check ok,
-831 cell ran end-to-end in 18s); **minute-bar tables are still Jan-2026 vintage** — full
-`sync-db.sh` required before any minute-bar job. Server code current (vector-action spine
-deployed); the 7 drifted server files are STASHED there (`git stash list`), not discarded.
+**Server status (updated 2026-07-09)**: gpu-server db verified at FULL workstation parity —
+daily tables synced 2026-07-08, and the minute `ohlcv` table measured at max ts 1765558500
+(2025-12-12, == workstation; the "Jan-2026 vintage" concern was file-mtime, not data). All
+daily AND minute jobs cleared. Server code current; the 7 drifted server files remain STASHED
+(`git stash list`).
 Stage-3 training destination = gpu-server GPUs 1/2/3 — run_queue.sh REPAIRED (TASK_833) and
 redeployed 2026-07-08; the scheduler is cleared for use.
 
