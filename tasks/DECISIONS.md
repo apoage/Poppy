@@ -8,7 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
-| _(none)_ | | | |
+| D7 | Vector-step budget semantics: how should `step_vector` size simultaneous per-asset trades? (today: EVERY buy/short charges `min(0.1×PV, 0.99×cash)` from ONE snapshot, no aggregate constraint → overdraft → margin-call bankruptcy; breadth is lethal — LEDGER 828s3/env-wall) | **Option (a) — budget-constrained weights (planner recommendation): trades size at `PV × budget_pct / n_trades_this_step` (equal-split of a per-step budget, Σ spend ≤ available cash by construction), flag-gated `--vector-budget-step`, canon path bit-identical when OFF.** This is the ORIGINAL 828 thesis (per-asset weight vector, EV=Σ64 edges) that Stage 1 under-implemented with scalar-era 10% sizing. Alternatives: (b) keep 10% sizing + hard cap on concurrent opens (preserves current semantics, abandons breadth); (c) full weight-vector actions Σw≤1 (bigger action-space change — H6 territory, more invasive). Consequence of deciding: TASK_839 builds it; phase-1 re-runs under the fixed step; phase-2 fee16 continuation stays GATED until then. | Phase-1 verdict: both seeds bankrupt (835/S4-p1); every instrument blocked/empty under the current step (834/E3-p1, 836/E4-p1); root cause reproduced at `jax_trading_env.py:1391-1491`. |
 
 ## DECIDED
 

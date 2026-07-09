@@ -51,6 +51,20 @@
 > fail ⇒ STOP, no battery — structural finding (exploration under learned values needs its own
 > design, e.g. proposal-bias annealing), escalate to the pathway.
 
+> **PHASE-1 VERDICT (planner, 2026-07-09 — LEDGER 828s3/env-wall + 835/S4-p1 + 834/E3-p1 +
+> 836/E4-p1).** Battery: s1/s2 ep2000 clean, s0 wedged ep1581 (log-freeze post-checkpoint-save,
+> killed, solo retry running). 835 on s1/s2: **FAIL — both seeds BANKRUPT mid-rollout** (PV→0 at
+> step ~750–990/1670, Sharpe −0.9..−1.25, below floor in all windows, 98% HOLD). 834: fail-loud
+> walk-bankruptcy at step 0 (no DEC-1 verdict possible); 836: 0 evaluable windows. ROOT CAUSE
+> (reproduced + code-traced): **`step_vector` snapshot-cash accounting — every buy/short charges
+> `min(0.1×PV, 0.99×cash)` with no aggregate budget; overdraft → margin cascade → bankruptcy**
+> (`jax_trading_env.py:1391-1491`). Breadth is lethal at ANY cost tier ⇒ the preflight
+> "fees punish exploration" was the wrong root; cost0 collapses too; the H6/H1 Σ64-edges thesis
+> is inexpressible under 10%-of-PV sizing (~10-position cap). Consequence: **D7 seeded
+> (budget-constrained step, rec = equal-split budget weights) → TASK_839; phase 2 + 832
+> imprint-sanity + 834/836 re-runs all GATED on it; phase 1 re-runs under the fixed step.**
+> E1/E2 (+5.29 perfect-model) unaffected — hb3.0 keeps vectors narrow.
+
 # TASK_828 — Vector-action MuZero: one decision = the whole portfolio
 
 **Status**: ACTIVE 2026-07-06. Operator directive: THIS is the fix. TASK_821 closed the planner
