@@ -60,3 +60,25 @@ battery. **Revised design (pre-registered)**:
   per-asset eval harness is also not built yet — future factory row).
 - Artifacts: server `jax_ckpt_fast/<name>/` + `logs/training_<name>.csv` + `runs/828_stage3/`
   → pulled via `pull-results.sh`; verdict lines → `experiments/LEDGER.md` (per pass, per seed).
+
+## Amendment 3 (2026-07-10, planner — PHASE-1b: re-run under the fixed step; pre-registered before launch)
+
+Phase-1 verdict was environmental, not model (LEDGER **828s3/env-wall**, 835/S4-p1 s0/s1/s2 all
+bankrupt): `step_vector`'s snapshot-cash accounting made breadth lethal at any cost tier.
+TASK_839 shipped the fix (`--vector-budget-step`, D7 opt (a), OFF bit-identical); **D8 ratified**
+ship-as-is-and-measure (planner ruling 2026-07-10).
+
+**Phase-1b battery** — identical to phase 1 except the flag and names:
+- Jobs `828s3p1b_cost0_s{0,1,2}` = the phase-1 command + `--vector-budget-step`
+  (`vector_budget_pct` default 0.99), manifest `jobs_phase1b.manifest`, gpu-server GPUs 1/2/3.
+- **Pre-registered reads**:
+  1. Mid-run tripwire UNCHANGED (pct_hold >99 & entropy <0.02, ≥2 seeds past ep300 ⇒ FAIL early).
+  2. Health signal (not a gate): self-play episodes should no longer mass-terminate by
+     bankruptcy; cost0 self-play reward ma20 materially above the phase-1 −13..−26 band.
+  3. Post-run instruments (phase-1b flags = phase-1 flags + `--vector-budget-step`): **835
+     rollouts must COMPLETE (partial=false, no bankruptcy) — this is the D8 primary evidence**;
+     corridor grading per D6; 834 DEC-1 and 836 E4 become measurable for the first time.
+  4. If 835 rollouts still die by margin cascade on invested books ⇒ D8 escalation: layer
+     opt (c) Σw≤1 as a NEW task; do not tweak 839 in place.
+- Phase-2 fee16 continuation re-targets phase-1b checkpoints (phase-1 ckpts are wall-domain
+  artifacts — keep for forensics, never warm-start from them).
