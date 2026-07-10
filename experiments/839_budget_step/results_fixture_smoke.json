@@ -1,0 +1,93 @@
+{
+  "task": "TASK_839 budget-constrained vector step (env-wall fix)",
+  "mode": "fixture-smoke",
+  "db": "fixtures/trading_fixture.db",
+  "window": [
+    "2021-01-01",
+    "2025-09-01"
+  ],
+  "n_assets": 279,
+  "d7": "RATIFIED option (a): PV*min(pct, budget_pct/n_open_trades)",
+  "ledger": "828s3/env-wall",
+  "factory_threading": {
+    "budget_False": {
+      "env_vector_budget_step": false,
+      "env_vector_budget_pct": 0.97
+    },
+    "budget_True": {
+      "env_vector_budget_step": true,
+      "env_vector_budget_pct": 0.97
+    },
+    "propagates": true
+  },
+  "survival_walk": {
+    "off": {
+      "budget_step": false,
+      "n_envs": 4,
+      "n_walk": 70,
+      "n_assets": 279,
+      "position_size_pct": 0.1,
+      "max_positions": 16,
+      "bankrupt_step_per_env": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "n_survived": 0,
+      "n_bankrupt": 4,
+      "step_level_overdraft_events": 4,
+      "first_step_open_frac": 0.3978494623655914
+    },
+    "on": {
+      "budget_step": true,
+      "n_envs": 4,
+      "n_walk": 70,
+      "n_assets": 279,
+      "position_size_pct": 0.1,
+      "max_positions": 16,
+      "bankrupt_step_per_env": [
+        -1,
+        -1,
+        -1,
+        -1
+      ],
+      "n_survived": 4,
+      "n_bankrupt": 0,
+      "step_level_overdraft_events": 0,
+      "first_step_open_frac": 0.3978494623655914
+    },
+    "on_survives_ge64_zero_bankrupt": true,
+    "off_env_wall_reproduced_step0": true
+  },
+  "jax_version": "0.6.2",
+  "timestamp": "2026-07-09T23:39:01",
+  "e1_net21": {
+    "K": 16,
+    "seed": 0,
+    "n_assets": 279,
+    "n_decisions": 30,
+    "warm": 31,
+    "position_size_pct": 0.0017921146953405018,
+    "discount": 0.997,
+    "value_rollout_steps": 3,
+    "proposal_bias": 3.0,
+    "cost_tier_bp": 21,
+    "net21_off": 7.6826630293827725,
+    "net21_on": 7.6826630293827725,
+    "delta_on_minus_off": 0.0,
+    "final_pv_off": 103125.671875,
+    "final_pv_on": 103125.671875,
+    "bankrupt_at_off": -1,
+    "bankrupt_at_on": -1,
+    "read": "ON >= OFF - 0.10",
+    "verdict": "PASS"
+  },
+  "gate_ok": true,
+  "gate": {
+    "survival_pass": true,
+    "e1_pass": true,
+    "forced_fail_selftest": false
+  },
+  "elapsed_sec": 13.3
+}

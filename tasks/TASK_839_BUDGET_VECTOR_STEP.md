@@ -1,3 +1,20 @@
+> **STATUS (2026-07-09): SHIPPED as `task839-budget-vector-step`.** Flag-gated `vector_budget_step`
+> (`--vector-budget-step`, config `vector_budget_pct`=0.99; default OFF = canon **bit-identical**,
+> pin `48e1f467…d25b` MATCH, captured pre-edit at 39ae0bf and provenance independently reproduced;
+> OFF jaxpr byte-identical). RATIFIED D7 opt (a) budget-split sizing in `step_vector`; threaded
+> default-OFF through training config/cli/env_factory/setup/`train_jax_fast.py` + 835 eval (operator
+> symmetry) + 834/836 walks. **Env-wall FIXED** (acceptance, 279-asset fixture panel: OFF all bankrupt
+> at step 0 / ON 4/4 survive ≥64 steps ZERO overdraft; E1 net@21 OFF==ON==+7.6827, narrow-regime cap
+> non-binding → byte-identical). **Full high-tier panel** (`wf_9bf385cf-124`): 1 MAJOR crossval-CONFIRMED
+> → RESOLVED (the "≤cash by construction" claim holds only at PV≈cash; corrected to honest scoped wording,
+> PV>cash behavior now PINNED by test, and the PV-relative-vs-cash-relative sufficiency escalated to the
+> planner as **DECISIONS D8** — the ratified formula is untouched), + a security MINOR (symlink write-guard
+> now `realpath`-resolves) & a fail-closed MINOR (probe exit code reflects the gate) FIXED + orchestrator-
+> re-verified; 2 NITs left as pre-existing-not-ours (`test_jax_env.py::TestLimitOrders` fails identically
+> on pre-edit HEAD). **Unblocks**: phase-1 RE-RUN under the fixed step, then phase-2 fee16 continuation +
+> 832 imprint-sanity + 834/836 re-runs (all gated on the phase-1 re-run). Scope note: scope item 2 below
+> states "Σspend ≤ cash by construction" — that holds only at episode start (PV≈cash); see D8.
+
 # TASK_839 — Budget-constrained vector step (the env-wall fix)
 
 **Status**: READY 2026-07-09 — **D7 RATIFIED option (a)** (operator, 2026-07-09). Take from

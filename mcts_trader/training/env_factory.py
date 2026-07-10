@@ -50,6 +50,9 @@ def create_jax_env_and_prices(
     price_seed: Optional[int] = None,
     # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
     vector_action: bool = False,
+    # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
+    vector_budget_step: bool = False,
+    vector_budget_pct: float = 0.99,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment states and synthetic prices.
 
@@ -143,6 +146,9 @@ def create_jax_env_and_prices(
         reward_attributable=reward_attributable,
         # TASK_828 Stage 3
         vector_action=vector_action,
+        # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
+        vector_budget_step=vector_budget_step,
+        vector_budget_pct=vector_budget_pct,
     )
 
     # Initialize batched environment states
@@ -181,6 +187,9 @@ def create_jax_env_unique_prices(
     reward_attributable: bool = False,
     # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
     vector_action: bool = False,
+    # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
+    vector_budget_step: bool = False,
+    vector_budget_pct: float = 0.99,
     n_workers: int = 8,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX env with UNIQUE prices per env (multithreaded generation).
@@ -277,6 +286,9 @@ def create_jax_env_unique_prices(
         reward_attributable=reward_attributable,
         # TASK_828 Stage 3
         vector_action=vector_action,
+        # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
+        vector_budget_step=vector_budget_step,
+        vector_budget_pct=vector_budget_pct,
     )
 
     # Initialize batched environment states with unique prices
@@ -313,6 +325,9 @@ def create_jax_env_historical(
     bar_minutes: int = 1,
     # TASK_828 Stage 3: vector-action env step (default OFF = canon scalar path).
     vector_action: bool = False,
+    # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
+    vector_budget_step: bool = False,
+    vector_budget_pct: float = 0.99,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment with HISTORICAL prices from database.
 
@@ -400,6 +415,9 @@ def create_jax_env_historical(
         reward_attributable=reward_attributable,
         # TASK_828 Stage 3
         vector_action=vector_action,
+        # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
+        vector_budget_step=vector_budget_step,
+        vector_budget_pct=vector_budget_pct,
     )
 
     # Initialize batched environment states

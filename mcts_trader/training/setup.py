@@ -287,6 +287,9 @@ def setup_jax_environment(config: TrainingConfig, seed: int = None):
         reward_attributable=getattr(config, 'reward_attributable', False),
         # TASK_828 Stage 3 (covers both **common_kwargs call sites)
         vector_action=getattr(config, 'vector_action', False),
+        # TASK_839: budget-constrained vector-step sizing (covers both call sites; default OFF)
+        vector_budget_step=getattr(config, 'vector_budget_step', False),
+        vector_budget_pct=getattr(config, 'vector_budget_pct', 0.99),
     )
 
     # Choose between shared prices (faster) or unique prices per env (more diversity)

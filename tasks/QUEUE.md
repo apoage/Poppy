@@ -16,7 +16,19 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_839_BUDGET_VECTOR_STEP.md` | M | **D7 RATIFIED option (a) 2026-07-09 — no wall, take it.** The env-wall fix: budget-constrained equal-split vector sizing, flag-gated `--vector-budget-step` default-OFF, 838-pattern parity discipline, acceptance = the 834-repro walk survives + E1-pattern probe ON ≥ OFF − 0.10. |
+| _(empty — factory run 6 shipped TASK_839; next rows = planner grooming after the phase-1 RE-RUN under the fixed step)_ | | | |
+
+_Shipped 2026-07-09 factory run 6 (solo, canon-adjacent env fix):_
+- _**TASK_839** (`task839-budget-vector-step`) — the env-wall fix: flag-gated (`--vector-budget-step`,
+  default OFF = canon bit-identical, pin `48e1f467…` MATCH pre-edit 39ae0bf) budget-constrained
+  equal-split sizing in `step_vector` (RATIFIED D7 opt (a)). Full high-tier panel: **1 MAJOR
+  crossval-CONFIRMED → RESOLVED** ("≤cash by construction" holds only at PV≈cash → honest wording +
+  PV>cash test + **DECISIONS D8** seeded; ratified formula untouched) + security MINOR (symlink
+  write-guard realpath) & fail-closed MINOR (probe exit code) FIXED. Acceptance: OFF bankrupt step 0 /
+  **ON 4/4 survive ≥64 steps zero-overdraft**; E1 byte-identical (narrow-regime cap non-binding).
+  **Unblocks the line**: phase-1 RE-RUN under the fixed step → phase-2 fee16 + 832 imprint-sanity +
+  834/836 re-runs. (NB: phase-2 gate row below still lists TASK_839 as a gate — now SATISFIED; D8 is
+  the residual planner call on PV-relative vs cash-relative before flipping the flag ON.)_
 
 _Shipped 2026-07-09 factory run 5 (836+837 parallel lanes, then 838 canon-adjacent solo):_
 - _**TASK_836** (`task836-e4-rank-probe`) — E4 value-vs-momentum rank probe; 0 MAJOR; 3 MINORs fixed
@@ -59,8 +71,8 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 |-----|------|-------|--------|
 | 830 real corridor | full-panel floors+ceiling+expressibility gap, `trading_data.db` read-only | workstation CPU (screen+safe_run) | **DONE 2026-07-08** — corridor official [+0.424, +29.698] net@21, ref +0.751; H6 armed; LEDGER 830/E0-REAL |
 | 831 real E1/E2 sweep | 9 scheme×K combos, full panel, seeds 0,1,2 | workstation CPU (screen+safe_run, ~7 min) | **DONE 2026-07-08** — E1 PASS 9/9 ⇒ Stage-3 training gate OPEN; carried scheme dithered-book\|K16; LEDGER 831/E1-REAL + E2-REAL |
-| 828 Stage-3 training **phase 1** | cost0 ×3 seeds from scratch, dithered-book\|K16 **hb0.0/d1.0** (3-arm diagnostic winner; fee16-from-scratch REJECTED — collapse finding, LEDGER 828s3/preflight), snapshots every 100; `jobs_phase1.manifest` | gpu-server GPUs 1/2/3 via run_queue.sh (tmux `q_828s3`) | **s1/s2 DONE 2026-07-09** (ep2000, 20 snapshots each). **s0 WEDGED at ep1581** (log-freeze right after a checkpoint save, ~12h dead; known wedge pattern) → killed 19:32, partials archived `*_wedged_ep1581`, **solo retry RUNNING** (tmux `q_828s3_s0`, GPU 1, `jobs_phase1_s0retry.manifest`; NOTE: fresh tmux needs `source trader_env/bin/activate` — bare `python` is system Py2) |
-| 828 phase-1 **instrument passes** | 835 eval + 834 E3/DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1 flags EXPLICIT (`--vector-hold-bias 0.0` — 835's CLI default is 3.0!), fee0/slip0 run configs `runs/828s3p1_instruments/cfg_*.json` (server) | gpu-server GPUs 2/3 via run_queue.sh (tmux `q_828s3_inst`) | **DONE 2026-07-09 20:06** — 835 FAIL both seeds (bankrupt, below floor; LEDGER 835/S4-p1); 834 fail-loud walk-bankrupt (834/E3-p1); 836 n=0 (836/E4-p1). Root = **828s3/env-wall**. 834/836 re-run AFTER TASK_839; s0's own pass low-value until then |
+| 828 Stage-3 training **phase 1** | cost0 ×3 seeds from scratch, dithered-book\|K16 **hb0.0/d1.0** (3-arm diagnostic winner; fee16-from-scratch REJECTED — collapse finding, LEDGER 828s3/preflight), snapshots every 100; `jobs_phase1.manifest` | gpu-server GPUs 1/2/3 via run_queue.sh (tmux `q_828s3`) | **DONE 3/3 2026-07-10 05:18** — s1/s2 ep2000 first pass; s0 wedged ep1581 (log-freeze post-checkpoint-save) → killed, archived `*_wedged_ep1581`, solo retry completed clean (rc 0, 20 snapshots; wedge did NOT reproduce at ep1581 — non-deterministic, not data-positional). Ops note: fresh tmux needs `source trader_env/bin/activate` (bare `python` = system Py2) |
+| 828 phase-1 **instrument passes** | 835 eval + 834 E3/DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1 flags EXPLICIT (`--vector-hold-bias 0.0` — 835's CLI default is 3.0!), fee0/slip0 run configs `runs/828s3p1_instruments/cfg_*.json` (server) | gpu-server GPUs 2/3 via run_queue.sh (tmux `q_828s3_inst`) | **DONE 2026-07-09 20:06** — 835 FAIL both seeds (bankrupt, below floor; LEDGER 835/S4-p1); 834 fail-loud walk-bankrupt (834/E3-p1); 836 n=0 (836/E4-p1). Root = **828s3/env-wall**. 834/836 re-run AFTER TASK_839. s0's 835 (record-completion only) launched 2026-07-10 (tmux `q_828s3_inst_s0`) |
 | 828 Stage-3 **phase 2** | fee16 CONTINUATION: (a) warm-start from cost0 ckpts, (b) warm-start from 832 imprint (E5 → critical path) | gpu-server | **GATED on TASK_839 + phase-1 RE-RUN under the fixed step** (2026-07-09: continuation from bankrupt-in-env HOLD-collapsed ckpts is DOA — LEDGER 828s3/env-wall). 832 imprint-sanity equally gated |
 
 ## Gated — do NOT start (named gate must open first)

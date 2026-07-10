@@ -219,6 +219,11 @@ class TrainingConfig:
     # TASK_838: resample K vectors at each expanded interior node (default OFF =
     # root-reuse, bit-identical to the shipped Stage-2/3 vector search).
     vector_per_node_resample: bool = False
+    # TASK_839: budget-constrained vector-step sizing (env-wall fix, D7 opt (a)).
+    # Default OFF = today's single-snapshot sizing, canon bit-identical. Threaded to
+    # EnvConfig via env_factory; the scalar path never reads it.
+    vector_budget_step: bool = False
+    vector_budget_pct: float = 0.99
     burning_money: bool = False
     burn_market_linked: bool = True
     burn_base_rate: float = 0.00005

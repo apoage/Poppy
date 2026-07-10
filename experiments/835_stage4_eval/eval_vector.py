@@ -278,6 +278,9 @@ def build_model_and_trainer(args, n_assets, init_seed):
         vector_hold_bias=args.vector_hold_bias,
         vector_dither_scale=args.vector_dither_scale,
         vector_proposal_scheme=args.vector_proposal_scheme,
+        # TASK_839: carried for run self-description (env-only flag; model build ignores it).
+        vector_budget_step=args.vector_budget_step,
+        vector_budget_pct=args.vector_budget_pct,
         seed=init_seed,
     )
     model, trainer = setup_model_and_trainer(cfg, n_assets)
@@ -494,6 +497,8 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
             "hold_bias": args.vector_hold_bias, "dither_scale": args.vector_dither_scale,
             "proposal_scheme": args.vector_proposal_scheme,
             "per_node_resampling": args.vector_per_node_resample,  # TASK_838
+            "vector_budget_step": args.vector_budget_step,   # TASK_839
+            "vector_budget_pct": args.vector_budget_pct,     # TASK_839
             "gumbel_scale": args.gumbel_scale,
             "max_num_considered_actions": min(args.vector_k, 16),
             "deterministic": True, "selection": "visit_probs argmax",
@@ -572,6 +577,9 @@ def build_panel(args):
         max_episode_steps=400,          # inert: episode bounds overridden below
         bar_minutes=args.bar_minutes,
         vector_action=True,
+        # TASK_839: eval ENV must use the SAME step-sizing the checkpoint trained under.
+        vector_budget_step=args.vector_budget_step,
+        vector_budget_pct=args.vector_budget_pct,
         rng_key=jax.random.PRNGKey(args.eval_seed),
     )
     row_ts, loaded_syms = load_row_timestamps(
@@ -760,6 +768,16 @@ def main():
                     help="TASK_838: per-node action resampling in the search operator — "
                          "MUST match the flag the checkpoint was trained with "
                          "(default OFF = root-reuse, the shipped operator)")
+    ap.add_argument("--vector-budget-step", action="store_true",
+                    dest="vector_budget_step",
+                    help="TASK_839: budget-constrained vector-step sizing in the eval ENV — "
+                         "MUST match the step the checkpoint was trained under (a budget-ON "
+                         "checkpoint scored under a budget-OFF env silently invalidates the "
+                         "measurement); default OFF = canon single-snapshot sizing")
+    ap.add_argument("--vector-budget-pct", type=float, default=0.99,
+                    dest="vector_budget_pct",
+                    help="TASK_839: cash-budget fraction split across simultaneous opening "
+                         "trades when --vector-budget-step is set (default 0.99)")
     ap.add_argument("--discount", type=float, default=0.997)
     ap.add_argument("--gumbel-scale", type=float, default=3.0)
     ap.add_argument("--value-scale", type=float, default=1.0)

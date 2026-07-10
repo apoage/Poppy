@@ -258,6 +258,9 @@ def main():
                 bar_minutes=getattr(config, 'bar_minutes', 1),
                 # TASK_828 Stage 3: vector-action env step (default OFF = canon).
                 vector_action=getattr(config, 'vector_action', False),
+                # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
+                vector_budget_step=getattr(config, 'vector_budget_step', False),
+                vector_budget_pct=getattr(config, 'vector_budget_pct', 0.99),
                 # TASK_821: explicit rng_key when --seed given (deterministic episode-start
                 # sampling in jit_batch_reset). None (default) preserves the existing
                 # time-seeded fallback in env_factory.py::create_jax_env_historical.

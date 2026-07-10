@@ -129,6 +129,15 @@ class EnvConfig:
     # Gate for step_vector(); the scalar step() path never reads this field, so with it
     # OFF the canon path is bit-identical. Not yet wired through training/search (Stage 2/3).
     vector_action: bool = False
+    # TASK_839: budget-constrained vector-step sizing (D7 opt (a); default OFF = canon).
+    # Read ONLY inside step_vector(); with it OFF that path is bit-identical (the branch is
+    # DCE'd — config is a static jit arg). Bounds aggregate simultaneous OPENING spend to
+    # PV * budget_pct, which is <= cash at/near episode start (PV ~= cash) — eliminates the
+    # step-0 env-wall bankruptcy (LEDGER 828s3/env-wall). NOT <= cash in general: on an
+    # invested book (PV > cash) a breadth of opens can still overdraw (process_margin_call
+    # resolves it, as OFF), but per-leg spend is always <= the OFF path so ON is never worse.
+    vector_budget_step: bool = False
+    vector_budget_pct: float = 0.99
 
 
 # =============================================================================
@@ -1400,9 +1409,37 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     a_lsell = action_vec == 3
     a_lbuy  = action_vec == 4
 
+    # TASK_839 (D7 opt (a)): budget-constrained spend sizing for the market legs.
+    # OFF (default) => ideal_spend_value IS ideal_trade_value, so the two lines below that
+    # consume it (actual_cost / actual_short_cost) are byte-identical to canon and the whole
+    # block is DCE'd (config is a static jit arg). ON => each simultaneous OPENING trade sizes
+    # at PV * min(position_size_pct, budget_pct / n_open_trades). This bounds AGGREGATE opening
+    # spend to PV * budget_pct, which is <= cash at/near episode start (PV ~= cash — the step-0
+    # env-wall regime), eliminating the step-0 bankruptcy (LEDGER 828s3/env-wall). It does NOT
+    # guarantee <= cash in general: on an already-invested book (PV > cash) a breadth of opens
+    # can still overdraw and process_margin_call resolves it exactly as before — but per-leg
+    # spend is always <= the OFF path (both clamp each leg at available_cash), so ON is never
+    # worse than canon.
+    #   * n_trades counts SPEND legs only — opening/adding longs (a_buy, not closing a short)
+    #     and opening shorts (a_sell, no position, shorting allowed). Closing trades
+    #     (buy-of-short, sell-of-long) are PROCEEDS and are excluded.
+    #   * The divisor uses only action + position + the size-insensitive `has_min_cash`, so
+    #     there is NO circular dependence on the sizing we are computing.
+    #   * LIMIT orders (ls_*/lb_* below) DELIBERATELY keep the original ideal_trade_value:
+    #     they reserve 0 cash immediately and fill one-at-a-time via process_limit_orders, so
+    #     they are not the simultaneous-overdraft source this fix targets (market-spend-only).
+    ideal_spend_value = ideal_trade_value  # OFF: byte-identical to today
+    if config.vector_budget_step:
+        open_long_mask  = a_buy  & (~(has_position & is_short)) & has_min_cash
+        open_short_mask = a_sell & (~has_position) & config.allow_short & has_min_cash
+        n_trades = jnp.sum(open_long_mask.astype(jnp.int32) + open_short_mask.astype(jnp.int32))
+        pct_eff = jnp.minimum(config.position_size_pct,
+                              config.vector_budget_pct / jnp.maximum(n_trades, 1))
+        ideal_spend_value = portfolio_value * pct_eff
+
     # --- BUY branch (mirror execute_buy) ---
     buy_exec_price = apply_fee_and_slippage(current_prices, True, config.fee_bps, config.slippage_bps)
-    actual_cost = jnp.minimum(ideal_trade_value, available_cash)  # scalar
+    actual_cost = jnp.minimum(ideal_spend_value, available_cash)  # scalar (TASK_839: spend-sized)
     shares_to_buy = actual_cost / jnp.maximum(buy_exec_price, 1e-10)
     short_proceeds_buy = cur_size * (2.0 * cur_entry - buy_exec_price)
     fee_on_close_short = jnp.abs(short_proceeds_buy) * fee_rate
@@ -1437,7 +1474,7 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     sell_exec_price = apply_fee_and_slippage(current_prices, False, config.fee_bps, config.slippage_bps)
     long_proceeds = cur_size * sell_exec_price
     fee_on_close_long = long_proceeds * fee_rate
-    actual_short_cost = jnp.minimum(ideal_trade_value, available_cash)  # scalar
+    actual_short_cost = jnp.minimum(ideal_spend_value, available_cash)  # scalar (TASK_839: spend-sized)
     shares_to_sell = actual_short_cost / jnp.maximum(current_prices, 1e-10)
     fee_on_open_short = actual_short_cost * fee_rate
     can_afford_short = has_min_cash & (shares_to_sell > 0)

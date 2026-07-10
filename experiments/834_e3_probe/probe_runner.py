@@ -248,6 +248,9 @@ def build_env(cfg, n_assets, n_envs, seed, db_override=None):
         reward_attributable=getattr(cfg, "reward_attributable", False),
         bar_minutes=getattr(cfg, "bar_minutes", 1),
         vector_action=True,
+        # TASK_839: budget-constrained vector-step sizing, from the run config (default OFF).
+        vector_budget_step=getattr(cfg, "vector_budget_step", False),
+        vector_budget_pct=getattr(cfg, "vector_budget_pct", 0.99),
         rng_key=jax.random.PRNGKey(seed),
     )
     n_rows = int(prices.shape[0])
@@ -612,6 +615,9 @@ def probe_core(model, params, cfg, env_pack, args, checkpoint_label, smoke,
             "reward_attributable": bool(env_cfg.reward_attributable),
             "reward_hybrid": bool(getattr(cfg, "reward_hybrid", False)),
             "vector_action": True,
+            # TASK_839: record the step-sizing mode the walk actually ran under.
+            "vector_budget_step": bool(env_cfg.vector_budget_step),
+            "vector_budget_pct": float(env_cfg.vector_budget_pct),
         },
         "r_model": r_model,
         "r_true": r_true,

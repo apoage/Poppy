@@ -204,6 +204,15 @@ def parse_args() -> TrainingConfig:
                         dest='vector_per_node_resample',
                         help='TASK_838: resample K action-vectors at each expanded interior '
                              'node (default OFF = root-reuse, canon bit-identical)')
+    parser.add_argument('--vector-budget-step', action='store_true',
+                        dest='vector_budget_step',
+                        help='TASK_839: budget-constrained vector-step sizing — each opening '
+                             'trade sizes at PV*min(pct, budget_pct/n_trades) so simultaneous '
+                             'spend <= cash (default OFF = canon single-snapshot sizing)')
+    parser.add_argument('--vector-budget-pct', type=float, default=0.99,
+                        dest='vector_budget_pct',
+                        help='TASK_839: cash-budget fraction split across simultaneous opening '
+                             'trades when --vector-budget-step is set (default 0.99)')
     parser.add_argument('--differential-baseline', type=str, default='market', choices=['market', 'zero'])
     parser.add_argument('--differential-weight', type=float, default=1.0)
     parser.add_argument('--burning-money', action='store_true')

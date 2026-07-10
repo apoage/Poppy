@@ -263,6 +263,9 @@ def build_panel(cfg, n_assets, seed, db_override, max_decisions, burn_in):
         reward_attributable=getattr(cfg, "reward_attributable", False),
         bar_minutes=getattr(cfg, "bar_minutes", 1),
         vector_action=True,
+        # TASK_839: budget-constrained vector-step sizing, from the run config (default OFF).
+        vector_budget_step=getattr(cfg, "vector_budget_step", False),
+        vector_budget_pct=getattr(cfg, "vector_budget_pct", 0.99),
         rng_key=jax.random.PRNGKey(seed),
     )
     # Row-timestamp axis via the 835 read-only loader mirror; length-asserted
@@ -741,6 +744,9 @@ def probe_core(model, params, cfg, panel, args, checkpoint_label, smoke,
             "window_size": int(env_cfg.window_size),
             "reward_attributable": bool(env_cfg.reward_attributable),
             "vector_action": True,
+            # TASK_839: record the step-sizing mode the walk actually ran under.
+            "vector_budget_step": bool(env_cfg.vector_budget_step),
+            "vector_budget_pct": float(env_cfg.vector_budget_pct),
             "obs_is_price_only_27ch": True,      # position-blind value input (SPEC note)
         },
         "jax_version": jax.__version__,
