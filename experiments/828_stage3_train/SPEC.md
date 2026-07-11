@@ -82,3 +82,32 @@ ship-as-is-and-measure (planner ruling 2026-07-10).
      opt (c) Σw≤1 as a NEW task; do not tweak 839 in place.
 - Phase-2 fee16 continuation re-targets phase-1b checkpoints (phase-1 ckpts are wall-domain
   artifacts — keep for forensics, never warm-start from them).
+
+## Amendment 4 (2026-07-11, planner — PHASE-1c: the weight-env re-train; pre-registered before launch)
+
+Phase-1b verdict (LEDGER 835/S4-p1b + 834/E3-p1b + 836/E4-p1b): **the nets learn — the env
+kills**. DEC-1 PASS ×2 and value>momentum ×2, while incremental-order semantics bankrupted every
+rollout (sparse books, unhedged shorts, margin cascade). TASK_840 shipped the target-weight
+rebalance env (D8 opt (c)); **D10 ratified PROCEED** (E1 edge positive +0.235; the trained
+policy is the real expressibility test).
+
+**Phase-1c battery** — the phase-1 recipe on the WEIGHT env:
+- Jobs `828s3p1c_cost0_s{0,1,2}` = phase-1 command + `--vector-weight-rebalance`
+  (weight-unit/deadband/max at shipped defaults: 1/n_assets, 0.1×unit, 4×unit). NO
+  `--vector-budget-step` (independent flag; weight semantics replace trade sizing wholesale —
+  one variable at a time). Manifest `jobs_phase1c.manifest`, gpu-server, run_queue with
+  `--stall-timeout 2700` (D11: training launches arm the watchdog) and `--acquire-timeout 0`
+  (third seed waits for GPU 1 to free from the p1b-s0 retry).
+- **Pre-registered reads**:
+  1. Collapse tripwire UNCHANGED (pct_hold >99 & ent <0.02, ≥2 seeds past ep300 ⇒ FAIL early).
+  2. Invariant health (env property, not model): ZERO bankruptcy terminations in self-play —
+     any bankruptcy under weight-ON is a TASK_840 defect ⇒ stop, file, no verdict.
+  3. Post-run instruments (phase-1c flags: hb0.0/d1.0, fee0/slip0, `--vector-weight-rebalance`;
+     NO budget flag): **835 rollouts MUST complete (guaranteed by env) — the graded number is
+     the corridor position**: primary = beats floor +0.424 net@21 on ≥2/3 seeds; the D6 engine
+     ref +0.751 and per-window floors reported alongside. 834 DEC-1 + 836 E4 re-run for
+     continuity (pass/diagnostic per their own pre-registrations).
+  4. **D10 granularity trigger**: phase-1c below floor on ≥2/3 seeds ⇒ H6 ladder-widening task
+     (weight-unit sweep / finer action set) becomes the next build; NOT a tweak to 840.
+  5. Phase-2 fee16 stays GATED on TASK_842 (D9 close-fee) + phase-1c verdicts.
+- s0-p1b retry (record-completion) runs to term on GPU 1; phase-1c s2 queues behind it.
