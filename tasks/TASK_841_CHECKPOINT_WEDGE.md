@@ -1,3 +1,12 @@
+> **STATUS (2026-07-11): SHIPPED as `task841-checkpoint-wedge`.** `run_queue.sh --stall-timeout`
+> stall watchdog (kill+archive `_wedged_ep<N>`+relaunch-once, second wedge fail-loud). **Default
+> OFF** (`STALL_TIMEOUT=0`, opt-in) — orchestrator deviation from "default 2700" per invariant #1
+> after the panel showed default-armed false-kills healthy CSV-less/`--name=` jobs at ~55min
+> (MAJOR, double-CONFIRMED, FIXED); unarmed summary byte-identical to HEAD → **DECISIONS D11**.
+> Root cause characterized (orbax post-save GC vs RLock) but STOPPED at out-of-scope trainer
+> surgery; `--debug-stall-dump` wired to capture the next real wedge's stack. Smoke 18/18,
+> scheduler 16/16. Follow-up: apply a flag-gated trainer save fix once the stack is captured.
+
 # TASK_841 — Post-checkpoint-save wedge: watchdog mitigation + root-cause hunt
 
 **Status**: READY 2026-07-11. **Size: S–M. Risk: low-medium** (run_queue.sh watchdog = pure
