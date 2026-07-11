@@ -16,8 +16,22 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_840_WEIGHT_REBALANCE_STEP.md` | L | **The D8 escalation, pre-registered and FIRED** (LEDGER 835/S4-p1b): target-weight rebalance step = the original 828 thesis env. Evidence: nets learn (834 DEC-1 PASS ×2, 836 value>momentum ×2) while incremental-order semantics bankrupts every rollout. Flag-gated, TWO parity pins (canon + 839 path), acceptance (i)–(iii) pre-registered in the spec. |
-| 2 | `tasks/TASK_841_CHECKPOINT_WEDGE.md` | S–M | Post-checkpoint-save wedge (2/6 seed-runs, ~2 GPU-days lost): run_queue stall watchdog (kill+archive+1 auto-retry) + bounded root-cause hunt. Parallel-lane friendly — pure orchestration, zero overlap with 840's diff surface. |
+| _(none)_ | | | 840 + 841 shipped in factory run 7 (2026-07-11) — see below. Next work is planner-owned scheduled runs. |
+
+_Shipped 2026-07-11 factory run 7 (840 + 841 parallel lanes, disjoint surfaces):_
+- _**TASK_840** (`task840-weight-rebalance-step`, `31a545f`) — target-weight rebalance step (H6 env,
+  D8 opt (c)): flag `--vector-weight-rebalance` default OFF (canon + 839-budget both bit-identical,
+  TWO pins `48e1f467…`/`4f8b692e…`). Full high-tier panel: **1 BLOCKER (held-winning-short budget
+  under-reservation, crossval-CONFIRMED) + 1 flow-verifier-CONFIRMED held-leg drift bleed → BOTH FIXED**
+  (whole-book posval/PV reservation + cap-clip re-trims every drifted leg → cash≥0, Σ|w|≤1, margin no-op).
+  Acceptance (i) survives full 1697-step walk (invariant gate cash≥0/Σ|w|≤1) / (ii) sticky-short PASS;
+  **(iii) E1 edge +0.235 (flipped from −0.23, below +0.436) = FINDING, non-gating**. Residuals → **D9**
+  (fee undercharge, gates fee16 phase-2) + **D10** (expressibility). Unblocks phase-1c re-train._
+- _**TASK_841** (`task841-checkpoint-wedge`, `52b155f`) — `run_queue.sh --stall-timeout` wedge watchdog,
+  **default OFF (opt-in)** per invariant #1 (unarmed = byte-identical to HEAD; CSV-declaring jobs only when
+  armed). Medium panel: **1 MAJOR (default-armed false-kills healthy CSV-less/`--name=` jobs at ~55min)
+  double-CONFIRMED → FIXED** + 3 MINOR. Root cause characterized (orbax post-save GC vs RLock), STOPPED at
+  out-of-scope trainer surgery; `--debug-stall-dump` wired for the next real wedge. Default → **D11**._
 
 _Shipped 2026-07-09 factory run 6 (solo, canon-adjacent env fix):_
 - _**TASK_839** (`task839-budget-vector-step`) — the env-wall fix: flag-gated (`--vector-budget-step`,
