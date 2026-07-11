@@ -266,6 +266,11 @@ def build_panel(cfg, n_assets, seed, db_override, max_decisions, burn_in):
         # TASK_839: budget-constrained vector-step sizing, from the run config (default OFF).
         vector_budget_step=getattr(cfg, "vector_budget_step", False),
         vector_budget_pct=getattr(cfg, "vector_budget_pct", 0.99),
+        # TASK_840: target-weight rebalance step, from the run config (default OFF).
+        vector_weight_rebalance=getattr(cfg, "vector_weight_rebalance", False),
+        vector_weight_unit=getattr(cfg, "vector_weight_unit", -1.0),
+        vector_weight_max=getattr(cfg, "vector_weight_max", 4.0),
+        vector_rebalance_deadband=getattr(cfg, "vector_rebalance_deadband", -1.0),
         rng_key=jax.random.PRNGKey(seed),
     )
     # Row-timestamp axis via the 835 read-only loader mirror; length-asserted
@@ -747,6 +752,11 @@ def probe_core(model, params, cfg, panel, args, checkpoint_label, smoke,
             # TASK_839: record the step-sizing mode the walk actually ran under.
             "vector_budget_step": bool(env_cfg.vector_budget_step),
             "vector_budget_pct": float(env_cfg.vector_budget_pct),
+            # TASK_840: record the weight-rebalance mode the walk actually ran under.
+            "vector_weight_rebalance": bool(env_cfg.vector_weight_rebalance),
+            "vector_weight_unit": float(env_cfg.vector_weight_unit),
+            "vector_weight_max": float(env_cfg.vector_weight_max),
+            "vector_rebalance_deadband": float(env_cfg.vector_rebalance_deadband),
             "obs_is_price_only_27ch": True,      # position-blind value input (SPEC note)
         },
         "jax_version": jax.__version__,

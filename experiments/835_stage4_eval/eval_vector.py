@@ -281,6 +281,11 @@ def build_model_and_trainer(args, n_assets, init_seed):
         # TASK_839: carried for run self-description (env-only flag; model build ignores it).
         vector_budget_step=args.vector_budget_step,
         vector_budget_pct=args.vector_budget_pct,
+        # TASK_840: carried for run self-description (env-only flag; model build ignores it).
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
         seed=init_seed,
     )
     model, trainer = setup_model_and_trainer(cfg, n_assets)
@@ -499,6 +504,10 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
             "per_node_resampling": args.vector_per_node_resample,  # TASK_838
             "vector_budget_step": args.vector_budget_step,   # TASK_839
             "vector_budget_pct": args.vector_budget_pct,     # TASK_839
+            "vector_weight_rebalance": args.vector_weight_rebalance,     # TASK_840
+            "vector_weight_unit": args.vector_weight_unit,              # TASK_840
+            "vector_weight_max": args.vector_weight_max,                # TASK_840
+            "vector_rebalance_deadband": args.vector_rebalance_deadband,  # TASK_840
             "gumbel_scale": args.gumbel_scale,
             "max_num_considered_actions": min(args.vector_k, 16),
             "deterministic": True, "selection": "visit_probs argmax",
@@ -580,6 +589,11 @@ def build_panel(args):
         # TASK_839: eval ENV must use the SAME step-sizing the checkpoint trained under.
         vector_budget_step=args.vector_budget_step,
         vector_budget_pct=args.vector_budget_pct,
+        # TASK_840: eval ENV must use the SAME weight-rebalance mode the checkpoint trained under.
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
         rng_key=jax.random.PRNGKey(args.eval_seed),
     )
     row_ts, loaded_syms = load_row_timestamps(
@@ -778,6 +792,22 @@ def main():
                     dest="vector_budget_pct",
                     help="TASK_839: cash-budget fraction split across simultaneous opening "
                          "trades when --vector-budget-step is set (default 0.99)")
+    ap.add_argument("--vector-weight-rebalance", action="store_true",
+                    dest="vector_weight_rebalance",
+                    help="TASK_840: target-weight rebalance step in the eval ENV — MUST match "
+                         "the step the checkpoint was trained under (a weight-ON checkpoint "
+                         "scored under a weight-OFF env silently invalidates the measurement); "
+                         "default OFF = canon")
+    ap.add_argument("--vector-weight-unit", type=float, default=-1.0,
+                    dest="vector_weight_unit",
+                    help="TASK_840: per-Buy/Sell target weight step (sentinel <=0 => 1/n_assets)")
+    ap.add_argument("--vector-weight-max", type=float, default=4.0,
+                    dest="vector_weight_max",
+                    help="TASK_840: per-asset weight cap in UNITS of w_unit (default 4)")
+    ap.add_argument("--vector-rebalance-deadband", type=float, default=-1.0,
+                    dest="vector_rebalance_deadband",
+                    help="TASK_840: re-trim only when |target-current| exceeds this "
+                         "(sentinel <0 => 0.1*w_unit)")
     ap.add_argument("--discount", type=float, default=0.997)
     ap.add_argument("--gumbel-scale", type=float, default=3.0)
     ap.add_argument("--value-scale", type=float, default=1.0)

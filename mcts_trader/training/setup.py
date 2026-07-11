@@ -290,6 +290,11 @@ def setup_jax_environment(config: TrainingConfig, seed: int = None):
         # TASK_839: budget-constrained vector-step sizing (covers both call sites; default OFF)
         vector_budget_step=getattr(config, 'vector_budget_step', False),
         vector_budget_pct=getattr(config, 'vector_budget_pct', 0.99),
+        # TASK_840: target-weight rebalance step (covers both call sites; default OFF)
+        vector_weight_rebalance=getattr(config, 'vector_weight_rebalance', False),
+        vector_weight_unit=getattr(config, 'vector_weight_unit', -1.0),
+        vector_weight_max=getattr(config, 'vector_weight_max', 4.0),
+        vector_rebalance_deadband=getattr(config, 'vector_rebalance_deadband', -1.0),
     )
 
     # Choose between shared prices (faster) or unique prices per env (more diversity)

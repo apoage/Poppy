@@ -138,6 +138,23 @@ class EnvConfig:
     # resolves it, as OFF), but per-leg spend is always <= the OFF path so ON is never worse.
     vector_budget_step: bool = False
     vector_budget_pct: float = 0.99
+    # TASK_840 (D8 opt (c) — the H6 env): target-weight rebalance step (default OFF = canon).
+    # Read ONLY inside step_vector(); with it OFF the whole ON block is DCE'd (config is a
+    # static jit arg) so BOTH the canon path AND the 839 budget path stay bit-identical (two
+    # parity pins). ON: the per-asset action maps to a TARGET signed weight and every Buy/Sell
+    # position is re-trimmed toward its target fraction of CURRENT PV each step; the book is a
+    # bounded allocation by construction (Σ|w| ≤ 1 via proportional scale-down, no leverage),
+    # so at fee=0 PV is conserved and bankruptcy is impossible. INDEPENDENT of and composes
+    # with vector_budget_step (weight ON overrides the sizing/trim semantics).
+    #   * vector_weight_unit: per-Buy/Sell target step. Sentinel <= 0 => 1/n_assets (resolved
+    #     inside step where n is known).
+    #   * vector_weight_max: position cap in UNITS of w_unit (default 4 => ±4·w_unit).
+    #   * vector_rebalance_deadband: re-trim only when |target − current| > deadband (turnover
+    #     discipline). Sentinel < 0 => 0.1·w_unit (resolved inside step).
+    vector_weight_rebalance: bool = False
+    vector_weight_unit: float = -1.0        # sentinel: <= 0 => 1/n_assets
+    vector_weight_max: float = 4.0          # in units of w_unit
+    vector_rebalance_deadband: float = -1.0  # sentinel: < 0 => 0.1 * w_unit
 
 
 # =============================================================================
@@ -1545,6 +1562,136 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     new_order_created = jnp.where(place_any, state.current_step, state.order_created)
     new_order_ttl = jnp.where(place_any, config.default_limit_order_ttl, state.order_ttl)
 
+    # ================================================================================
+    # TASK_840 (D8 opt (c) — the H6 env): target-weight rebalance override.
+    # OFF (default) => this whole block is DCE'd (config is a static jit arg) and BOTH the
+    # canon path and the 839 budget path assembled above are byte-identical (two parity pins).
+    # ON => the per-asset action maps to a TARGET signed weight (Buy +w_unit, Sell -w_unit,
+    # Hold/Limit +0), CLIPPED to +-w_max for EVERY asset, and EVERY position whose target
+    # deviates beyond the deadband is RE-TRIMMED (closed + re-opened) to its target fraction of
+    # CURRENT PV this step. Two quantities, deliberately distinct (both mechanisms the crossval
+    # panel flagged trace to conflating them):
+    #   * the target/cap/clip ladder uses SIGNED MARKET NOTIONAL w = +-size*price/PV. Clipping
+    #     the Hold/Limit legs (target = clip(w_cur)) pulls a DRIFTED held leg (e.g. a losing
+    #     short whose notional grew past the cap) back to the cap => it re-trims => |w| cannot
+    #     run away (closes the "held leg bleeds unbounded" mechanism);
+    #   * the cash RESERVATION of a HELD (non-re-trimmed) leg uses its true CAPITAL footprint
+    #     posval/PV (compute_position_values: long size*price, short 2*size*entry-size*price),
+    #     NOT market notional. A winning short's capital EXCEEDS its market notional, so reserving
+    #     by |w_cur| under-counts it and over-admits new opens => overdraft (closes the
+    #     "winning-short under-reservation -> negative cash -> wipe" mechanism).
+    # Re-trimmed legs are admitted only into the remaining capital budget (1 - Σ_held posval/PV),
+    # so Σ|w| <= 1 (no leverage) AND at fee=0 weight_cash >= 0 EXACTLY (cash = PV*(1 - Σ_held
+    # posval/PV - Σ_reb|w_final|) >= 0 by induction; Σ posval <= PV entering the step). Bankruptcy
+    # is therefore impossible and process_margin_call below is genuinely a no-op ON (kept as the
+    # canon/839 safety net, never deleted; the acceptance probe hard-asserts cash>=0 / Σ|w|<=1 /
+    # margin-no-op every step). ORDER arrays keep the canon placement above (market cancels
+    # pending; LimitSell/LimitBuy still place the order — spec item 2: "order placed, target
+    # applies on fill"); only the POSITION arrays and cash are overridden.
+    if config.vector_weight_rebalance:
+        # resolve the (STATIC) weight schedule from config (n_assets is a static int)
+        w_unit = (config.vector_weight_unit if config.vector_weight_unit > 0.0
+                  else 1.0 / n_assets)
+        w_max = config.vector_weight_max * w_unit
+        deadband = (config.vector_rebalance_deadband if config.vector_rebalance_deadband >= 0.0
+                    else 0.1 * w_unit)
+
+        # current SIGNED MARKET-notional weight (ladder/cap/clip quantity): long +, short -.
+        pv_safe = jnp.maximum(portfolio_value, 1e-10)
+        pos_notional = cur_size * current_prices
+        w_cur = jnp.where(is_long, pos_notional / pv_safe,
+                jnp.where(is_short, -pos_notional / pv_safe, 0.0))
+
+        # current CAPITAL footprint (posval == compute_position_values): long size*price, short
+        # 2*size*entry - size*price. Used ONLY to reserve HELD legs (their real PV contribution).
+        posval = jnp.where(is_long, pos_notional,
+                 jnp.where(is_short, 2.0 * cur_size * cur_entry - pos_notional, 0.0))
+        posval = jnp.where(has_position, posval, 0.0)
+
+        # action -> one-unit target step, then CLIP EVERY asset to the cap (Hold/Limit => clip
+        # w_cur, which re-trims a drifted held leg — the anti-bleed mechanism).
+        step_w = jnp.where(a_buy, w_unit, jnp.where(a_sell, -w_unit, 0.0))
+        raw_target = jnp.clip(w_cur + step_w, -w_max, w_max)
+
+        # turnover discipline: re-trim EVERY leg whose target deviates beyond the deadband
+        # (any action, so clip-pulled held legs are included; sub-threshold drifts don't churn).
+        do_reb = jnp.abs(raw_target - w_cur) > deadband
+
+        # Σ|w| <= 1 (no leverage) AND cash >= 0: HELD legs keep their full CAPITAL footprint
+        # (posval), so admit the re-trimmed legs only into the REMAINING capital budget
+        # (1 - Σ_held posval/PV). held_reserve <= 1 inductively (Σ posval <= PV when cash>=0), so
+        # budget >= 0 and Σ_reb|w_final| <= budget => weight_cash >= 0 EXACTLY at fee=0. This is
+        # the guarantee a whole-vector market-notional scale does NOT deliver (it under-reserves
+        # held winning-short capital); scaling only the re-trimmed legs into the posval budget does.
+        held_reserve = jnp.sum(jnp.where(do_reb, 0.0, posval)) / pv_safe
+        reb_abs = jnp.sum(jnp.where(do_reb, jnp.abs(raw_target), 0.0))
+        budget = jnp.maximum(1.0 - held_reserve, 0.0)
+        scale = jnp.where(reb_abs > budget, budget / jnp.maximum(reb_abs, 1e-10), 1.0)
+        w_final = jnp.where(do_reb, raw_target * scale, w_cur)
+
+        # realize the re-trimmed position into cash (fee-adjusted close proceeds), then re-open
+        # to the target notional. At fee=0 close_proceeds == posval, so PV is conserved and
+        # cash_final = PV*(1 - Σ_held posval/PV - Σ_reb|w_final|) >= 0.
+        close_long_proceeds  = cur_size * sell_exec_price
+        close_short_proceeds = 2.0 * cur_size * cur_entry - cur_size * buy_exec_price
+        close_proceeds = jnp.where(is_long, close_long_proceeds,
+                         jnp.where(is_short, close_short_proceeds, 0.0))
+        close_proceeds = jnp.where(has_position & do_reb, close_proceeds, 0.0)
+
+        target_notional = jnp.abs(w_final) * portfolio_value
+        want_long  = do_reb & (w_final > 0.0)
+        want_short = do_reb & (w_final < 0.0) & config.allow_short   # w_final<0 w/o short => flat
+        open_long_size  = target_notional / jnp.maximum(buy_exec_price, 1e-10)
+        open_short_size = target_notional / jnp.maximum(sell_exec_price, 1e-10)
+        # collateral consumed == target_notional for both sides (fully collateralized book)
+        open_cost = jnp.where(want_long, open_long_size * buy_exec_price,
+                    jnp.where(want_short, open_short_size * sell_exec_price, 0.0))
+
+        reb_cash_delta = jnp.where(do_reb, close_proceeds - open_cost, 0.0)
+        weight_cash = snap_cash + jnp.sum(reb_cash_delta)
+
+        # assemble position arrays; do_reb=False leaves the current position untouched
+        tp_sl_on = config.tp_sl_enabled
+        weight_pos_active = jnp.where(do_reb, want_long | want_short, state.pos_active)
+        weight_pos_side = jnp.where(do_reb,
+                          jnp.where(want_long, 1, jnp.where(want_short, 2, 0)), state.pos_side)
+        weight_pos_size = jnp.where(do_reb,
+                          jnp.where(want_long, open_long_size,
+                          jnp.where(want_short, open_short_size, 0.0)), state.pos_size)
+        weight_pos_entry = jnp.where(do_reb,
+                           jnp.where(want_long, buy_exec_price,
+                           jnp.where(want_short, sell_exec_price, 0.0)), state.pos_entry)
+        weight_pos_sl = jnp.where(do_reb,
+                        jnp.where(want_long & tp_sl_on, buy_exec_price * (1.0 - config.default_stop_loss_pct),
+                        jnp.where(want_short & tp_sl_on, sell_exec_price * (1.0 + config.default_stop_loss_pct),
+                                  0.0)), state.pos_sl)
+        weight_pos_tp = jnp.where(do_reb,
+                        jnp.where(want_long & tp_sl_on, buy_exec_price * (1.0 + config.default_take_profit_pct),
+                        jnp.where(want_short & tp_sl_on, sell_exec_price * (1.0 - config.default_take_profit_pct),
+                                  0.0)), state.pos_tp)
+
+        # LIMIT orders (spec item 2: "order placed, target applies on fill"): keep the canon
+        # PLACEMENT (active/side/price/cancel already assembled above) but SIZE each placed
+        # order to ONE weight unit of PV so a fill moves the position ~one step toward target
+        # (canon sizes at position_size_pct*PV; under weight semantics that lets a breadth of
+        # simultaneous limit-short fills overdraw cash on the next step, re-introducing the very
+        # margin cascade this env removes). Closing-long limit sells keep the full current size.
+        w_notional = w_unit * portfolio_value
+        ls_size_w = jnp.where(has_position & is_long, cur_size,
+                              w_notional / jnp.maximum(ls_limit_price, 1e-10))
+        lb_size_w = w_notional / jnp.maximum(lb_limit_price, 1e-10)
+        new_order_size = jnp.where(place_ls, ls_size_w,
+                         jnp.where(place_lb, lb_size_w, state.order_size))
+
+        # override the canon/839 position + cash result (order active/side/price kept as canon)
+        new_pos_active = weight_pos_active
+        new_pos_side   = weight_pos_side
+        new_pos_size   = weight_pos_size
+        new_pos_entry  = weight_pos_entry
+        new_pos_sl     = weight_pos_sl
+        new_pos_tp     = weight_pos_tp
+        new_cash       = weight_cash
+
     new_state = state.replace(
         cash=new_cash,
         pos_active=new_pos_active,
@@ -1562,7 +1709,11 @@ def step_vector(state: TradingState, action_vec: chex.Array,
         order_ttl=new_order_ttl,
     )
 
-    # 4. Margin call (short losses from the rebalance may have driven cash negative)
+    # 4. Margin call (short losses from the rebalance may have driven cash negative).
+    #    TASK_840: with vector_weight_rebalance ON this is UNREACHABLE — the book is a bounded
+    #    Σ|w| ≤ 1 allocation, so cash stays >= 0 (no overdraft to resolve). The call is kept
+    #    verbatim as the safety net for the canon / 839 paths (never deleted); the ON
+    #    zero-bankruptcy invariant is asserted by the acceptance probe's survival read.
     new_state = process_margin_call(new_state, current_prices, config)
 
     # 5. Liquidation check (identical to scalar step)

@@ -1,3 +1,15 @@
+> **STATUS (2026-07-11): SHIPPED as `task840-weight-rebalance-step`.** Flag-gated
+> `--vector-weight-rebalance` default-OFF (canon + 839-budget both bit-identical, pins
+> `48e1f467…` / `4f8b692e…`). Full high-tier panel: 1 BLOCKER (winning-short budget
+> under-reservation, crossval-CONFIRMED) + 1 flow-verifier-CONFIRMED held-leg drift bleed —
+> BOTH FIXED (whole-book posval/PV reservation + cap-clip re-trims every drifted leg → cash≥0,
+> Σ|w|≤1, margin_call a no-op ON). Acceptance (i) survival PASS (1697 steps, invariant gate
+> cash≥0/Σ|w|≤1/margin-noop), (ii) sticky-short PASS; **(iii) E1 edge +0.235 (flipped from −0.23
+> but below the +0.436 bar) = FINDING, non-gating** per item 6(iii). Note: the "acceptance
+> (i)–(iii) green" line below is superseded — (iii) is a recorded FINDING, not a hard gate.
+> Residuals → **DECISIONS D9** (weight-path fee undercharge, gates fee16 phase-2) + **D10**
+> (weight-semantics expressibility). Retrain = scheduled phase-1c.
+
 # TASK_840 — Target-weight rebalance step (D8 escalation, opt (c) — the H6 env)
 
 **Status**: READY 2026-07-11 — the pre-registered D8 escalation FIRED (LEDGER 835/S4-p1b).

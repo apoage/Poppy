@@ -224,6 +224,13 @@ class TrainingConfig:
     # EnvConfig via env_factory; the scalar path never reads it.
     vector_budget_step: bool = False
     vector_budget_pct: float = 0.99
+    # TASK_840: target-weight rebalance step (D8 opt (c), the H6 env). Default OFF = canon.
+    # Threaded to EnvConfig via env_factory; the scalar path never reads it. w_unit sentinel
+    # <=0 => 1/n_assets; deadband sentinel <0 => 0.1*w_unit (resolved inside step_vector).
+    vector_weight_rebalance: bool = False
+    vector_weight_unit: float = -1.0
+    vector_weight_max: float = 4.0
+    vector_rebalance_deadband: float = -1.0
     burning_money: bool = False
     burn_market_linked: bool = True
     burn_base_rate: float = 0.00005

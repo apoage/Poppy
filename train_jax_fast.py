@@ -261,6 +261,11 @@ def main():
                 # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
                 vector_budget_step=getattr(config, 'vector_budget_step', False),
                 vector_budget_pct=getattr(config, 'vector_budget_pct', 0.99),
+                # TASK_840: target-weight rebalance step (default OFF = canon).
+                vector_weight_rebalance=getattr(config, 'vector_weight_rebalance', False),
+                vector_weight_unit=getattr(config, 'vector_weight_unit', -1.0),
+                vector_weight_max=getattr(config, 'vector_weight_max', 4.0),
+                vector_rebalance_deadband=getattr(config, 'vector_rebalance_deadband', -1.0),
                 # TASK_821: explicit rng_key when --seed given (deterministic episode-start
                 # sampling in jit_batch_reset). None (default) preserves the existing
                 # time-seeded fallback in env_factory.py::create_jax_env_historical.

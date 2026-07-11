@@ -213,6 +213,22 @@ def parse_args() -> TrainingConfig:
                         dest='vector_budget_pct',
                         help='TASK_839: cash-budget fraction split across simultaneous opening '
                              'trades when --vector-budget-step is set (default 0.99)')
+    parser.add_argument('--vector-weight-rebalance', action='store_true',
+                        dest='vector_weight_rebalance',
+                        help='TASK_840: target-weight rebalance step — each Buy/Sell steps a '
+                             'per-asset TARGET signed weight by w_unit and re-trims toward it '
+                             '(bounded Σ|w|<=1 allocation; default OFF = canon)')
+    parser.add_argument('--vector-weight-unit', type=float, default=-1.0,
+                        dest='vector_weight_unit',
+                        help='TASK_840: per-Buy/Sell target weight step (sentinel <=0 => '
+                             '1/n_assets)')
+    parser.add_argument('--vector-weight-max', type=float, default=4.0,
+                        dest='vector_weight_max',
+                        help='TASK_840: per-asset weight cap in UNITS of w_unit (default 4)')
+    parser.add_argument('--vector-rebalance-deadband', type=float, default=-1.0,
+                        dest='vector_rebalance_deadband',
+                        help='TASK_840: re-trim only when |target-current| exceeds this '
+                             '(sentinel <0 => 0.1*w_unit)')
     parser.add_argument('--differential-baseline', type=str, default='market', choices=['market', 'zero'])
     parser.add_argument('--differential-weight', type=float, default=1.0)
     parser.add_argument('--burning-money', action='store_true')

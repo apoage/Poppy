@@ -53,6 +53,11 @@ def create_jax_env_and_prices(
     # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
     vector_budget_step: bool = False,
     vector_budget_pct: float = 0.99,
+    # TASK_840: target-weight rebalance step (default OFF = canon).
+    vector_weight_rebalance: bool = False,
+    vector_weight_unit: float = -1.0,
+    vector_weight_max: float = 4.0,
+    vector_rebalance_deadband: float = -1.0,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment states and synthetic prices.
 
@@ -149,6 +154,11 @@ def create_jax_env_and_prices(
         # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
         vector_budget_step=vector_budget_step,
         vector_budget_pct=vector_budget_pct,
+        # TASK_840: target-weight rebalance step (default OFF = canon)
+        vector_weight_rebalance=vector_weight_rebalance,
+        vector_weight_unit=vector_weight_unit,
+        vector_weight_max=vector_weight_max,
+        vector_rebalance_deadband=vector_rebalance_deadband,
     )
 
     # Initialize batched environment states
@@ -190,6 +200,11 @@ def create_jax_env_unique_prices(
     # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
     vector_budget_step: bool = False,
     vector_budget_pct: float = 0.99,
+    # TASK_840: target-weight rebalance step (default OFF = canon).
+    vector_weight_rebalance: bool = False,
+    vector_weight_unit: float = -1.0,
+    vector_weight_max: float = 4.0,
+    vector_rebalance_deadband: float = -1.0,
     n_workers: int = 8,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX env with UNIQUE prices per env (multithreaded generation).
@@ -289,6 +304,11 @@ def create_jax_env_unique_prices(
         # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
         vector_budget_step=vector_budget_step,
         vector_budget_pct=vector_budget_pct,
+        # TASK_840: target-weight rebalance step (default OFF = canon)
+        vector_weight_rebalance=vector_weight_rebalance,
+        vector_weight_unit=vector_weight_unit,
+        vector_weight_max=vector_weight_max,
+        vector_rebalance_deadband=vector_rebalance_deadband,
     )
 
     # Initialize batched environment states with unique prices
@@ -328,6 +348,11 @@ def create_jax_env_historical(
     # TASK_839: budget-constrained vector-step sizing (default OFF = canon).
     vector_budget_step: bool = False,
     vector_budget_pct: float = 0.99,
+    # TASK_840: target-weight rebalance step (default OFF = canon).
+    vector_weight_rebalance: bool = False,
+    vector_weight_unit: float = -1.0,
+    vector_weight_max: float = 4.0,
+    vector_rebalance_deadband: float = -1.0,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment with HISTORICAL prices from database.
 
@@ -418,6 +443,11 @@ def create_jax_env_historical(
         # TASK_839: budget-constrained vector-step sizing (default OFF = canon)
         vector_budget_step=vector_budget_step,
         vector_budget_pct=vector_budget_pct,
+        # TASK_840: target-weight rebalance step (default OFF = canon)
+        vector_weight_rebalance=vector_weight_rebalance,
+        vector_weight_unit=vector_weight_unit,
+        vector_weight_max=vector_weight_max,
+        vector_rebalance_deadband=vector_rebalance_deadband,
     )
 
     # Initialize batched environment states

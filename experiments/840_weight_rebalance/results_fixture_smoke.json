@@ -1,0 +1,156 @@
+{
+  "task": "TASK_840 target-weight rebalance step (the H6 env)",
+  "mode": "fixture-smoke",
+  "db": "fixtures/trading_fixture.db",
+  "window": [
+    "2021-01-01",
+    "2025-09-01"
+  ],
+  "n_assets": 279,
+  "n_rows": 1704,
+  "d8": "RATIFIED option (c): per-asset action -> target signed weight, re-trim to CURRENT PV",
+  "ledger": "835/S4-p1b",
+  "weight_flags": {
+    "vector_weight_rebalance": true,
+    "vector_weight_unit": -1.0,
+    "vector_weight_max": 4.0,
+    "vector_rebalance_deadband": -1.0
+  },
+  "factory_threading": {
+    "weight_False": {
+      "env_vector_weight_rebalance": false,
+      "env_vector_weight_unit": 0.05
+    },
+    "weight_True": {
+      "env_vector_weight_rebalance": true,
+      "env_vector_weight_unit": 0.05
+    },
+    "propagates": true
+  },
+  "survival_walk": {
+    "canon": {
+      "mode": "canon",
+      "n_envs": 2,
+      "n_walk": 1697,
+      "n_assets": 279,
+      "position_size_pct": 0.1,
+      "max_positions": 16,
+      "bankrupt_step_per_env": [
+        0,
+        0
+      ],
+      "n_survived": 0,
+      "n_bankrupt": 2,
+      "final_pv_per_env": [
+        0.0,
+        0.0
+      ],
+      "min_final_pv": 0.0,
+      "first_step_open_frac": 0.3924731182795699,
+      "min_step_cash": 0.0,
+      "max_step_sum_abs_w": 0.0
+    },
+    "budget": {
+      "mode": "budget",
+      "n_envs": 2,
+      "n_walk": 1697,
+      "n_assets": 279,
+      "position_size_pct": 0.1,
+      "max_positions": 16,
+      "bankrupt_step_per_env": [
+        306,
+        205
+      ],
+      "n_survived": 0,
+      "n_bankrupt": 2,
+      "final_pv_per_env": [
+        0.0,
+        0.0
+      ],
+      "min_final_pv": 0.0,
+      "first_step_open_frac": 0.3924731182795699,
+      "min_step_cash": 0.0,
+      "max_step_sum_abs_w": 0.990000307559967
+    },
+    "weight": {
+      "mode": "weight",
+      "n_envs": 2,
+      "n_walk": 1697,
+      "n_assets": 279,
+      "position_size_pct": 0.1,
+      "max_positions": 16,
+      "bankrupt_step_per_env": [
+        -1,
+        -1
+      ],
+      "n_survived": 2,
+      "n_bankrupt": 0,
+      "final_pv_per_env": [
+        63833.75,
+        66317.7890625
+      ],
+      "min_final_pv": 63833.75,
+      "first_step_open_frac": 0.3924731182795699,
+      "min_step_cash": 38642.4921875,
+      "max_step_sum_abs_w": 0.5292869210243225
+    },
+    "weight_survives_full_panel_zero_bankrupt": true,
+    "invariant_cash_ge0_sumw_le1_margin_noop": true
+  },
+  "sticky_short": {
+    "canon": {
+      "mode": "canon",
+      "n_short": 8,
+      "n_steps": 500,
+      "final_pv": 108820.0,
+      "min_pv": 60127.890625,
+      "final_pv_frac": 1.0882,
+      "bankrupt_at": -1
+    },
+    "weight": {
+      "mode": "weight",
+      "n_short": 8,
+      "n_steps": 500,
+      "final_pv": 100050.4453125,
+      "min_pv": 96538.703125,
+      "final_pv_frac": 1.000504453125,
+      "bankrupt_at": -1
+    },
+    "weight_keeps_pv_gt_50pct": true
+  },
+  "jax_version": "0.6.2",
+  "timestamp": "2026-07-11T23:01:02",
+  "e1_net21": {
+    "K": 16,
+    "seed": 0,
+    "n_assets": 279,
+    "n_decisions": 60,
+    "warm": 31,
+    "position_size_pct": 0.0017921146953405018,
+    "discount": 0.997,
+    "value_rollout_steps": 3,
+    "proposal_bias": 3.0,
+    "cost_tier_bp": 21,
+    "net21_floor_819book_weighton": 5.6033517223808555,
+    "net21_e1_weighton": 5.838351891016046,
+    "edge_e1_minus_floor": 0.23500016863519058,
+    "required_edge": 0.436,
+    "floor_final_pv": 118299.453125,
+    "e1_final_pv": 107440.140625,
+    "floor_bankrupt_at": -1,
+    "e1_bankrupt_at": -1,
+    "read": "net21(E1) >= floor + 0.436",
+    "verdict": "FINDING",
+    "finding": "E1 perfect-model search did not clear floor+0.436 in weight semantics (fixture-smoke; recorded per SPEC, not a silent pass)."
+  },
+  "gate_ok": true,
+  "gate": {
+    "survival_pass": true,
+    "sticky_pass": true,
+    "invariant_pass": true,
+    "e1_pass": false,
+    "e1_is_hard_gate": false,
+    "forced_fail_selftest": false
+  },
+  "elapsed_sec": 20.4
+}
