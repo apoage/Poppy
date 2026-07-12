@@ -8,7 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
-| _(none)_ | | | |
+| D13 | Phase-1c verdict is SPLIT (LEDGER 835/S4-p1c): the weight env is FIXED (first-ever complete trained-policy rollouts, zero bankruptcies) but from-scratch self-play is below floor 2/2 with a systematic SHORT-heavy book (≈10 shorts; profits only in the bear window) — the SAME bias as p1b, across two envs. The pre-registered D10 trigger (≥2/3 below floor ⇒ H6 ladder-widening "becomes the next build") FIRED. Follow it literally, or redirect to the designed alternative? | **REDIRECT (planner recommendation — this OVERRIDES a pre-registered trigger, so it is an OPERATOR call): make E5/832 imprint→ExIt the critical path** (imprint the floor-beating LONG linear book via BC, then ExIt — DEC-2 bar ε=+0.10; the from-scratch cell is now measured negative twice, and the short bias indicts the learning path, which granularity does not address; 836 weak-mixed value supports this). Consequences: (a) small factory task threading the 840 weight flag through 832 (it was NOT threaded in run 7) + imprint-sanity fixture smoke; (b) TASK_844 short-bias postmortem probe runs in parallel (valuable under EITHER ruling — already in Ready); (c) H6 ladder-widening DEFERRED to a named contingency: it activates if the IMPRINTED policy also can't hold the floor. Answer "redirect" or "follow D10". | 2026-07-12 |
 
 ## DECIDED
 
