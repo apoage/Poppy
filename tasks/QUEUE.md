@@ -16,7 +16,7 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| _(none)_ | | | 842 shipped in factory run 8 (2026-07-12) — see below. Next work is planner-owned (phase-1c in flight, phase-2 fee16 now un-gated). |
+| _(none — TASK_843 seeded but GATED on phase-1c completion; see Gated table)_ | | | 842 shipped in factory run 8 (2026-07-12). Next Ready rows come from phase-1c verdicts. |
 
 _Shipped 2026-07-12 factory run 8 (solo, canon-adjacent fee fix):_
 - _**TASK_842** (`task842-weight-close-fee`, `30013a4`) — canon-equivalent explicit close/open-short fee
@@ -101,7 +101,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 | 828 phase-1 **instrument passes** | 835 eval + 834 E3/DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1 flags EXPLICIT (`--vector-hold-bias 0.0` — 835's CLI default is 3.0!), fee0/slip0 run configs `runs/828s3p1_instruments/cfg_*.json` (server) | gpu-server GPUs 2/3 via run_queue.sh (tmux `q_828s3_inst`) | **DONE 2026-07-09 20:06** — 835 FAIL both seeds (bankrupt, below floor; LEDGER 835/S4-p1); 834 fail-loud walk-bankrupt (834/E3-p1); 836 n=0 (836/E4-p1). Root = **828s3/env-wall**. 834/836 re-run AFTER phase-1b. s0's 835 DONE 2026-07-10: same FAIL (bankrupt 501/676, hold 98.2) — verdict 3/3, LEDGER row folded |
 | 828 Stage-3 training **phase 1b** | RE-RUN under the fixed step: phase-1 command + `--vector-budget-step` (D7 opt (a), **D8 ratified ship-and-measure**), cost0 ×3 seeds, `jobs_phase1b.manifest`; pre-registration = SPEC amendment 3 | gpu-server GPUs 1/2/3 via run_queue.sh | **s1/s2 DONE 2026-07-10 ~16:15** (ep2000, 20 snapshots, 9.7h). **s0 WEDGED at ep162** — SAME signature as phase-1's wedge: frozen immediately after "Finished synchronous save" (orbax post-checkpoint deadlock, now 2/6 seed-runs — pattern, candidate factory row) → killed 2026-07-11 21:08, archived `*_wedged_ep162`, solo retry RUNNING (tmux `q_828s3p1b_s0`, GPU 1) |
 | 828 phase-1b **instrument passes** | 835 (D8 primary evidence) + 834 DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1b flags (budget ON) | gpu-server GPUs 2/3 | **DONE 2026-07-11 21:35, 6/6 rc0 — the decisive mixed verdict**: 835 still bankrupt (step 132/181, s1 book = 10–11 shorts → D8 escalation FIRED ⇒ TASK_840); **834 DEC-1 PASS ×2** (R 1.30/1.12 vs bars 0.33/0.24 — D2 rebuild works); **836 value>momentum ×2** (ρ +0.21/+0.30 vs −0.03 — first positive learning signal). LEDGER 835/S4-p1b · 834/E3-p1b · 836/E4-p1b |
-| 828 Stage-3 **phase 1c** | re-train under the TASK_840 weight env: phase-1 recipe + `--vector-weight-rebalance` (NO budget flag — one variable), cost0 ×3 seeds, `jobs_phase1c.manifest`; pre-registration = SPEC amendment 4; **D10 ratified PROCEED**; watchdog ARMED per D11 (`--stall-timeout 2700`) | gpu-server via run_queue (tmux `q_828s3p1c`, `--gpus 1,2,3 --acquire-timeout 0`) | **RUNNING 2026-07-11** — s0/s1 on GPUs 2/3; s2 queues until the p1b-s0 retry frees GPU 1 (~07:00). Graded read: corridor position vs floor +0.424 on ≥2/3 seeds; any bankruptcy = TASK_840 defect (invariant) |
+| 828 Stage-3 **phase 1c** | re-train under the TASK_840 weight env: phase-1 recipe + `--vector-weight-rebalance` (NO budget flag — one variable), cost0 ×3 seeds, `jobs_phase1c.manifest`; pre-registration = SPEC amendment 4; **D10 ratified PROCEED**; watchdog ARMED per D11 (`--stall-timeout 2700`) | gpu-server via run_queue (tmux `q_828s3p1c`, `--gpus 1,2,3 --acquire-timeout 0`) | **RUNNING** — s0/s1 landing ~07:45 2026-07-12; s2 started 07:0x on GPU 1 (~10h behind) after the **p1b-s0 retry wedged AGAIN at ep982 (wedge #3)** → py-spy stack CAPTURED (841 root-cause: XLA/CUDA dispatch hang post-save, orbax-lock hypothesis REFUTED — see TASK_841 evidence note + `lore/notes_2026-07-12.md`), killed, NO re-retry (p1b verdict stands on s1/s2). Graded read: corridor vs floor +0.424 on ≥2/3 seeds; any bankruptcy = TASK_840 defect |
 | 828 Stage-3 **phase 2** (restated) | fee16 CONTINUATION from phase-1c ckpts + 832 imprint | gpu-server | GATED on **TASK_842 (D9)** + phase-1c verdicts |
 | 828 Stage-3 **phase 2** | fee16 CONTINUATION: (a) warm-start from **phase-1b** ckpts, (b) warm-start from 832 imprint (E5 → critical path). Phase-1 (wall-domain) ckpts = forensics only, never warm-start | gpu-server | GATED on phase-1b snapshots + instrument passes + 832 imprint-sanity |
 
@@ -109,6 +109,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 
 | Task | Gate |
 |------|------|
+| `tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md` (D12 cleanup: incremental netting + snap-to-flat) | phase-1c battery COMPLETE + instrument passes graded (fee0-pin re-base is only safe after the battery; also fixes the short over-tax before phase-2 relies on fee16 numbers) |
 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped ✓ (2026-07-08) + Stage-3 training run's rung verdicts green; SCHEDULED server run, not a factory-loop job |
 
 _TASK_832 (E5 linear imprint) moved to Ready 2026-07-08 — its gate (828 Stage 3 banner) is now satisfied._

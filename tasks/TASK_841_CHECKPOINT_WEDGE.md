@@ -47,3 +47,16 @@ byte-stable on the existing fixture manifest); selftest 7/7; medium panel.
 Rewriting the checkpoint format, async-checkpointing migration, touching training math.
 Evidence pointers: `logs/*_wedged_ep{1581,162}.{csv,log}` + `jax_ckpt_fast/*_wedged_*` on
 gpu-server; wedge tails quoted in `lore/notes_2026-07-09.md` and QUEUE.md.
+
+---
+
+> **ROOT-CAUSE EVIDENCE (planner, 2026-07-12 — live wedge #3 captured).** p1b-s0 retry wedged at
+> ep982 (post-save signature, 3rd occurrence). `py-spy dump --nonblocking` on the live process
+> (`runs/828_stage3_p1b_s0/wedge_ep982_pyspy.txt` on gpu-server, quoted in
+> `lore/notes_2026-07-12.md`): MainThread ACTIVE inside `jax pxla.__call__` executing the
+> compiled self-play `lax.scan` (`training/self_play.py:742`) — a CUDA/XLA kernel dispatch that
+> never returns (GPU util 0%). Only other thread: idle tqdm monitor. **No orbax threads, no
+> Python lock. The orbax-GC-vs-RLock hypothesis is REFUTED** — the save COMPLETES; the next XLA
+> GPU execution hangs at the driver/stream level. Follow-up direction: XLA/driver-level stall
+> (post-save host-transfer or stream-sync interaction), not trainer-lock surgery. The D11
+> watchdog remains the correct mitigation and is armed on all training launches.
