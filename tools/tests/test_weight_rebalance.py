@@ -253,15 +253,13 @@ def test_fee_charged_on_retrim_documented():
     """Force the SAME re-trim (a Buy that steps up a pre-existing long) at fee0 and at
     fee16/slip5; compare the PV change across the step.
 
-    FINDING (documented explicitly, not a silent pass): the weight-rebalance path DOES
-    charge transaction cost on a re-trim. Cost enters via the fee+slippage spread baked
-    into buy_exec_price / sell_exec_price (apply_fee_and_slippage): a re-trim CLOSES at
-    sell_exec_price = px/(1+c) and REOPENS at buy_exec_price = px*(1+c), so PV drops by
-    ~ (c/(1+c)) * (closed_notional + reopened_notional), c = (fee+slip). At fee0 the
-    spread is 0 and PV is conserved. NOTE: unlike the canon buy/sell path the weight path
-    does NOT add the separate explicit close-fee (fee_on_close = proceeds*fee_rate) on top
-    of the exec price — its cost model is purely the round-trip exec-price spread (one
-    fee+slip leg per side). Turnover is therefore NOT free."""
+    The weight-rebalance path charges transaction cost on a re-trim via TWO layers:
+    (a) the fee+slippage spread baked into buy_exec_price / sell_exec_price
+    (apply_fee_and_slippage) — a re-trim CLOSES at sell_exec_price = px/(1+c) and REOPENS
+    at buy_exec_price = px*(1+c); and (b) TASK_842: the canon-equivalent SEPARATE explicit
+    close-fee (closed_notional*fee_rate) on the closing leg (plus fee_on_open_short on a
+    short open), mirroring execute_sell/execute_buy. At fee0 BOTH layers are 0 and PV is
+    conserved. Turnover is therefore NOT free, and is now cost-honest vs the canon path."""
     na = 4
     w_unit = 0.1
     prices = _flat_prices(80, na)
@@ -285,7 +283,8 @@ def test_fee_charged_on_retrim_documented():
     # fee16/slip5: PV strictly DROPS -> a transaction cost IS charged on the re-trim
     assert dpv_fee16 < -1.0
     assert dpv_fee16 < dpv_fee0 - 1.0
-    # magnitude sanity: ~ (21bp/1.0021) * (closed ~10k + reopened ~19k) ~ 60
+    # magnitude sanity: spread ~ (21bp/1.0021)*(closed ~10k + reopened ~19k) ~ 60,
+    # PLUS the TASK_842 explicit close-fee ~16bp*closed(~10k) ~ 16  ->  ~ -76 total
     assert -200.0 < dpv_fee16 < -10.0
 
 
@@ -434,6 +433,104 @@ def test_margin_call_is_noop_under_on_fee0():
     pv = float(compute_portfolio_value(st, cur))
     sumw = float((np.abs(np.asarray(st.pos_size) * np.asarray(cur))).sum() / max(pv, 1e-9))
     assert sumw <= 1.05, f"Σ|w|={sumw} exceeded the no-leverage cap"
+
+
+# ---------------------------------------------------------------------------
+# TASK_842: canon-equivalent close fee — the weight re-trim's TOTAL round-trip
+# cost (spread + explicit close-fee) now equals the equivalent canon scalar
+# round-trip's TOTAL cost within 1e-6 (the panel's own equivalence construction:
+# mirror notionals => set canon position_size_pct == w_unit so both size the SAME
+# notional). At flat prices the only PV loss over a full open->close round-trip is
+# transaction cost, so total_fee == initial_cash - final_cash.
+# ---------------------------------------------------------------------------
+
+def test_weight_roundtrip_fee_equals_canon_roundtrip():
+    from mcts_trader.env.jax_trading_env import execute_buy, execute_sell
+    na = 4
+    w_unit = 0.1
+    fee_bps, slip_bps = 16.0, 5.0
+    prices = _flat_prices(80, na)
+
+    # allow_short=False so a Sell that targets a (tiny) negative weight closes cleanly to FLAT
+    # rather than opening a residual micro-short — makes the round-trip land exactly flat, so
+    # the ONLY cost is the open spread (no explicit open fee) + the explicit close-fee.
+    # --- weight path: Buy asset0 (open long -> target +w_unit), then Sell (re-trim to flat) ---
+    cfg_w = _cfg(na, w_unit=w_unit, fee_bps=fee_bps, slippage_bps=slip_bps, allow_short=False)
+    st = _fresh_state(prices, cfg_w)
+    c0 = float(np.asarray(st.cash))
+    buy = jnp.array([2] + [1] * (na - 1), dtype=jnp.int32)
+    sell = jnp.array([0] + [1] * (na - 1), dtype=jnp.int32)
+    st, _, _, _ = step_vector(st, buy, prices, cfg_w)       # open long ~ w_unit*PV notional
+    assert bool(np.asarray(st.pos_active)[0]) and int(np.asarray(st.pos_side)[0]) == 1
+    st, _, _, _ = step_vector(st, sell, prices, cfg_w)      # re-trim to flat (closes the long)
+    assert not bool(np.asarray(st.pos_active)[0])            # back to flat
+    weight_total_fee = c0 - float(np.asarray(st.cash))
+
+    # --- canon scalar path: execute_buy (open long) then execute_sell (close long),
+    #     position_size_pct == w_unit so the opened notional MIRRORS the weight path exactly ---
+    cfg_c = EnvConfig(
+        n_assets=na, initial_cash=INITIAL_CASH, fee_bps=fee_bps, slippage_bps=slip_bps,
+        max_steps=400, window_size=5, position_size_pct=w_unit, allow_short=False,
+        tp_sl_enabled=False, vector_weight_rebalance=False,
+    )
+    stc = _fresh_state(prices, cfg_c)
+    cur = get_current_prices(prices, stc.current_step, stc.episode_start_idx)
+    stc = execute_buy(stc, jnp.array(0, dtype=jnp.int32), cur, cfg_c)
+    assert bool(np.asarray(stc.pos_active)[0]) and int(np.asarray(stc.pos_side)[0]) == 1
+    stc = execute_sell(stc, jnp.array(0, dtype=jnp.int32), cur, cfg_c)
+    assert not bool(np.asarray(stc.pos_active)[0])
+    canon_total_fee = c0 - float(np.asarray(stc.cash))
+
+    # both charge a real cost, and they now MATCH within 1e-6 (cost-honest turnover)
+    assert weight_total_fee > 1.0, f"weight round-trip charged no fee: {weight_total_fee}"
+    assert weight_total_fee == pytest.approx(canon_total_fee, abs=1e-6), (
+        f"weight total fee {weight_total_fee!r} != canon total fee {canon_total_fee!r} "
+        f"(diff {weight_total_fee - canon_total_fee:.3e})")
+
+
+# ---------------------------------------------------------------------------
+# TASK_842: sign check — on a SHORT weight-ON rollout, fee16 strictly REDUCES
+# PV vs fee0 (fees can only cost), with no invariant violation (cash>=0, Σ|w|<=1).
+# ---------------------------------------------------------------------------
+
+def test_fee16_reduces_pv_vs_fee0_short_rollout():
+    na = 4
+    w_unit = 0.1
+    T = 40
+    prices = _flat_prices(T, na)   # flat: any PV divergence between arms is fees alone
+
+    def short_rollout(fee_bps, slip_bps):
+        cfg = _cfg(na, w_unit=w_unit, w_max=4.0, fee_bps=fee_bps, slippage_bps=slip_bps)
+        st = _fresh_state(prices, cfg)
+        # constant Sell on assets 0..1 (open + step shorts, then held at the cap => re-trims)
+        sell = jnp.array([0, 0] + [1] * (na - 2), dtype=jnp.int32)
+        min_cash = np.inf
+        max_sumw = 0.0
+        for k in range(20):
+            st, _, _, done = step_vector(st, sell, prices, cfg)
+            cur = get_current_prices(prices, st.current_step - 1, st.episode_start_idx)
+            pv = float(compute_portfolio_value(st, cur))
+            cash = float(np.asarray(st.cash))
+            sumw = float((np.abs(np.asarray(st.pos_size) * np.asarray(cur))).sum() / max(pv, 1e-9))
+            min_cash = min(min_cash, cash)
+            max_sumw = max(max_sumw, sumw)
+            assert not bool(np.asarray(done)), f"fee{fee_bps}: bankrupt at step {k}"
+        cur = get_current_prices(prices, st.current_step - 1, st.episode_start_idx)
+        pv_final = float(compute_portfolio_value(st, cur))
+        return pv_final, min_cash, max_sumw
+
+    pv_fee0, cash0, sumw0 = short_rollout(0.0, 0.0)
+    pv_fee16, cash16, sumw16 = short_rollout(16.0, 5.0)
+
+    # invariants hold in BOTH arms (weight-ON guarantee): cash>=0, no leverage
+    for cash, sumw, tag in ((cash0, sumw0, "fee0"), (cash16, sumw16, "fee16")):
+        assert cash >= -1e-2, f"{tag}: cash {cash} < 0 (margin path would fire)"
+        assert sumw <= 1.05, f"{tag}: Σ|w|={sumw} exceeded the no-leverage cap"
+
+    # fees strictly REDUCE PV (Δ<0): at flat prices fee16 PV must sit below fee0 PV
+    delta = pv_fee16 - pv_fee0
+    assert delta < 0.0, f"fee16 did not reduce PV vs fee0 (Δ={delta:.4f})"
+    assert pv_fee0 == pytest.approx(INITIAL_CASH, rel=1e-4)  # fee0: PV conserved (flat prices)
 
 
 if __name__ == "__main__":

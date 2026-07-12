@@ -1,3 +1,16 @@
+> **STATUS (2026-07-12): SHIPPED as `task842-weight-close-fee`.** Canon-equivalent explicit
+> close/open-short fee added to the weight re-trim (`close_fee=|close_proceeds|·fee_rate` = canon
+> L788/L894; `open_short_fee=open_cost·fee_rate` = L905; no open-long fee = L813). **Three pins
+> MATCH** (canon `48e1f467…`, 839-budget `4f8b692e…`, new weight-ON-fee0 `1c50d58c…`) — every term
+> ×fee_rate ⇒ **fee0 bit-identical, phase-1c cost0 untouched**. The ~16bps UNDERcharge (D9) is
+> FIXED. Flow-verifier CONFIRMED: weight ≥ canon per re-trim (never under). NOTE: the weight env
+> full-closes+reopens each re-trim with a slippage-driven residual micro-short → it OVER-taxes a
+> short round-trip vs canon (pre-existing 840 geometry, fee-independent, fee0-locked) → **DECISIONS
+> D12** (planner; incremental-netting cleanup is a post-phase-1c task). NIT: the "within 1e-6"
+> acceptance is float32-summation fragile (float64-exact; rel ~3e-7). Medium panel: correctness+
+> regression session-limit-truncated (trending clean, orchestrator-substituted on objective gates);
+> flow-verifier re-run COMPLETED clean. selftest 7/7, 44 tests pass.
+
 # TASK_842 — Weight-path canon-equivalent close fee (D9 remainder; gates phase-2 fee16)
 
 **Status**: READY 2026-07-11 (D9 ratified: phase-1c runs cost0 as-is; THIS ships before any

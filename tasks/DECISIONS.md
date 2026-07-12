@@ -8,7 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
-| _(none)_ | | | |
+| D12 | The TASK_840 weight env re-trims by FULL close+reopen each step (not a canon-style incremental adjust), and `w_cur` uses market notional so slippage leaves a tiny residual after a unit-step "close". With TASK_842's now-canon-faithful fees this means: a LONG full-close round-trip matches canon to 1e-6 (verified), but a SHORT round-trip OVER-charges vs a canon round-trip (orchestrator repro: 185.2 vs 105.0 at fee16) and leaves a residual micro-short. **This is an OVER-tax, never an undercharge — D9's concern is fixed.** For phase-2 fee16: accept the close+reopen cost model as-is, or change re-trims to net incrementally against the held position (canon-style) + snap-to-flat within deadband to kill dust? | **ACCEPT as-is for now (planner call).** 842's job — kill the fee UNDERcharge — is done and fee0-locked (phase-1c cost0 unaffected; the fee0 pin forbids touching the residual/close+reopen semantics while the battery runs). The incremental-netting + snap-to-flat cleanup is a SEPARATE post-phase-1c task (it changes fee0 behavior → cannot touch the running battery). Revisit when phase-1c completes and the fee0 pin can be re-based. | 2026-07-12 |
 
 ## DECIDED
 

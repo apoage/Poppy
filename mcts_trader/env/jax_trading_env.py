@@ -1647,7 +1647,31 @@ def step_vector(state: TradingState, action_vec: chex.Array,
         open_cost = jnp.where(want_long, open_long_size * buy_exec_price,
                     jnp.where(want_short, open_short_size * sell_exec_price, 0.0))
 
-        reb_cash_delta = jnp.where(do_reb, close_proceeds - open_cost, 0.0)
+        # TASK_842 (D9 remainder): canon charges a SEPARATE explicit fee ON TOP of the
+        # exec-price spread; the weight re-trim above charged only the spread (undercharged
+        # ~one fee tier of closed notional vs an equivalent canon round-trip). Mirror canon
+        # EXACTLY so weight turnover is cost-honest at fee>0. Every term is ×fee_rate, so it is
+        # EXACTLY 0 at fee_bps==0 => the weight-ON/fee0 pin stays bit-identical (phase-1c cost0
+        # unaffected). Lines cited are the canon scalar close/open fee arithmetic this mirrors:
+        #   * close-long  fee: execute_sell L894 fee_on_close = long_proceeds * fee_rate,
+        #                      deducted L914 cash + long_proceeds - fee_on_close;
+        #   * close-short fee: execute_buy  L788 fee_on_close = |short_proceeds| * fee_rate,
+        #                      deducted L812 cash + short_proceeds - fee_on_close;
+        #     (close_proceeds already holds long_proceeds / short_proceeds and is (has_position
+        #      & do_reb)-gated above; jnp.abs unifies both legs — long_proceeds>=0 so abs is a
+        #      no-op there and matches canon's un-abs'd close-long form exactly.)
+        #   * open-short  fee: execute_sell L905 fee_on_open = short_cost * fee_rate,
+        #                      deducted L915 cash - short_cost - fee_on_open (short_cost == the
+        #                      collateral == open_cost here). Opening a LONG has NO explicit
+        #                      canon fee (execute_buy L813 is cost only) => none added on want_long.
+        # Deducted from weight_cash at the SAME logical point canon deducts it: folded into the
+        # re-trim cash delta (+close_proceeds -close_fee on the close; -open_cost -open_short_fee
+        # on the short open), then summed onto snap_cash exactly as the fee-free delta was.
+        close_fee = jnp.abs(close_proceeds) * fee_rate
+        open_short_fee = jnp.where(want_short, open_cost, 0.0) * fee_rate
+
+        reb_cash_delta = jnp.where(
+            do_reb, close_proceeds - close_fee - open_cost - open_short_fee, 0.0)
         weight_cash = snap_cash + jnp.sum(reb_cash_delta)
 
         # assemble position arrays; do_reb=False leaves the current position untouched
