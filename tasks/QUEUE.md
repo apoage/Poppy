@@ -16,7 +16,18 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_842_WEIGHT_PATH_CLOSE_FEE.md` | S | **D9 remainder, ratified 2026-07-11**: canon-equivalent close-fee on the weight-path re-trim (~16bps/close undercharge, panel-quantified). Fee=0 bit-identical (provable no-op for the RUNNING phase-1c — but do NOT deploy to srv mid-battery; planner controls deploy timing). GATES phase-2 fee16. |
+| _(none)_ | | | 842 shipped in factory run 8 (2026-07-12) — see below. Next work is planner-owned (phase-1c in flight, phase-2 fee16 now un-gated). |
+
+_Shipped 2026-07-12 factory run 8 (solo, canon-adjacent fee fix):_
+- _**TASK_842** (`task842-weight-close-fee`, `30013a4`) — canon-equivalent explicit close/open-short fee
+  on the TASK_840 weight re-trim (was undercharging ~16bps/close, D9). Every term ×fee_rate ⇒ **fee0
+  bit-identical** (THIRD pin weight-ON/fee0 `1c50d58c…` captured pre-edit at ba53294; canon `48e1f467…`
+  + budget `4f8b692e…` also MATCH) ⇒ **RUNNING phase-1c cost0 untouched**. Medium panel: correctness+
+  regression session-limit-truncated (trending clean, orchestrator-substituted); flow-verifier re-run
+  CONFIRMED **no undercharge** (weight ≥ canon per re-trim — the short RT is an OVER-charge from 840
+  close+reopen/residual geometry, fee-independent, → **D12**) + canon-faithful arithmetic. NIT: within-1e-6
+  is float32-summation fragile (float64-exact). **Un-gates phase-2 fee16.** 840 (iii) E1 fee16 edge honestly
+  moved +0.235→−0.134 (the +0.235 was flattered by the fixed undercharge)._
 
 _Shipped 2026-07-11 factory run 7 (840 + 841 parallel lanes, disjoint surfaces):_
 - _**TASK_840** (`task840-weight-rebalance-step`, `31a545f`) — target-weight rebalance step (H6 env,
