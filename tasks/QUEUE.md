@@ -3,22 +3,21 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-09 ~21:15** — PHASE-1 VERDICTS IN: both finished seeds FAIL (bankrupt mid-rollout,
-below floor — LEDGER 835/S4-p1), 834/836 blocked/empty, and the root cause is STRUCTURAL:
-`step_vector`'s snapshot-cash accounting makes breadth lethal at any cost tier (LEDGER
-**828s3/env-wall** — reproduced + code-traced). The 828s3/preflight "fees punish exploration"
-reading was the wrong root; cost0 collapses too. **Everything now funnels through D7
-(vector-step budget semantics, recommendation seeded) → TASK_839** — phase-2 fee16 continuation,
-832 imprint-sanity, and the 834/836 re-runs are all GATED on it. The annealing contingency stays
-un-seeded (superseded twice over: the collapse is env-mechanical, not exploration-schedule).
+**2026-07-14 ~21:30 — D13 DECIDED: REDIRECT** (operator; H6 widening = named "rainy day"
+contingency). The wall is DOWN. Critical path = E5/832 imprint→ExIt (DEC-2 bar ε=+0.10 +
+per-window consistency leg). The 844 postmortem informed the ruling: no locus tripped 4/4 —
+the nets carry NO short preference; the measured failure is "no profitable behavioral prior"
+(LEDGER 844/postmortem), which imprint injects and granularity does not. Ready re-seeded:
+**TASK_843 first** (env reaches its FINAL fee0 form — netting + snap-to-flat) then
+**TASK_845** (832 weight-compat + teacher-expressibility gate, measured against that final
+form). Scheduled E5 runs (imprint-sanity → imprint → ExIt) gated on 845's ship.
 
 ## Ready — take from the top
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| _(none — D13 wall)_ | | | 844 shipped in factory run 9 (2026-07-14). TASK_843 is GATED on D13; the E5/832-compat and H6-widening tracks both wait on the D13 ruling. Next factory work needs either D13 answered or a new D13-independent Ready row. |
-
-**WALL NOTICE — D13 is OPEN** (operator call: the pre-registered D10 ladder-widening trigger fired, but the planner recommends REDIRECTING to the E5/832 imprint→ExIt path — overriding a pre-registration needs the operator). H6-widening and 832-compat work must NOT start until D13 is answered. TASK_844 postmortem is SHIPPED **and its real run is DONE (2026-07-14): no locus tripped — verdicts folded into the D13 row (LEDGER 844/postmortem). D13 is now fully informed; nothing else blocks the ruling.**
+| 1 | `tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md` | S–M | **UN-GATED 2026-07-14** (gate satisfied: phase-1c battery complete + instruments graded; D13 ruled). D12 cleanup: incremental netting + snap-to-flat on the 840 weight branch; fee0 pin `1c50d58c…` RE-BASES (capture new pins pre/post per the 838/842 parity discipline). Fixes the short over-tax (185.2 vs 105.0 at fee16) BEFORE anything relies on fee16 numbers. Ranked first so the env reaches its final form before 845 measures against it. |
+| 2 | `tasks/TASK_845_IMPRINT_WEIGHT_COMPAT.md` | S–M | **D13-redirect critical path.** Thread the TASK_840 weight env through the 832 imprint runner (runner is weight-blind: no weight flags `imprint.py:533-579`; `_to_action_vec` is order-semantics) + pre-registered TEACHER-EXPRESSIBILITY gate (teacher replay in weight env ≈ order-env replay, fixture ≤10% rel; weight-native mapping variant if it fails). Zero canon diffs. Both rows are S–M — one factory run can take both in sequence (run-7 pattern). |
 
 _Shipped 2026-07-14 factory run 9 (solo, read-only diagnostic):_
 - _**TASK_844** (`task844-short-bias-probe`, `b53ecfe`) — short-bias postmortem instrument (mirror-book
@@ -115,14 +114,15 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 | 828 phase-1b **instrument passes** | 835 (D8 primary evidence) + 834 DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1b flags (budget ON) | gpu-server GPUs 2/3 | **DONE 2026-07-11 21:35, 6/6 rc0 — the decisive mixed verdict**: 835 still bankrupt (step 132/181, s1 book = 10–11 shorts → D8 escalation FIRED ⇒ TASK_840); **834 DEC-1 PASS ×2** (R 1.30/1.12 vs bars 0.33/0.24 — D2 rebuild works); **836 value>momentum ×2** (ρ +0.21/+0.30 vs −0.03 — first positive learning signal). LEDGER 835/S4-p1b · 834/E3-p1b · 836/E4-p1b |
 | 828 Stage-3 **phase 1c** | re-train under the TASK_840 weight env: phase-1 recipe + `--vector-weight-rebalance` (NO budget flag — one variable), cost0 ×3 seeds, `jobs_phase1c.manifest`; pre-registration = SPEC amendment 4; **D10 ratified PROCEED**; watchdog ARMED per D11 (`--stall-timeout 2700`) | gpu-server via run_queue (tmux `q_828s3p1c`, `--gpus 1,2,3 --acquire-timeout 0`) | **s0/s1 DONE 2026-07-12 07:32 + instruments graded same morning (LEDGER 835/S4-p1c · 834/E3-p1c · 836/E4-p1c): ENV FIXED (zero bankruptcies, first-ever complete rollouts) / POLICY BELOW FLOOR 2/2 (short-biased book) ⇒ D13 OPEN**; s2 DONE 14:16 + record pass graded (−1.385, complete rollout, 7L/8.4S — verdict 3/3). **Battery closed CLEAN: zero failures, zero wedges, watchdog armed throughout.** Earlier: s2 start was delayed by the **p1b-s0 retry wedge #3 at ep982** → py-spy stack CAPTURED (841 root-cause: XLA/CUDA dispatch hang post-save, orbax-lock hypothesis REFUTED — see TASK_841 evidence note + `lore/notes_2026-07-12.md`), killed, NO re-retry (p1b verdict stands on s1/s2). Graded read: corridor vs floor +0.424 on ≥2/3 seeds; any bankruptcy = TASK_840 defect |
 | 844 **short-bias postmortem** | `bias_probe.py` on p1c s0/s1/s2 + p1b s1 control (`jobs_844.manifest`, weight/order run flags from `cfg_*.json`) | gpu-server GPUs 2/3 via run_queue.sh (tmux `q_844`) | **DONE 2026-07-14 20:40, 4/4 rc0 — NO LOCUS TRIPPED (LEDGER 844/postmortem)**: value clean (calibrated \|z\|≤0.9, the raw-t would have false-tripped ×4), prior BUY-leaning (0.65–0.84), credit-misassignment unsupported. Planner post-hoc: probe leg tracker is FLIP-BLIND in weight semantics — shorts exit ONLY by BUY-flip to long (exact arithmetic 3/3); longs culled by non-action re-trim closes (margin ruled out — fee0 no-op invariant). Folded into D13 |
-| 828 Stage-3 **phase 2** (restated) | fee16 CONTINUATION from phase-1c ckpts + 832 imprint | gpu-server | GATED on **TASK_842 (D9)** + phase-1c verdicts |
-| 828 Stage-3 **phase 2** | fee16 CONTINUATION: (a) warm-start from **phase-1b** ckpts, (b) warm-start from 832 imprint (E5 → critical path). Phase-1 (wall-domain) ckpts = forensics only, never warm-start | gpu-server | GATED on phase-1b snapshots + instrument passes + 832 imprint-sanity |
+| 832 **imprint-sanity** (E5 leg 1) | teacher replay floor (weight env, real panel — the binding ±0.10-absolute expressibility read) + BC imprint + deterministic sanity replay vs teacher ±0.10 (DEC-2 tolerance); cost0, weight flags = phase-1c set; ≤1 GPU-day | gpu-server single verified-idle GPU, run_queue + D11 watchdog | **GATED on TASK_845 ship** (+ TASK_843 if it ships after 845 — re-base first). FAIL here = H5 falsification clause fires (BC/representation path implicated) → planner, before any ExIt spend |
+| 832 **ExIt** (E5 leg 2, = the phase-2 continuation under redirect) | short ExIt from the imprint ckpt (`--load-checkpoint --reset-optimizer --clear-buffer`; verify `Restored entropy_coef: 0.01` at launch — SPEC PIN c), ≥3 seeds, fee16 per DEC-2; PASS = floor+0.10 net@21 ≥3 seeds (per-seed above bare floor) + ≥3/4 regime windows at/above their window floor | gpu-server, run_queue + D11 watchdog | GATED on imprint-sanity PASS. PASS ⇒ R3 gate opens (warm-start ranked first); FAIL with sanity green + E1/E3 green ⇒ H1 weakens, planner pivots (pathway kill logic). H6 widening = contingency if the IMPRINTED policy can't hold the floor |
+| ~~828 Stage-3 phase 2 (from-scratch continuations)~~ | ~~fee16 continuation from phase-1b/1c ckpts~~ | — | **SUPERSEDED by D13 redirect 2026-07-14**: the ExIt row above IS the phase-2 fee16 continuation, warm-started from the imprint. From-scratch ckpts (p1/p1b/p1c) = forensics + probe inputs only, never warm-start (cell measured negative twice: LEDGER 835/S4-p1b, 835/S4-p1c) |
 
 ## Gated — do NOT start (named gate must open first)
 
 | Task | Gate |
 |------|------|
-| `tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md` (D12 cleanup: incremental netting + snap-to-flat) | phase-1c battery COMPLETE + instrument passes graded (fee0-pin re-base is only safe after the battery; also fixes the short over-tax before phase-2 relies on fee16 numbers) |
+| ~~`tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md`~~ | gate SATISFIED 2026-07-14 → moved to Ready #1 |
 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped ✓ (2026-07-08) + Stage-3 training run's rung verdicts green; SCHEDULED server run, not a factory-loop job |
 
 _TASK_832 (E5 linear imprint) moved to Ready 2026-07-08 — its gate (828 Stage 3 banner) is now satisfied._

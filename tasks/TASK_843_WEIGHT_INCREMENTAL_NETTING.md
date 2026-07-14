@@ -1,8 +1,9 @@
 # TASK_843 — Weight-path incremental netting + snap-to-flat (D12 cleanup)
 
-**Status**: GATED 2026-07-12 — do NOT start until the phase-1c battery COMPLETES and its
-instrument passes are graded (this change alters fee0 behavior → the weight-ON/fee0 pin
-`1c50d58c…` re-bases; touching it mid-battery would break run/eval symmetry).
+**Status**: READY 2026-07-14 — gate SATISFIED (phase-1c battery complete 3/3 + instruments
+graded 2026-07-12; D13 ruled). Ranked #1: the env must reach its FINAL fee0 form before
+TASK_845's teacher-expressibility gate measures against it. The weight-ON/fee0 pin
+`1c50d58c…` RE-BASES with this change — capture fresh pins pre/post (838/842 discipline).
 **Size: S–M. Risk: medium** (TASK_840 weight branch only; canon + 839-budget pins unchanged).
 
 ## Why
