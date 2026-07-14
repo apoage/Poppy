@@ -10,6 +10,18 @@
 > 7/7. **Real numbers = the scheduled planner run** on p1c s0/s1(+s2) + p1b s1 control with the
 > weight-env run flags (this ships the instrument + fixture plumbing proof only).
 
+> **PLANNER POST-RUN NOTE (2026-07-14, real run DONE 4/4 rc0 — LEDGER 844/postmortem):** no
+> pre-registered locus tripped on any checkpoint (value clean calibrated \|z\|≤0.9; prior
+> BUY-leaning 0.65–0.84; credit-misassignment unsupported on the valid p1b read). **Instrument
+> blind spot found for any re-run:** the leg tracker's `pre_active & ~post_active` close
+> detector assumes no same-step side flips — TRUE in order semantics, FALSE in weight semantics
+> (fractional budget-scaled weights + ±1-unit steps flip short→long in one step,
+> `jax_trading_env.py:1613-1630`). In p1c ALL short exits are such flips (hidden long-opens ≡
+> short-exits, exact 3/3: 103/81/108), so `close_count.short = 0` and the empty
+> action-attributed subset are ARTIFACTS there. Fix if re-run: treat a side change as
+> close+open. Also inherited: per-side $ attribution of the PV bleed is out of reach (re-trim
+> fragments reset `pos_entry`; leg-visible PnL ≪ bleed).
+
 # TASK_844 — Short-bias postmortem probe (where does the ~10-short book come from?)
 
 **Status**: READY 2026-07-12 (valid under EITHER D13 ruling — diagnostic, zero canon diffs).
