@@ -1,3 +1,15 @@
+> **STATUS (2026-07-14): SHIPPED as `task844-short-bias-probe`.** Read-only diagnostic
+> (`experiments/844_short_bias/`, zero canon diffs, D13-independent). Three probes: mirror-book
+> value (calibrated), flat-book policy marginals, rollout leg decomposition + fixture smoke on an
+> untrained model. Medium panel: regression clean; **2 MAJOR FIXED** — (1) probe-1 mirror-Δ was
+> uncalibrated (independently-initialized BUY/SELL embedding columns → a FRESH model trips |t|~4;
+> now gated on a matched fresh-init null z-statistic, smoke robust across seeds 0/7/8: z
+> +0.10/−0.85/−1.12), (2) probe-3 mislabeled an all-close SUPERSET as the EXACT `reward_attributable`
+> term → relabeled + an action-attributed subset now gates `credit_misassign`. MINOR (smoke
+> tolerance false-alarm) fixed. NIT → planner: `open_count` also counts limit-fill opens. selftest
+> 7/7. **Real numbers = the scheduled planner run** on p1c s0/s1(+s2) + p1b s1 control with the
+> weight-env run flags (this ships the instrument + fixture plumbing proof only).
+
 # TASK_844 — Short-bias postmortem probe (where does the ~10-short book come from?)
 
 **Status**: READY 2026-07-12 (valid under EITHER D13 ruling — diagnostic, zero canon diffs).

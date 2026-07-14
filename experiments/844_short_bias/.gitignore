@@ -1,0 +1,5 @@
+# Compiled artifacts (py_compile / pytest bytecode).
+__pycache__/
+*.pyc
+# Scheduled-run (real-checkpoint) outputs — only the fixture smoke is committed.
+results_probe.json

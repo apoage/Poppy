@@ -1,0 +1,201 @@
+{
+ "task": "TASK_844 short-bias postmortem probe",
+ "mode": "fixture-smoke",
+ "checkpoint": "fresh-init (fixture smoke; saved+reloaded via trainer.save_checkpoint/load_checkpoint)",
+ "db": "fixtures/trading_fixture.db",
+ "window": [
+  "2025-09-14",
+  "2025-12-11"
+ ],
+ "panel": {
+  "n_rows": 427,
+  "n_assets": 16,
+  "warm": 60,
+  "n_decisions": 30,
+  "n_loaded_symbols": 8,
+  "padded": true
+ },
+ "seed": 8,
+ "restored_step_count": 0,
+ "operator": {
+  "hold_bias": 3.0,
+  "dither_scale": 1.0,
+  "proposal_scheme": "dithered-book",
+  "rollout": {
+   "vector_k": 8,
+   "sims": 8,
+   "discount": 0.997,
+   "gumbel_scale": 3.0,
+   "value_scale": 1.0,
+   "value_shift": 0.0,
+   "hold_bias": 3.0,
+   "dither_scale": 1.0,
+   "proposal_scheme": "dithered-book",
+   "per_node_resampling": false
+  },
+  "fee_bps": 16.0,
+  "slippage_bps": 5.0
+ },
+ "mirror_book_value": {
+  "definition": "\u0394 = V(B) \u2212 V(\u2212B); B = open the walk-state book's support LONG (BUY on support, HOLD elsewhere); \u2212B = its EXACT element-wise long\u2194short mirror (SELL on support). Value = one recurrent_inference_vector step from the state's own market latent, canon _categorical_to_scalar decode. B canonicalized LONG so mean \u0394 < 0 \u21d2 short-preference. RAW delta_stats (within-state t) is UNCALIBRATED: vec_act_proj (muzero_model.py:306-314) has independently-initialized BUY vs SELL columns, so even a fresh untrained model yields a per-checkpoint offset with |t| up to ~4 (arbitrary architectural zero-point). The VALUE-locus read gates on `calibrated` (null-subtracted vs matched fresh inits), NOT raw t.",
+  "n_states_walked": 24,
+  "n_states_with_book": 24,
+  "mean_support_size": 8.875,
+  "delta_stats": {
+   "n": 24,
+   "mean": -0.6081762500107288,
+   "std": 0.5940474023198161,
+   "sem": 0.1212594182257818,
+   "t": -5.015497013834595,
+   "frac_negative": 0.875
+  },
+  "calibrated": {
+   "definition": "z = (\u0394_ckpt_offset \u2212 null_mean) / null_std, where null_mean/null_std are the MEAN and SPREAD of the mirror-\u0394 offset ACROSS FRESH INITS of the SAME architecture, measured on the IDENTICAL book states/latents. This removes the arbitrary vec_act_proj zero-point that the raw within-state t cannot separate from a learned short-preference. The null is bootstrapped OVER INITS for the CI. Value-locus \u21d4 z < -2.0 (needs n_null \u2265 3).",
+   "ckpt_offset": -0.6081762500107288,
+   "n_null": 5,
+   "null_init_seeds": [
+    20000,
+    20001,
+    20002,
+    20003,
+    20004
+   ],
+   "null_offsets": [
+    0.46925437202056247,
+    -0.1892868783324957,
+    0.1725256989399592,
+    -0.5495423351724943,
+    -0.49371420592069626
+   ],
+   "null_mean": -0.11815266969303291,
+   "null_std": 0.4363898868159017,
+   "calibrated_delta": -0.49002358031769594,
+   "z": -1.1229031540880334,
+   "bootstrap_ci95_delta": [
+    -0.8270309027284384,
+    -0.14185063205659387
+   ]
+  },
+  "value_B_mean": -0.8357499875128269,
+  "value_mirror_mean": -0.22757373750209808,
+  "mirror_audit": "EXACT: off-support both HOLD; on-support B=BUY vs \u2212B=SELL; per-state long-leg count == short-leg count; same active set",
+  "walk": {
+   "action_rule": "zero-logit dithered-book proposal, seed-fixed, legality-masked per state (834 precedent) \u2014 checkpoint-independent; single env, fixed start at the first obs-valid row",
+   "seed": 8,
+   "burn_in": 6,
+   "collect_steps": 24,
+   "first_done": -1,
+   "mask_max_positions": 16,
+   "mask_min_cash_threshold": 100.0
+  }
+ },
+ "flat_book_policy": {
+  "definition": "raw = per-asset softmax of the factored policy head at flat-book (all-cash) states = the learned PRIOR (primary); masked = same under the legality mask (diagnostic secondary). sell-mass = p(SELL)+p(LimitSell); buy-mass = p(BUY)+p(LimitBuy).",
+  "n_flat_states": 16,
+  "n_assets": 16,
+  "under_powered": false,
+  "raw_prior": {
+   "sell_mass": 0.363609712709831,
+   "buy_mass": 0.4117165778393428,
+   "hold_mass": 0.22467370305275836,
+   "sell_over_buy": 0.88315538475042
+  },
+  "masked": {
+   "sell_mass": 0.363609712709831,
+   "buy_mass": 0.4117165778393428,
+   "hold_mass": 0.22467370305275836,
+   "sell_over_buy": 0.88315538475042
+  },
+  "rows_first_last": [
+   60,
+   425
+  ]
+ },
+ "rollout_legs": {
+  "definition": "835 deterministic vector rollout (visit-argmax); per-leg realized PnL by side, long=log(exit/entry), short=\u2212log(exit/entry), exit=decision-row price, entry=pre-close avg entry. realized_log_pnl_by_side = ALL-CLOSE realized log-PnL = a SUPERSET of the env reward_attributable term (jax_trading_env.py:1249-1259): it also sweeps in limit-fill / TP-SL / margin closes, whereas the env snapshots prev_active_attr POST limit/TP-SL/margin, pre-action (env:1401/1191) so it credits ACTION-caused closes only. action_attributed_log_pnl_by_side = the closes the market SELL/BUY on that asset directly commanded (a clean, conservative subset of the env term \u2014 excludes indirect post-action margin liquidations, so it never over-credits). credit-misassignment gates on the ACTION-ATTRIBUTED short term. realized_dollar / unrealized_dollar are the $ views of the all-close set.",
+  "operator": {
+   "vector_k": 8,
+   "sims": 8,
+   "discount": 0.997,
+   "gumbel_scale": 3.0,
+   "value_scale": 1.0,
+   "value_shift": 0.0,
+   "hold_bias": 3.0,
+   "dither_scale": 1.0,
+   "proposal_scheme": "dithered-book",
+   "per_node_resampling": false
+  },
+  "n_decisions": 30,
+  "n_exec": 30,
+  "terminated_early_at": -1,
+  "final_pv": 97022.28125,
+  "close_count": {
+   "long": 15,
+   "short": 11
+  },
+  "close_count_action_attributed": {
+   "long": 9,
+   "short": 11
+  },
+  "open_count": {
+   "long": 20,
+   "short": 18
+  },
+  "realized_log_pnl_by_side": {
+   "long": -0.042598755143232,
+   "short": -0.08621476057175546
+  },
+  "action_attributed_log_pnl_by_side": {
+   "long": -0.00266342690042619,
+   "short": -0.08621476057175546
+  },
+  "realized_dollar_by_side": {
+   "long": -359.3108411421417,
+   "short": -844.0289842550919
+  },
+  "open_at_end": {
+   "long": 5,
+   "short": 7
+  },
+  "unrealized_dollar_by_side": {
+   "long": -783.0618374549813,
+   "short": 487.57344653096516
+  }
+ },
+ "interpretation": {
+  "rule_verbatim": "mirror-book value mean \u0394 significantly < 0 (prefers short books) \u21d2 VALUE locus; flat-book sell/buy policy-mass ratio > 1.5 \u21d2 POLICY-prior locus; short legs realize losses but the policy keeps opening them \u21d2 REWARD/credit mis-assignment (profited in training-era self-play but not at eval \u21d2 distribution shift). DIAGNOSTIC \u2014 this probe localizes the ~10-short bias; it gates nothing and fixes nothing by itself. The \u22652-checkpoint aggregation is the planner's job across scheduled runs.",
+  "applied": false,
+  "reading": "FIXTURE-SMOKE (untrained fresh-init model) \u2014 plumbing proof only; interpretation NOT applied. Real reading = scheduled run on the p1c/p1b snapshots."
+ },
+ "leak_check": {
+  "obs_rows": "[t-60, t-1] (position-blind 27ch)",
+  "mirror_exact_flip": "EXACT: off-support both HOLD; on-support B=BUY vs \u2212B=SELL; per-state long-leg count == short-leg count; same active set",
+  "leg_exit_mark": "decision-row price (the row the action executes on)",
+  "leg_no_flip_in_step": "SELL closes long / BUY closes short \u2014 a side never flips in one step, so each asset closes at most once per step (no double-count)"
+ },
+ "config": {
+  "model_size": "small",
+  "state_dim": 64,
+  "h_cycles": 4,
+  "l_cycles": 6,
+  "n_assets": 16,
+  "value_scale": 1.0,
+  "value_shift": 0.0,
+  "bar_minutes": 60,
+  "window_size": 60,
+  "reward_attributable": true,
+  "vector_action": true,
+  "vector_budget_step": false,
+  "vector_budget_pct": 0.99,
+  "vector_weight_rebalance": false,
+  "vector_weight_unit": -1.0,
+  "vector_weight_max": 4.0,
+  "vector_rebalance_deadband": -1.0,
+  "obs_is_price_only_27ch": true
+ },
+ "jax_version": "0.6.2",
+ "timestamp": "2026-07-14T20:12:18",
+ "out_name": "results_fixture_smoke.json",
+ "out_pointer": "experiments/844_short_bias/results_fixture_smoke.json",
+ "ledger_row": "| 844/short-bias | 2026-07-14 | postmortem | Where is the ~10-short standing book carried (value / policy prior / realized reward)? fresh-init (fixture smoke; saved+reloaded via trainer.save_checkpoint/load_checkpoint) | mirror-\u0394 calibrated -0.4900 (z -1.1229, n_null=5; raw mean -0.6082, raw-t -5.0155 UNCAL, n=24); flat-book sell/buy +0.8832 (sell +0.3636 vs buy +0.4117); legs action-attributed realized-log S -0.0862 (opens 18) vs L -0.0027 (opens 20) [all-close S -0.0862 / L -0.0426]. FIXTURE-SMOKE \u2014 plumbing proof, untrained model, interpretation not applied; real numbers come from the scheduled run. | n/a (diagnostic instrument \u2014 no corridor claim) | experiments/844_short_bias/results_fixture_smoke.json |"
+}
