@@ -16,9 +16,19 @@ un-seeded (superseded twice over: the collapse is env-mechanical, not exploratio
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_844_SHORT_BIAS_POSTMORTEM.md` | S–M | Diagnostic instrument, valid under EITHER D13 ruling: where does the systematic ~10-short book come from (value locus / policy prior / credit mis-assignment)? Read-only, 834/836 pattern. |
+| _(none — D13 wall)_ | | | 844 shipped in factory run 9 (2026-07-14). TASK_843 is GATED on D13; the E5/832-compat and H6-widening tracks both wait on the D13 ruling. Next factory work needs either D13 answered or a new D13-independent Ready row. |
 
-**WALL NOTICE — D13 is OPEN** (operator call: the pre-registered D10 ladder-widening trigger fired, but the planner recommends REDIRECTING to the E5/832 imprint→ExIt path — overriding a pre-registration needs the operator). The factory may take row 1 (D13-independent) but must NOT start H6-widening or 832-compat work until D13 is answered.
+**WALL NOTICE — D13 is OPEN** (operator call: the pre-registered D10 ladder-widening trigger fired, but the planner recommends REDIRECTING to the E5/832 imprint→ExIt path — overriding a pre-registration needs the operator). H6-widening and 832-compat work must NOT start until D13 is answered. TASK_844 (the D13-independent postmortem) is now SHIPPED — see below.
+
+_Shipped 2026-07-14 factory run 9 (solo, read-only diagnostic):_
+- _**TASK_844** (`task844-short-bias-probe`, `b53ecfe`) — short-bias postmortem instrument (mirror-book
+  value / flat-book marginals / leg decomposition + fixture smoke), zero canon diffs, D13-independent.
+  Medium panel: regression clean; **2 MAJOR FIXED** — probe-1 mirror-Δ was uncalibrated (independently-
+  init BUY/SELL embedding columns ⇒ a FRESH model trips |t|~4; now gated on a matched fresh-init null
+  z-stat, smoke robust across seeds 0/7/8 z +0.10/−0.85/−1.12) + probe-3 mislabeled an all-close SUPERSET
+  as the EXACT reward_attributable term (relabeled + action-attributed subset now gates credit_misassign).
+  MINOR (smoke tol false-alarm) fixed; NIT (open_count counts limit-fill opens) → planner. Real numbers =
+  the SCHEDULED planner run (p1c s0/s1(+s2) + p1b s1 control, weight-env flags)._
 
 _Shipped 2026-07-12 factory run 8 (solo, canon-adjacent fee fix):_
 - _**TASK_842** (`task842-weight-close-fee`, `30013a4`) — canon-equivalent explicit close/open-short fee
