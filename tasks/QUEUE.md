@@ -19,7 +19,7 @@ are PLANNER-owned**: the scheduled E5 imprint-sanity→imprint→ExIt real-panel
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| _(none)_ | Ready EMPTY after factory run 10 (843 + 845 shipped). Next moves are PLANNER-owned: the scheduled E5 imprint-sanity→imprint→ExIt real-panel runs (un-blocked by 845) + the OPEN decisions **D14** (fee16 all-short overdraft, before phase-2 fee16) and **D15** (E5 teacher-expressibility mapping/params, before the imprint→ExIt spend). No new factory-loop task until a Ready row lands. | | |
+| 1 | `tasks/TASK_846_WEIGHT_FEE_HEADROOM.md` | S | **D14 ratified opt (a) 2026-07-16**: fee-headroom reservation in the weight budget (all-short fee16 wipe fix). Every term ×fee_rate ⇒ fee0 pin `6293668f…` must MATCH. GATES the ExIt continuation + all phase-2 fee16 launches. Fail-closed lens mandatory. |
 
 _Shipped 2026-07-16 factory run 10 (843 → 845 in sequence, the D12-cleanup → E5-compat chain):_
 - _**TASK_843** (`task843-weight-incremental-netting`, `ed27849`) — weight-path incremental netting + snap-to-flat
