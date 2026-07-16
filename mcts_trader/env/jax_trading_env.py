@@ -1568,8 +1568,10 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     # canon path and the 839 budget path assembled above are byte-identical (two parity pins).
     # ON => the per-asset action maps to a TARGET signed weight (Buy +w_unit, Sell -w_unit,
     # Hold/Limit +0), CLIPPED to +-w_max for EVERY asset, and EVERY position whose target
-    # deviates beyond the deadband is RE-TRIMMED (closed + re-opened) to its target fraction of
-    # CURRENT PV this step. Two quantities, deliberately distinct (both mechanisms the crossval
+    # deviates beyond the deadband is RE-TRIMMED (TASK_843: NET incremental adjust — only the
+    # DELTA notional trades, not a full close+reopen) to its target fraction of CURRENT PV this
+    # step; a target within the deadband of zero snaps to FLAT. Two quantities, deliberately
+    # distinct (both mechanisms the crossval
     # panel flagged trace to conflating them):
     #   * the target/cap/clip ladder uses SIGNED MARKET NOTIONAL w = +-size*price/PV. Clipping
     #     the Hold/Limit legs (target = clip(w_cur)) pulls a DRIFTED held leg (e.g. a losing
@@ -1581,13 +1583,20 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     #     by |w_cur| under-counts it and over-admits new opens => overdraft (closes the
     #     "winning-short under-reservation -> negative cash -> wipe" mechanism).
     # Re-trimmed legs are admitted only into the remaining capital budget (1 - Σ_held posval/PV),
-    # so Σ|w| <= 1 (no leverage) AND at fee=0 weight_cash >= 0 EXACTLY (cash = PV*(1 - Σ_held
-    # posval/PV - Σ_reb|w_final|) >= 0 by induction; Σ posval <= PV entering the step). Bankruptcy
-    # is therefore impossible and process_margin_call below is genuinely a no-op ON (kept as the
-    # canon/839 safety net, never deleted; the acceptance probe hard-asserts cash>=0 / Σ|w|<=1 /
-    # margin-no-op every step). ORDER arrays keep the canon placement above (market cancels
-    # pending; LimitSell/LimitBuy still place the order — spec item 2: "order placed, target
-    # applies on fill"); only the POSITION arrays and cash are overridden.
+    # so Σ|w| <= 1 (no leverage) AND **at fee=0** weight_cash >= 0 EXACTLY (cash = PV*(1 - Σ_held
+    # posval/PV - Σ_reb footprint/PV) >= 0 by induction; Σ posval <= PV entering the step). At
+    # fee=0 (the phase-1c cost0 regime) bankruptcy is therefore impossible and process_margin_call
+    # below is genuinely a no-op ON; the acceptance probe hard-asserts cash>=0 / Σ|w|<=1 /
+    # margin-no-op every step AT fee0. SCOPE CAVEAT (DECISIONS D14): the budget reserves CAPITAL
+    # footprint, NOT turnover FEES, so at fee>0 a near-fully-invested all-short book (Σ|w|->1) can
+    # overdraw by ~the unreserved open-fees and hit process_margin_call — which on an all-short
+    # book (no longs to liquidate) escalates to a full wipe. This is the pre-existing
+    # project_vector_env_cash_wall (842 wipes the same repro, slightly worse), NOT a 843
+    # regression; resolving it (reserve fee headroom / margin-call buyback / cap short breadth) is
+    # an env-design choice tracked as D14, to settle BEFORE phase-2 fee16 relies on the ON path.
+    # ORDER arrays keep the canon placement above (market cancels pending; LimitSell/LimitBuy
+    # still place the order — spec item 2: "order placed, target applies on fill"); only the
+    # POSITION arrays and cash are overridden.
     if config.vector_weight_rebalance:
         # resolve the (STATIC) weight schedule from config (n_assets is a static int)
         w_unit = (config.vector_weight_unit if config.vector_weight_unit > 0.0
@@ -1624,74 +1633,130 @@ def step_vector(state: TradingState, action_vec: chex.Array,
         # the guarantee a whole-vector market-notional scale does NOT deliver (it under-reserves
         # held winning-short capital); scaling only the re-trimmed legs into the posval budget does.
         held_reserve = jnp.sum(jnp.where(do_reb, 0.0, posval)) / pv_safe
-        reb_abs = jnp.sum(jnp.where(do_reb, jnp.abs(raw_target), 0.0))
-        budget = jnp.maximum(1.0 - held_reserve, 0.0)
+        # TASK_843 BLOCKER fix: a re-trimmed HELD short that SURVIVES as a short keeps its (stale)
+        # entry (D12 cost-basis correctness), so its true post-trim capital FOOTPRINT — what
+        # compute_position_values / PV actually charge, size*(2*entry - price) — EXCEEDS its
+        # MARKET notional (size*price) whenever the short is WINNING (price < entry), by the
+        # factor (2E-P)/P (up to ~w_max). Reserving such a leg at market notional (|raw_target|)
+        # under-counts that footprint and frees phantom budget that funds fresh shorts elsewhere
+        # => real ~0.3-0.5*PV overdraft => spurious full-book wipe at fee0. Reserve each reb leg
+        # by its footprint fraction: staying-short legs at (2E-P)/P (>= 1; clamped so a losing
+        # short is never reserved BELOW market notional — that would re-open the hole), every
+        # other transition (long / fresh-or-flipped short / snap) at market notional = 1. This
+        # is target-magnitude-linear, so the proportional scale below still holds, and it
+        # upper-bounds the increasing-short footprint too (tgt + 2*s0*(E-P) <= tgt*(2E-P)/P).
+        short_stays_short = is_short & has_position & (raw_target < 0.0)
+        foot_mult = jnp.where(
+            short_stays_short,
+            jnp.maximum((2.0 * cur_entry - current_prices) / jnp.maximum(current_prices, 1e-10), 1.0),
+            1.0)
+        reb_abs = jnp.sum(jnp.where(do_reb, jnp.abs(raw_target) * foot_mult, 0.0))
+        # TASK_843: reserve a HAIR below 100% (1e-4 of PV). At full investment the netted
+        # weight_cash lands on the 0-cash knife-edge, where float32 round-off (summing many
+        # per-asset deltas) can push it microscopically negative; process_margin_call escalates
+        # ANY cash<0 with no longs to liquidate (an all-short book) into a spurious full-book
+        # bankruptcy. This negligible haircut keeps weight_cash strictly >= 0, making the ON
+        # zero-bankruptcy guarantee ROBUST to round-off rather than knife-edge (Σ|w| ~ 0.9999).
+        budget = jnp.maximum(1.0 - held_reserve, 0.0) * (1.0 - 1e-4)
         scale = jnp.where(reb_abs > budget, budget / jnp.maximum(reb_abs, 1e-10), 1.0)
         w_final = jnp.where(do_reb, raw_target * scale, w_cur)
 
-        # realize the re-trimmed position into cash (fee-adjusted close proceeds), then re-open
-        # to the target notional. At fee=0 close_proceeds == posval, so PV is conserved and
-        # cash_final = PV*(1 - Σ_held posval/PV - Σ_reb|w_final|) >= 0.
-        close_long_proceeds  = cur_size * sell_exec_price
-        close_short_proceeds = 2.0 * cur_size * cur_entry - cur_size * buy_exec_price
-        close_proceeds = jnp.where(is_long, close_long_proceeds,
-                         jnp.where(is_short, close_short_proceeds, 0.0))
-        close_proceeds = jnp.where(has_position & do_reb, close_proceeds, 0.0)
-
+        # TASK_843 (D12): re-trim NET against the held position — only the DELTA notional
+        # trades (canon-style incremental adjust), instead of the old FULL close+reopen that
+        # re-taxed the ENTIRE held notional every step (short round-trip 185.2 vs canon 105.0).
+        # 842's canon-equivalent fees now apply to the CLOSED portion only. Decompose each
+        # re-trimmed leg into a close-amount (reduce existing exposure) + an open-amount (new
+        # exposure of the FINAL side); same-side increase => pure open (no close), same-side
+        # decrease => pure partial-close (no open), sign-flip => full close + full open,
+        # flat->pos => pure open, ->flat => full close. Sizing the closed portion off the
+        # MARKET price (not exec price) lands the surviving notional EXACTLY on target, so
+        # partial closes leave no residual dust either.
         target_notional = jnp.abs(w_final) * portfolio_value
-        want_long  = do_reb & (w_final > 0.0)
-        want_short = do_reb & (w_final < 0.0) & config.allow_short   # w_final<0 w/o short => flat
-        open_long_size  = target_notional / jnp.maximum(buy_exec_price, 1e-10)
-        open_short_size = target_notional / jnp.maximum(sell_exec_price, 1e-10)
-        # collateral consumed == target_notional for both sides (fully collateralized book)
-        open_cost = jnp.where(want_long, open_long_size * buy_exec_price,
-                    jnp.where(want_short, open_short_size * sell_exec_price, 0.0))
 
-        # TASK_842 (D9 remainder): canon charges a SEPARATE explicit fee ON TOP of the
-        # exec-price spread; the weight re-trim above charged only the spread (undercharged
-        # ~one fee tier of closed notional vs an equivalent canon round-trip). Mirror canon
-        # EXACTLY so weight turnover is cost-honest at fee>0. Every term is ×fee_rate, so it is
-        # EXACTLY 0 at fee_bps==0 => the weight-ON/fee0 pin stays bit-identical (phase-1c cost0
-        # unaffected). Lines cited are the canon scalar close/open fee arithmetic this mirrors:
-        #   * close-long  fee: execute_sell L894 fee_on_close = long_proceeds * fee_rate,
-        #                      deducted L914 cash + long_proceeds - fee_on_close;
-        #   * close-short fee: execute_buy  L788 fee_on_close = |short_proceeds| * fee_rate,
-        #                      deducted L812 cash + short_proceeds - fee_on_close;
-        #     (close_proceeds already holds long_proceeds / short_proceeds and is (has_position
-        #      & do_reb)-gated above; jnp.abs unifies both legs — long_proceeds>=0 so abs is a
-        #      no-op there and matches canon's un-abs'd close-long form exactly.)
-        #   * open-short  fee: execute_sell L905 fee_on_open = short_cost * fee_rate,
-        #                      deducted L915 cash - short_cost - fee_on_open (short_cost == the
-        #                      collateral == open_cost here). Opening a LONG has NO explicit
-        #                      canon fee (execute_buy L813 is cost only) => none added on want_long.
-        # Deducted from weight_cash at the SAME logical point canon deducts it: folded into the
-        # re-trim cash delta (+close_proceeds -close_fee on the close; -open_cost -open_short_fee
-        # on the short open), then summed onto snap_cash exactly as the fee-free delta was.
+        # target side, with SNAP-TO-FLAT: a target within the deadband of zero (incl. the
+        # slippage micro-drift a unit-step close leaves in w_cur's market notional, and a
+        # short target that shorting is disallowed) is treated as FLAT => the FULL residual is
+        # closed and NO micro-short dust is left behind (spec item 2).
+        want_long  = do_reb & (w_final >  deadband)
+        want_short = do_reb & (w_final < -deadband) & config.allow_short
+        want_flat  = do_reb & (~want_long) & (~want_short)
+        tgt_notional_abs = jnp.where(want_long | want_short, target_notional, 0.0)
+
+        # current holding, gated by has_position (pos_notional is 0 when flat).
+        cur_long_h  = is_long  & has_position
+        cur_short_h = is_short & has_position
+        cur_notional_abs = pos_notional   # cur_size * current_prices, >= 0
+
+        # transition classification (mutually exclusive across the do_reb legs)
+        same_long  = cur_long_h  & want_long
+        same_short = cur_short_h & want_short
+        flip = (cur_long_h & want_short) | (cur_short_h & want_long)
+        open_from_flat = (~has_position) & (want_long | want_short)
+        full_close = has_position & want_flat
+        increasing_same = (same_long | same_short) & (tgt_notional_abs >= cur_notional_abs)
+        decreasing_same = (same_long | same_short) & (tgt_notional_abs <  cur_notional_abs)
+
+        # DELTA notionals: how much of the held leg is CLOSED, how much NEW exposure is OPENED.
+        close_notional = jnp.where(flip | full_close, cur_notional_abs,
+                         jnp.where(decreasing_same, cur_notional_abs - tgt_notional_abs, 0.0))
+        open_notional  = jnp.where(flip | open_from_flat, tgt_notional_abs,
+                         jnp.where(increasing_same, tgt_notional_abs - cur_notional_abs, 0.0))
+
+        # shares of the CURRENT leg removed (priced at market so the survivor lands exactly on
+        # target), and shares of the FINAL-side leg opened. Canon sizing asymmetry mirrored
+        # EXACTLY: execute_buy L760 sizes a LONG open by BUY-EXEC price; execute_sell L902 sizes
+        # a SHORT open by MARKET (current) price (collateral / price) — the entry is recorded at
+        # the exec price for BOTH. Matching this is what makes a weight short round-trip equal
+        # the canon short round-trip (TASK_843 acceptance (i)); it also lands a short's market
+        # notional EXACTLY on target (no dust).
+        close_shares = close_notional / jnp.maximum(current_prices, 1e-10)
+        open_size_price  = jnp.where(want_short, current_prices, buy_exec_price)
+        open_entry_price = jnp.where(want_short, sell_exec_price, buy_exec_price)
+        open_shares  = open_notional / jnp.maximum(open_size_price, 1e-10)
+        size_after_close = jnp.maximum(cur_size - close_shares, 0.0)   # 0 on flip / full close
+        # final size: snap-to-flat forces EXACT 0 (no float dust); else survivor + newly opened.
+        new_reb_size = jnp.where(want_flat, 0.0, size_after_close + open_shares)
+
+        # TASK_842 fees, now on the CLOSED portion only. close_proceeds is the canon per-leg
+        # form scaled to close_shares (execute_sell L914 long / execute_buy L812 short); the
+        # explicit close-fee mirrors execute_sell L894 / execute_buy L788 (|proceeds|*fee_rate),
+        # the open-short fee mirrors execute_sell L905 (short collateral * fee_rate). Opening a
+        # LONG has no explicit canon fee. Every fee term is ×fee_rate => EXACTLY 0 at fee0.
+        close_long_proceeds  = close_shares * sell_exec_price
+        close_short_proceeds = close_shares * (2.0 * cur_entry - buy_exec_price)
+        close_proceeds = jnp.where(cur_long_h, close_long_proceeds,
+                         jnp.where(cur_short_h, close_short_proceeds, 0.0))
         close_fee = jnp.abs(close_proceeds) * fee_rate
-        open_short_fee = jnp.where(want_short, open_cost, 0.0) * fee_rate
+        open_cost = open_notional                       # collateral for both long buy / short open
+        open_short_fee = jnp.where(want_short, open_notional, 0.0) * fee_rate
 
         reb_cash_delta = jnp.where(
             do_reb, close_proceeds - close_fee - open_cost - open_short_fee, 0.0)
         weight_cash = snap_cash + jnp.sum(reb_cash_delta)
 
+        # entry: an ADD blends the surviving shares' entry with the newly opened exec price; a
+        # partial reduce keeps cur_entry (open_shares == 0); a flip / flat-open has no surviving
+        # shares so it collapses to the exec price; a full close => 0.
+        new_reb_entry = jnp.where(
+            new_reb_size > 1e-10,
+            (size_after_close * cur_entry + open_shares * open_entry_price)
+            / jnp.maximum(new_reb_size, 1e-10),
+            0.0)
+
         # assemble position arrays; do_reb=False leaves the current position untouched
         tp_sl_on = config.tp_sl_enabled
+        new_reb_side = jnp.where(want_long, 1, jnp.where(want_short, 2, 0))
         weight_pos_active = jnp.where(do_reb, want_long | want_short, state.pos_active)
-        weight_pos_side = jnp.where(do_reb,
-                          jnp.where(want_long, 1, jnp.where(want_short, 2, 0)), state.pos_side)
-        weight_pos_size = jnp.where(do_reb,
-                          jnp.where(want_long, open_long_size,
-                          jnp.where(want_short, open_short_size, 0.0)), state.pos_size)
-        weight_pos_entry = jnp.where(do_reb,
-                           jnp.where(want_long, buy_exec_price,
-                           jnp.where(want_short, sell_exec_price, 0.0)), state.pos_entry)
+        weight_pos_side   = jnp.where(do_reb, new_reb_side, state.pos_side)
+        weight_pos_size   = jnp.where(do_reb, new_reb_size, state.pos_size)
+        weight_pos_entry  = jnp.where(do_reb, new_reb_entry, state.pos_entry)
         weight_pos_sl = jnp.where(do_reb,
-                        jnp.where(want_long & tp_sl_on, buy_exec_price * (1.0 - config.default_stop_loss_pct),
-                        jnp.where(want_short & tp_sl_on, sell_exec_price * (1.0 + config.default_stop_loss_pct),
+                        jnp.where(want_long & tp_sl_on, new_reb_entry * (1.0 - config.default_stop_loss_pct),
+                        jnp.where(want_short & tp_sl_on, new_reb_entry * (1.0 + config.default_stop_loss_pct),
                                   0.0)), state.pos_sl)
         weight_pos_tp = jnp.where(do_reb,
-                        jnp.where(want_long & tp_sl_on, buy_exec_price * (1.0 + config.default_take_profit_pct),
-                        jnp.where(want_short & tp_sl_on, sell_exec_price * (1.0 - config.default_take_profit_pct),
+                        jnp.where(want_long & tp_sl_on, new_reb_entry * (1.0 + config.default_take_profit_pct),
+                        jnp.where(want_short & tp_sl_on, new_reb_entry * (1.0 - config.default_take_profit_pct),
                                   0.0)), state.pos_tp)
 
         # LIMIT orders (spec item 2: "order placed, target applies on fill"): keep the canon
@@ -1734,10 +1799,13 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     )
 
     # 4. Margin call (short losses from the rebalance may have driven cash negative).
-    #    TASK_840: with vector_weight_rebalance ON this is UNREACHABLE — the book is a bounded
-    #    Σ|w| ≤ 1 allocation, so cash stays >= 0 (no overdraft to resolve). The call is kept
-    #    verbatim as the safety net for the canon / 839 paths (never deleted); the ON
-    #    zero-bankruptcy invariant is asserted by the acceptance probe's survival read.
+    #    TASK_840: with vector_weight_rebalance ON this is a genuine no-op **at fee=0** — the book
+    #    is a bounded Σ|w| ≤ 1 allocation reserved by capital footprint, so cash stays >= 0 (no
+    #    overdraft to resolve), asserted by the acceptance probe's survival read at fee0. It is
+    #    NOT unconditionally unreachable: at fee>0 a near-fully-invested all-short book can overdraw
+    #    by unreserved turnover fees and this CAN fire (DECISIONS D14 / project_vector_env_cash_wall
+    #    — pre-existing, not a 843 regression). The call is kept verbatim as the safety net for the
+    #    canon / 839 paths and this fee>0 edge (never deleted).
     new_state = process_margin_call(new_state, current_prices, config)
 
     # 5. Liquidation check (identical to scalar step)

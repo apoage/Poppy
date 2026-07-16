@@ -41,13 +41,21 @@ for _p in (str(_REPO), str(_HERE)):
 from test_vector_step_parity import _price_walk, _configs, _inject_positions
 
 # ---------------------------------------------------------------------------
-# PINNED weight-ON/fee0 hash — captured on HEAD BEFORE any TASK_842 edit.
-#   commit:      ba53294d87f3fd9c99f797be733f1b77dfb50b05
+# PINNED weight-ON/fee0 hash.
+#   commit:      8f76a71886af61a39e8ff0f9fd1b90ea3df3a119  (TASK_843 rebase)
 #   jax version: 0.6.2
-# If this breaks after a TASK_842 edit, the new close-fee term is NOT ×0 at fee0
-# (it would perturb the running phase-1c cost0 battery) — find it; do NOT re-pin.
-PINNED = "1c50d58c570d10cfe237e4b7c630cd01058a7b5a68766eb0001a14e301474c20"
-PIN_COMMIT = "ba53294d87f3fd9c99f797be733f1b77dfb50b05"
+# TASK_843 (D12) RE-BASED this pin ON PURPOSE: incremental netting + snap-to-flat
+# change the weight-ON re-trim ARITHMETIC (delta-only trades vs the old full
+# close+reopen; a full residual close on snap), which alters the fee0 ON-path
+# state even though every EXPLICIT fee term is still ×0 at fee0. The prior pin
+#   1c50d58c570d10cfe237e4b7c630cd01058a7b5a68766eb0001a14e301474c20  (TASK_842)
+# was captured on the clean tree pre-edit; the value below is the honest hash of
+# the NEW intended behavior on the SAME deterministic rollout. The canon-OFF pin
+# (test_vector_step_parity.py) and the 839-budget pin (test_vector_weight_parity.py)
+# are UNCHANGED and still pass — only this ON-path pin moves. Do NOT re-pin to hide
+# an unintended break.
+PINNED = "6293668f034ef42f7fdd71005d625c4958e189705256463aae6eb49d4c3d90bf"
+PIN_COMMIT = "8f76a71886af61a39e8ff0f9fd1b90ea3df3a119"
 PIN_JAX_VERSION = "0.6.2"
 
 

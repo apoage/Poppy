@@ -86,13 +86,13 @@
       "n_survived": 2,
       "n_bankrupt": 0,
       "final_pv_per_env": [
-        63833.75,
-        66317.7890625
+        43230.79296875,
+        55230.07421875
       ],
-      "min_final_pv": 63833.75,
+      "min_final_pv": 43230.79296875,
       "first_step_open_frac": 0.3924731182795699,
-      "min_step_cash": 38642.4921875,
-      "max_step_sum_abs_w": 0.5292869210243225
+      "min_step_cash": 17680.51953125,
+      "max_step_sum_abs_w": 0.7350969314575195
     },
     "weight_survives_full_panel_zero_bankrupt": true,
     "invariant_cash_ge0_sumw_le1_margin_noop": true
@@ -111,15 +111,15 @@
       "mode": "weight",
       "n_short": 8,
       "n_steps": 500,
-      "final_pv": 100050.4453125,
-      "min_pv": 96538.703125,
-      "final_pv_frac": 1.000504453125,
+      "final_pv": 100050.390625,
+      "min_pv": 96538.6640625,
+      "final_pv_frac": 1.00050390625,
       "bankrupt_at": -1
     },
     "weight_keeps_pv_gt_50pct": true
   },
   "jax_version": "0.6.2",
-  "timestamp": "2026-07-11T23:39:24",
+  "timestamp": "2026-07-16T20:41:06",
   "e1_net21": {
     "K": 16,
     "seed": 0,
@@ -131,26 +131,26 @@
     "value_rollout_steps": 3,
     "proposal_bias": 3.0,
     "cost_tier_bp": 21,
-    "net21_floor_819book_weighton": 5.566655792886912,
-    "net21_e1_weighton": 5.432705140557302,
-    "edge_e1_minus_floor": -0.13395065232960945,
+    "net21_floor_819book_weighton": 5.575750497880985,
+    "net21_e1_weighton": 7.742423539340634,
+    "edge_e1_minus_floor": 2.1666730414596493,
     "required_edge": 0.436,
-    "floor_final_pv": 118170.375,
-    "e1_final_pv": 107576.96875,
+    "floor_final_pv": 118093.078125,
+    "e1_final_pv": 112097.515625,
     "floor_bankrupt_at": -1,
     "e1_bankrupt_at": -1,
     "read": "net21(E1) >= floor + 0.436",
-    "verdict": "FINDING",
-    "finding": "E1 perfect-model search did not clear floor+0.436 in weight semantics (fixture-smoke; recorded per SPEC, not a silent pass)."
+    "verdict": "PASS",
+    "finding": null
   },
   "gate_ok": true,
   "gate": {
     "survival_pass": true,
     "sticky_pass": true,
     "invariant_pass": true,
-    "e1_pass": false,
+    "e1_pass": true,
     "e1_is_hard_gate": false,
     "forced_fail_selftest": false
   },
-  "elapsed_sec": 19.4
+  "elapsed_sec": 21.9
 }

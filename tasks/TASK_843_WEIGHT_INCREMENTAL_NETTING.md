@@ -1,3 +1,22 @@
+> **STATUS (2026-07-16): SHIPPED as `task843-weight-incremental-netting`.** Incremental netting
+> (delta-only re-trim, entry preserved) + snap-to-flat on the TASK_840 weight branch; fixes the D12
+> short over-tax (short RT 185.2→≈canon, per-step cost now constant not escalating) + kills slippage
+> micro-short dust. Canon-OFF `48e1f467…` + 839-budget `4f8b692e…` pins UNCHANGED; weight-ON/fee0 pin
+> RE-BASED `1c50d58c…`→`6293668f…`. Escalated 4-member panel (correctness/regression/fail-closed/
+> flow-verifier): **1 BLOCKER — winning-short survivor under-reservation (entry-preserving netting
+> reserved re-trim legs by market notional while PV charges the larger `2·entry−price` footprint →
+> phantom budget → all-short margin-call full wipe at fee0 from a valid state), orchestrator-crossval-
+> CONFIRMED vs pre-edit → FIXED** (reserve staying-short legs at footprint fraction `(2E−P)/P`,
+> clamped ≥1; entry-preservation intact); re-run fail-closed adversarial attack on the fix confirmed
+> the fee0 hole closed (3,840-case fuzz + repro-sweep 0 hits). Acceptance (i)–(iv) all PASS: short RT
+> rel 0.0/2.47e-4, zero residual, 840 walks survival 2/2 + invariants (cash≥0/Σ|w|≤1/margin-noop),
+> E1 fee16 edge **+2.1667** (from 842's −0.134). selftest 7/7; parity+rebalance 30 passed; 2 new
+> adversarial regression tests (fail pre-fix / pass post-fix). **Remainder → DECISIONS D14**: a
+> PRE-EXISTING (stash-confirmed 842-identical, not a 843 regression) fee>0 all-short overdraft wipe
+> (`project_vector_env_cash_wall` — budget reserves footprint, not turnover fees) affects phase-2
+> fee16; recommend reserving fee headroom before the 845/ExIt fee16 reads. Env now at its final fee0
+> form → un-blocks TASK_845.
+
 # TASK_843 — Weight-path incremental netting + snap-to-flat (D12 cleanup)
 
 **Status**: READY 2026-07-14 — gate SATISFIED (phase-1c battery complete 3/3 + instruments

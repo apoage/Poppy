@@ -32,6 +32,7 @@ if str(_REPO) not in sys.path:
 
 from mcts_trader.env.jax_trading_env import (
     EnvConfig, reset, step_vector, get_current_prices, compute_portfolio_value,
+    execute_buy, execute_sell,
 )
 from mcts_trader.utils.transforms import symlog
 
@@ -300,7 +301,10 @@ def test_reward_reflects_post_override_pv():
     the same inputs and reward tracks the ON one (so it is not the OFF assembly's reward);
     (3) the state's own prev_portfolio_value (carried forward) equals that realized PV."""
     na = 6
-    w_unit = 0.1
+    # w_unit deliberately != canon position_size_pct (0.1) so the ON book allocates DIFFERENT
+    # notionals than the canon path (TASK_843 made a single fresh open at w_unit==pct match canon
+    # EXACTLY, so a divergence config is required to keep assertion (2) meaningful).
+    w_unit = 0.2
     prices = _flat_prices(80, na)
     av = jnp.array([2, 2, 0] + [1] * (na - 3), dtype=jnp.int32)  # Buy,Buy,Sell,Hold...
     prev = INITIAL_CASH
@@ -531,6 +535,249 @@ def test_fee16_reduces_pv_vs_fee0_short_rollout():
     delta = pv_fee16 - pv_fee0
     assert delta < 0.0, f"fee16 did not reduce PV vs fee0 (Δ={delta:.4f})"
     assert pv_fee0 == pytest.approx(INITIAL_CASH, rel=1e-4)  # fee0: PV conserved (flat prices)
+
+
+# ---------------------------------------------------------------------------
+# TASK_843 (D12): incremental netting + snap-to-flat.
+# ---------------------------------------------------------------------------
+
+def _canon_cfg(na, fee_bps, slip_bps, pct, allow_short=True):
+    return EnvConfig(
+        n_assets=na, initial_cash=INITIAL_CASH, fee_bps=fee_bps, slippage_bps=slip_bps,
+        max_steps=400, window_size=5, position_size_pct=pct, allow_short=allow_short,
+        tp_sl_enabled=False, vector_weight_rebalance=False)
+
+
+def test_netted_short_roundtrip_equals_canon():
+    """A SHORT round-trip through the weight path must cost the SAME as the equivalent canon
+    scalar short round-trip (TASK_843 acceptance (i) — fixes the 185.2-vs-canon-105.0 over-tax).
+
+    TWO constructions, both flat prices at fee16/slip5 so the only PV loss is transaction cost:
+      * SINGLE: Sell (open -w_unit) then Buy (snap to flat) == execute_sell + execute_buy
+        (position_size_pct == w_unit -> mirrored notional). Must match EXACTLY (netting closes
+        the SAME notional it opened, and the short-open sizing now mirrors canon's collateral/price).
+      * STEPPED: Sell,Sell (build to -2w_unit) then Buy,Buy (net back to flat). The OLD full
+        close+reopen re-taxed the entire held notional every step (~2x); netting trades only the
+        DELTA, so total cost matches a canon single 2w_unit open+close within 1e-3 relative."""
+    na, w_unit = 4, 0.1
+    fee_bps, slip_bps = 16.0, 5.0
+    prices = _flat_prices(80, na)
+    sell = jnp.array([0] + [1] * (na - 1), dtype=jnp.int32)
+    buy = jnp.array([2] + [1] * (na - 1), dtype=jnp.int32)
+
+    # --- SINGLE short round-trip ---
+    cw = _cfg(na, w_unit=w_unit, fee_bps=fee_bps, slippage_bps=slip_bps, allow_short=True)
+    st = _fresh_state(prices, cw); c0 = float(np.asarray(st.cash))
+    st, _, _, _ = step_vector(st, sell, prices, cw)
+    assert bool(np.asarray(st.pos_active)[0]) and int(np.asarray(st.pos_side)[0]) == 2
+    st, _, _, _ = step_vector(st, buy, prices, cw)
+    assert not bool(np.asarray(st.pos_active)[0])          # snap-to-flat closed the short
+    assert float(np.asarray(st.pos_size)[0]) == 0.0        # zero residual
+    weight_single = c0 - float(np.asarray(st.cash))
+
+    cc = _canon_cfg(na, fee_bps, slip_bps, w_unit)
+    stc = _fresh_state(prices, cc)
+    cur = get_current_prices(prices, stc.current_step, stc.episode_start_idx)
+    stc = execute_sell(stc, jnp.array(0, dtype=jnp.int32), cur, cc)
+    stc = execute_buy(stc, jnp.array(0, dtype=jnp.int32), cur, cc)
+    canon_single = c0 - float(np.asarray(stc.cash))
+    assert weight_single > 1.0
+    assert weight_single == pytest.approx(canon_single, rel=1e-3, abs=1e-3), (
+        f"single short rt weight {weight_single} != canon {canon_single}")
+
+    # --- STEPPED short round-trip (the over-tax repro) ---
+    st = _fresh_state(prices, cw)
+    st, _, _, _ = step_vector(st, sell, prices, cw)
+    st, _, _, _ = step_vector(st, sell, prices, cw)     # -> -2 units
+    st, _, _, _ = step_vector(st, buy, prices, cw)
+    st, _, _, _ = step_vector(st, buy, prices, cw)      # -> flat
+    assert not bool(np.asarray(st.pos_active)[0])
+    assert float(np.asarray(st.pos_size)[0]) == 0.0
+    weight_stepped = c0 - float(np.asarray(st.cash))
+
+    cc2 = _canon_cfg(na, fee_bps, slip_bps, 2 * w_unit)  # canon single 2-unit open+close
+    stc = _fresh_state(prices, cc2)
+    cur = get_current_prices(prices, stc.current_step, stc.episode_start_idx)
+    stc = execute_sell(stc, jnp.array(0, dtype=jnp.int32), cur, cc2)
+    stc = execute_buy(stc, jnp.array(0, dtype=jnp.int32), cur, cc2)
+    canon_stepped = c0 - float(np.asarray(stc.cash))
+    assert weight_stepped == pytest.approx(canon_stepped, rel=1e-3), (
+        f"stepped short rt weight {weight_stepped} != canon {canon_stepped} "
+        f"(rel {abs(weight_stepped - canon_stepped) / abs(canon_stepped):.2e})")
+
+
+def test_snap_to_flat_zero_residual_close_everything():
+    """A close-everything sequence must leave EXACTLY zero residual — no slippage micro-short
+    dust (TASK_843 acceptance (ii)). Build a mixed long/short book (fee16/slip5), then drive
+    every target to zero; the snap-to-flat closes the FULL residual so pos_size is bit-zero."""
+    na = 6
+    cfg = _cfg(na, w_unit=0.1, fee_bps=16.0, slippage_bps=5.0)
+    prices = _flat_prices(80, na)
+    st = _fresh_state(prices, cfg)
+    # assets 0,1 long (Buy), 2,3 short (Sell), 4,5 flat — 2 units each
+    for _ in range(2):
+        st, _, _, _ = step_vector(st, jnp.array([2, 2, 0, 0, 1, 1], dtype=jnp.int32), prices, cfg)
+    assert int(np.asarray(st.pos_side)[0]) == 1 and int(np.asarray(st.pos_side)[2]) == 2
+    # close all in EXACTLY 2 steps (Sell steps longs down, Buy steps shorts up)
+    for _ in range(2):
+        st, _, _, _ = step_vector(st, jnp.array([0, 0, 2, 2, 1, 1], dtype=jnp.int32), prices, cfg)
+    assert not bool(np.asarray(st.pos_active).any()), "residual active position after close-all"
+    assert float(np.max(np.abs(np.asarray(st.pos_size)))) == 0.0, "residual size dust after close-all"
+
+
+def test_deadband_boundary_snap_vs_partial():
+    """At the snap boundary: a Sell that drives a 1-unit long to a target WITHIN the deadband of
+    zero snaps to a FULL close (flat, zero size); a Sell on a 2-unit long lands a target OUTSIDE
+    the deadband and does a PARTIAL reduce (still active, ~1 unit, entry preserved)."""
+    na, w_unit = 4, 0.1
+    prices = _flat_prices(80, na)
+    cfg = _cfg(na, w_unit=w_unit, fee_bps=0.0, slippage_bps=0.0)
+    buy = jnp.array([2] + [1] * (na - 1), dtype=jnp.int32)
+    sell = jnp.array([0] + [1] * (na - 1), dtype=jnp.int32)
+
+    # 1-unit long -> Sell -> snap to flat
+    st = _fresh_state(prices, cfg)
+    st, _, _, _ = step_vector(st, buy, prices, cfg)          # +1 unit long
+    st, _, _, _ = step_vector(st, sell, prices, cfg)         # target ~0 -> snap flat
+    assert not bool(np.asarray(st.pos_active)[0])
+    assert float(np.asarray(st.pos_size)[0]) == 0.0
+
+    # 2-unit long -> Sell -> partial reduce to ~1 unit (still active)
+    st = _fresh_state(prices, cfg)
+    st, _, _, _ = step_vector(st, buy, prices, cfg)
+    st, _, _, _ = step_vector(st, buy, prices, cfg)          # +2 units
+    entry2 = float(np.asarray(st.pos_entry)[0])
+    st, _, _, _ = step_vector(st, sell, prices, cfg)         # target ~1 unit -> partial reduce
+    assert bool(np.asarray(st.pos_active)[0]) and int(np.asarray(st.pos_side)[0]) == 1
+    cur = get_current_prices(prices, st.current_step - 1, st.episode_start_idx)
+    px = float(np.asarray(cur)[0])
+    pv = float(compute_portfolio_value(st, cur))
+    w_after = float(np.asarray(st.pos_size)[0]) * px / pv  # market notional lands ~1 unit of PV
+    assert w_after == pytest.approx(w_unit, rel=5e-3), f"partial reduce landed at w={w_after}, want {w_unit}"
+    # partial close keeps the original entry
+    assert float(np.asarray(st.pos_entry)[0]) == pytest.approx(entry2, rel=1e-6)
+
+
+def test_sign_flip_long_to_short_nets_fee0():
+    """A single action that crosses zero (small long -> short target past the deadband) FLIPS:
+    the long is fully closed and a fresh short opened, in ONE step. At fee0/slip0 PV is conserved
+    and cash stays >= 0; the resulting side is short at the target weight."""
+    na, w_unit = 1, 0.25
+    prices = _flat_prices(40, na)
+    cfg = _cfg(na, w_unit=w_unit, w_max=4.0, fee_bps=0.0, slippage_bps=0.0)
+    st = _fresh_state(prices, cfg)
+    # inject a small long (w = 0.02, well below one unit) so a single Sell (-0.25) crosses zero
+    st = _inject_long(st, 0, entry=FLAT_PRICE, size=20.0, cash=98_000.0)
+    pv_before = float(compute_portfolio_value(
+        st, get_current_prices(prices, st.current_step, st.episode_start_idx)))
+    ns, _, _, _ = step_vector(st, jnp.array([0], dtype=jnp.int32), prices, cfg)  # Sell -> flip
+    assert bool(np.asarray(ns.pos_active)[0]) and int(np.asarray(ns.pos_side)[0]) == 2, "did not flip to short"
+    pv_after = _pv_at_exec(st, ns, prices)
+    assert pv_after == pytest.approx(pv_before, rel=1e-4), f"flip broke PV conservation: {pv_after} vs {pv_before}"
+    assert float(np.asarray(ns.cash)) >= -1e-2
+    # short landed at the ladder target = w_cur + step_w = 0.02 - 0.25 = -0.23 (the target is the
+    # SIGNED weight, so a flip from a +0.02 long steps to -0.23, NOT -w_unit).
+    px = float(np.asarray(get_current_prices(prices, st.current_step, st.episode_start_idx))[0])
+    w_short = float(np.asarray(ns.pos_size)[0]) * px / pv_after
+    assert w_short == pytest.approx(0.23, rel=5e-3), f"flip short weight {w_short} != 0.23"
+
+
+def test_netted_short_rollout_margin_noop_fee0():
+    """Netting must preserve the ON margin-noop guarantee on a SHORT-heavy churn: build+step+net
+    shorts across many assets at fee0, cash stays >= 0 and Σ|w| <= 1 every step (process_margin_call
+    never has anything to resolve)."""
+    from mcts_trader.env.jax_trading_env import process_margin_call
+    na = 12
+    prices = _flat_prices(120, na)
+    cfg = _cfg(na, w_unit=-1.0, fee_bps=0.0, slippage_bps=0.0)   # w_unit = 1/12
+    st = _fresh_state(prices, cfg)
+    rng = np.random.default_rng(11)
+    for k in range(80):
+        # Sell-biased mix (0=Sell,1=Hold,2=Buy) so shorts open/step/net constantly
+        av = jnp.asarray(rng.choice([0, 0, 1, 2], size=na), dtype=jnp.int32)
+        st, _, _, done = step_vector(st, av, prices, cfg)
+        cash = float(np.asarray(st.cash))
+        assert cash >= -1e-2, f"step {k}: cash {cash} < 0 (margin path would fire)"
+        cur = get_current_prices(prices, st.current_step - 1, st.episode_start_idx)
+        st2 = process_margin_call(st, cur, cfg)
+        assert float(np.asarray(st2.cash)) == pytest.approx(cash, abs=1e-2)  # nothing to resolve
+        assert not bool(np.asarray(done))
+    cur = get_current_prices(prices, st.current_step - 1, st.episode_start_idx)
+    pv = float(compute_portfolio_value(st, cur))
+    sumw = float((np.abs(np.asarray(st.pos_size) * np.asarray(cur))).sum() / max(pv, 1e-9))
+    assert sumw <= 1.05, f"Σ|w|={sumw} exceeded the no-leverage cap"
+
+
+def test_winning_short_survivor_reservation_no_overdraft_fee0():
+    """TASK_843 BLOCKER regression: reducing a DEEP WINNING short (clip pullback) while opening
+    FRESH shorts elsewhere must NOT overdraw at fee0.
+
+    A winning short that SURVIVES a re-trim keeps its stale entry, so its true capital footprint
+    (compute_position_values: size*(2*entry - price)) exceeds its market notional. If the re-trim
+    leg is reserved at market notional, the difference frees phantom budget that funds the fresh
+    shorts -> internal cash goes deeply negative -> process_margin_call sees an all-short book
+    (no longs to liquidate) -> spurious FULL-BOOK bankruptcy (PV 100000 -> 0). This is the
+    bank.py repro. It FAILS on the pre-fix tree and PASSES once re-trim legs are reserved by
+    their footprint. All at fee0 from a VALID state."""
+    na = 6
+    prices = np.full((80, na), 100.0, dtype=np.float32)
+    prices[:, 0] = 50.0                                   # asset0 winning short (entry 100 > 50)
+    prices = jnp.asarray(prices)
+    cfg = _cfg(na, w_unit=0.2, w_max=1.0, fee_bps=0.0, slippage_bps=0.0)  # w_max*w_unit = 0.2
+    st = _fresh_state(prices, cfg)
+    # inject winning short on asset0: entry 100, price 50, size 600 -> footprint 90k, notional 30k
+    st = _inject_short(st, 0, entry=100.0, size=600.0, cash=10_000.0)
+    cur = get_current_prices(prices, st.current_step, st.episode_start_idx)
+    pv_before = float(compute_portfolio_value(st, cur))
+    assert float(np.asarray(st.cash)) >= 0.0 and pv_before == pytest.approx(100_000.0, rel=1e-4)
+
+    # asset0 Hold (clips the drifted -0.3 short back to -0.2 => a reducing re-trim); assets 1..4
+    # Sell -> open FRESH shorts (all-short book, NO longs to liquidate on a margin call)
+    av = jnp.array([1, 0, 0, 0, 0, 1], dtype=jnp.int32)
+    ns, _, _, done = step_vector(st, av, prices, cfg)
+    assert not bool(np.asarray(done)), "spurious bankruptcy: winning-short survivor under-reserved"
+    pv_after = float(compute_portfolio_value(ns, cur))
+    assert pv_after == pytest.approx(pv_before, rel=1e-3), (
+        f"PV not preserved at fee0: {pv_after} vs {pv_before} (phantom-budget overdraft)")
+    assert float(np.asarray(ns.cash)) >= -1e-2, f"overdraft: cash {float(np.asarray(ns.cash))} < 0"
+    # the winning short survives (reduced, not wiped) and fresh shorts actually opened
+    assert bool(np.asarray(ns.pos_active)[0]) and int(np.asarray(ns.pos_side)[0]) == 2
+    assert int(np.asarray(ns.pos_active).sum()) >= 3, "positions were wiped by the margin path"
+    # Σ|w| within the no-leverage cap
+    sumw = float((np.abs(np.asarray(ns.pos_size) * np.asarray(cur))).sum() / max(pv_after, 1e-9))
+    assert sumw <= 1.05, f"Σ|w|={sumw} exceeded the no-leverage cap"
+
+
+def test_winning_short_survivor_margin_call_genuine_noop_with_longs_fee0():
+    """Quieter variant of the BLOCKER: when LONGS coexist with the under-reserved winning short,
+    the overdraft does NOT wipe the book — process_margin_call silently LIQUIDATES the freshly
+    opened longs to claw cash back, so cash>=0 / Σ|w|<=1 read clean but the "margin_call is a
+    genuine no-op ON" guarantee is FALSE and the agent's intended longs are destroyed. This test
+    asserts the intended longs SURVIVE and margin_call is a true no-op (idempotent). FAILS pre-fix
+    (longs liquidated), PASSES post-fix (footprint reservation leaves cash>=0 -> nothing to do)."""
+    from mcts_trader.env.jax_trading_env import process_margin_call
+    na = 6
+    prices = np.full((80, na), 100.0, dtype=np.float32)
+    prices[:, 0] = 50.0                                   # asset0 winning short
+    prices = jnp.asarray(prices)
+    cfg = _cfg(na, w_unit=0.2, w_max=1.0, fee_bps=0.0, slippage_bps=0.0)
+    st = _fresh_state(prices, cfg)
+    st = _inject_short(st, 0, entry=100.0, size=600.0, cash=10_000.0)
+    cur = get_current_prices(prices, st.current_step, st.episode_start_idx)
+    # asset0 Hold (clip-reduce winning short); assets 1,2 Sell (fresh shorts); 3,4 Buy (fresh longs)
+    av = jnp.array([1, 0, 0, 2, 2, 1], dtype=jnp.int32)
+    ns, _, _, done = step_vector(st, av, prices, cfg)
+    assert not bool(np.asarray(done))
+    cash = float(np.asarray(ns.cash))
+    assert cash >= -1e-2, f"overdraft: cash {cash} < 0"
+    # the intended fresh longs (assets 3,4) must SURVIVE — not be silently liquidated to cover
+    assert bool(np.asarray(ns.pos_active)[3]) and int(np.asarray(ns.pos_side)[3]) == 1, "long 3 liquidated"
+    assert bool(np.asarray(ns.pos_active)[4]) and int(np.asarray(ns.pos_side)[4]) == 1, "long 4 liquidated"
+    # margin_call is a GENUINE no-op: re-running it changes nothing (cash & every position identical)
+    st2 = process_margin_call(ns, cur, cfg)
+    assert float(np.asarray(st2.cash)) == pytest.approx(cash, abs=1e-2)
+    assert bool(np.asarray((st2.pos_active == ns.pos_active).all())), "margin_call altered positions (not a no-op)"
+    assert bool(np.asarray((st2.pos_size == ns.pos_size).all()))
 
 
 if __name__ == "__main__":
