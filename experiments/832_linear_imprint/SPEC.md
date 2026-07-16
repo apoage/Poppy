@@ -134,10 +134,99 @@ corridor_position + diagnostics, action agreement), `ledger_row` (imprint corrid
 position net@21 per DEC-2 shape; post-ExIt row = the scheduled run), `exit_half`
 (verified flag anchors), `checkpoint`.
 
+## TASK_845 — weight-env compat (D13 redirect; added 2026-07-16)
+
+The runner shipped (2026-07-08) BEFORE the TASK_840/843 target-weight rebalance env, so it
+was weight-blind. TASK_845 threads the phase-1c weight-env config through it and adds the
+pre-registered teacher-expressibility gate. **Default OFF => byte-identical to the pre-840
+order-semantics path** (verified: with the weight flags off the results JSON's core fields
+are identical to the pre-845 baseline; the only additions are the always-emitted
+`expressibility_gate` block and the four `vector_weight_*` config echoes). ZERO canon diffs.
+
+### Weight-env flags (mirror `cli.py:216-229` names/sentinels)
+- `--vector-weight-rebalance` (store_true, default OFF): applies the TASK_840/843 target-weight
+  rebalance `step_vector` to **BOTH** in-env walks — teacher trajectory generation (whose
+  rewards become the injected BC value targets) AND the imprint-sanity deterministic replay.
+  Threaded via `create_jax_env_historical` in `load_training_panel`, so `env_cfg` and every
+  `env_cfg.replace(...)` tier config carry it.
+- `--vector-weight-unit` (float, sentinel <=0 => 1/n_assets), `--vector-weight-max` (units of
+  w_unit, default 4), `--vector-rebalance-deadband` (sentinel <0 => 0.1*w_unit).
+
+### Teacher-expressibility gate (pre-registered, the real deliverable)
+The order-code teacher (`corridor._to_action_vec`) reproduces the ~floor under ORDER
+semantics; under WEIGHT semantics the same codes mean ±1-unit budget-scaled target-weight
+steps, so the book, its net@21, and the injected BC reward/value stream all change. The gate
+measures whether the teacher still expresses ~floor in the weight env:
+- **Reference (fixed):** order-code teacher walked at net@21 through the ORDER env (weight OFF)
+  = the 830/831 corridor floor (`order_floor_reference`).
+- **Primary:** order-code teacher walked at net@21 through the WEIGHT env (weight ON), on the
+  IDENTICAL decision rows. Fixture gate = `|teacher_weight - teacher_order| <= 0.10` relative.
+- **Contingency (pre-registered, ACTIONABLE):** if the primary misses, re-gate the
+  **weight-native ladder** mapping (`_make_weight_native_teacher_fn`: per step per asset
+  `action = sign(w_target - w_cur)` while `|dw| > deadband`, driving to ±w_max in the 819
+  target direction, `w_cur` reconstructed from the state as `jax_trading_env.py:1608-1612` —
+  see the pre-preamble caveat in that function's comment) against the SAME order reference.
+  Both mappings' `{order,weight}` net@21 + rel diff + PASS/FAIL are in the JSON under
+  `expressibility_gate` (+ `expressibility_gate.weight_native_regate`). **The weight-native
+  ladder is not diagnostic-only:** `--imprint-mapping {order-code,weight-native}` selects which
+  teacher is actually IMPRINTED (default `order-code`; `weight-native` re-walks the same
+  per-cost-tier configs with the ladder and rebinds the injected teacher / floor / agreement /
+  values / ledger so the whole run is self-consistent, and records `imprint.imprint_mapping`).
+  So if the real-panel gate shows order-code FAIL / weight-native PASS, the operator can imprint
+  on the passing mapping — the contingency is wired, not just measured.
+- **Fixture read (REPORTED, not asserted; PASS/FAIL INCONCLUSIVE):** the ~50-decision fixture
+  slice is a losing period (order net@21 -3.44, weight net@21 -4.69 order-code / -4.59
+  weight-native), so a ±10% *relative* threshold on negative Sharpes is ill-defined and its
+  PASS/FAIL is inconclusive — consistent with this module's "no performance threshold on the
+  fixture smoke" stance. BUT the ~1.25 net@21 gap is **NOT noise**: it is a real **structural
+  sizing divergence**. At the default weight params (`w_unit = 1/n_assets`, `w_max = 4*w_unit
+  = 0.5`) the weight book expresses ~2× (order-code) to ~8×-then-budget-clipped, Σ|w|≤1
+  (weight-native) the order env's per-asset exposure — a real ~4% terminal-wealth gap that
+  ±0.10-**ABSOLUTE** (the DEC-2 real-panel tolerance) would ALSO fail. The smoke asserts the
+  gate is REPORTED (both values emitted) and that the weight-native variant is re-gated when the
+  order-code mapping misses; the **binding read is the real-panel scheduled run** (planner-owned,
+  DEC-2 ±0.10), which must confront the weight-param sizing (unit/max/deadband are exposed
+  precisely so the planner can tune the expressible book). No mapping/threshold/fixture was
+  tuned to force a pass.
+
+### BC targets under weight ON
+Injection is unchanged in mechanism; because the teacher walk now runs the WEIGHT env, the
+injected `values = compute_returns(use_gae=False)` are discounted MC returns over the teacher's
+WEIGHT-env rewards (the same env the ExIt loop runs in). One-hot marginals unchanged.
+
+### Imprinted-mapping selector (`--imprint-mapping`, fail-closed coupling)
+`weight-native` is only coherent when the WHOLE run is weight semantics (teacher walk, obs
+encoding, and the ExIt continuation env). The runner therefore **asserts**
+`--imprint-mapping weight-native` is passed together with `--vector-weight-rebalance`; the
+contradictory combo (weight-native ladder walked through the ORDER env while the gate certifies
+the WEIGHT-env teacher — two different teachers) is rejected fast with a clear message. Default
+`order-code` is unconstrained (it is the pre-840 order path).
+
+### Committed fixture artifact (regeneration — pinned)
+`results_fixture_smoke.json` committed in this dir is the **weight-ON, default order-code**
+deliverable. It is NOT reproduced by the bare flagless command (that writes the weight-OFF
+numbers and would leave a spurious working-tree diff). Regenerate it with EXACTLY:
+`python experiments/832_linear_imprint/imprint.py --vector-weight-rebalance`
+(fixture defaults + `--imprint-mapping order-code` default auto-apply). A weight-native run must
+use a scratch `--out` so it never overwrites the committed order-code artifact.
+
+### ExIt launch flags (weight-ON continuation — no runner code; trainer flags exist)
+The ExIt half MUST run the SAME env semantics as the imprint. On `train_jax_fast.py`, in
+addition to the PIN-(c) flags, pass the weight-env flags (`cli.py:216-229`, consumed at
+`train_jax_fast.py:265-268`) with the SAME values used for the imprint run:
+`--vector-action --load-checkpoint <dir> --reset-optimizer --clear-buffer
+--vector-weight-rebalance [--vector-weight-unit U --vector-weight-max M
+--vector-rebalance-deadband D]` (plus the matching arch flags). Mismatched weight flags =
+the cross-env imprint the gate exists to prevent.
+
 ## Scheduled real run (NOT this factory half — recorded for the operator)
 
 `--db trading_data.db --start 2021-01-01 --end 2025-09-01 --bar-minutes 1440
---n-assets 64 --iters 2000 --batch-size 256`, `JAX_PLATFORMS=cuda`, single verified-idle
-GPU, tmux, then the ExIt continuation via the PIN-(c) flags. Verdicts (DEC-2 primary +
-consistency legs, ±0.10 imprint-sanity tolerance) belong to that run and `experiments/
-LEDGER.md` — not to the fixture smoke.
+--n-assets 64 --iters 2000 --batch-size 256 --vector-weight-rebalance` (D13 phase-1c weight
+env; add `--vector-weight-unit/-max/-rebalance-deadband` only to override the sentinels),
+`JAX_PLATFORMS=cuda`, single verified-idle GPU, tmux, then the ExIt continuation via the
+PIN-(c) flags **plus the SAME weight-env flags** (see "ExIt launch flags" above). The
+real-panel run is also where the ±10%-relative expressibility gate gets its BINDING read
+(the fixture read is REPORTED-only). Verdicts (DEC-2 primary + consistency legs, ±0.10
+imprint-sanity tolerance) belong to that run and `experiments/LEDGER.md` — not to the
+fixture smoke.

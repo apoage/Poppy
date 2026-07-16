@@ -1,3 +1,20 @@
+> **STATUS (2026-07-16): SHIPPED as `task845-imprint-weight-compat`.** Threaded the TASK_840/843
+> weight env through the 832 imprint runner (both walks) + the pre-registered teacher-expressibility
+> gate; ZERO canon diffs (`experiments/832_linear_imprint/` only). Medium panel + a fresh fix-judge:
+> **1 MAJOR — the weight-native remediation mapping was DIAGNOSTIC-ONLY (runner always imprinted the
+> order-code teacher, defeating spec item-2) → FIXED** with a `--imprint-mapping {order-code,weight-native}`
+> selector (default order-code = byte-identical) that rebinds teacher/floor/agreement/values/ledger;
+> **+2 MINOR guards FIXED** (fail-closed: weight-native asserts `--vector-weight-rebalance`; None-guard
+> the gate-MISS WARN vs a fee16 bankrupt-teacher `TypeError`). Orchestrator re-verified: default core
+> BYTE-IDENTICAL to committed, weight-native genuinely imprints (floor −4.593, CE 2.03→0.13, no
+> bankruptcy), assert fails fast, selftest 7/7. **Expressibility gate REPORTED, fixture PASS/FAIL
+> INCONCLUSIVE → DECISIONS D15**: both mappings miss ±10%-relative on the ~50-decision losing slice,
+> but the ~1.25 net@21 gap is a real STRUCTURAL sizing divergence under default w_unit/w_max (±0.10-
+> absolute would also fail); binding read = planner-owned real-panel run (DEC-2). ExIt launch flags
+> documented in SPEC. Un-blocks the scheduled E5 imprint-sanity→imprint→ExIt once D15's mapping/params
+> are set. (One fix pass died on the nightly session-token limit mid-report; edits complete +
+> re-verified.)
+
 # TASK_845 — 832 imprint weight-env compat (D13 redirect: thread TASK_840 through the E5 runner)
 
 **Status**: READY 2026-07-14 (D13 DECIDED: **redirect** — E5/832 imprint→ExIt is the critical

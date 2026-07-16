@@ -117,6 +117,10 @@ def load_training_panel(args):
         reward_attributable=args.reward_attributable,
         bar_minutes=args.bar_minutes,
         vector_action=True,
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
     )
     prices_np = np.asarray(prices_j, dtype=np.float64)
     logc = np.log(np.maximum(prices_np, 1e-12))
@@ -130,7 +134,9 @@ def load_training_panel(args):
 def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
     """Deterministic single-episode walk from panel row ``start_row`` through
     ``step_vector`` (the corridor/831 replay pattern, on the TRAINING panel/config).
-    ``action_fn(k, pos_side) -> (A,) int32``. Returns per-decision returns + diag."""
+    ``action_fn(k, state) -> (A,) int32`` (state = the pre-step TradingState, so a
+    state-greedy mapping can read ``pos_side`` and, for the weight-native ladder,
+    reconstruct the current signed weight). Returns per-decision returns + diag."""
     initial_cash = float(cfg.initial_cash)
     state = reset(jax.random.PRNGKey(0), prices_j, cfg).replace(
         episode_start_idx=jnp.array(start_row), current_step=jnp.array(0),
@@ -148,8 +154,7 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
     n_long = n_short = 0
     bankrupt_at = -1
     for k in range(n_decisions):
-        side = np.asarray(state.pos_side)
-        act = np.asarray(action_fn(k, side), dtype=np.int32)
+        act = np.asarray(action_fn(k, state), dtype=np.int32)
         state, _, r, d = jstep(state, jnp.asarray(act))
         jax.block_until_ready(r)
         actions[k] = act
@@ -286,6 +291,103 @@ def _sharpe(rets, period):
     return backtest._sharpe(np.asarray(rets, dtype=np.float64), period)
 
 
+def _rel(a, b, eps=1e-8):
+    """|a - b| / max(|b|, eps), guarded (b is the reference = order-semantics floor)."""
+    if not (np.isfinite(a) and np.isfinite(b)):
+        return float("nan")
+    return float(abs(a - b) / max(abs(b), eps))
+
+
+def _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, n_assets):
+    """Weight-native ladder teacher (TASK_845 fallback mapping, pre-registered).
+
+    Per step per asset: ``action = sign(w_target - w_cur)`` while ``|dw| > deadband``,
+    else HOLD. ``w_target`` drives to the signed cap ±``w_max`` in the 819 book's target
+    direction (flat target => 0); ``w_cur`` is the pre-step signed market-notional weight
+    reconstructed from the state exactly as the env does
+    (``jax_trading_env.py:1608-1612``). Emits the same 0/1/2 codes the weight env reads as
+    -1/0/+1-unit target-weight steps — the natural ladder encoding under weight semantics.
+    The (static) weight schedule resolves from ``env_cfg`` with the env's own sentinels."""
+    w_unit = (env_cfg.vector_weight_unit if env_cfg.vector_weight_unit > 0.0
+              else 1.0 / n_assets)
+    w_max = env_cfg.vector_weight_max * w_unit
+    deadband = (env_cfg.vector_rebalance_deadband if env_cfg.vector_rebalance_deadband >= 0.0
+                else 0.1 * w_unit)
+
+    def fn(k, state):
+        # CAVEAT: w_cur is reconstructed from the PRE-preamble state.pos_size, whereas the env
+        # computes its own w_cur AFTER process_limit_orders/margin_call/tp_sl
+        # (jax_trading_env.py:1608-1612). No-op on the fixture (no limits, tp/sl off, no margin
+        # call fires), but at fee16 real-panel a margin call between steps could shrink pos_size
+        # so this ladder decision reads a slightly stale w_cur — acceptable for a greedy teacher
+        # mapping (it only sets the ±unit step direction; the env still applies the exact math).
+        current_prices = np.asarray(get_current_prices(
+            prices_j, state.current_step, state.episode_start_idx), dtype=np.float64)
+        pv = max(float(compute_portfolio_value(state, jnp.asarray(current_prices,
+                                                                  dtype=jnp.float32))), 1e-10)
+        size = np.asarray(state.pos_size, dtype=np.float64)
+        side = np.asarray(state.pos_side)
+        pos_notional = size * current_prices
+        w_cur = np.where(side == 1, pos_notional / pv,
+                np.where(side == 2, -pos_notional / pv, 0.0))
+        tgt_row = tgt[start_row + k]
+        w_target = np.where(tgt_row > 0, w_max, np.where(tgt_row < 0, -w_max, 0.0))
+        dw = w_target - w_cur
+        act = np.ones(n_assets, dtype=np.int32)
+        act = np.where(dw > deadband, 2, act)          # need more long  -> BUY
+        act = np.where(dw < -deadband, 0, act)         # need more short -> SELL
+        return act.astype(np.int32)
+
+    return fn
+
+
+def order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N, bar_minutes):
+    """The FIXED order-semantics floor: the canonical order-code teacher
+    (``corridor._to_action_vec``, via ``teacher_fn``) walked at net@21 through the ORDER
+    env (weight OFF). This is the 830/831 corridor floor and the SAME reference both the
+    primary and the weight-native re-gate are scored against."""
+    order_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
+                                vector_weight_rebalance=False)
+    wo = walk_env(prices_j, order_cfg, start_row, N, teacher_fn)
+    return {"s": _sharpe(wo["rets"], bar_minutes),
+            "final_pv": wo["final_pv"], "bankrupt_at": wo["bankrupt_at"]}
+
+
+def expressibility_gate(prices_j, env_cfg, weight_teacher_fn, start_row, N, bar_minutes,
+                        order_ref, mapping, tol=0.10):
+    """Pre-registered teacher-expressibility gate (TASK_845, the real deliverable).
+
+    Walks ``weight_teacher_fn`` at net@21 through the WEIGHT env (weight ON) on the
+    IDENTICAL decision rows as ``order_ref`` (the fixed order-env floor), and reports
+    BOTH net@21 Sharpes. Fixture gate = |teacher_weight - teacher_order| <= ``tol``
+    relative (default 10%).
+
+    The teacher walk is state-greedy: ``weight_teacher_fn`` reads the walking env's own
+    state each step, so the order-code mapping produces the ±1-unit budget-scaled
+    target-weight book (``jax_trading_env.py:1600-1699``). The order-env value is the
+    corridor floor reference (830/831); the weight-env value is the book the ExIt loop
+    will actually imprint on. A miss > tol means the mapping does NOT reproduce ~floor
+    under weight semantics => the caller swaps in the weight-native ladder and re-gates
+    against the SAME order_ref (DEC-2 core-risk check)."""
+    weight_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
+                                 vector_weight_rebalance=True)
+    ww = walk_env(prices_j, weight_cfg, start_row, N, weight_teacher_fn)
+    s_o = order_ref["s"]
+    s_w = _sharpe(ww["rets"], bar_minutes)
+    rel = _rel(s_w, s_o)
+    passed = bool(np.isfinite(rel) and rel <= tol)
+    return {
+        "mapping": mapping,
+        "teacher_order_net21": float(s_o) if np.isfinite(s_o) else None,
+        "teacher_weight_net21": float(s_w) if np.isfinite(s_w) else None,
+        "rel_diff": rel if np.isfinite(rel) else None,
+        "tolerance_rel": tol,
+        "passed": passed,
+        "order_final_pv": order_ref["final_pv"], "weight_final_pv": ww["final_pv"],
+        "order_bankrupt_at": order_ref["bankrupt_at"], "weight_bankrupt_at": ww["bankrupt_at"],
+    }
+
+
 def _loss_summary(history, key, head=5):
     vals = [float(v) for v in history.get(key, [])]
     if not vals:
@@ -322,8 +424,9 @@ def run(args, out_path, tag):
     print(f"[832] panel T={T} A={A} warm={warm} start_row={start_row} N={N} "
           f"bar_minutes={args.bar_minutes}")
 
-    # ---- teacher walks, one per cost tier (same actions; costs differ) ----
-    def teacher_fn(k, side):
+    # ---- teacher walks, one per cost tier (same mapping; costs differ) ----
+    def teacher_fn(k, state):
+        side = np.asarray(state.pos_side)
         return corridor._to_action_vec(tgt[start_row + k], side, A)
 
     tier_cfg = {}
@@ -334,6 +437,56 @@ def run(args, out_path, tag):
                for c in GATE_COSTS}
     floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
     print(f"[832] teacher floor in-env: gross {floor[0]:+.3f}  net@21 {floor[21]:+.3f}")
+
+    # ---- teacher-expressibility gate (TASK_845, pre-registered, the real deliverable) ----
+    def _gate_line(g):
+        rel = g["rel_diff"] if g["rel_diff"] is not None else float("nan")
+        print(f"[845 GATE] {g['mapping']}: order net@21 {_fmt(g['teacher_order_net21'])}  "
+              f"weight net@21 {_fmt(g['teacher_weight_net21'])}  rel {rel:.3f} "
+              f"(tol {g['tolerance_rel']:.2f}) -> {'PASS' if g['passed'] else 'FAIL'}")
+
+    wn_fn = _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, A)
+    order_ref = order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N,
+                                      args.bar_minutes)
+    gate = expressibility_gate(prices_j, env_cfg, teacher_fn, start_row, N, args.bar_minutes,
+                               order_ref, "order-code (corridor._to_action_vec)")
+    _gate_line(gate)
+    if not gate["passed"]:
+        # FAIL => re-gate the weight-native ladder mapping against the SAME order-code floor
+        # reference (pre-registered contingency; the same wn_fn can be IMPRINTED, below).
+        wn_gate = expressibility_gate(
+            prices_j, env_cfg, wn_fn, start_row, N, args.bar_minutes, order_ref,
+            "weight-native ladder (sign(w_target - w_cur) | |dw|>deadband)")
+        _gate_line(wn_gate)
+        gate["weight_native_regate"] = wn_gate
+
+    # ---- select the teacher that is actually IMPRINTED (TASK_845 MAJOR fix) ----
+    # The pre-registered contingency must be ACTIONABLE: when the order-code teacher fails the
+    # weight-env expressibility gate, the runner must be able to imprint on the weight-native
+    # ladder instead (not merely re-measure it). Default 'order-code' keeps every computed
+    # number byte-identical to the pre-selector default path (the injected teacher, agreement,
+    # values, floor, sanity and ledger are all unchanged). 'weight-native' walks the SAME
+    # per-cost-tier configs with wn_fn and rebinds teacher/floor so the WHOLE run is
+    # self-consistent with the imprinted mapping. The gate measurement above is untouched
+    # (it always reports BOTH mappings vs the fixed order-code reference).
+    imprint_mapping = args.imprint_mapping
+    if imprint_mapping == "weight-native":
+        # FAIL-CLOSED (TASK_845 MINOR): weight-native imprint is only coherent when the WHOLE
+        # run is weight semantics — the teacher walk (tier_cfg inherits env_cfg's flag), the obs
+        # encoding, and the ExIt continuation env. Without --vector-weight-rebalance the ladder
+        # would walk the ORDER env (floor +8.454) while the gate certifies the WEIGHT-env teacher
+        # (-4.593): two different teachers, a gate-uncertified imprint. Reject the combo.
+        assert env_cfg.vector_weight_rebalance, (
+            "--imprint-mapping weight-native requires --vector-weight-rebalance so the teacher "
+            "walk, obs encoding, and ExIt env all run weight semantics; the gate certifies the "
+            "weight-env teacher, not the order-env one")
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, wn_fn)
+                   for c in GATE_COSTS}
+        floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
+        print(f"[832] IMPRINT MAPPING = weight-native ladder; teacher floor in-env: "
+              f"gross {floor[0]:+.3f}  net@21 {floor[21]:+.3f}")
+    else:
+        print(f"[832] IMPRINT MAPPING = order-code (default; byte-identical default path)")
 
     # ---- training observations for the SAME decision rows (PIN b) ----
     obs = encode_training_obs(prices_j, start_row, N, env_cfg)
@@ -393,7 +546,7 @@ def run(args, out_path, tag):
     sanity = {}
     for c in GATE_COSTS:
         rep = walk_env(prices_j, tier_cfg[c], start_row, N,
-                       lambda k, side: pol_actions[k])
+                       lambda k, state: pol_actions[k])
         s = _sharpe(rep["rets"], args.bar_minutes)
         sanity[c] = {
             "policy_inenv": float(s) if np.isfinite(s) else None,
@@ -412,6 +565,7 @@ def run(args, out_path, tag):
         "position_size_pct": args.position_size_pct,
         "cost_tiers_bp": list(GATE_COSTS), "sharpe_period_minutes": args.bar_minutes,
         "imprint": {
+            "imprint_mapping": imprint_mapping,   # which teacher mapping was IMPRINTED
             "mechanism": "buffer-injection: on-the-fly teacher walk -> one-hot per-asset "
                          "marginals -> JAXReplayBuffer(vector_action=True).add_trajectory "
                          "-> trainer.train (shipped factored CE = BC loss)",
@@ -426,6 +580,10 @@ def run(args, out_path, tag):
                 "reward_hybrid": args.reward_hybrid,
                 "reward_attributable": args.reward_attributable,
                 "fee_bps": args.fee_bps, "slip_bps": args.slip_bps,
+                "vector_weight_rebalance": bool(env_cfg.vector_weight_rebalance),
+                "vector_weight_unit": float(env_cfg.vector_weight_unit),
+                "vector_weight_max": float(env_cfg.vector_weight_max),
+                "vector_rebalance_deadband": float(env_cfg.vector_rebalance_deadband),
                 "reward_tier_bp": net_tier, "chunk_len": args.chunk_len,
                 "seed": args.seed,
                 "value_targets": "MC returns (compute_returns use_gae=False, bootstrap 0)",
@@ -445,6 +603,7 @@ def run(args, out_path, tag):
             "values_stats": {"mean": float(values.mean()), "std": float(values.std()),
                              "min": float(values.min()), "max": float(values.max())},
         },
+        "expressibility_gate": gate,
         "sanity": {
             "method": "direct policy-argmax rollout (pre-registered; deterministic, "
                       "no search) on the identical decision rows",
@@ -492,7 +651,36 @@ def run(args, out_path, tag):
             f"(head5 {ce['head_mean']:.5f} -> tail5 {ce['tail_mean']:.5f})")
         for c in GATE_COSTS:
             assert sanity[c]["policy_inenv"] is not None, "SMOKE FAIL: sanity replay Sharpe missing"
-        print("[832] SMOKE PASS: finite losses, decreasing imprint CE, sanity replay emitted schema")
+        # TASK_845 gate: the deliverable is that the gate is REPORTED (both net@21 values
+        # emitted) and that when the order-code mapping misses, the weight-native ladder is
+        # re-gated (and can be IMPRINTED via --imprint-mapping). The PASS/FAIL of the
+        # ±10%-RELATIVE threshold is NOT asserted on the fixture (this module's pre-registered
+        # "no performance threshold on the fixture smoke" stance): the ~50-decision fixture
+        # slice is a losing period (both net@21 negative), so the relative threshold is
+        # ill-defined on negative Sharpes and the PASS/FAIL itself is inconclusive. What the
+        # fixture DOES reveal is a real STRUCTURAL sizing divergence (see WARN below) that the
+        # BINDING real-panel run (planner-owned, DEC-2 ±0.10 ABSOLUTE) must confront.
+        assert gate["teacher_order_net21"] is not None and gate["teacher_weight_net21"] is not None, \
+            "SMOKE FAIL: expressibility gate did not emit both net@21 values"
+        final_gate = gate.get("weight_native_regate", gate)
+        assert (gate["passed"] or "weight_native_regate" in gate), \
+            "SMOKE FAIL: order-code gate missed but the weight-native re-gate was not shipped"
+        if not final_gate["passed"]:
+            rel_txt = (f"{final_gate['rel_diff']:.3f}" if final_gate["rel_diff"] is not None
+                       else "n/a (non-finite weight Sharpe)")
+            print(f"[832] WARN: expressibility gate MISS on the fixture after "
+                  f"{final_gate['mapping']} (order {_fmt(final_gate['teacher_order_net21'])} vs "
+                  f"weight {_fmt(final_gate['teacher_weight_net21'])}, rel "
+                  f"{rel_txt} > {final_gate['tolerance_rel']:.2f}). PASS/FAIL "
+                  f"is INCONCLUSIVE on this small losing slice (relative threshold ill-defined "
+                  f"on negative Sharpes), but the ~1.25 net@21 gap is a real STRUCTURAL sizing "
+                  f"divergence: default w_unit=1/n, w_max=4*w_unit=0.5 make the weight book "
+                  f"express ~2x (order-code) to ~8x-then-budget-clipped (weight-native) the "
+                  f"order env's per-asset exposure (~4% terminal-wealth gap; ±0.10-ABSOLUTE "
+                  f"would also FAIL). REPORTED, not asserted; binding read = real-panel "
+                  f"scheduled run (DEC-2), which must confront the weight-param sizing.")
+        print("[832] SMOKE PASS: finite losses, decreasing imprint CE, sanity replay emitted "
+              "schema, expressibility gate reported (both mappings)")
     return result
 
 
@@ -520,6 +708,16 @@ def _print_report(r):
         label = "gross" if c == 0 else f"net@{c}"
         print(f"{label:>8} | {_fmt(s['policy_inenv']):>12} {_fmt(s['teacher_floor_inenv']):>11} "
               f"{_fmt(s['corridor_position']):>9}")
+    g = r.get("expressibility_gate")
+    if g is not None:
+        fg = g.get("weight_native_regate", g)
+        print("-" * 84)
+        print(f"[845] teacher-expressibility gate ({fg['mapping']}): "
+              f"order net@21 {_fmt(fg['teacher_order_net21'])}  "
+              f"weight net@21 {_fmt(fg['teacher_weight_net21'])}  "
+              f"rel {fg['rel_diff'] if fg['rel_diff'] is not None else float('nan'):.3f} "
+              f"(tol {fg['tolerance_rel']:.2f}) -> {'PASS' if fg['passed'] else 'FAIL'}")
+        print("-" * 84)
     print(f"teacher action agreement: {r['sanity']['teacher_action_agreement']:.3f}  "
           f"policy hist {r['sanity']['policy_action_hist']}  "
           f"teacher hist {r['teacher']['action_hist']}")
@@ -545,6 +743,18 @@ def main():
                     help="per-asset notional fraction (default 0.5/n_assets, 830 convention)")
     ap.add_argument("--fee-bps", type=float, default=FEE_BPS)
     ap.add_argument("--slip-bps", type=float, default=SLIP_BPS)
+    # phase-1c weight-rebalance env (TASK_840/843; default OFF => canon order semantics,
+    # byte-identical to the pre-840 path). ON => BOTH in-env walks (teacher trajectory
+    # generation AND the sanity replay) run the target-weight rebalance step_vector.
+    ap.add_argument("--vector-weight-rebalance", dest="vector_weight_rebalance",
+                    action="store_true", default=False,
+                    help="TASK_840/843 target-weight rebalance env for BOTH in-env walks")
+    ap.add_argument("--vector-weight-unit", type=float, default=-1.0,
+                    help="per Buy/Sell target-weight step (sentinel <=0 => 1/n_assets)")
+    ap.add_argument("--vector-weight-max", type=float, default=4.0,
+                    help="position cap in UNITS of weight-unit (default 4 => +-4*w_unit)")
+    ap.add_argument("--vector-rebalance-deadband", type=float, default=-1.0,
+                    help="re-trim only when |target-current| > deadband (sentinel <0 => 0.1*w_unit)")
     # imprint phase (PIN a knobs + canon-mirrored trainer knobs)
     ap.add_argument("--iters", type=int, default=None,
                     help="trainer.train iterations (default: 80 smoke / 2000 real)")
@@ -567,6 +777,13 @@ def main():
     ap.add_argument("--reward-attributable", dest="reward_attributable",
                     action="store_true", default=True)
     ap.add_argument("--no-reward-attributable", dest="reward_attributable", action="store_false")
+    ap.add_argument("--imprint-mapping", choices=("order-code", "weight-native"),
+                    default="order-code",
+                    help="teacher mapping to IMPRINT on: 'order-code' (default; "
+                         "corridor._to_action_vec) or 'weight-native' (the ladder the "
+                         "expressibility gate re-measures — pre-registered contingency when "
+                         "the order-code teacher fails the weight-env gate). Default keeps "
+                         "the byte-identical default output.")
     ap.add_argument("--chunk-len", type=int, default=400,
                     help="max steps per injected trajectory chunk (canon episode scale)")
     ap.add_argument("--seed", type=int, default=0)
