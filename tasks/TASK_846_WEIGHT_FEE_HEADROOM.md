@@ -1,6 +1,30 @@
+> **STATUS (2026-07-17): SHIPPED as `task846-weight-fee-headroom`.** D14 opt (a): the weight
+> budget now reserves turnover-fee headroom (`budget × (1 − 2·fee_rate)`, internal `fee_headroom_k=2`,
+> no new flag) — closes the all-short fee16 full-wipe. k=2 covers the full-flip worst case; every
+> term ×fee_rate ⇒ **fee0 BIT-IDENTICAL** (all 3 pins MATCH incl. `6293668f…`). Acceptance (i)–(iii)
+> PASS (D14 repro cash≥0/PV>0 at fee8/16/32, 843 walks green); **selftest 7/7; 36 passed**; 5 new D14
+> regression tests (FAIL pre-fix / PASS post-fix). **Acceptance (iv) → DECISIONS D16 (RULED: ship
+> as-is).** The k=2 shrink materially shifts the 832/845 teacher-gate on the **8-asset fixture**
+> (`teacher_weight_net21` −4.687→−3.111, Δ1.576) — a **benign 8-asset binding-regime chaos artifact**
+> (budget-binding scaling through deadband/snap nonlinearity; no bankruptcy; moves net@21 UP), NOT a
+> real-surface distortion: the binding **64-asset real-panel** read is **Δ=0.0008** (25× under the 0.02
+> bar; `runs/832_e5/gate_read_post846.json`, gate PASS rel 0.042, zero bankruptcies, host-determinism
+> control clean). Refinement (a′ conditional headroom) REJECTED as unsound (band hole). Un-gates the
+> E5 ExIt continuation + all phase-2 fee16. (Orchestrator note: a first transient 5-test failure was
+> GPU contention from racing the still-running implementer on the single 3090 — cleared serially.)
+
 # TASK_846 — Weight-budget fee headroom (D14 opt (a); gates ExIt + all phase-2 fee16)
 
-**Status**: READY 2026-07-16 (D14 ratified opt (a)).
+**Status**: READY (re-seeded) 2026-07-17 — **D16 RULED: SHIP the existing implementation AS-IS.**
+Run-11 held the ship on acceptance (iv) (fixture teacher-gate Δ1.576) → D16. The binding
+64-asset real-panel distortion read (`runs/832_e5/gate_read_post846.json`, patch from the
+working tree) measured **Δ=0.0008 < 0.02** with the expressibility gate still passing and a
+clean host-determinism control ⇒ acceptance (iv) is SATISFIED on the binding surface; the
+fixture Δ is a KNOWN-BENIGN 8-asset binding-regime chaos artifact (tiny budget shrink flips
+discrete deadband/snap decisions on a hard-binding walk — record, don't gate). Wrap = commit
+the gate-green implementation + 5 D14 regression tests already in the working tree, update
+this banner + CHANGELOG. **No code changes requested.** (a′ "only-when-binding" was REJECTED
+as unsound — see D16: it reopens a narrow D14 wipe band.)
 **Size: S. Risk: medium** (TASK_840/843 weight branch of `step_vector` only; canon `48e1f467…`
 + 839-budget `4f8b692e…` pins unchanged; weight-ON/fee0 pin `6293668f…` must ALSO stay
 unchanged — the headroom term must be exactly 0 at fee=0, the 842 ×fee_rate discipline).

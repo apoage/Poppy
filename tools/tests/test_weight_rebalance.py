@@ -780,5 +780,86 @@ def test_winning_short_survivor_margin_call_genuine_noop_with_longs_fee0():
     assert bool(np.asarray((st2.pos_size == ns.pos_size).all()))
 
 
+# ---------------------------------------------------------------------------
+# TASK_846 (D14 opt (a)): weight-budget fee headroom. A near-fully-invested
+# all-short book (Σ|w|->1) at fee>0 must NOT overdraw cash / trip a spurious
+# full-book margin wipe. The budget now reserves k*fee_rate of turnover-fee
+# headroom (k=2, open+close legs). These FAIL on the pre-846 tree (the all-short
+# fee16 book overdraws by ~the open-turnover fee -> process_margin_call escalates
+# the no-longs deficit into PV 100000 -> 0) and PASS post-fix.
+# ---------------------------------------------------------------------------
+
+def _d14_all_short_step(fee_bps, slip_bps=0.0, na=64):
+    """The D14 repro: na assets, w_unit=1/na, w_max=1 (=na units), all-Sell, flat prices.
+    One step opens a full Σ|w|->1 short book from flat. Returns the post-step state and
+    the pre-margin cash observed by re-running process_margin_call (idempotent iff no-op)."""
+    from mcts_trader.env.jax_trading_env import process_margin_call
+    w_unit = 1.0 / na
+    prices = _flat_prices(40, na)
+    # w_max = vector_weight_max * w_unit = na * (1/na) = 1.0
+    cfg = _cfg(na, w_unit=w_unit, w_max=float(na), fee_bps=fee_bps, slippage_bps=slip_bps)
+    st = _fresh_state(prices, cfg)
+    sell_all = jnp.zeros((na,), dtype=jnp.int32)   # action 0 == Sell on every asset
+    ns, _, _, done = step_vector(st, sell_all, prices, cfg)
+    cur = get_current_prices(prices, st.current_step, st.episode_start_idx)
+    pv = float(compute_portfolio_value(ns, cur))
+    cash = float(np.asarray(ns.cash))
+    n_active = int(np.asarray(ns.pos_active).sum())
+    sumw = float((np.abs(np.asarray(ns.pos_size) * np.asarray(cur))).sum() / max(pv, 1e-9))
+    # margin-call escalation probe: re-run it; a genuine no-op leaves cash & book untouched.
+    st2 = process_margin_call(ns, cur, cfg)
+    margin_noop = (float(np.asarray(st2.cash)) == pytest.approx(cash, abs=1e-2)
+                   and bool(np.asarray((st2.pos_active == ns.pos_active).all())))
+    return dict(pv=pv, cash=cash, n_active=n_active, sumw=sumw,
+                done=bool(np.asarray(done)), margin_noop=margin_noop)
+
+
+def test_d14_all_short_fee16_no_wipe():
+    """64 assets, w_unit=1/64, w_max=1, all-Sell, flat prices, fee16: cash>=0, PV>0, the full
+    64-short book survives (no margin escalation), Σ|w|<=1. FAILS pre-846 (PV -> 0)."""
+    r = _d14_all_short_step(fee_bps=16.0)
+    assert r["cash"] >= -1e-2, f"fee16 all-short overdrew: cash {r['cash']} < 0"
+    assert r["pv"] > 0.5 * INITIAL_CASH, f"fee16 all-short book wiped: PV {r['pv']}"
+    assert not r["done"], "spurious bankruptcy on the fee16 all-short book"
+    assert r["n_active"] == 64, f"margin path liquidated shorts: {r['n_active']}/64 survive"
+    assert r["margin_noop"], "process_margin_call escalated the all-short deficit (not a no-op)"
+    assert r["sumw"] <= 1.05, f"Σ|w|={r['sumw']} exceeded the no-leverage cap"
+
+
+@pytest.mark.parametrize("fee_bps", [8.0, 16.0, 32.0])
+def test_d14_all_short_fee_scaling_no_wipe(fee_bps):
+    """Scaling check: the headroom holds at fee8, fee16 AND fee32 (k*fee_rate scales with the
+    fee), each ending cash>=0, PV>0, full book intact, margin a no-op. FAILS pre-846."""
+    r = _d14_all_short_step(fee_bps=fee_bps)
+    assert r["cash"] >= -1e-2, f"fee{fee_bps} all-short overdrew: cash {r['cash']} < 0"
+    assert r["pv"] > 0.5 * INITIAL_CASH, f"fee{fee_bps} all-short book wiped: PV {r['pv']}"
+    assert not r["done"], f"fee{fee_bps}: spurious bankruptcy"
+    assert r["n_active"] == 64, f"fee{fee_bps}: only {r['n_active']}/64 shorts survive"
+    assert r["margin_noop"], f"fee{fee_bps}: margin path escalated (not a no-op)"
+    assert r["sumw"] <= 1.05, f"fee{fee_bps}: Σ|w|={r['sumw']} exceeded the no-leverage cap"
+
+
+def test_d14_all_short_fee16_slip5_no_wipe():
+    """Phase-2 regime (DEC-2 fee16/slip5): the same all-short book must also survive with the
+    canonical slippage present (slippage rides the exec spread, not the reservation)."""
+    r = _d14_all_short_step(fee_bps=16.0, slip_bps=5.0)
+    assert r["cash"] >= -1e-2, f"fee16/slip5 all-short overdrew: cash {r['cash']} < 0"
+    assert r["pv"] > 0.5 * INITIAL_CASH, f"fee16/slip5 all-short book wiped: PV {r['pv']}"
+    assert not r["done"], "fee16/slip5: spurious bankruptcy"
+    assert r["n_active"] == 64, f"fee16/slip5: only {r['n_active']}/64 shorts survive"
+    assert r["margin_noop"], "fee16/slip5: margin path escalated (not a no-op)"
+
+
+def test_d14_fee0_bit_identical_budget_unchanged():
+    """The headroom term is ×fee_rate: at fee0 the all-short book is UNCHANGED from the pre-846
+    behavior (budget * (1 - k*0) == budget). PV conserved, full book, cash the pure footprint
+    hair (Σ|w| ~ 0.9999). This is the local guard for the 6293668f fee0 pin."""
+    r = _d14_all_short_step(fee_bps=0.0)
+    assert r["pv"] == pytest.approx(INITIAL_CASH, rel=1e-4), f"fee0 PV not conserved: {r['pv']}"
+    assert r["cash"] >= -1e-2 and r["cash"] < 100.0, f"fee0 cash off the footprint knife-edge: {r['cash']}"
+    assert r["n_active"] == 64
+    assert r["sumw"] == pytest.approx(1.0, abs=2e-3), f"fee0 Σ|w|={r['sumw']} not ~0.9999"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([os.path.abspath(__file__), "-q"]))

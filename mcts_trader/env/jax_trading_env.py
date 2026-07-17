@@ -1587,13 +1587,12 @@ def step_vector(state: TradingState, action_vec: chex.Array,
     # posval/PV - Σ_reb footprint/PV) >= 0 by induction; Σ posval <= PV entering the step). At
     # fee=0 (the phase-1c cost0 regime) bankruptcy is therefore impossible and process_margin_call
     # below is genuinely a no-op ON; the acceptance probe hard-asserts cash>=0 / Σ|w|<=1 /
-    # margin-no-op every step AT fee0. SCOPE CAVEAT (DECISIONS D14): the budget reserves CAPITAL
-    # footprint, NOT turnover FEES, so at fee>0 a near-fully-invested all-short book (Σ|w|->1) can
-    # overdraw by ~the unreserved open-fees and hit process_margin_call — which on an all-short
-    # book (no longs to liquidate) escalates to a full wipe. This is the pre-existing
-    # project_vector_env_cash_wall (842 wipes the same repro, slightly worse), NOT a 843
-    # regression; resolving it (reserve fee headroom / margin-call buyback / cap short breadth) is
-    # an env-design choice tracked as D14, to settle BEFORE phase-2 fee16 relies on the ON path.
+    # margin-no-op every step AT fee0. TASK_846 (D14 opt (a) — RESOLVED): the budget now ALSO
+    # reserves turnover-FEE headroom (shrunk by k*fee_rate below, k=2 covering the open+close
+    # legs of the 842 re-trim), so a near-fully-invested book no longer overdraws by ~the
+    # unreserved turnover fee at fee>0 (project_vector_env_cash_wall). The headroom term is
+    # ×fee_rate => EXACTLY 0 at fee0 => the fee0 path stays BIT-IDENTICAL (pin 6293668f…); the
+    # process_margin_call below is a genuine no-op at fee0 AND at fee>0 across the D14 repro.
     # ORDER arrays keep the canon placement above (market cancels pending; LimitSell/LimitBuy
     # still place the order — spec item 2: "order placed, target applies on fill"); only the
     # POSITION arrays and cash are overridden.
@@ -1657,7 +1656,24 @@ def step_vector(state: TradingState, action_vec: chex.Array,
         # ANY cash<0 with no longs to liquidate (an all-short book) into a spurious full-book
         # bankruptcy. This negligible haircut keeps weight_cash strictly >= 0, making the ON
         # zero-bankruptcy guarantee ROBUST to round-off rather than knife-edge (Σ|w| ~ 0.9999).
-        budget = jnp.maximum(1.0 - held_reserve, 0.0) * (1.0 - 1e-4)
+        #
+        # TASK_846 (D14 opt (a)): the 1e-4 haircut reserves capital FOOTPRINT but not turnover
+        # FEES. At fee>0 the 842 re-trim charges close_fee (|close_proceeds|*fee_rate, L~1729)
+        # on the CLOSE leg PLUS open_short_fee (open_notional*fee_rate, L~1731) on the OPEN leg;
+        # neither is reserved here, so a near-fully-invested book (Σ|w|->1) overdraws by ~the
+        # unreserved turnover fee and process_margin_call escalates the all-short deficit (no
+        # longs to liquidate) into a spurious FULL-BOOK wipe (project_vector_env_cash_wall).
+        # Fix: shrink the admitted budget by the expected turnover-fee fraction k*fee_rate.
+        # k derivation (worst case = a FULL flip re-trim, close longs + open shorts, on ~the
+        # whole admitted budget): weight_cash(fee) ~ PV*fee_rate*(-2 + k + k*fee_rate), so
+        # weight_cash>=0 needs k >= 2/(1+fee_rate); the all-short-from-flat D14 repro (open leg
+        # only) needs k >= 1/(1+fee_rate). k=2 covers BOTH legs of the step's traded notional
+        # (the 842 close_fee + open_short_fee) and is the tight safe integer. Every new term is
+        # ×fee_rate, so at fee0 (1 - k*fee_rate) == 1.0 EXACTLY and the budget — hence the whole
+        # weight-ON/fee0 path — is BIT-IDENTICAL (pin 6293668f…). Internal constant, no new flag.
+        fee_headroom_k = 2.0
+        budget = (jnp.maximum(1.0 - held_reserve, 0.0) * (1.0 - 1e-4)
+                  * (1.0 - fee_headroom_k * fee_rate))
         scale = jnp.where(reb_abs > budget, budget / jnp.maximum(reb_abs, 1e-10), 1.0)
         w_final = jnp.where(do_reb, raw_target * scale, w_cur)
 

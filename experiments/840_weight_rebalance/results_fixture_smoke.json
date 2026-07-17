@@ -119,7 +119,7 @@
     "weight_keeps_pv_gt_50pct": true
   },
   "jax_version": "0.6.2",
-  "timestamp": "2026-07-16T20:41:06",
+  "timestamp": "2026-07-16T23:57:58",
   "e1_net21": {
     "K": 16,
     "seed": 0,
@@ -132,11 +132,11 @@
     "proposal_bias": 3.0,
     "cost_tier_bp": 21,
     "net21_floor_819book_weighton": 5.575750497880985,
-    "net21_e1_weighton": 7.742423539340634,
-    "edge_e1_minus_floor": 2.1666730414596493,
+    "net21_e1_weighton": 7.7925928482406075,
+    "edge_e1_minus_floor": 2.216842350359623,
     "required_edge": 0.436,
     "floor_final_pv": 118093.078125,
-    "e1_final_pv": 112097.515625,
+    "e1_final_pv": 111972.1640625,
     "floor_bankrupt_at": -1,
     "e1_bankrupt_at": -1,
     "read": "net21(E1) >= floor + 0.436",
@@ -152,5 +152,5 @@
     "e1_is_hard_gate": false,
     "forced_fail_selftest": false
   },
-  "elapsed_sec": 21.9
+  "elapsed_sec": 20.0
 }
