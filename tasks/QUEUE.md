@@ -3,23 +3,34 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-16 (factory run 10 wrap-up) — 843 + 845 SHIPPED, Ready now EMPTY.** The env reached its
-final fee0 form (843: netting + snap-to-flat; winning-short reservation BLOCKER fixed) and the 832
-imprint runner is weight-compat with the pre-registered teacher-expressibility gate (845). Two OPEN
-planner decisions came out of the run: **D14** (pre-existing fee16 all-short overdraft wipe — before
-phase-2 fee16) and **D15** (E5 teacher-expressibility structural sizing divergence — mapping/params
-before the imprint→ExIt spend; on D13's critical path). Prior context: **2026-07-14 D13 DECIDED:
-REDIRECT** (operator; H6 widening = named "rainy day" contingency) → critical path = E5/832
-imprint→ExIt (DEC-2 bar ε=+0.10 + per-window consistency leg); the 844 postmortem showed no locus
-tripped 4/4 (the failure is "no profitable behavioral prior", which imprint injects). **Next moves
-are PLANNER-owned**: the scheduled E5 imprint-sanity→imprint→ExIt real-panel runs (un-blocked by 845)
-+ ruling D14/D15. No new factory-loop task until a Ready row lands.
+**2026-07-17 (planner, post factory run 11) — 846 SHIPPED, Ready EMPTY, ExIt battery LAUNCHED
+(planner-owned; SPEC 828 Amendment 5).** No factory-loop work until the ExIt verdict lands
+(PASS ⇒ R3/graduation rows; FAIL ⇒ pivot rows per pathway kill logic).
+The E5 chain executed clean through the night: D15 gate-read (order-code FAIL rel 0.290 /
+weight-native PASS rel 0.041 ⇒ branch 2, LEDGER `832/E5-gate`) → **full imprint DONE**
+(weight-native, iters 2000: BC CE ÷100, agreement 97.5%, sanity replay net@21 **+0.839 vs
+teacher floor +0.542**, above floor BOTH tiers, zero bankruptcies — first learned policy above
+floor in the program; strict ±0.10 window missed on the UPSIDE ⇒ PASS-with-caveat, LEDGER
+`832/E5-imprint`; ckpt `runs/832_e5/ckpt_imprint_full` on srv). Factory run 11 held 846 on
+acceptance (iv) → **D16 seeded, then RULED same night: SHIP AS-IS** (binding 64-asset read
+Δ=0.0008 ≪ 0.02, `runs/832_e5/gate_read_post846.json`; fixture Δ known-benign; (a′) rejected
+unsound). Prior context: **2026-07-14 D13 REDIRECT** (operator; H6 = rainy-day contingency) →
+critical path = E5 imprint→ExIt. **Factory: take 846 (wrap-only commit). Once shipped, the
+planner launches the ExIt continuation** (PIN-(c) flags + weight-env flags, ≥3 seeds, fee16,
+DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
 
 ## Ready — take from the top
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_846_WEIGHT_FEE_HEADROOM.md` | S | **D14 ratified opt (a) 2026-07-16**: fee-headroom reservation in the weight budget (all-short fee16 wipe fix). Every term ×fee_rate ⇒ fee0 pin `6293668f…` must MATCH. GATES the ExIt continuation + all phase-2 fee16 launches. Fail-closed lens mandatory. |
+_(empty — next rows come out of the ExIt verdict)_
+
+_Shipped 2026-07-17 factory run 11:_
+- _**TASK_846** (`task846-weight-fee-headroom`, `c2f1ba5`) — weight-budget fee headroom (D14 opt (a)):
+  `budget × (1 − 2·fee_rate)`, closes the all-short fee16 full-wipe; fee0 BIT-IDENTICAL (3 pins MATCH
+  incl. `6293668f…`); 5 D14 regression tests, selftest 7/7. Acceptance (iv) went through **D16**
+  (fixture teacher-gate Δ1.576 → held → planner's binding 64-asset real-panel read Δ=0.0008 ≪ 0.02 →
+  RULED ship-as-is; (a′) rejected unsound). Un-gated the ExIt continuation + all phase-2 fee16._
 
 _Shipped 2026-07-16 factory run 10 (843 → 845 in sequence, the D12-cleanup → E5-compat chain):_
 - _**TASK_843** (`task843-weight-incremental-netting`, `ed27849`) — weight-path incremental netting + snap-to-flat
@@ -133,8 +144,8 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 | 828 phase-1b **instrument passes** | 835 (D8 primary evidence) + 834 DEC-1 + 836 E4 on s1/s2 `snapshot_ep2000`, phase-1b flags (budget ON) | gpu-server GPUs 2/3 | **DONE 2026-07-11 21:35, 6/6 rc0 — the decisive mixed verdict**: 835 still bankrupt (step 132/181, s1 book = 10–11 shorts → D8 escalation FIRED ⇒ TASK_840); **834 DEC-1 PASS ×2** (R 1.30/1.12 vs bars 0.33/0.24 — D2 rebuild works); **836 value>momentum ×2** (ρ +0.21/+0.30 vs −0.03 — first positive learning signal). LEDGER 835/S4-p1b · 834/E3-p1b · 836/E4-p1b |
 | 828 Stage-3 **phase 1c** | re-train under the TASK_840 weight env: phase-1 recipe + `--vector-weight-rebalance` (NO budget flag — one variable), cost0 ×3 seeds, `jobs_phase1c.manifest`; pre-registration = SPEC amendment 4; **D10 ratified PROCEED**; watchdog ARMED per D11 (`--stall-timeout 2700`) | gpu-server via run_queue (tmux `q_828s3p1c`, `--gpus 1,2,3 --acquire-timeout 0`) | **s0/s1 DONE 2026-07-12 07:32 + instruments graded same morning (LEDGER 835/S4-p1c · 834/E3-p1c · 836/E4-p1c): ENV FIXED (zero bankruptcies, first-ever complete rollouts) / POLICY BELOW FLOOR 2/2 (short-biased book) ⇒ D13 OPEN**; s2 DONE 14:16 + record pass graded (−1.385, complete rollout, 7L/8.4S — verdict 3/3). **Battery closed CLEAN: zero failures, zero wedges, watchdog armed throughout.** Earlier: s2 start was delayed by the **p1b-s0 retry wedge #3 at ep982** → py-spy stack CAPTURED (841 root-cause: XLA/CUDA dispatch hang post-save, orbax-lock hypothesis REFUTED — see TASK_841 evidence note + `lore/notes_2026-07-12.md`), killed, NO re-retry (p1b verdict stands on s1/s2). Graded read: corridor vs floor +0.424 on ≥2/3 seeds; any bankruptcy = TASK_840 defect |
 | 844 **short-bias postmortem** | `bias_probe.py` on p1c s0/s1/s2 + p1b s1 control (`jobs_844.manifest`, weight/order run flags from `cfg_*.json`) | gpu-server GPUs 2/3 via run_queue.sh (tmux `q_844`) | **DONE 2026-07-14 20:40, 4/4 rc0 — NO LOCUS TRIPPED (LEDGER 844/postmortem)**: value clean (calibrated \|z\|≤0.9, the raw-t would have false-tripped ×4), prior BUY-leaning (0.65–0.84), credit-misassignment unsupported. Planner post-hoc: probe leg tracker is FLIP-BLIND in weight semantics — shorts exit ONLY by BUY-flip to long (exact arithmetic 3/3); longs culled by non-action re-trim closes (margin ruled out — fee0 no-op invariant). Folded into D13 |
-| 832 **imprint-sanity** (E5 leg 1) | teacher replay floor (weight env, real panel — the binding ±0.10-absolute expressibility read) + BC imprint + deterministic sanity replay vs teacher ±0.10 (DEC-2 tolerance); cost0, weight flags = phase-1c set; run BOTH mappings via `--imprint-mapping {order-code,weight-native}` (845); ≤1 GPU-day | gpu-server single verified-idle GPU, run_queue + D11 watchdog | **UN-BLOCKED 2026-07-16** (TASK_845 shipped; TASK_843 shipped before it → env at final form, no re-base pending). **Rule DECISIONS D15 first** (which mapping / whether to retune w_unit/w_max — fixture shows a structural sizing divergence; this run IS the ±0.10-absolute binding read). FAIL here = H5 falsification clause fires (BC/representation path implicated) → planner, before any ExIt spend |
-| 832 **ExIt** (E5 leg 2, = the phase-2 continuation under redirect) | short ExIt from the imprint ckpt (`--load-checkpoint --reset-optimizer --clear-buffer`; verify `Restored entropy_coef: 0.01` at launch — SPEC PIN c), ≥3 seeds, fee16 per DEC-2; PASS = floor+0.10 net@21 ≥3 seeds (per-seed above bare floor) + ≥3/4 regime windows at/above their window floor | gpu-server, run_queue + D11 watchdog | GATED on imprint-sanity PASS. PASS ⇒ R3 gate opens (warm-start ranked first); FAIL with sanity green + E1/E3 green ⇒ H1 weakens, planner pivots (pathway kill logic). H6 widening = contingency if the IMPRINTED policy can't hold the floor |
+| 832 **imprint-sanity** (E5 leg 1) | teacher replay floor (weight env, real panel — the binding ±0.10-absolute expressibility read) + BC imprint + deterministic sanity replay vs teacher ±0.10 (DEC-2 tolerance); cost0, weight flags = phase-1c set; run BOTH mappings via `--imprint-mapping {order-code,weight-native}` (845); ≤1 GPU-day | gpu-server single verified-idle GPU, run_queue + D11 watchdog | **DONE 2026-07-17 00:06 — BOTH LEGS (LEDGER 832/E5-gate + 832/E5-imprint).** Gate-read: order-code FAIL (rel 0.290) / weight-native PASS (rel 0.041) ⇒ D15 branch 2, no retune. Full imprint (weight-native, iters 2000): BC converged (CE ÷100, agreement 97.5%), sanity replay net@21 **+0.839 vs floor +0.542** — ABOVE floor both tiers, zero bankruptcies, first learned policy above floor in the program. Strict ±0.10 window missed on the UPSIDE (+0.297) ⇒ ruled PASS-with-caveat (planner; H5 kill clause targets BC failure, which did not occur). Ckpt `runs/832_e5/ckpt_imprint_full` (srv) ready for the ExIt restore |
+| 832 **ExIt** (E5 leg 2, = the phase-2 continuation under redirect) | short ExIt from the imprint ckpt (`--load-checkpoint --reset-optimizer --clear-buffer`; verify `Restored entropy_coef: 0.01` at launch — SPEC PIN c), ≥3 seeds, fee16 per DEC-2; PASS = floor+0.10 net@21 ≥3 seeds (per-seed above bare floor) + ≥3/4 regime windows at/above their window floor | gpu-server, run_queue + D11 watchdog | **LAUNCHED 2026-07-17 (both gates open: imprint-sanity PASS + 846 shipped).** Battery = `e5exit_fee16_s{0,1,2}`, 1000 epochs, pre-registration = SPEC 828 **Amendment 5** (incl. the `Restored entropy_coef: 0.01` hard launch check + imprint-erosion tripwire + DEC-2 graded read on ep1000). PASS ⇒ R3 gate opens (warm-start ranked first); FAIL with sanity green + E1/E3 green ⇒ H1 weakens, planner pivots (pathway kill logic). H6 widening = contingency if the IMPRINTED policy can't hold the floor |
 | ~~828 Stage-3 phase 2 (from-scratch continuations)~~ | ~~fee16 continuation from phase-1b/1c ckpts~~ | — | **SUPERSEDED by D13 redirect 2026-07-14**: the ExIt row above IS the phase-2 fee16 continuation, warm-started from the imprint. From-scratch ckpts (p1/p1b/p1c) = forensics + probe inputs only, never warm-start (cell measured negative twice: LEDGER 835/S4-p1b, 835/S4-p1c) |
 
 ## Gated — do NOT start (named gate must open first)

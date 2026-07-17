@@ -111,3 +111,38 @@ policy is the real expressibility test).
      (weight-unit sweep / finer action set) becomes the next build; NOT a tweak to 840.
   5. Phase-2 fee16 stays GATED on TASK_842 (D9 close-fee) + phase-1c verdicts.
 - s0-p1b retry (record-completion) runs to term on GPU 1; phase-1c s2 queues behind it.
+
+## Amendment 5 (2026-07-17, planner — ExIt battery: the D13-redirect phase 2; pre-registered before launch)
+
+Gates now OPEN: imprint-sanity PASSED (LEDGER 832/E5-imprint: replay +0.839 net@21 vs teacher
+floor +0.542, zero bankruptcies) and TASK_846 SHIPPED (`task846-weight-fee-headroom`, c2f1ba5 —
+the D14 fee16 all-short wipe is closed; binding distortion read Δ=0.0008, D16). This is the
+phase-2 fee16 continuation under the D13 redirect: warm-start from the E5 imprint, NEVER from
+the from-scratch ckpts (superseded, LEDGER 835/S4-p1{b,c}).
+
+**ExIt battery** — phase-1c recipe + fee16 + the imprint warm start:
+- Jobs `e5exit_fee16_s{0,1,2}` = the phase-1c command with: `--fee 16 --slippage 5` (the canon
+  fee16/slip5 = net@21 cost model, DEC-2), `--load-checkpoint runs/832_e5/ckpt_imprint_full
+  --reset-optimizer --clear-buffer` (PIN-(c), all three), `--vector-weight-rebalance` at the
+  SAME shipped sentinels as the imprint (unit 1/64, max 4, deadband 0.1×unit — SPEC 832 "ExIt
+  launch flags": mismatched weight flags = the cross-env imprint the gate exists to prevent),
+  seeds {0,1,2}, `--epochs 1000` (SHORT continuation: warm start ≠ from-scratch 2000; extension
+  past 1000 only via a pre-grading amendment), `--snapshot-every 100`.
+  Manifest `runs/832_e5/jobs_exit.manifest`, gpu-server, run_queue `--gpus 1,2,3
+  --acquire-timeout 0 --stall-timeout 2700` (D11 armed; wedge watchdog is the mitigation).
+- **Launch verification (hard)**: each log must show `Restored entropy_coef: 0.01` (832 PIN c —
+  the imprint's 0.001 knob must NOT leak into ExIt). Missing line ⇒ kill before ep50, fix, relaunch.
+- **Pre-registered reads**:
+  1. Collapse tripwire UNCHANGED (pct_hold >99 & ent <0.02, ≥2 seeds past ep300 ⇒ FAIL early).
+     Additional imprint-erosion tripwire: pct_hold falling BELOW 80% with alpha collapsing
+     (fee-bleed churn) on ≥2 seeds past ep300 ⇒ record, planner reads before riding to 1000.
+  2. Invariant health: bankruptcy termination in self-play at fee16 is now a TASK_846 defect
+     (the wipe is supposed to be closed) ⇒ stop, file, no verdict.
+  3. **Graded read (DEC-2, the E5/R3 verdict)**: 835 corridor eval on the FINAL snapshot
+     (ep1000), ExIt flags at eval: PASS = net@21 ≥ floor+0.10 on ≥3/3 seeds (per-seed above the
+     bare floor +0.424) AND ≥3/4 regime windows at/above their window floors (consistency leg).
+     Baseline anchor: the imprint itself replays at +0.839 — an ExIt that DEGRADES below the
+     imprint replay is itself a finding (search/self-play subtracting value), graded honestly.
+  4. FAIL with sanity green + E1/E3 green ⇒ H1 weakens, planner pivots (pathway kill logic);
+     the H6 rainy-day contingency (D13) activates only if the IMPRINTED policy can't hold the
+     floor.
