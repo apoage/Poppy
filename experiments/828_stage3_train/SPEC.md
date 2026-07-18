@@ -146,3 +146,15 @@ the from-scratch ckpts (superseded, LEDGER 835/S4-p1{b,c}).
   4. FAIL with sanity green + E1/E3 green ⇒ H1 weakens, planner pivots (pathway kill logic);
      the H6 rainy-day contingency (D13) activates only if the IMPRINTED policy can't hold the
      floor.
+
+### Amendment 5 addendum (2026-07-18, planner — post-verdict erosion-curve diagnostic; pre-registered before results)
+ExIt graded FAIL 2/2 (s1 −1.223, s2 −0.791 net@21 vs bar +0.524; s0 wedge-failed ep706, moot —
+verdict determined). Both seeds landed in the from-scratch attractor (99% hold, sparse book)
+FROM an above-ref warm start (+0.839). Diagnostic before the pivot decision (D17): grade the
+SNAPSHOT CURVE on s2 (better final seed), snapshots ep{100,300,500,700,900}, same 835 eval
+operator as the verdict run. Read: net@21 vs epoch = the erosion speed. Interpretation guide
+(pre-registered): above-floor at ep100 with monotone decay ⇒ slow erosion — a BC-anchor /
+KL-regularizer or shorter ExIt may hold the prior; already below floor at ep100 ⇒ the fee16
+self-play target destroys the prior ~immediately — training-objective-level fix required
+(curriculum or anchored objective), not a duration tweak. Diagnostic-only: no corridor claim,
+folds into D17 context.
