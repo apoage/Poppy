@@ -90,6 +90,9 @@ from mcts_trader.jax_agent.sampled_search import create_sampled_vector_search
 from mcts_trader.env.jax_trading_env import (
     jit_batch_step_vector, jit_batch_compute_action_mask,
     get_current_prices, compute_portfolio_value,
+    # TASK_850: daily-source panel builds its own env states/config (the minute path goes
+    # through create_jax_env_historical; the daily path reads ohlcv_daily directly).
+    EnvConfig, jit_batch_reset,
 )
 from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_simple
 
@@ -238,6 +241,184 @@ def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_asset
     if bar_minutes > 1:                        # env_factory.py:369 stride, verbatim
         row_ts = row_ts[::bar_minutes]
     return row_ts, symbols
+
+
+# =============================================================================
+# TASK_850 — daily-source panel loader (reads ohlcv_daily directly; no resample)
+# =============================================================================
+# The minute path (create_jax_env_historical) resamples the dying `ohlcv` table via a
+# ``[::bar_minutes]`` stride. That table's 64-asset coverage dies ~2025-10 while
+# ``ohlcv_daily`` is current to 2026-06 for 376 assets — so the 10-month OOS panel exists
+# but the minute loader can't reach it (LEDGER 832/E5-oos). The daily source reads the
+# daily table directly with the SAME symbol selection + SAME warm/decision-row semantics
+# as the minute path, and is valid ONLY with --bar-minutes 1440 (the table IS daily —
+# a non-1440 request would be an incoherent second resample). LOADER-only: zero training
+# path change (imprint.py stays minute-sourced — out of scope).
+
+def _daily_table_exists(db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv_daily'"
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def _minute_ranked_symbols(db_path, start_date, end_date, n_assets):
+    """The minute path's default universe: top-N symbols coverage-ranked over the MINUTE
+    `ohlcv` table (COUNT(*) DESC in the window — VectorBTTradingEnv._load_database_prices'
+    no-symbols branch, verbatim). The daily source and the equivalence gate BOTH route their
+    no-symbols universe through this single resolver, so the daily panel is scored on the
+    SAME asset set as the minute baseline (on the real DB the majors still hold the deepest
+    ohlcv history even though it ends ~Oct-2025, so they still rank top-N). Fail-loud if the
+    minute table is absent/empty — never silently rank over ohlcv_daily (a disjoint universe
+    that corrupts the OOS benchmark)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        has = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv'").fetchone()
+        if has is None:
+            raise RuntimeError(
+                f"cannot resolve a universe without --symbols: no `ohlcv` (minute) table in "
+                f"{db_path} to coverage-rank against. The daily source pins its universe to the "
+                f"minute baseline's top-N; pass --symbols explicitly, or point --db at a DB "
+                f"that carries the minute table.")
+        s_ts, e_ts = _to_epoch(start_date, 0), _to_epoch(end_date, 9999999999)
+        rows = conn.execute(
+            """SELECT a.symbol FROM ohlcv o JOIN assets a ON o.asset_id = a.id
+               WHERE o.timestamp >= ? AND o.timestamp <= ?
+               GROUP BY a.id ORDER BY COUNT(*) DESC LIMIT ?""",
+            (s_ts, e_ts, n_assets)).fetchall()
+    finally:
+        conn.close()
+    syms = [r[0] for r in rows]
+    if not syms:
+        raise RuntimeError(
+            f"cannot resolve a universe without --symbols: the minute `ohlcv` table in "
+            f"{db_path} has no rows in [{start_date}..{end_date}] to rank. Pass --symbols "
+            f"or widen the window.")
+    return syms
+
+
+def load_daily_prices(db_path, start_date, end_date, specific_symbols, n_assets):
+    """Read the panel close matrix from ``ohlcv_daily`` — a read-only mirror of
+    ``VectorBTTradingEnv._load_database_prices`` (symbol selection, distinct-timestamp axis,
+    close matrix, forward-fill) with the table swapped to ``ohlcv_daily`` and NO
+    ``[::bar_minutes]`` stride (the rows are already daily). Returns
+    (prices_np (T, n_loaded), symbols, row_ts int64 (T,)). Fail-loud: missing table / empty
+    window (acceptance iii — no silently-degenerate panel)."""
+    if not _daily_table_exists(db_path):
+        raise RuntimeError(
+            f"--panel-source daily: no `ohlcv_daily` table in {db_path}. The daily source "
+            f"reads that table directly (schema asset_id/timestamp/OHLCV); it is absent here. "
+            f"Use --panel-source minute, or point --db at a DB that carries ohlcv_daily.")
+    # --- symbol selection: IDENTICAL universe to the minute baseline (task scope 1) ---
+    # When no --symbols is given the universe is coverage-ranked over the MINUTE `ohlcv`
+    # table (exactly what the minute path selects) and those symbols' PRICE ROWS are then
+    # read from ohlcv_daily. Ranking over ohlcv_daily instead would resolve a DIFFERENT
+    # (meme-tail) universe than the minute baseline and silently corrupt the OOS benchmark
+    # this task exists to unlock — so that path is removed. Fail-loud if the minute table
+    # can't resolve a universe (never silently fall back to ranking over ohlcv_daily).
+    if not specific_symbols:
+        specific_symbols = _minute_ranked_symbols(db_path, start_date, end_date, n_assets)
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    # Window bounds via _to_epoch (LOCAL-time date parsing) — intentionally identical to the
+    # minute path (VectorBTTradingEnv parses dates in local time too), so the daily and minute
+    # panels apply the SAME window semantics. (The equivalence gate uses UTC bounds instead;
+    # that's a gate-only choice affecting boundary-day close bucketing, not the panels.)
+    s_ts = _to_epoch(start_date, 0)
+    e_ts = _to_epoch(end_date, 9999999999)
+    ph = ",".join("?" * len(specific_symbols))
+    rows = cur.execute(
+        f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})",
+        specific_symbols).fetchall()
+    sym_to_id = {r[1]: r[0] for r in rows}
+    asset_ids, symbols = [], []
+    for sym in specific_symbols:               # preserve order; skip missing (loader parity)
+        if sym in sym_to_id:
+            asset_ids.append(sym_to_id[sym])
+            symbols.append(sym)
+    if not asset_ids:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-source daily: no assets resolved in {db_path} ohlcv_daily for the "
+            f"requested universe/window [{start_date}..{end_date}] (empty window).")
+    id_to_col = {aid: i for i, aid in enumerate(asset_ids)}
+    ph = ",".join("?" * len(asset_ids))
+    timestamps = [r[0] for r in cur.execute(
+        f"""SELECT DISTINCT timestamp FROM ohlcv_daily
+            WHERE asset_id IN ({ph}) AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp""",
+        (*asset_ids, s_ts, e_ts)).fetchall()]
+    if not timestamps:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-source daily: ohlcv_daily has no rows for the requested universe in "
+            f"[{start_date}..{end_date}] (empty window). Widen --start/--end.")
+    ts_to_idx = {ts: i for i, ts in enumerate(timestamps)}
+    n_steps = len(timestamps)
+    prices = np.zeros((n_steps, len(symbols)), dtype=np.float32)
+    for asset_id, ts, close in cur.execute(
+        f"""SELECT asset_id, timestamp, close FROM ohlcv_daily
+            WHERE asset_id IN ({ph}) AND timestamp >= ? AND timestamp <= ?""",
+        (*asset_ids, s_ts, e_ts)).fetchall():
+        if ts in ts_to_idx and asset_id in id_to_col:
+            prices[ts_to_idx[ts], id_to_col[asset_id]] = close
+    conn.close()
+    # forward-fill zeros — verbatim mirror of _load_database_prices:646-656
+    for col in range(prices.shape[1]):
+        mask = prices[:, col] == 0
+        if mask.any():
+            first_valid = int(np.argmax(~mask))
+            if first_valid > 0:
+                prices[:first_valid, col] = prices[first_valid, col]
+            for i in range(1, n_steps):
+                if prices[i, col] == 0:
+                    prices[i, col] = prices[i - 1, col]
+    return prices, symbols, np.asarray(timestamps, dtype=np.int64)
+
+
+def create_daily_panel(args):
+    """Daily-source analogue of ``create_jax_env_historical``: load ``ohlcv_daily`` closes
+    (no stride), pad/truncate to n_assets, build the SAME EnvConfig (env_factory.py:422-451,
+    the fields build_panel drives), and reset. Returns
+    (states0, prices_j, env_cfg, row_ts, loaded_symbols)."""
+    prices_np, symbols, row_ts = load_daily_prices(
+        args.db, args.start, args.end, args.symbols, args.n_assets)
+    n_assets = args.n_assets
+    if prices_np.shape[1] < n_assets:                    # pad (env_factory.py:412-415)
+        n_loaded = prices_np.shape[1]
+        prices_np = prices_np[:, [i % n_loaded for i in range(n_assets)]]
+    elif prices_np.shape[1] > n_assets:
+        prices_np = prices_np[:, :n_assets]
+    prices_j = jnp.array(prices_np, dtype=jnp.float32)
+    # EnvConfig — identical to create_jax_env_historical's block for the args build_panel
+    # passes (fee/slip 0 here; tiers derive via .replace downstream, exactly as the minute
+    # path). Defaults (initial_cash, window_size 60, probabilistic_fills False, …) mirror
+    # env_factory.py:422-451 so the daily panel is env-identical to a minute panel of the
+    # same closes.
+    config = EnvConfig(
+        n_assets=n_assets,
+        initial_cash=100_000.0,
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        max_steps=400,
+        window_size=60,
+        position_size_pct=args.position_size_pct,
+        vector_action=True,
+        vector_budget_step=args.vector_budget_step,
+        vector_budget_pct=args.vector_budget_pct,
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
+    )
+    keys = jax.random.split(jax.random.PRNGKey(args.eval_seed), 1)
+    states = jit_batch_reset(keys, prices_j, config)
+    return states, prices_j, config, row_ts, symbols
 
 
 # =============================================================================
@@ -780,9 +961,67 @@ def make_ledger_row(r):
 # panel construction (once per run; shared by every checkpoint + tier)
 # =============================================================================
 
+def _finalize_panel(states0, prices, env_cfg, row_ts, loaded_syms, args):
+    """Shared panel tail: assert loader/env row-count consistency, size the deterministic
+    full-timeline episode, build col_symbols + panel_info. Identical for both sources so a
+    daily panel and a same-close minute panel produce byte-identical downstream scorecards."""
+    T = int(prices.shape[0])
+    if len(row_ts) != T:
+        raise RuntimeError(
+            f"panel-consistency violation: reconstructed timestamp axis has {len(row_ts)} "
+            f"rows but the loader produced {T} — loader mirror out of sync")
+    warm = int(env_cfg.window_size)
+    n_max = T - 1 - warm
+    n_decisions = n_max if args.max_decisions is None else min(n_max, args.max_decisions)
+    if n_decisions < 2:
+        raise RuntimeError(f"panel too short: T={T}, warm={warm} → n_decisions={n_decisions}")
+    # Deterministic full-timeline episode: fixed start at the first obs-valid row.
+    state_init = states0.replace(
+        episode_start_idx=jnp.full_like(states0.episode_start_idx, warm),
+        current_step=jnp.zeros_like(states0.current_step),
+        max_episode_steps=jnp.full_like(states0.max_episode_steps, n_decisions + 2),
+        initial_portfolio_value=jnp.full_like(states0.initial_portfolio_value,
+                                              env_cfg.initial_cash),
+        prev_portfolio_value=jnp.full_like(states0.prev_portfolio_value,
+                                           env_cfg.initial_cash),
+    )
+    n_loaded = len(loaded_syms)
+    padded = n_loaded < args.n_assets
+    col_symbols = [loaded_syms[i % n_loaded] if i < n_loaded
+                   else f"{loaded_syms[i % n_loaded]}#pad{i}"
+                   for i in range(args.n_assets)]
+    spacing = (float(np.median(np.diff(row_ts))) / 60.0) if len(row_ts) > 1 else None
+    panel_info = {
+        "n_rows": T, "n_assets": int(env_cfg.n_assets), "warm": warm,
+        "n_decisions": n_decisions, "n_loaded_symbols": n_loaded, "padded": padded,
+        "position_size_pct": float(env_cfg.position_size_pct),
+        "row_spacing_minutes_median": spacing,
+    }
+    return prices, env_cfg, state_init, row_ts, col_symbols, panel_info
+
+
+def _build_panel_daily(args):
+    """TASK_850 daily source: read ohlcv_daily directly (no [::bar_minutes] stride) then the
+    SAME finalize tail as the minute path. Valid ONLY with --bar-minutes 1440 (the table is
+    daily; any other stride would be an incoherent second resample) — fail-loud otherwise
+    (acceptance iii)."""
+    if args.bar_minutes != 1440:
+        raise RuntimeError(
+            f"--panel-source daily requires --bar-minutes 1440 (got {args.bar_minutes}). "
+            f"The ohlcv_daily table already IS daily; a non-1440 bar would imply a second "
+            f"resample of already-daily rows (incoherent). Pass --bar-minutes 1440.")
+    states0, prices, env_cfg, row_ts, loaded_syms = create_daily_panel(args)
+    return _finalize_panel(states0, prices, env_cfg, row_ts, loaded_syms, args)
+
+
 def build_panel(args):
     """The training panel, via the training factory itself. Gross config returned;
-    tiers derive from it via .replace(fee/slip) — prices identical by construction."""
+    tiers derive from it via .replace(fee/slip) — prices identical by construction.
+
+    TASK_850: --panel-source daily reads ohlcv_daily directly (the minute `ohlcv` table's
+    coverage dies ~2025-10); default 'minute' is byte-identical to the pre-850 path."""
+    if getattr(args, "panel_source", "minute") == "daily":
+        return _build_panel_daily(args)
     states0, prices, env_cfg = create_jax_env_historical(
         db_path=args.db,
         start_date=args.start,
@@ -845,6 +1084,197 @@ def build_panel(args):
         "row_spacing_minutes_median": spacing,
     }
     return prices, env_cfg, state_init, row_ts, col_symbols, panel_info
+
+
+# =============================================================================
+# TASK_850 — equivalence gate (trust anchor): daily source vs minute table
+# =============================================================================
+
+def _resolve_universe(db_path, start_date, end_date, specific_symbols, n_assets):
+    """The comparison universe: the explicit --symbols list, else the SAME minute-coverage
+    top-N the daily loader pins to (via the shared _minute_ranked_symbols resolver). Both
+    sources are then loaded on this SAME universe so the gate tests equivalence rather than
+    comparing disjoint asset sets."""
+    if specific_symbols:
+        return list(specific_symbols)
+    return _minute_ranked_symbols(db_path, start_date, end_date, n_assets)
+
+
+def _utc_day_bounds(start_date, end_date):
+    """Whole-UTC-day epoch bounds [s, e] for the gate's close comparison. Parsed in UTC
+    (calendar.timegm) and the end extended to the last second of the end day, so a boundary
+    day's minute last-of-day is NOT clipped mid-day. This is deliberately UTC-consistent
+    with the daily table's midnight-UTC row timestamps — distinct from the loader's
+    _to_epoch (local-time) window bounds, which the daily loader keeps for byte-parity with
+    the minute path (VectorBTTradingEnv parses dates in local time too)."""
+    import calendar
+    def p(s, default):
+        if s is None:
+            return default
+        s = str(s)
+        if s.isdigit():
+            return int(s)
+        return calendar.timegm(datetime.strptime(s, "%Y-%m-%d").timetuple())
+    return p(start_date, 0), p(end_date, 9999999999) + 86399
+
+
+def _close_by_date(db_path, table, symbols, s_ts, e_ts):
+    """{symbol: {YYYY-MM-DD (UTC): last-of-day close}} for `symbols` from `table` over the
+    UTC epoch window [s_ts, e_ts]. Last-write-wins per (symbol, UTC day) with rows ordered by
+    timestamp = the calendar-daily close (the aggregation ohlcv_daily is built from — its
+    midnight-UTC rows collapse to one per day, so the daily table reads as-is)."""
+    conn = sqlite3.connect(db_path)
+    ph = ",".join("?" * len(symbols))
+    rows = conn.execute(
+        f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})", symbols).fetchall()
+    id_to_sym = {r[0]: r[1] for r in rows}
+    if not id_to_sym:
+        conn.close()
+        return {}
+    aids = list(id_to_sym)
+    ph2 = ",".join("?" * len(aids))
+    out = {sym: {} for sym in id_to_sym.values()}
+    for aid, ts, close in conn.execute(
+        f"""SELECT asset_id, timestamp, close FROM {table}
+            WHERE asset_id IN ({ph2}) AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp""", (*aids, s_ts, e_ts)):
+        d = datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d")
+        out[id_to_sym[aid]][d] = float(close)
+    conn.close()
+    return out
+
+
+def run_equivalence_gate(args):
+    """TASK_850 acceptance (i). Two legs on the overlap window:
+      CLOSE  — daily-source closes vs the minute table's calendar-daily aggregation, per
+               asset over shared UTC dates; max relative diff must be <= --equiv-close-rtol.
+      FLOOR  — teacher-floor net@21 on the daily panel vs the minute panel (both @1440);
+               |Δ| must be <= 0.02. Deferred when either panel is too short at 1440 (the
+               fixture minute slice is — the real-db leg is the planner's scheduled run).
+    Divergence beyond tolerance => data-integrity FINDING: nonzero exit, NO artifact."""
+    print("=" * 84)
+    print(f"TASK_850 EQUIVALENCE GATE — db={_display_path(args.db)} window=[{args.start}..{args.end}]")
+    if not _daily_table_exists(args.db):
+        raise RuntimeError(
+            f"--equivalence-gate: no `ohlcv_daily` table in {args.db}; nothing to compare "
+            f"against. (Check gated on table presence — acceptance i.)")
+    universe = _resolve_universe(args.db, args.start, args.end, args.symbols, args.n_assets)
+    if not universe:
+        raise RuntimeError(f"--equivalence-gate: empty universe for [{args.start}..{args.end}]")
+    print(f"universe ({len(universe)}): {universe[:8]}{' ...' if len(universe) > 8 else ''}")
+
+    # ---- CLOSE leg -------------------------------------------------------------
+    s_ts, e_ts = _utc_day_bounds(args.start, args.end)
+    minute_cd = _close_by_date(args.db, "ohlcv", universe, s_ts, e_ts)
+    daily_cd = _close_by_date(args.db, "ohlcv_daily", universe, s_ts, e_ts)
+    per_asset, worst = {}, {"symbol": None, "date": None, "rel": 0.0}
+    shared_dates_total = 0
+    for sym in universe:
+        md, dd = minute_cd.get(sym, {}), daily_cd.get(sym, {})
+        shared = sorted(set(md) & set(dd))
+        if not shared:
+            per_asset[sym] = {"shared_dates": 0, "max_rel": None}
+            continue
+        mx = 0.0
+        for d in shared:
+            denom = max(abs(dd[d]), 1e-8)
+            rel = abs(md[d] - dd[d]) / denom
+            if rel > mx:
+                mx = rel
+            if rel > worst["rel"]:
+                worst = {"symbol": sym, "date": d, "rel": rel,
+                         "minute": md[d], "daily": dd[d]}
+        per_asset[sym] = {"shared_dates": len(shared), "max_rel": mx}
+        shared_dates_total += len(shared)
+    checked = [v["max_rel"] for v in per_asset.values() if v["max_rel"] is not None]
+    close_max_rel = max(checked) if checked else None
+    close_pass = (close_max_rel is not None and close_max_rel <= args.equiv_close_rtol)
+    print("-" * 84)
+    print(f"CLOSE leg: {len(checked)}/{len(universe)} assets with shared dates "
+          f"({shared_dates_total} asset-days); tol rtol<={args.equiv_close_rtol:g}")
+    if close_max_rel is None:
+        print("  NO shared dates between minute and daily on this window — CLOSE leg N/A "
+              "(minute table does not cover the window).")
+    elif worst["symbol"] is None:
+        print(f"  max relative close diff = {close_max_rel:.3e} (all shared dates exact) "
+              f"→ {'PASS' if close_pass else 'FAIL'}")
+    else:
+        print(f"  max relative close diff = {close_max_rel:.3e} "
+              f"(worst {worst['symbol']} {worst['date']}: minute={worst.get('minute')} "
+              f"daily={worst.get('daily')}) → {'PASS' if close_pass else 'FAIL'}")
+
+    # ---- FLOOR leg -------------------------------------------------------------
+    floor_note = None
+    floor_delta = tf_daily = tf_minute = None
+    if not args.vector_weight_rebalance:
+        floor_note = ("teacher-floor leg SKIPPED — pass --vector-weight-rebalance (the "
+                      "weight-native ladder needs weight semantics; imprint.py:479-482).")
+    else:
+        # Pin BOTH FLOOR builds to the gate's already-resolved comparison universe — never
+        # let the two sources' no-symbols selection diverge (that would compare teacher
+        # floors on DISJOINT portfolios and pass/fail spuriously). Explicit pinning tests
+        # equivalence rather than relying on the loaders happening to agree.
+        args.symbols = list(universe)
+        args.panel_source = "daily"
+        try:
+            pd_ = build_panel(args)
+        except RuntimeError as e:
+            pd_ = None
+            floor_note = f"daily panel could not build @1440 ({e})"
+        args.panel_source = "minute"
+        pm_ = None
+        if pd_ is not None:
+            try:
+                pm_ = build_panel(args)
+            except RuntimeError as e:
+                floor_note = (f"minute panel too short @1440 on this window ({e}) — FLOOR leg "
+                              f"DEFERRED to the planner's scheduled real-db run (the fixture "
+                              f"minute slice cannot build a 1440 panel).")
+        if pd_ is not None and pm_ is not None:
+            pm = float(args.bar_minutes)
+            tf_d, _ = compute_teacher_floor(pd_[0], pd_[1], int(pd_[1].window_size),
+                                            pd_[5]["n_decisions"], pm)
+            tf_m, _ = compute_teacher_floor(pm_[0], pm_[1], int(pm_[1].window_size),
+                                            pm_[5]["n_decisions"], pm)
+            tf_daily, tf_minute = tf_d[21]["sharpe"], tf_m[21]["sharpe"]
+            if tf_daily is not None and tf_minute is not None:
+                floor_delta = abs(tf_daily - tf_minute)
+    floor_pass = (floor_delta is not None and floor_delta <= 0.02)
+    print("-" * 84)
+    if floor_delta is not None:
+        print(f"FLOOR leg: teacher-floor net@21 daily={tf_daily:+.4f} minute={tf_minute:+.4f} "
+              f"|Δ|={floor_delta:.4f} (tol<=0.02) → {'PASS' if floor_pass else 'FAIL'}")
+    else:
+        print(f"FLOOR leg: DEFERRED — {floor_note}")
+
+    print("=" * 84)
+    # data-integrity finding: any leg that RAN and diverged beyond tolerance.
+    diverged = []
+    if close_max_rel is not None and not close_pass:
+        diverged.append(f"CLOSE max_rel {close_max_rel:.3e} > {args.equiv_close_rtol:g}")
+    if floor_delta is not None and not floor_pass:
+        diverged.append(f"FLOOR |Δ| {floor_delta:.4f} > 0.02")
+    if diverged:
+        print("*** DATA-INTEGRITY FINDING — daily and minute sources DIVERGE beyond "
+              "tolerance: " + "; ".join(diverged))
+        print("*** STOP: the daily source does NOT reproduce the minute panel on the overlap. "
+              "Do not use --panel-source daily until reconciled.")
+        print("=" * 84)
+        sys.exit(2)
+    ran = [n for n, ok in (("CLOSE", close_max_rel is not None),
+                           ("FLOOR", floor_delta is not None)) if ok]
+    deferred = [n for n in ("CLOSE", "FLOOR")
+                if (n == "CLOSE" and close_max_rel is None) or (n == "FLOOR" and floor_delta is None)]
+    if not ran:
+        # Fail-closed: nothing was actually compared (no minute↔daily overlap AND floor
+        # deferred). Never certify equivalence on zero bytes — INCONCLUSIVE, non-zero exit.
+        print("*** EQUIVALENCE GATE INCONCLUSIVE — NO leg ran (no minute↔daily overlap on "
+              f"this window and FLOOR deferred: {floor_note}). Nothing was compared; this is "
+              "NOT a pass. Choose a window where the minute table overlaps ohlcv_daily.")
+        print("=" * 84)
+        sys.exit(3)
+    print(f"EQUIVALENCE GATE PASS — legs run: {ran}; legs deferred: {deferred}.")
+    print("=" * 84)
 
 
 # =============================================================================
@@ -987,6 +1417,13 @@ def main():
                     help="comma-separated symbol list (overrides periods-file assets)")
     ap.add_argument("--bar-minutes", type=int, default=1440,
                     help="1-min → K-min resample stride (1440 = the battery's daily bars)")
+    ap.add_argument("--panel-source", choices=["minute", "daily"], default="minute",
+                    dest="panel_source",
+                    help="TASK_850: panel price source. 'minute' (default = byte-identical to "
+                         "pre-850) resamples the dying `ohlcv` 1-min table via [::bar_minutes]; "
+                         "'daily' reads the current `ohlcv_daily` table directly (same symbol "
+                         "selection + warm/decision semantics, valid ONLY with --bar-minutes "
+                         "1440) — unlocks the OOS window the minute table no longer covers")
     ap.add_argument("--n-assets", type=int, default=64)
     ap.add_argument("--checkpoint", action="append", default=[],
                     help="checkpoint dir (repeatable; jax_ckpt_fast/<name>/snapshot_ep<N>/ or final)")
@@ -994,6 +1431,15 @@ def main():
                     help="file with one checkpoint path per line (comparison-table mode)")
     ap.add_argument("--smoke", action="store_true",
                     help="fixture smoke: fresh-init untrained model + save->load roundtrip")
+    ap.add_argument("--equivalence-gate", dest="equivalence_gate", action="store_true",
+                    help="TASK_850 trust anchor: on the overlap window compare the daily source "
+                         "against the minute table — per-asset closes (daily vs minute "
+                         "calendar-daily aggregation) within tolerance, and (when both build) "
+                         "the teacher-floor net@21 within +/-0.02. Divergence beyond tolerance "
+                         "= data-integrity finding (nonzero exit, no artifact)")
+    ap.add_argument("--equiv-close-rtol", type=float, default=1e-4, dest="equiv_close_rtol",
+                    help="TASK_850 equivalence gate: max per-asset relative close diff "
+                         "(daily vs minute calendar-daily aggregation) over shared dates")
     ap.add_argument("--smoke-ckpt-dir", default=None,
                     help="where the smoke writes its roundtrip checkpoint "
                          "(default: <this dir>/smoke_ckpt — gitignored, stable provenance)")
@@ -1120,6 +1566,10 @@ def main():
             "teacher walks WEIGHT semantics; without it the ladder's 0/1/2 target-weight codes "
             "are misread as SELL/HOLD/BUY orders (an incoherent floor). (imprint.py:479-482 "
             "precedent; the D17 OOS read always passes --vector-weight-rebalance.)")
+
+    if args.equivalence_gate:
+        run_equivalence_gate(args)
+        return
 
     args.tag = args.tag or ("fixture-smoke" if (args.smoke and is_fixture)
                             else "fixture" if is_fixture else "real-panel")

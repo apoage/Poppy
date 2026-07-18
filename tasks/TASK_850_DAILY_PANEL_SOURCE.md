@@ -1,5 +1,23 @@
 # TASK_850 — Daily-table panel source for the eval instruments (unlocks the real OOS benchmark)
 
+> **STATUS (2026-07-18): SHIPPED as `task850-daily-panel-source`.** `--panel-source {minute,daily}`
+> on the 835/848 instrument (`experiments/835_stage4_eval/eval_vector.py`, default `minute` =
+> byte-identical); `daily` reads `ohlcv_daily` directly (current to 2026-06) instead of resampling
+> the dying minute table, valid only with `--bar-minutes 1440`. `--equivalence-gate` (CLOSE leg:
+> per-asset daily-vs-minute close within rtol≤1e-4; FLOOR leg: teacher-floor net@21 within ±0.02)
+> is the trust anchor. Single-file diff; default smoke byte-identical (`net@21 -43.972249581758106`);
+> selftest 8/8. Correctness + fail-closed + flow-verifier panel: **1 BLOCKER (no-`--symbols` daily
+> universe ranked over `ohlcv_daily` → arbitrary meme-coin tail, 1-asset overlap with the minute
+> majors) + 1 MAJOR (gate FLOOR leg compared floors on disjoint universes) + 1 MINOR (zero-legs
+> printed PASS/exit 0) FIXED + re-verified clean** — daily universe now coverage-ranked over the
+> MINUTE `ohlcv` table (exact minute-baseline parity, verified daily==minute IDENTICAL ORDER on the
+> OOS command), FLOOR leg pins the universe, zero-legs → INCONCLUSIVE/exit 3. Fail-loud on
+> non-1440/missing-table/empty-window; divergence → data-integrity finding exit 2, no artifact.
+> **Remainder → planner: the scheduled real OOS run** (`--panel-source daily --start 2025-07-03
+> --end 2026-06-30`, ~240 decisions, `--vector-weight-rebalance` for the FLOOR leg) — a BENCHMARK
+> read only (operator D17 correction); watch `ohlcv_daily.source` mixing `agg1m`/`kraken_rest` on
+> recent days when interpreting any residual close diff.
+
 **Status**: READY 2026-07-18 (planner seed under D17 Track 2 / D18 ops note).
 **Size: S. Risk: low** (panel LOADER only, eval instruments; zero training-path code).
 
