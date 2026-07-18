@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """TASK_820 self-tests — ST1-ST6 ported verbatim from runs/819_single_asset/portfolio.self_tests
-(construction validated before trusting any result), plus ST7 for the risk overlay. Forced onto
-the numpy backend: these are the determinism reference, and the planted-panel magnitudes match
-the 819 RESULT.md values.
+(construction validated before trusting any result), plus ST7 for the risk overlay. ST1-ST7 are
+hermetic and forced onto the numpy backend: these are the determinism reference, and the
+planted-panel magnitudes match the 819 RESULT.md values. ST8 (TASK_847) is a JAX property test
+and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gate.
 
   ST1 annualization identity (_sharpe == mean/std*sqrt(525600/period))
   ST2 planted trend: downtrend book shorts the crash (gross+, long-only B&H dies)
@@ -11,6 +12,8 @@ the 819 RESULT.md values.
   ST5 sub-cost wiggle: random walk -> gross~0, net@21 mean<0, cost-monotone
   ST6 leak-free: wrecking close>t leaves positions<=t byte-identical
   ST7 shadow-DD throttle: V-shaped dd recovers -> scale re-raises; legacy mode dead-states
+  ST8 TASK_847 policy-prior candidates: argmax@slot0, temp monotonicity, explore slots, dedup
+      (JAX; import-guarded — SKIPS with notice if the JAX stack is unavailable)
 """
 
 import numpy as np
@@ -168,4 +171,91 @@ def self_tests():
     msgs.append(f"[ST7] shadow-DD throttle: V-shaped dd -55%->recovery; shadow_scale walks "
                 f"1.0->0.5->{rc_sh.dd_deep_scale} and RE-RAISES to {scales[-1]:.1f} (pos restored); "
                 f"legacy realized_flat dead-states at scale {scales2[-1]:.1f} — difference asserted")
+
+    # 8. TASK_847 policy-prior candidate-set properties (Sampled-MuZero root proposal).
+    #    The dithered-book proposal is policy-BLIND; the policy-prior scheme lays the K
+    #    candidates out as [argmax | tempered marginal samples | N dither explore slots]
+    #    so the learned prior is representable in the search. Asserts, on planted logits:
+    #    argmax vector present@slot0; temperature monotonicity; explore slots honored; dedup.
+    #    JAX-import-GUARDED: ST1-ST7 above are hermetic numpy; if the JAX/flax stack
+    #    cannot import (no GPU/CUDA, missing dep), ST8 SKIPS with notice — it must NEVER
+    #    red the numpy determinism gate the factory runs (`python -m trader selftest`).
+    try:
+        import jax
+        import jax.numpy as jnp
+        from mcts_trader.jax_agent.sampled_search import SampledMuZeroVectorSearch
+    except ImportError as e:
+        msgs.append(f"[ST8] TASK_847 policy-prior candidates: SKIPPED (JAX stack "
+                    f"unavailable: {type(e).__name__}: {e}) — ST1-ST7 numpy gate unaffected")
+        return msgs
+
+    nA, Av, Kv, Nv = 8, 5, 16, 2                      # n_assets, actions/asset, K, explore N
+    rng8 = np.random.RandomState(17)
+    base = (rng8.randn(1, nA, Av) * 0.1).astype(np.float32)
+    for i in range(nA):
+        base[0, i, i % Av] += 6.0                     # sharp per-asset argmax at action i%Av
+    policy_logits = jnp.asarray(base.reshape(1, nA * Av))
+    expect_argmax = np.array([i % Av for i in range(nA)], dtype=np.int32)
+
+    def _mk(scheme, temp=1.0, explore=Nv, K=Kv, dither=1.0):
+        return SampledMuZeroVectorSearch(
+            model_apply_fn=None, n_assets=nA, n_actions_per_asset=Av,
+            num_samples=K, num_simulations=8, max_num_considered_actions=min(K, 8),
+            dither_scale=dither,
+            proposal_scheme=scheme, proposal_temp=temp, explore_slots=explore)
+
+    # (a) policy-argmax vector GUARANTEED present, and at candidate slot 0.
+    sp = _mk('policy-prior', temp=1.0)
+    cA = np.asarray(sp.build_root_candidates(policy_logits, rng=jax.random.PRNGKey(3)))
+    assert cA.shape == (1, Kv, nA), f"candidate set must be (1,K,n_assets), got {cA.shape}"
+    assert np.array_equal(cA[0, 0], expect_argmax), "policy-argmax vector must be candidate 0"
+    assert any(np.array_equal(cA[0, k], expect_argmax) for k in range(Kv)), \
+        "policy-argmax vector must be present in the candidate set"
+
+    # (b) temperature monotonicity: colder temp -> fewer distinct sampled candidates.
+    def _distinct(temp):
+        c = np.asarray(_mk('policy-prior', temp=temp).build_root_candidates(
+            policy_logits, rng=jax.random.PRNGKey(9)))
+        return len({tuple(c[0, k]) for k in range(Kv)})
+    d_cold, d_hot = _distinct(0.05), _distinct(50.0)
+    assert d_cold <= d_hot, f"distinct candidates must not shrink with temperature: {d_cold} > {d_hot}"
+    assert d_cold <= 1 + Nv, f"near-zero temp: sampled slots collapse to argmax (distinct<=1+N), got {d_cold}"
+    assert d_hot > d_cold, f"hot temp must spread the candidate set: {d_hot} !> {d_cold}"
+
+    # (c) explore slots honored: with N=0 + cold temp EVERY candidate is the argmax (no
+    #     dither injection); adding strongly-dithered explore slots injects non-argmax
+    #     candidates while the cold sampled slots stay pinned to the argmax — so the only
+    #     source of non-argmax candidates is the explore machinery.
+    c0 = np.asarray(_mk('policy-prior', temp=0.05, explore=0).build_root_candidates(
+        policy_logits, rng=jax.random.PRNGKey(9)))
+    assert all(np.array_equal(c0[0, k], expect_argmax) for k in range(Kv)), \
+        "explore=0 + cold temp: every candidate must be the argmax vector"
+    c4 = np.asarray(_mk('policy-prior', temp=0.05, explore=4, dither=50.0).build_root_candidates(
+        policy_logits, rng=jax.random.PRNGKey(9)))
+    n_nonargmax = sum(not np.array_equal(c4[0, k], expect_argmax) for k in range(Kv))
+    assert 0 < n_nonargmax <= 4, \
+        f"explore slots (and only they) must inject non-argmax candidates, got {n_nonargmax}"
+
+    # (d) dedup: identical candidates are COUNTED by the empirical prior (beta_hat=n_a/K),
+    #     not dropped (fixed-K static shape). All-argmax -> beta_hat==1; one outlier -> 1/K.
+    _, beta_all = _mk('policy-prior', explore=0)._empirical_prior(jnp.asarray(c0))
+    assert np.allclose(np.asarray(beta_all), 1.0), "all-identical candidates -> beta_hat==1"
+    mixed = c0.copy()
+    mixed[0, 0, 0] = (expect_argmax[0] + 1) % Av          # perturb slot 0 to a distinct vector
+    _, beta_mix = _mk('policy-prior', explore=0)._empirical_prior(jnp.asarray(mixed))
+    beta_mix = np.asarray(beta_mix)
+    assert abs(beta_mix[0, 0] - 1.0 / Kv) < 1e-6, "distinct outlier slot must get beta_hat==1/K"
+    assert abs(beta_mix[0, 1] - (Kv - 1) / Kv) < 1e-6, "the duplicated block must get (K-1)/K"
+
+    # canon parity of the scheme dispatch: non-policy-prior schemes ignore the new knobs
+    # (proposal_temp / explore_slots) — same candidates regardless of their values.
+    cD1 = np.asarray(_mk('dithered-book', temp=1.0, explore=2).build_root_candidates(
+        policy_logits, rng=jax.random.PRNGKey(1)))
+    cD2 = np.asarray(_mk('dithered-book', temp=9.9, explore=7).build_root_candidates(
+        policy_logits, rng=jax.random.PRNGKey(1)))
+    assert np.array_equal(cD1, cD2), "dithered-book must ignore the TASK_847 policy-prior knobs"
+
+    msgs.append(f"[ST8] TASK_847 policy-prior candidates: argmax@slot0 present; temp-monotone "
+                f"distinct {d_cold}<={d_hot}; explore slots inject {n_nonargmax} dithered cands; "
+                f"dedup beta_hat exact; dithered-book ignores the new knobs")
     return msgs

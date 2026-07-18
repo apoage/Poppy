@@ -92,7 +92,12 @@ class SampledMuZeroVectorSearch:
         # TASK_828 Stage 3: dithered-book proposal knobs (D-2/D-3).
         hold_bias: float = 0.0,             # additive bias on the book (HOLD) slot
         dither_scale: float = 1.0,          # Gumbel dither scale on the proposal
-        proposal_scheme: str = 'dithered-book',  # 'dithered-book' | 'iid-beta'
+        proposal_scheme: str = 'dithered-book',  # 'dithered-book' | 'iid-beta' | 'policy-prior'
+        # TASK_847: policy-prior proposal knobs (used ONLY when
+        # proposal_scheme == 'policy-prior'; ignored by every other scheme so
+        # the default paths stay bit-identical — see _build_candidates).
+        proposal_temp: float = 1.0,         # temperature on the per-asset marginals
+        explore_slots: int = 2,             # N dither-machinery slots retained (of K)
         # TASK_838: resample K vectors at each expanded interior node (default
         # OFF = root-reuse, bit-identical to the shipped Stage-2/3 behavior).
         per_node_resampling: bool = False,
@@ -113,6 +118,30 @@ class SampledMuZeroVectorSearch:
         self.hold_bias = hold_bias
         self.dither_scale = dither_scale
         self.proposal_scheme = proposal_scheme
+        # TASK_847 policy-prior knobs (static; ignored unless scheme is policy-prior).
+        self.proposal_temp = proposal_temp
+        self.explore_slots = explore_slots
+        if proposal_scheme == 'policy-prior':
+            # Fail-loud on misconfiguration (candidate 0 is always the argmax vector).
+            if not (0 <= explore_slots <= num_samples - 1):
+                raise ValueError(
+                    f"policy-prior needs 0 <= explore_slots <= num_samples-1 "
+                    f"(got explore_slots={explore_slots}, num_samples={num_samples}); "
+                    f"candidate 0 is always the policy-argmax vector.")
+            if proposal_temp <= 0:
+                raise ValueError(
+                    f"policy-prior needs proposal_temp > 0 (got {proposal_temp}); "
+                    f"temp<=0 would silently collapse the sampled slots to the argmax.")
+            if per_node_resampling:
+                # Interior policy-prior is OUT OF SCOPE for TASK_847: the interior
+                # recurrent_fn expands via _build_proposal, which under a
+                # 'policy-prior' scheme falls through to raw masked marginals (no
+                # argmax anchor, no dither) — a silent-wrong hybrid. Reject the
+                # combo rather than plumb an unspecified interior proposal.
+                raise ValueError(
+                    "proposal_scheme='policy-prior' is incompatible with "
+                    "per_node_resampling=True (interior policy-prior is out of "
+                    "scope for TASK_847); use per_node_resampling=False.")
         # TASK_838 — static Python bool, captured at construction/trace time:
         # OFF ⇒ the per-node branches below are never traced (XLA DCE like every
         # prior stage) and the rng stream is untouched.
@@ -196,6 +225,7 @@ class SampledMuZeroVectorSearch:
         action_mask: jnp.ndarray,
         book: jnp.ndarray,
         dither_rng: chex.PRNGKey,
+        scheme: str = None,
     ) -> jnp.ndarray:
         """TASK_828 Stage 3: dithered-book proposal (D-2/D-3).
 
@@ -209,12 +239,18 @@ class SampledMuZeroVectorSearch:
         asset. The Sampled-MuZero visit correction is proposal-independent (the
         samples ARE drawn from this proposal), so ``_empirical_prior`` stays
         uniform-1/K.
+
+        ``scheme`` defaults to ``self.proposal_scheme`` (default-path calls pass
+        nothing ⇒ the traced graph is unchanged). TASK_847 passes an explicit
+        ``'dithered-book'`` to reuse the dither machinery for the policy-prior
+        exploration slots regardless of ``self.proposal_scheme``.
         """
+        scheme = self.proposal_scheme if scheme is None else scheme
         B = policy_logits.shape[0]
         n_assets, A = self.n_assets, self.n_actions_per_asset
         proposal = policy_logits.reshape(B, n_assets, A)
 
-        if self.proposal_scheme == 'dithered-book':
+        if scheme == 'dithered-book':
             if book is not None:
                 # Bias the maintain-action slot per asset (v1 book = HOLD=1).
                 book_oh = jax.nn.one_hot(book.astype(jnp.int32), A,
@@ -232,6 +268,111 @@ class SampledMuZeroVectorSearch:
             mask_bool = action_mask.reshape(B, n_assets, A).astype(bool)
             proposal = jnp.where(mask_bool, proposal, -1e9)
         return proposal
+
+    def _policy_prior_candidates(
+        self,
+        policy_logits: jnp.ndarray,
+        action_mask: jnp.ndarray,
+        book: jnp.ndarray,
+        sample_rng: chex.PRNGKey,
+        dither_rng: chex.PRNGKey,
+    ) -> jnp.ndarray:
+        """TASK_847: policy-prior candidate set for the vector search.
+
+        The dithered-book proposal is POLICY-BLIND — it perturbs the current
+        book, so the policy's preferred action vector is never among the K
+        candidates and the prior cannot express itself through search (LEDGER
+        832/E5-exit/erosion/autopsy). This scheme lays the K candidates out so
+        the learned prior is always representable, per batch element:
+
+          slot 0          : the policy-argmax vector (per-asset argmax of the
+                            masked policy marginals) — GUARANTEED every root;
+          slots 1..K-1-N  : i.i.d. per-asset draws from the marginals at
+                            temperature ``proposal_temp``;
+          slots K-N..K-1  : N exploration slots drawn from the existing
+                            dithered-book machinery (``hold_bias`` + Gumbel
+                            dither), retained so the search keeps a little
+                            book-anchored exploration.
+
+        The legality mask is applied to every slot. K and N are static Python
+        ints (captured at trace) so shapes are fixed. ``_empirical_prior`` stays
+        uniform-1/K (the slot prior mctx consumes) and duplicate vectors (e.g.
+        the argmax also drawn by a sample or explore slot) accumulate their
+        n_a/K empirical mass naturally — that is the dedup: identical candidates
+        are counted, not dropped (dropping would break the fixed-K static shape
+        AND the visit accounting).
+
+        CAVEAT (β̂ interpretation): unlike the i.i.d. schemes, the K slots here
+        are a MIXTURE (deterministic argmax + tempered-π samples + dither), so
+        the per-candidate ``beta_hat`` returned by ``_empirical_prior`` is a
+        biased mixture frequency, NOT an unbiased estimate of the factored
+        policy π. The mctx visit mechanics are still correct (uniform-1/K slot
+        prior), but a Stage-3 factored-policy target built on ``beta_hat`` under
+        this scheme would be mis-specified — read B territory, out of scope here.
+
+        Returns (B, K, n_assets) int32 in {0..A-1}.
+        """
+        B = policy_logits.shape[0]
+        n_assets, A = self.n_assets, self.n_actions_per_asset
+        K, N = self.num_samples, self.explore_slots
+
+        logits = policy_logits.reshape(B, n_assets, A)
+        if action_mask is not None:
+            mask_bool = action_mask.reshape(B, n_assets, A).astype(bool)
+            logits = jnp.where(mask_bool, logits, -1e9)
+
+        # slot 0 — per-asset argmax of the (masked) policy marginals.
+        argmax_vec = jnp.argmax(logits, axis=-1).astype(jnp.int32)     # (B, n_assets)
+        slots = [argmax_vec[:, None, :]]                               # (B, 1, n_assets)
+
+        # slots 1..K-1-N — i.i.d. per-asset draws at temperature.
+        n_sampled = K - 1 - N
+        if n_sampled > 0:
+            temp = max(float(self.proposal_temp), 1e-6)
+            s = jax.random.categorical(
+                sample_rng, logits / temp, axis=-1,
+                shape=(n_sampled, B, n_assets))
+            slots.append(jnp.transpose(s, (1, 0, 2)).astype(jnp.int32))
+
+        # slots K-N..K-1 — exploration via the dithered-book machinery (reused
+        # unconditionally, independent of self.proposal_scheme).
+        if N > 0:
+            prop_rng, samp_rng = jax.random.split(dither_rng)
+            explore_proposal = self._build_proposal(
+                policy_logits, action_mask, book, prop_rng, scheme='dithered-book')
+            e = jax.random.categorical(
+                samp_rng, explore_proposal, axis=-1,
+                shape=(N, B, n_assets))
+            slots.append(jnp.transpose(e, (1, 0, 2)).astype(jnp.int32))
+
+        return jnp.concatenate(slots, axis=1)                         # (B, K, n_assets)
+
+    def build_root_candidates(
+        self,
+        policy_logits: jnp.ndarray,
+        action_mask: jnp.ndarray = None,
+        book: jnp.ndarray = None,
+        rng: chex.PRNGKey = None,
+    ) -> jnp.ndarray:
+        """TASK_847 test/diagnostic hook: build the root K-candidate set straight
+        from policy logits (no model inference), honoring ``proposal_scheme``.
+
+        For 'policy-prior' this is exactly the in-search generator; for every
+        other scheme it mirrors the in-search sample path. Not on the jitted
+        search path — used by the selftest candidate-set property test and for
+        offline inspection.
+        """
+        if rng is None:
+            rng = jax.random.PRNGKey(0)
+        sample_rng, dither_rng = jax.random.split(rng)
+        if self.proposal_scheme == 'policy-prior':
+            return self._policy_prior_candidates(
+                policy_logits, action_mask, book, sample_rng, dither_rng)
+        proposal = self._build_proposal(policy_logits, action_mask, book, dither_rng)
+        samples = jax.random.categorical(
+            sample_rng, proposal, axis=-1,
+            shape=(self.num_samples, policy_logits.shape[0], self.n_assets))
+        return jnp.transpose(samples, (1, 0, 2)).astype(jnp.int32)
 
     def _search(
         self,
@@ -266,13 +407,23 @@ class SampledMuZeroVectorSearch:
         latent = root_out['latent_state']                    # (B, state_dim)
         root_value = self._categorical_to_scalar(root_out['value'])  # (B,)
 
-        # 2. Build the dithered-book proposal and sample K candidate vectors from it.
-        proposal = self._build_proposal(policy_logits, action_mask, book, dither_rng)
-        samples = jax.random.categorical(
-            sample_rng, proposal, axis=-1,
-            shape=(self.num_samples, observation.shape[0], self.n_assets),
-        )
-        sampled_vecs = jnp.transpose(samples, (1, 0, 2)).astype(jnp.int32)  # (B,K,A_n)
+        # 2. Build the K candidate action-vectors. Static string dispatch on
+        #    ``proposal_scheme`` (captured at trace ⇒ the untaken branch is never
+        #    traced): the non-'policy-prior' branch is the shipped Stage-2/3 code
+        #    VERBATIM (bit-identity pinned by tools/tests/test_pernode_parity.py),
+        #    'policy-prior' (TASK_847) builds the structured argmax+samples+explore
+        #    candidate set so the learned prior is representable in the search.
+        if self.proposal_scheme == 'policy-prior':
+            sampled_vecs = self._policy_prior_candidates(
+                policy_logits, action_mask, book, sample_rng, dither_rng)  # (B,K,A_n)
+        else:
+            # Build the dithered-book proposal and sample K candidate vectors from it.
+            proposal = self._build_proposal(policy_logits, action_mask, book, dither_rng)
+            samples = jax.random.categorical(
+                sample_rng, proposal, axis=-1,
+                shape=(self.num_samples, observation.shape[0], self.n_assets),
+            )
+            sampled_vecs = jnp.transpose(samples, (1, 0, 2)).astype(jnp.int32)  # (B,K,A_n)
 
         # 3. Sampled-MuZero corrected prior over the K slots (uniform 1/K).
         prior_logits, beta_hat = self._empirical_prior(sampled_vecs)  # (B,K),(B,K)

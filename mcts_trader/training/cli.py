@@ -198,8 +198,20 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--vector-dither-scale', type=float, default=1.0, dest='vector_dither_scale',
                         help='TASK_828: Gumbel dither scale on the sampling proposal')
     parser.add_argument('--vector-proposal-scheme', type=str, default='dithered-book',
-                        choices=['dithered-book', 'iid-beta'], dest='vector_proposal_scheme',
-                        help='TASK_828: proposal distribution for action-vector sampling')
+                        choices=['dithered-book', 'iid-beta', 'policy-prior'],
+                        dest='vector_proposal_scheme',
+                        help='TASK_828/847: proposal distribution for action-vector sampling. '
+                             'policy-prior (TASK_847) puts the policy-argmax vector in every '
+                             'candidate set + i.i.d. tempered marginal draws + N dither explore '
+                             'slots (default dithered-book = canon, bit-identical)')
+    parser.add_argument('--vector-proposal-temp', type=float, default=1.0,
+                        dest='vector_proposal_temp',
+                        help='TASK_847: temperature on the per-asset marginals for the '
+                             'policy-prior sampled slots (default 1.0; policy-prior scheme only)')
+    parser.add_argument('--vector-proposal-explore-slots', type=int, default=2,
+                        dest='vector_proposal_explore_slots',
+                        help='TASK_847: N of K candidates drawn from the dither machinery under '
+                             'the policy-prior scheme (default 2 of K=16; policy-prior only)')
     parser.add_argument('--vector-per-node-resample', action='store_true',
                         dest='vector_per_node_resample',
                         help='TASK_838: resample K action-vectors at each expanded interior '

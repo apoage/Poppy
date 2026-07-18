@@ -389,6 +389,9 @@ def main():
             hold_bias=getattr(config, 'vector_hold_bias', 0.0),
             dither_scale=getattr(config, 'vector_dither_scale', 1.0),
             proposal_scheme=getattr(config, 'vector_proposal_scheme', 'dithered-book'),
+            # TASK_847: policy-prior knobs (ignored unless scheme='policy-prior').
+            proposal_temp=getattr(config, 'vector_proposal_temp', 1.0),
+            explore_slots=getattr(config, 'vector_proposal_explore_slots', 2),
             # TASK_838: per-node action resampling (default OFF = root-reuse).
             per_node_resampling=getattr(config, 'vector_per_node_resample', False),
         )

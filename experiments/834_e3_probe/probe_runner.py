@@ -481,6 +481,9 @@ def probe_core(model, params, cfg, env_pack, args, checkpoint_label, smoke,
         hold_bias=hold_bias,
         dither_scale=float(getattr(cfg, "vector_dither_scale", 1.0)),
         proposal_scheme=str(getattr(cfg, "vector_proposal_scheme", "dithered-book")),
+        # TASK_847: policy-prior knobs (ignored unless scheme='policy-prior').
+        proposal_temp=float(getattr(cfg, "vector_proposal_temp", 1.0)),
+        explore_slots=int(getattr(cfg, "vector_proposal_explore_slots", 2)),
     )
 
     # 1. state distribution: seed-fixed env walk on the LEGAL (masked) proposal,

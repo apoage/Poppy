@@ -278,6 +278,8 @@ def build_model_and_trainer(args, n_assets, init_seed):
         vector_hold_bias=args.vector_hold_bias,
         vector_dither_scale=args.vector_dither_scale,
         vector_proposal_scheme=args.vector_proposal_scheme,
+        vector_proposal_temp=args.vector_proposal_temp,
+        vector_proposal_explore_slots=args.vector_proposal_explore_slots,
         # TASK_839: carried for run self-description (env-only flag; model build ignores it).
         vector_budget_step=args.vector_budget_step,
         vector_budget_pct=args.vector_budget_pct,
@@ -316,6 +318,9 @@ def build_search(model, args, n_assets):
         hold_bias=args.vector_hold_bias,
         dither_scale=args.vector_dither_scale,
         proposal_scheme=args.vector_proposal_scheme,
+        # TASK_847: policy-prior knobs (ignored unless scheme='policy-prior').
+        proposal_temp=args.vector_proposal_temp,
+        explore_slots=args.vector_proposal_explore_slots,
         # TASK_838: eval operator must match the training operator — a checkpoint
         # trained with --vector-per-node-resample must be evaluated with the SAME
         # flag or the measurement is train/eval-asymmetric (default OFF = canon).
@@ -501,6 +506,8 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
             "vector_k": args.vector_k, "sims": args.sims,
             "hold_bias": args.vector_hold_bias, "dither_scale": args.vector_dither_scale,
             "proposal_scheme": args.vector_proposal_scheme,
+            "proposal_temp": args.vector_proposal_temp,              # TASK_847
+            "proposal_explore_slots": args.vector_proposal_explore_slots,  # TASK_847
             "per_node_resampling": args.vector_per_node_resample,  # TASK_838
             "vector_budget_step": args.vector_budget_step,   # TASK_839
             "vector_budget_pct": args.vector_budget_pct,     # TASK_839
@@ -650,8 +657,12 @@ def print_summary(r):
     print(f"panel: {r['panel']['n_assets']} assets × {r['panel']['n_rows']} rows "
           f"(bar_minutes={r['bar_minutes']}), warm={r['panel']['warm']}, "
           f"decisions={r['panel']['n_decisions']}, eval_seed={r['eval_seed']}")
-    print(f"operator: dithered-book K={r['operator']['vector_k']} sims={r['operator']['sims']} "
-          f"hold_bias={r['operator']['hold_bias']} deterministic(visit-argmax)")
+    _op = r['operator']
+    _scheme = _op['proposal_scheme']
+    _extra = (f" temp={_op['proposal_temp']} explore_slots={_op['proposal_explore_slots']}"
+              if _scheme == 'policy-prior' else f" hold_bias={_op['hold_bias']}")
+    print(f"operator: {_scheme} K={_op['vector_k']} sims={_op['sims']}"
+          f"{_extra} deterministic(visit-argmax)")
     if cor["partial_rollout"]:
         print("*" * 84)
         print("*** PARTIAL ROLLOUT — a tier terminated early (env done / bankruptcy); "
@@ -776,7 +787,18 @@ def main():
     ap.add_argument("--vector-hold-bias", type=float, default=3.0,
                     help="battery value 3.0 (TrainingConfig CLI default 0.0 is the known trap)")
     ap.add_argument("--vector-dither-scale", type=float, default=1.0)
-    ap.add_argument("--vector-proposal-scheme", default="dithered-book")
+    ap.add_argument("--vector-proposal-scheme", default="dithered-book",
+                    choices=["dithered-book", "iid-beta", "policy-prior"],
+                    help="TASK_847: policy-prior puts the policy-argmax vector in every "
+                         "candidate set (the read-A inversion); default dithered-book = canon")
+    ap.add_argument("--vector-proposal-temp", type=float, default=1.0,
+                    dest="vector_proposal_temp",
+                    help="TASK_847: temperature on the per-asset marginals for the "
+                         "policy-prior sampled slots (policy-prior scheme only)")
+    ap.add_argument("--vector-proposal-explore-slots", type=int, default=2,
+                    dest="vector_proposal_explore_slots",
+                    help="TASK_847: N of K candidates from the dither machinery under "
+                         "policy-prior (default 2 of K=16; policy-prior only)")
     ap.add_argument("--vector-per-node-resample", action="store_true",
                     dest="vector_per_node_resample",
                     help="TASK_838: per-node action resampling in the search operator — "

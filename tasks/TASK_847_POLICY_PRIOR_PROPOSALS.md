@@ -1,6 +1,16 @@
+> **STATUS (2026-07-18): SHIPPED as `task847-policy-prior-proposals`.** `policy-prior` proposal
+> scheme built + wired (training CLI, 835 eval, 834/836 plumbing); default UNCHANGED (`dithered-book`),
+> canon pin `22b0c7f5…` bit-identical, selftest 8/8 (new ST8 property tests). Medium panel + fix-pass
+> re-verify: no BLOCKER/MAJOR; 5 findings all fixed and re-verified clean. Acceptance (i) MECHANISM
+> leg CONFIRMED on the fixture (slot0==policy-argmax 40/40; dithered-book contains argmax 0/40 — the
+> exact policy-blindness fixed). **Remainder → planner**: the binding NUMERIC acceptance leg (835
+> search-eval of the frozen imprint ckpt with `policy-prior` preserves the prior, net@21 ≥ +0.74) is
+> NOT fixture-reproducible (real ckpt is 64-asset/real-panel) → planner's scheduled real-panel run,
+> same discipline as 846/(iv); its pass un-gates the short ExIt re-try with the fixed operator.
+
 # TASK_847 — Policy-prior proposal scheme for the vector search (D17; the read-A inversion)
 
-**Status**: READY 2026-07-18 (D17 ruled — operator).
+**Status**: SHIPPED 2026-07-18 (was READY; D17 (1) ruled — operator).
 **Size: M. Risk: medium** (search proposal layer only; canon scalar path untouched; all existing
 schemes remain selectable — new scheme is a new `--vector-proposal-scheme` value, default
 UNCHANGED so every existing invocation is bit-identical).

@@ -215,7 +215,11 @@ class TrainingConfig:
     vector_hold_bias: float = 0.0            # additive HOLD-slot bias in the proposal
     vector_dither_scale: float = 1.0         # Gumbel dither scale on the sampling proposal
     vector_gumbel_scale_eval: float = 0.5    # (reserved) lower gumbel scale for eval
-    vector_proposal_scheme: str = 'dithered-book'  # 'dithered-book' | 'iid-beta'
+    vector_proposal_scheme: str = 'dithered-book'  # 'dithered-book' | 'iid-beta' | 'policy-prior'
+    # TASK_847: policy-prior proposal knobs (used ONLY when scheme='policy-prior';
+    # default scheme unchanged ⇒ every existing invocation stays bit-identical).
+    vector_proposal_temp: float = 1.0        # temperature on the per-asset policy marginals
+    vector_proposal_explore_slots: int = 2   # N dither-machinery slots retained (of K)
     # TASK_838: resample K vectors at each expanded interior node (default OFF =
     # root-reuse, bit-identical to the shipped Stage-2/3 vector search).
     vector_per_node_resample: bool = False
