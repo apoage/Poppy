@@ -31,8 +31,11 @@ DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_847_POLICY_PRIOR_PROPOSALS.md` | M | **D17 (1)**: `policy-prior` proposal scheme — guaranteed policy-argmax candidate + policy-marginal samples + explore slots. Acceptance = the read-A inversion (fixture leg; real-panel leg planner-side, bar ≥ +0.74). Existing schemes bit-identical. Correctness + regression lenses. |
-| 2 | `tasks/TASK_848_POLICY_REPLAY_INSTRUMENT.md` | S | **D17 (2)/Track 2**: `--operator policy-argmax` + `--start/--end` + on-window teacher floor on the 835 instrument. Acceptance = round-trip vs imprint sanity (+0.839) + search default bit-identical + fail-loud. OOS read itself = planner-scheduled after ship (BENCHMARK only — operator correction). |
+| 1 | `tasks/TASK_849_LEAF_EVAL_AUTOPSY.md` | S/M | **D18 (Amendment 6 FAIL branch)**: read-B instrument — per-state candidate/Q/visit selection trace + true-reward calibration column on the frozen imprint ckpt (both schemes). Decides value-repair vs reward-repair vs selection-mechanics. Read-only, zero canon diffs. |
+
+_Shipped 2026-07-18 factory run 12 (both D17 instrument builds):_
+- _**TASK_847** (`task847-policy-prior-proposals`, `873effe`) — `policy-prior` scheme; canon pin bit-identical, selftest 8/8, mechanism leg 40/40. **Real-panel numeric leg FAILED post-ship (−7.839 vs ≥+0.74, LEDGER 832/E5-inversion) — the fault moved to leaf-eval selection (⇒ 849); the scheme stays shipped/inert (default unchanged).**_
+- _**TASK_848** (`task848-policy-replay-instrument`, `371e7c5`) — policy-argmax operator + OOS window + on-window teacher floor; 1 BLOCKER (date-coercion in-sample leak) + 2 MAJOR fixed. **Its fail-loud guard immediately caught the STALE SERVER DB (daily ends ~2025-10-04 vs local 2026-07-06) on the first OOS attempt — the OOS read moved to the workstation.**_
 
 _Shipped 2026-07-17 factory run 11:_
 - _**TASK_846** (`task846-weight-fee-headroom`, `c2f1ba5`) — weight-budget fee headroom (D14 opt (a)):
