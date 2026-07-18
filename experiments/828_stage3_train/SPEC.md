@@ -171,3 +171,30 @@ search-book = HOLD/sparse ⇒ the search visit distribution OVERRIDES the prior 
 decision time — value/reward leaf evaluation at fee16 is the demonstrated erosion mechanism
 (then the anchored-ExIt design must fix LEAF EVAL or target mixing, not just add a BC loss).
 Diagnostic-only; folds into D17.
+
+## Amendment 6 (2026-07-18, planner — ExIt re-try under the policy-prior operator; pre-registered BEFORE the gating read)
+
+Gate: LEDGER-bound read-A INVERSION (835 search-eval of frozen `runs/832_e5/ckpt_imprint_full`
+with `--vector-proposal-scheme policy-prior`, same panel/flags as 832/E5-autopsy otherwise).
+**Launch the battery ONLY if inversion net@21 ≥ +0.74** (policy-argmax +0.839 − 0.10; the same
+configuration scores −6.92 under dithered-book). Below +0.74 ⇒ NO training spend — the residual
+gap is leaf-eval territory (read B: value ranking of prior-book vs candidates) → back to D17's
+decided tree via a new DECISIONS row.
+
+**Battery `e5exit2_pp_s{0,1,2}`** = the Amendment-5 ExIt command with TWO changes:
+`--vector-proposal-scheme policy-prior` and `--epochs 300` (the erosion window — Amendment-5
+addendum showed annihilation by ep100, so 300 is decisive), `--snapshot-every 50` (fine curve).
+Everything else IDENTICAL (fee16/slip5, PIN-(c) from `ckpt_imprint_full`, weight sentinels,
+hb0.0/d1.0 dither params feed the explore slots, D11 watchdog 2700, `Restored entropy_coef:
+0.01` hard check).
+
+**Pre-registered reads**:
+1. PRIMARY (prior-survival): ep300 snapshot net@21 ≥ +0.74 under BOTH operators — 848
+   policy-argmax replay AND 835 policy-prior search-eval — on ≥2/3 seeds. PASS ⇒ the improvement
+   operator no longer subtracts value ⇒ resume the DEC-2 ladder (longer ExIt = next planner
+   schedule, its own amendment). FAIL with the inversion green ⇒ the TRAINING-side targets
+   (buffer/CE/value drift), not decision-time search — read B before any further spend.
+2. Erosion curve at ep{50,100,...,300} via 848 policy-argmax (cheap, batched post-run) — decay
+   shape vs the Amendment-5 curve is the mechanism read.
+3. Tripwires + invariants carry over from Amendment 5 unchanged (collapse, bankruptcy=846
+   defect, wedge watchdog).
