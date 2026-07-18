@@ -158,3 +158,16 @@ KL-regularizer or shorter ExIt may hold the prior; already below floor at ep100 
 self-play target destroys the prior ~immediately — training-objective-level fix required
 (curriculum or anchored objective), not a duration tweak. Diagnostic-only: no corridor claim,
 folds into D17 context.
+
+### Amendment 5 addendum 2 (2026-07-18, planner — targets-autopsy read A; pre-registered before result)
+Erosion curve read: IMMEDIATE decay (ep100 already −0.105 net@21, 99.4% hold, sparse book vs
+the +0.839 dense-book warm start; ep300..1000 = noise around the attractor). Per the addendum-1
+guide: training-objective-level fault ⇒ autopsy the TARGETS. **Read A (zero training):** 835
+eval (visit-argmax, sims 32, dithered-book K16 — the ExIt search operator) of the UNMODIFIED
+`runs/832_e5/ckpt_imprint_full` on the SAME panel where its policy-argmax replay scored +0.839
+(2% hold, 29L/32S). Interpretation (pre-registered): search-book ≈ policy-book (dense, ~floor)
+⇒ search layer NOT the erosion source — suspicion moves to the BC/replay-buffer interaction;
+search-book = HOLD/sparse ⇒ the search visit distribution OVERRIDES the prior toward HOLD at
+decision time — value/reward leaf evaluation at fee16 is the demonstrated erosion mechanism
+(then the anchored-ExIt design must fix LEAF EVAL or target mixing, not just add a BC loss).
+Diagnostic-only; folds into D17.
