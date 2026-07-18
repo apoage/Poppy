@@ -20,12 +20,21 @@
     "row_spacing_minutes_median": 60.0
   },
   "operator": {
+    "mode": "search",
     "vector_k": 16,
     "sims": 32,
     "hold_bias": 3.0,
     "dither_scale": 1.0,
     "proposal_scheme": "dithered-book",
+    "proposal_temp": 1.0,
+    "proposal_explore_slots": 2,
     "per_node_resampling": false,
+    "vector_budget_step": false,
+    "vector_budget_pct": 0.99,
+    "vector_weight_rebalance": false,
+    "vector_weight_unit": -1.0,
+    "vector_weight_max": 4.0,
+    "vector_rebalance_deadband": -1.0,
     "gumbel_scale": 3.0,
     "max_num_considered_actions": 16,
     "deterministic": true,
@@ -114,7 +123,9 @@
           "ceiling": 39.56304775006262,
           "above_floor": null
         }
-      }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
     },
     "21": {
       "sharpe_full": -43.972249581758106,
@@ -189,7 +200,9 @@
           "ceiling": 37.44202529720721,
           "above_floor": null
         }
-      }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
     }
   },
   "corridor": {
@@ -206,8 +219,11 @@
     "position_in_corridor_net21": -1.5165580461390145,
     "beats_floor_net21": false,
     "beats_reference_net21": false,
-    "hold_collapse": false
+    "hold_collapse": false,
+    "teacher_floor_net21": null,
+    "policy_minus_floor_net21": null
   },
+  "teacher_floor": null,
   "roundtrip": {
     "ckpt_dir": "experiments/835_stage4_eval/smoke_ckpt",
     "params_differ_before_load": true,
@@ -215,5 +231,5 @@
   },
   "out_name": "results_fixture_smoke.json",
   "out_pointer": "experiments/835_stage4_eval/results_fixture_smoke.json",
-  "ledger_row": "| 835/S4 | 2026-07-09 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -43.972 \u00b7 gross -17.697; final PV 96935; avgL 1.3 avgS 3.9; no HOLD collapse (pct_hold 64.7%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -43.972 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
+  "ledger_row": "| 835/S4 | 2026-07-18 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -43.972 \u00b7 gross -17.697; final PV 96935; avgL 1.3 avgS 3.9; no HOLD collapse (pct_hold 64.7%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -43.972 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
 }

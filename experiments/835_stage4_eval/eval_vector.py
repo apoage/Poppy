@@ -67,6 +67,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import argparse
+import importlib.util
 import json
 import sqlite3
 import sys
@@ -126,6 +127,26 @@ SMOKE_START, SMOKE_END = "2025-09-13", "2025-12-12"
 SMOKE_BAR_MINUTES = 60        # exercises the ::bar_minutes resample path; 447 rows > warm+decisions
 SMOKE_MAX_DECISIONS = 40
 
+# TASK_848: reuse the 832 imprint runner's deterministic-replay + weight-native-teacher
+# machinery verbatim (do NOT reimplement) — its dir name is not a python identifier, so it
+# is imported by path (the same pattern 832 uses for the 830 corridor module).
+IMPRINT_PY = os.path.join(_REPO, "experiments", "832_linear_imprint", "imprint.py")
+_IMPRINT_MOD = None
+
+
+def load_imprint_module():
+    """Import experiments/832_linear_imprint/imprint.py by path (cached). Provides the
+    pre-registered ``policy_argmax_actions`` / ``encode_training_obs`` deterministic-replay
+    operator and ``_make_weight_native_teacher_fn`` / ``walk_env`` / ``_load_corridor`` —
+    lifted, not re-derived (TASK_848 scope 1 + 3)."""
+    global _IMPRINT_MOD
+    if _IMPRINT_MOD is None:
+        spec = importlib.util.spec_from_file_location("imprint832", IMPRINT_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _IMPRINT_MOD = mod
+    return _IMPRINT_MOD
+
 
 # =============================================================================
 # panel timestamp axis — read-only mirror of the training loader
@@ -148,6 +169,30 @@ def _to_epoch(v, default):
             return int(datetime.fromisoformat(s).timestamp())
         except Exception:
             return default
+
+
+def _validate_eval_date(v, which):
+    """TASK_848 fix pass: STRICT window parsing for the eval --start/--end path. ``_to_epoch``
+    (an exact mirror of the env loader) silently coerces an unparseable date to a SENTINEL
+    (start→0 / end→9999999999) = the FULL DB window — which would fold the imprint's in-sample
+    training rows into an OOS generalization read. In the eval context we refuse the fallback:
+    accept only all-digit epoch seconds, ``%Y-%m-%d``, or ISO-8601; ABORT otherwise. (The env
+    loader's own sentinel behavior is left untouched — we simply never hand it a wrong value.)"""
+    if v is None:
+        return
+    s = str(v)
+    if s.isdigit():
+        return
+    for parse in (lambda t: datetime.strptime(t, "%Y-%m-%d"), datetime.fromisoformat):
+        try:
+            parse(s)
+            return
+        except (ValueError, TypeError):
+            continue
+    raise RuntimeError(
+        f"eval --{which}: '{v}' is not a valid date (expected YYYY-MM-DD, ISO-8601, or epoch "
+        f"seconds). Refusing the full-DB sentinel fallback — that would fold in-sample rows into "
+        f"the OOS read (acceptance iii: no silently-degenerate window). Fix the --{which} value.")
 
 
 def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_assets, bar_minutes):
@@ -306,6 +351,49 @@ def load_checkpoint_into(trainer, ckpt_path):
     return trainer
 
 
+def check_checkpoint_arch(ckpt_path, args):
+    """Fail-loud architecture guard (TASK_848 acceptance iii). The TRM shares weights across
+    its H/L recursion cycles, so a checkpoint evaluated with the WRONG --h-cycles/--l-cycles
+    loads with IDENTICAL param shapes and silently unrolls a different net than was trained
+    (a wrong-operator result, not a crash — unlike an n_assets/state_dim mismatch, which the
+    param-shape check already rejects on load). Verify the eval arch against the checkpoint's
+    ``trainer_metadata.json`` (written by trainer.save_checkpoint). Missing metadata -> WARN
+    (older checkpoint, cannot verify); mismatch -> ABORT before any rollout runs."""
+    meta_path = os.path.join(os.path.abspath(ckpt_path), "trainer_metadata.json")
+    if not os.path.exists(meta_path):
+        print(f"[835] WARN: no trainer_metadata.json in {ckpt_path} — cannot verify checkpoint "
+              f"architecture; ensure --h-cycles/--l-cycles match the training run")
+        return
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+    except (ValueError, OSError) as e:
+        # Corrupt/truncated metadata (MEMORY: zstd->rsync doesn't detect source corruption) is
+        # NOT a hard arch mismatch — trainer.load_checkpoint tolerates it and the pre-848 search
+        # path never read this file. Downgrade to the SAME WARN-and-continue as missing metadata.
+        print(f"[835] WARN: trainer_metadata.json in {ckpt_path} is unreadable ({type(e).__name__}"
+              f": {e}) — cannot verify checkpoint architecture; ensure --h-cycles/--l-cycles match")
+        return
+    if not isinstance(meta, dict):
+        # Valid JSON but wrong TYPE (null / number / list — page corruption can produce these):
+        # meta.get(...) would raise AttributeError. Same WARN-and-continue as corrupt/missing.
+        print(f"[835] WARN: trainer_metadata.json in {ckpt_path} is not a JSON object "
+              f"(got {type(meta).__name__}) — cannot verify checkpoint architecture; ensure "
+              f"--h-cycles/--l-cycles match")
+        return
+    want = {"h_cycles": args.h_cycles, "l_cycles": args.l_cycles}
+    mism = [(k, meta.get(k), v) for k, v in want.items()
+            if meta.get(k) is not None and meta.get(k) != v]
+    if mism:
+        detail = "; ".join(f"{k}: ckpt={m} eval={v}" for k, m, v in mism)
+        raise RuntimeError(
+            f"checkpoint architecture mismatch ({ckpt_path}): {detail}. The TRM shares weights "
+            f"across H/L recursion cycles, so a wrong --h-cycles/--l-cycles loads with identical "
+            f"param shapes and would SILENTLY evaluate a different net than was trained. Pass "
+            f"--h-cycles {meta.get('h_cycles')} --l-cycles {meta.get('l_cycles')} to match "
+            f"(source: {os.path.relpath(meta_path, _REPO)}).")
+
+
 def build_search(model, args, n_assets):
     """Mirror of train_jax_fast.py:375-385 — the shipped Stage-2/3 search operator.
     ``vector_gumbel_scale_eval`` is reserved/unwired upstream and is NOT touched here."""
@@ -341,9 +429,15 @@ def _trees_allclose(a, b):
 # =============================================================================
 
 def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
-            eval_seed, max_positions, min_cash_threshold):
+            eval_seed, max_positions, min_cash_threshold, policy_actions=None):
     """Walk the full timeline once: obs → mask → deterministic vector search → step_vector.
-    Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics."""
+    Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics.
+
+    TASK_848: when ``policy_actions`` (an (N, A) int array) is supplied the SEARCH branch is
+    bypassed entirely — decision k replays the precomputed per-asset policy-argmax vector
+    directly (no obs/mask/search/dither), the deterministic direct-replay operator lifted from
+    832's imprint-sanity. ``policy_actions is None`` (default) keeps the search path
+    character-for-character identical to the shipped operator (acceptance ii)."""
     enc_cfg = EncoderConfig(n_assets=n_assets, window_size=env_cfg.window_size,
                             n_channels=27)                    # self_play.py:627 (27ch)
     book = jnp.ones((1, n_assets), dtype=jnp.int32)           # v1 book = HOLD (DEC-3)
@@ -366,17 +460,22 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     bankrupt_at = terminated_early_at = -1
     n_exec = 0
     for k in range(n_decisions):
-        # A. leak-free obs window [t-window, t-1] + legal mask (self_play.py:645-668)
-        price_idx = state.episode_start_idx + state.current_step          # (1,)
-        window_starts = price_idx - enc_cfg.window_size
-        obs = jit_batch_encode_simple(prices, window_starts, enc_cfg)
-        current_prices = prices[price_idx]                                # (1, A)
-        mask = jit_batch_compute_action_mask(
-            state, current_prices, env_cfg, max_positions, min_cash_threshold)
-        # B. deterministic Sampled-MuZero vector search (visit-argmax selection)
-        key, step_rng = jax.random.split(key)
-        action_vec, _sampled, _visit_probs, _stats = search_obj(
-            params, step_rng, obs, mask, book, True)          # deterministic=True (eval)
+        if policy_actions is None:
+            # A. leak-free obs window [t-window, t-1] + legal mask (self_play.py:645-668)
+            price_idx = state.episode_start_idx + state.current_step      # (1,)
+            window_starts = price_idx - enc_cfg.window_size
+            obs = jit_batch_encode_simple(prices, window_starts, enc_cfg)
+            current_prices = prices[price_idx]                            # (1, A)
+            mask = jit_batch_compute_action_mask(
+                state, current_prices, env_cfg, max_positions, min_cash_threshold)
+            # B. deterministic Sampled-MuZero vector search (visit-argmax selection)
+            key, step_rng = jax.random.split(key)
+            action_vec, _sampled, _visit_probs, _stats = search_obj(
+                params, step_rng, obs, mask, book, True)      # deterministic=True (eval)
+        else:
+            # B'. TASK_848 policy-argmax replay: the precomputed per-asset argmax vector,
+            # no search, no mask (the 832 imprint-sanity direct-replay operator).
+            action_vec = jnp.asarray(policy_actions[k], dtype=jnp.int32)[None, :]
         # C. the REAL vector env step
         state, _, _, done = jit_batch_step_vector(state, action_vec, prices, env_cfg)
         pv_arr = _pv_fn(state)
@@ -453,12 +552,88 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
 # per-checkpoint evaluation
 # =============================================================================
 
-def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_windows):
+def book_target_signs(prices):
+    """The 819 book's per-asset target sign per row + its warmup, via the 830 corridor module
+    (``book_target_signs`` on log-close). Returns (tgt, book_warm)."""
+    imp = load_imprint_module()
+    corridor_mod = imp._load_corridor()
+    logc = np.log(np.maximum(np.asarray(prices, dtype=np.float64), 1e-12))
+    tgt, _pres, book_warm = corridor_mod.book_target_signs(logc)
+    return tgt, int(book_warm)
+
+
+def guard_book_warm(book_warm, warm):
+    """Fail-loud alignment guard (fix pass): the operator/teacher start decisions at row
+    ``warm`` (= env window_size), but the 819 book has no valid target until row ``book_warm``
+    (imprint replayed from max(book_warm, window_size)). If the book warmup exceeds the env
+    window, the leading decision rows were never imprinted — abort rather than score them."""
+    if book_warm > warm:
+        raise RuntimeError(
+            f"book warmup ({book_warm}) exceeds env window ({warm}) on this window — the "
+            f"operator starts decisions at row {warm} but the 819 book has no valid target "
+            f"until row {book_warm}; the first {book_warm - warm} decision rows were never "
+            f"imprinted. Start --start earlier so every decision row has a valid book target.")
+
+
+def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes):
+    """TASK_848 scope 3 — the on-window teacher floor. Walks 832's weight-native ladder
+    teacher (``_make_weight_native_teacher_fn``, same sentinels) on the SAME decision rows
+    [warm, warm+N) the operator replays, through the SAME env config (its cost tier + weight
+    flag). Returns ({cost: {sharpe, final_pv, ...}}, book_warm). Fail-loud if the book warmup
+    exceeds the env window (some decision rows would read strategy-warmup signs)."""
+    imp = load_imprint_module()
+    n_assets = int(env_cfg0.n_assets)
+    # FAIL-CLOSED (fix pass, imprint.py:479-482 precedent): the weight-native ladder emits
+    # 0/1/2 as -1/0/+1-unit TARGET-WEIGHT steps; walked through the ORDER env (weight OFF)
+    # those codes are misread as SELL/HOLD/BUY orders => an incoherent floor. Require the
+    # weight env so the teacher walk actually runs weight semantics.
+    assert env_cfg0.vector_weight_rebalance, (
+        "--teacher-floor requires --vector-weight-rebalance so the weight-native ladder teacher "
+        "walks WEIGHT semantics; without it the ladder's 0/1/2 target-weight codes are misread "
+        "as SELL/HOLD/BUY orders (an incoherent floor). (imprint.py:479-482 precedent.)")
+    tgt, book_warm = book_target_signs(prices)
+    guard_book_warm(book_warm, warm)
+    wn_fn = imp._make_weight_native_teacher_fn(prices, env_cfg0, tgt, warm, n_assets)
+    floor = {}
+    for c in GATE_COSTS:
+        fee, slip = (0.0, 0.0) if c == 0 else (FEE_BPS, SLIP_BPS)
+        cfg_c = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
+        wrep = imp.walk_env(prices, cfg_c, warm, n_decisions, wn_fn)
+        s = _sharpe(wrep["rets"], period_minutes)
+        floor[c] = {"sharpe": _f(s), "final_pv": wrep["final_pv"],
+                    "avg_long": wrep["avg_long"], "avg_short": wrep["avg_short"],
+                    "bankrupt_at": wrep["bankrupt_at"]}
+    return floor, int(book_warm)
+
+
+def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor, ext_windows):
     prices, env_cfg0, state_init, row_ts, col_symbols, panel_info = panel
     warm = int(env_cfg0.window_size)
     n_decisions = panel_info["n_decisions"]
     period_minutes = float(args.bar_minutes)
     ts_dec = row_ts[warm:warm + n_decisions]
+
+    # TASK_848: policy-argmax = the deterministic direct-replay operator lifted from 832.
+    # Obs depend only on prices (state-independent), so the whole per-asset argmax vector
+    # sequence batches through the net ONCE and replays across every cost tier (the policy
+    # is fee-blind; only the env trajectory differs by tier).
+    policy_actions = None
+    if args.operator == "policy-argmax":
+        imp = load_imprint_module()
+        # Alignment guard fires for the BARE operator too (not only under --teacher-floor):
+        # a policy-argmax replay on rows the 819 book never covered is scoring un-imprinted
+        # decisions. Cheap numpy book-sign pass; abort if book_warm > window_size.
+        _tgt, book_warm_op = book_target_signs(prices)
+        guard_book_warm(book_warm_op, warm)
+        obs_all = imp.encode_training_obs(prices, warm, n_decisions, env_cfg0)
+        policy_actions = imp.policy_argmax_actions(model, params, obs_all,
+                                                   int(env_cfg0.n_assets))
+
+    # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
+    teacher_floor = book_warm = None
+    if args.teacher_floor:
+        teacher_floor, book_warm = compute_teacher_floor(
+            prices, env_cfg0, warm, n_decisions, period_minutes)
 
     tiers = {}
     for c in GATE_COSTS:
@@ -468,9 +643,20 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
         env_cfg = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
         rep = rollout(params, search_obj, prices, env_cfg, state_init,
                       env_cfg0.n_assets, n_decisions, args.eval_seed,
-                      args.max_positions, args.min_cash_threshold)
-        tiers[str(c)] = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
-                                   period_minutes, c, col_symbols, n_decisions)
+                      args.max_positions, args.min_cash_threshold,
+                      policy_actions=policy_actions)
+        st = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
+                        period_minutes, c, col_symbols, n_decisions)
+        # scope-3 fields: teacher floor on the SAME window + policy-vs-floor delta (per tier).
+        # WITHHOLD the delta on a partial rollout — the policy Sharpe is over n_exec rows while
+        # the teacher walk has no done-break (imprint.walk_env) and covers all N: subtracting
+        # them is apples-to-oranges (mirror the corridor booleans' partial gating below).
+        tf = teacher_floor[c]["sharpe"] if teacher_floor else None
+        st["teacher_floor_inenv"] = tf
+        st["corridor_position"] = (
+            None if (tf is None or st["sharpe_full"] is None or st["partial"])
+            else float(st["sharpe_full"] - tf))
+        tiers[str(c)] = st
 
     net, gross = tiers["21"], tiers["0"]
     # Completeness guard: an early-terminated walk (env done / bankruptcy) must not emit
@@ -496,6 +682,11 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
                                   else bool(agent_net >= rf)),
         "hold_collapse": bool(net["pct_hold_agg"] > HOLD_COLLAPSE_PCT),
     }
+    # TASK_848 scope 3/4: the on-window teacher floor delta (the OOS read of record).
+    tf21 = teacher_floor[21]["sharpe"] if teacher_floor else None
+    corridor_block["teacher_floor_net21"] = tf21
+    corridor_block["policy_minus_floor_net21"] = (
+        None if (tf21 is None or agent_net is None or partial) else float(agent_net - tf21))
 
     result = {
         "tag": args.tag, "checkpoint": label["path"], "checkpoint_label": label["name"],
@@ -503,6 +694,7 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
         "eval_seed": args.eval_seed,
         "panel": panel_info,
         "operator": {
+            "mode": args.operator,                                   # TASK_848
             "vector_k": args.vector_k, "sims": args.sims,
             "hold_bias": args.vector_hold_bias, "dither_scale": args.vector_dither_scale,
             "proposal_scheme": args.vector_proposal_scheme,
@@ -517,7 +709,9 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
             "vector_rebalance_deadband": args.vector_rebalance_deadband,  # TASK_840
             "gumbel_scale": args.gumbel_scale,
             "max_num_considered_actions": min(args.vector_k, 16),
-            "deterministic": True, "selection": "visit_probs argmax",
+            "deterministic": True,
+            "selection": ("visit_probs argmax" if args.operator == "search"
+                          else "per-asset policy-logit argmax (initial_inference, no search)"),
             "model_size": args.model_size, "h_cycles": args.h_cycles,
             "l_cycles": args.l_cycles, "discount": args.discount,
         },
@@ -525,6 +719,14 @@ def evaluate_checkpoint(label, params, search_obj, panel, args, corridor, ext_wi
         "annualization_period_minutes": period_minutes,
         "tiers": tiers,
         "corridor": corridor_block,
+        # TASK_848 scope 3/4: on-window teacher floor block (None unless --teacher-floor).
+        "teacher_floor": (None if teacher_floor is None else {
+            "mapping": "weight-native ladder (832 _make_weight_native_teacher_fn, same sentinels)",
+            "book_warm": book_warm,
+            "weight_rebalance_env": bool(env_cfg0.vector_weight_rebalance),
+            "same_rows_as_operator": True,
+            "per_tier": {str(c): teacher_floor[c] for c in GATE_COSTS},
+        }),
     }
     # ledger_row is rendered by the caller once the ACTUAL output path is known
     # (out_pointer) — a hardcoded pointer here would dangle for scheduled runs.
@@ -591,6 +793,11 @@ def build_panel(args):
         fee_bps=0.0,
         slippage_bps=0.0,
         max_episode_steps=400,          # inert: episode bounds overridden below
+        # TASK_848: expose per-asset notional fraction (default 0.1 = the create_jax_env_
+        # historical default the search path already used → search byte-identical). The
+        # policy-argmax round-trip passes the imprint run's 0.5/n_assets to match the env
+        # the checkpoint was replayed in.
+        position_size_pct=args.position_size_pct,
         bar_minutes=args.bar_minutes,
         vector_action=True,
         # TASK_839: eval ENV must use the SAME step-sizing the checkpoint trained under.
@@ -658,11 +865,15 @@ def print_summary(r):
           f"(bar_minutes={r['bar_minutes']}), warm={r['panel']['warm']}, "
           f"decisions={r['panel']['n_decisions']}, eval_seed={r['eval_seed']}")
     _op = r['operator']
-    _scheme = _op['proposal_scheme']
-    _extra = (f" temp={_op['proposal_temp']} explore_slots={_op['proposal_explore_slots']}"
-              if _scheme == 'policy-prior' else f" hold_bias={_op['hold_bias']}")
-    print(f"operator: {_scheme} K={_op['vector_k']} sims={_op['sims']}"
-          f"{_extra} deterministic(visit-argmax)")
+    if _op.get('mode') == 'policy-argmax':
+        print("operator: policy-argmax (initial_inference -> per-asset argmax -> step_vector; "
+              "no search/dither)")
+    else:
+        _scheme = _op['proposal_scheme']
+        _extra = (f" temp={_op['proposal_temp']} explore_slots={_op['proposal_explore_slots']}"
+                  if _scheme == 'policy-prior' else f" hold_bias={_op['hold_bias']}")
+        print(f"operator: search[{_scheme}] K={_op['vector_k']} sims={_op['sims']}"
+              f"{_extra} deterministic(visit-argmax)")
     if cor["partial_rollout"]:
         print("*" * 84)
         print("*** PARTIAL ROLLOUT — a tier terminated early (env done / bankruptcy); "
@@ -695,6 +906,17 @@ def print_summary(r):
           f"{_fmt(cor['position_in_corridor_net21'])}; beats floor: {cor['beats_floor_net21']}; "
           f"beats ref: {cor['beats_reference_net21']}; HOLD collapse: {cor['hold_collapse']}"
           + ("  [PARTIAL — booleans withheld]" if cor["partial_rollout"] else ""))
+    tf = r.get("teacher_floor")
+    if tf is not None:
+        print("-" * 84)
+        print(f"on-window teacher floor ({tf['mapping']}, book_warm={tf['book_warm']}, "
+              f"weight_env={tf['weight_rebalance_env']}):")
+        for c in GATE_COSTS:
+            t = r["tiers"][str(c)]
+            lab = "gross" if c == 0 else f"net@{c}"
+            print(f"  {lab:>8}: policy {_fmt(t['sharpe_full'])}  floor "
+                  f"{_fmt(t['teacher_floor_inenv'])}  policy-floor "
+                  f"{_fmt(t['corridor_position'])}")
     print("=" * 84)
     print("LEDGER row:")
     print(r["ledger_row"])
@@ -741,10 +963,10 @@ def run_smoke(args, corridor, ext_windows):
         raise RuntimeError(f"checkpoint roundtrip FAILED: {roundtrip}")
 
     panel = build_panel(args)
-    search_obj = build_search(model_b, args, args.n_assets)
+    search_obj = build_search(model_b, args, args.n_assets) if args.operator == "search" else None
     label = {"path": _display_path(ckpt_dir),
              "name": "untrained_fresh_init(save->load roundtrip)"}
-    result = evaluate_checkpoint(label, trainer_b.state.params, search_obj,
+    result = evaluate_checkpoint(label, model_b, trainer_b.state.params, search_obj,
                                  panel, args, corridor, ext_windows)
     result["roundtrip"] = roundtrip
     return result
@@ -778,6 +1000,23 @@ def main():
     ap.add_argument("--max-decisions", type=int, default=None,
                     help="cap decisions (smoke); None/negative = full timeline")
     ap.add_argument("--eval-seed", type=int, default=0)
+    # ---- TASK_848: eval OPERATOR + on-window teacher floor + window sizing ----
+    ap.add_argument("--operator", choices=["search", "policy-argmax"], default="search",
+                    help="TASK_848: 'search' (default = byte-identical shipped Sampled-MuZero "
+                         "vector search) or 'policy-argmax' (the 832 imprint-sanity direct "
+                         "replay: initial_inference -> per-asset argmax -> step_vector, no "
+                         "search/dither). policy-argmax bypasses the proposal/search path "
+                         "entirely (orthogonal to the TASK_847 --vector-proposal-* knobs)")
+    ap.add_argument("--teacher-floor", dest="teacher_floor", action="store_true", default=False,
+                    help="TASK_848: also walk 832's weight-native ladder teacher "
+                         "(_make_weight_native_teacher_fn, same sentinels) on the SAME decision "
+                         "rows/env and report teacher_floor_inenv + policy-vs-floor delta per "
+                         "tier — the OOS read is meaningless without the floor on the same window")
+    ap.add_argument("--position-size-pct", type=float, default=0.1,
+                    dest="position_size_pct",
+                    help="TASK_848: per-asset notional fraction for the eval env (default 0.1 = "
+                         "the create_jax_env_historical default the search path already used; "
+                         "the imprint round-trip uses 0.5/n_assets to match the imprint env)")
     # ---- run shapes: defaults = the 828 Stage-3 battery manifest (jobs.manifest) ----
     ap.add_argument("--model-size", default="small")
     ap.add_argument("--h-cycles", type=int, default=4)
@@ -868,6 +1107,20 @@ def main():
         if args.max_decisions is None:
             args.max_decisions = SMOKE_MAX_DECISIONS
         is_fixture = True
+
+    # TASK_848 fix pass — fail-loud BEFORE any panel build / JSON write:
+    #  (1) strict eval-window parsing (no silent full-DB sentinel), and
+    #  (2) --teacher-floor coherence: the weight-native ladder is only meaningful under the
+    #      weight env (imprint.py:479-482 precedent; the D17 OOS read always passes it).
+    _validate_eval_date(args.start, "start")
+    _validate_eval_date(args.end, "end")
+    if args.teacher_floor and not args.vector_weight_rebalance:
+        raise RuntimeError(
+            "--teacher-floor requires --vector-weight-rebalance so the weight-native ladder "
+            "teacher walks WEIGHT semantics; without it the ladder's 0/1/2 target-weight codes "
+            "are misread as SELL/HOLD/BUY orders (an incoherent floor). (imprint.py:479-482 "
+            "precedent; the D17 OOS read always passes --vector-weight-rebalance.)")
+
     args.tag = args.tag or ("fixture-smoke" if (args.smoke and is_fixture)
                             else "fixture" if is_fixture else "real-panel")
     out_dir = args.out_dir or (EXP_DIR if is_fixture
@@ -879,7 +1132,22 @@ def main():
 
     if args.smoke:
         result = run_smoke(args, corridor, ext_windows)
-        out_name = "results_fixture_smoke.json"
+        # Fix pass: only the EXACT default-search config owns the canonical committed artifact
+        # (the config that JSON actually represents: search operator, no teacher floor, weight
+        # env OFF). ANY other flag combo — incl. a SEARCH smoke run with --teacher-floor /
+        # --vector-weight-rebalance (the D17 OOS workflow always passes --teacher-floor) — writes
+        # a suffixed file so a verification smoke can never clobber the checked-in parity baseline.
+        is_default_search = (args.operator == "search" and not args.teacher_floor
+                             and not args.vector_weight_rebalance)
+        if is_default_search:
+            out_name = "results_fixture_smoke.json"
+        else:
+            suffix = args.operator
+            if args.teacher_floor:
+                suffix += "_tf"
+            if args.vector_weight_rebalance:
+                suffix += "_wr"
+            out_name = f"results_fixture_smoke_{suffix}.json"
         result["out_name"] = out_name
         # LEDGER pointer derived from the ACTUAL output path (MINOR-1 fix: a hardcoded
         # directory dangles as soon as out_dir differs — the 734-819 stale-pointer hazard).
@@ -904,10 +1172,11 @@ def main():
     for path in ckpts:
         label = _ckpt_label(path)
         print(f"\n[835] evaluating {label['name']} ...")
+        check_checkpoint_arch(path, args)                    # fail-loud arch guard (acceptance iii)
         model, trainer = build_model_and_trainer(args, args.n_assets, init_seed=0)
         load_checkpoint_into(trainer, path)
-        search_obj = build_search(model, args, args.n_assets)
-        result = evaluate_checkpoint(label, trainer.state.params, search_obj,
+        search_obj = build_search(model, args, args.n_assets) if args.operator == "search" else None
+        result = evaluate_checkpoint(label, model, trainer.state.params, search_obj,
                                      panel, args, corridor, ext_windows)
         out_name = f"results_{args.tag}_{label['name'].replace('/', '__')}.json"
         result["out_name"] = out_name

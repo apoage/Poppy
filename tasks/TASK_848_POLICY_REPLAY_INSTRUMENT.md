@@ -1,6 +1,20 @@
+> **STATUS (2026-07-18): SHIPPED as `task848-policy-replay-instrument`.** `--operator policy-argmax`
+> (default `search` = byte-identical) + `--start/--end` window + on-window `--teacher-floor` added to
+> the 835 instrument; only `experiments/835_stage4_eval/` touched, no canon leak. Round-trip (i)
+> byte-exact vs imprint (gross −6.409/net@21 −6.778/hist [9,388,3,0,0]); default-search (ii)
+> bit-identical (net@21 −43.972…); fail-loud (iii) on malformed date / incoherent teacher-floor combo /
+> empty+short panel / wrong arch; selftest 8/8. Medium+ panel + 2 fix re-verifies: 1 BLOCKER (malformed
+> `--start/--end` → in-sample contamination) + 2 MAJOR (teacher floor through wrong env; delta emitted on
+> partial rollout) + MINORs — ALL fixed and re-verified. **Remainder → planner**: the scheduled real OOS
+> run (`--operator policy-argmax --checkpoint runs/832_e5/ckpt_imprint_full --start 2025-09-01 --end
+> <latest> --teacher-floor --vector-weight-rebalance`) is planner-owned, NOT launched by the factory;
+> verdict → LEDGER 832/E5-oos; a PASS routes to the BENCHMARK sequence only (operator D17 correction),
+> not the D-gate ladder. Order-code teacher-floor mapping intentionally out of scope (incoherent combo
+> is fail-closed-rejected).
+
 # TASK_848 — Policy-argmax replay instrument (ckpt-in + arbitrary window; the OOS read mechanics)
 
-**Status**: READY 2026-07-18 (D17 ruled — operator; Track 2).
+**Status**: SHIPPED 2026-07-18 (was READY; D17 (2)/Track 2 ruled — operator).
 **Size: S. Risk: low** (new eval mode on the 835 instrument, zero training-path code).
 
 ## Why
