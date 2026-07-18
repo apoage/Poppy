@@ -3,14 +3,17 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-18 (planner, post ExIt verdict) — ExIt FAIL 2/2 (LEDGER 832/E5-exit), Ready EMPTY,
-pivot = DECISIONS D17 (OPEN).** The graded read: fee16 self-play ERODED the +0.839 imprint back
-to the from-scratch HOLD/sparse attractor (s1 −1.223, s2 −0.791 vs bar +0.524; s0 wedge-failed,
-moot). Positive findings that survive: the imprint itself is the program's first above-floor
-learned policy, and the 840/843/846 env stack ran 1670-step fee16 rollouts with ZERO
-bankruptcies (846's first production test). Erosion-curve diagnostic running (planner);
-factory rows come out of the D17 ruling (BC-anchored ExIt build / targets-autopsy instrument /
-imprint out-of-sample gate-read are the candidates).
+**2026-07-18 (D17 RULED by operator) — Ready = TASK_847 + TASK_848; factory GREEN.** The E5
+diagnosis chain closed same-day (LEDGER 832/E5-exit → 832/E5-erosion → 832/E5-autopsy): fee16
+self-play erodes the +0.839 imprint to the HOLD attractor by ep100 because **the dithered-book
+proposal scheme is policy-blind** — same ckpt scores +0.839 (policy-argmax) vs −6.92 (search
+operator); the prior's vector is never among the K candidates. D17 ruling: (1) **TASK_847**
+policy-prior proposal scheme (read-A inversion acceptance); (2) **TASK_848** policy-argmax
+replay instrument (the OOS-read mechanics) — **with the operator's binding correction: the OOS
+read is a BENCHMARK only, no deployment-gate status without the full testing/benchmarking
+sequence**; (3) short ExIt re-try (planner) after 847 ships + passes its real-panel leg.
+Positives that survive: the imprint is the program's first above-floor learned policy; the
+840/843/846 env stack ran all fee16 rollouts with zero bankruptcies.
 The E5 chain executed clean through the night: D15 gate-read (order-code FAIL rel 0.290 /
 weight-native PASS rel 0.041 ⇒ branch 2, LEDGER `832/E5-gate`) → **full imprint DONE**
 (weight-native, iters 2000: BC CE ÷100, agreement 97.5%, sanity replay net@21 **+0.839 vs
@@ -28,7 +31,8 @@ DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-_(empty — next rows come out of the ExIt verdict)_
+| 1 | `tasks/TASK_847_POLICY_PRIOR_PROPOSALS.md` | M | **D17 (1)**: `policy-prior` proposal scheme — guaranteed policy-argmax candidate + policy-marginal samples + explore slots. Acceptance = the read-A inversion (fixture leg; real-panel leg planner-side, bar ≥ +0.74). Existing schemes bit-identical. Correctness + regression lenses. |
+| 2 | `tasks/TASK_848_POLICY_REPLAY_INSTRUMENT.md` | S | **D17 (2)/Track 2**: `--operator policy-argmax` + `--start/--end` + on-window teacher floor on the 835 instrument. Acceptance = round-trip vs imprint sanity (+0.839) + search default bit-identical + fail-loud. OOS read itself = planner-scheduled after ship (BENCHMARK only — operator correction). |
 
 _Shipped 2026-07-17 factory run 11:_
 - _**TASK_846** (`task846-weight-fee-headroom`, `c2f1ba5`) — weight-budget fee headroom (D14 opt (a)):
