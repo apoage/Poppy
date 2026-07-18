@@ -32,6 +32,7 @@ DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
 | # | Task | Size | Note |
 |---|------|------|------|
 | 1 | `tasks/TASK_849_LEAF_EVAL_AUTOPSY.md` | S/M | **D18 (Amendment 6 FAIL branch)**: read-B instrument — per-state candidate/Q/visit selection trace + true-reward calibration column on the frozen imprint ckpt (both schemes). Decides value-repair vs reward-repair vs selection-mechanics. Read-only, zero canon diffs. |
+| 2 | `tasks/TASK_850_DAILY_PANEL_SOURCE.md` | S | **OOS unblock (LEDGER 832/E5-oos)**: `--panel-source daily` on 835/848 — `ohlcv_daily` is current to 2026-06 (376 assets) but the loader resamples the minute table that dies Oct 2025. Equivalence gate vs minute source on the overlap window (±0.02 on the teacher floor). Unlocks the ~240-decision real OOS benchmark. |
 
 _Shipped 2026-07-18 factory run 12 (both D17 instrument builds):_
 - _**TASK_847** (`task847-policy-prior-proposals`, `873effe`) — `policy-prior` scheme; canon pin bit-identical, selftest 8/8, mechanism leg 40/40. **Real-panel numeric leg FAILED post-ship (−7.839 vs ≥+0.74, LEDGER 832/E5-inversion) — the fault moved to leaf-eval selection (⇒ 849); the scheme stays shipped/inert (default unchanged).**_
