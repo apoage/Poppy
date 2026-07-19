@@ -3,17 +3,18 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-18 (D17 RULED by operator) — Ready = TASK_847 + TASK_848; factory GREEN.** The E5
-diagnosis chain closed same-day (LEDGER 832/E5-exit → 832/E5-erosion → 832/E5-autopsy): fee16
-self-play erodes the +0.839 imprint to the HOLD attractor by ep100 because **the dithered-book
-proposal scheme is policy-blind** — same ckpt scores +0.839 (policy-argmax) vs −6.92 (search
-operator); the prior's vector is never among the K candidates. D17 ruling: (1) **TASK_847**
-policy-prior proposal scheme (read-A inversion acceptance); (2) **TASK_848** policy-argmax
-replay instrument (the OOS-read mechanics) — **with the operator's binding correction: the OOS
-read is a BENCHMARK only, no deployment-gate status without the full testing/benchmarking
-sequence**; (3) short ExIt re-try (planner) after 847 ships + passes its real-panel leg.
-Positives that survive: the imprint is the program's first above-floor learned policy; the
-840/843/846 env stack ran all fee16 rollouts with zero bankruptcies.
+**2026-07-19 (post factory run 13 + planner reads) — Ready = TASK_852; TASK_851 pends the D19
+ruling; factory GREEN (one takeable row).** Run 13 shipped the 849/850 instruments; the planner
+reads then landed the program's sharpest diagnosis (LEDGER 849/leaf): **the value leaf is
+action-blind** — v̂ correlates +0.03 with true reward across candidates while r̂ works (+0.29),
+so search rationally refuses fee-paying trades ⇒ the HOLD attractor behind every collapse
+(preflight, p1b, p1c, ExIt erosion). Fix decision = **D19 (OPEN)**: recommendation (a) true-env
+leaf rollouts in search (the E1 +5.29 operator) as TASK_851. Track 2: the 850 equivalence gate
+FIRED (LEDGER 850/eqgate — daily/minute floor Δ=0.2565, lookahead-shaped, 27/64 shared dates)
+⇒ the binding OOS benchmark is BLOCKED on **TASK_852** (reconciliation, Ready #1). The
+operator's D17 correction stands: OOS = benchmark only, never deployment status.
+Prior context: D13 redirect; the imprint (+0.839) is the program's first above-floor learned
+policy; the 840/843/846 env stack has run every fee16 rollout with zero bankruptcies.
 The E5 chain executed clean through the night: D15 gate-read (order-code FAIL rel 0.290 /
 weight-native PASS rel 0.041 ⇒ branch 2, LEDGER `832/E5-gate`) → **full imprint DONE**
 (weight-native, iters 2000: BC CE ÷100, agreement 97.5%, sanity replay net@21 **+0.839 vs
