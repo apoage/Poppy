@@ -33,7 +33,7 @@ DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
 | # | Task | Size | Note |
 |---|------|------|------|
 | 1 | `tasks/TASK_852_DAILY_MINUTE_RECONCILE.md` | S/M | **LEDGER 850/eqgate (data-integrity)**: daily-vs-minute panel divergence — closes EXACT but 27/64 shared dates, floor Δ=0.2565 (lookahead-shaped). Diagnose (coverage + timestamp convention + the −1-day probe) then fix the DAILY loader only; gate must pass or STOP→DECISIONS. Fail-closed lens mandatory. Gates the binding OOS benchmark. |
-| 2 | _(pending D19 ruling)_ TASK_851 true-env leaf rollouts | M | Seeds on the D19 "as you recommend" — the E1 +5.29 operator wired into search behind `--leaf-eval {model,true-env}`; acceptance = inversion re-run ≥ +0.74. |
+| 2 | `tasks/TASK_851_TRUE_ENV_LEAF.md` | M | **D19 RULED 2026-07-20 ("ok seed 851")**: `--leaf-eval {model,true-env}` — the E1 +5.29 operator (true-env R-step rollout leaf, v̂ tail optional) wired into training self-play + 835 eval; reuse the 831 probe machinery. Acceptance = fixture inversion + E1-consistency anchor + default bit-identical + cost guard. Real binding leg (≥ +0.74) + ExIt re-try re-arm = planner, post-ship. |
 
 _Shipped 2026-07-18 factory run 12 (both D17 instrument builds):_
 - _**TASK_847** (`task847-policy-prior-proposals`, `873effe`) — `policy-prior` scheme; canon pin bit-identical, selftest 8/8, mechanism leg 40/40. **Real-panel numeric leg FAILED post-ship (−7.839 vs ≥+0.74, LEDGER 832/E5-inversion) — the fault moved to leaf-eval selection (⇒ 849); the scheme stays shipped/inert (default unchanged).**_
