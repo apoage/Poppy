@@ -1,5 +1,16 @@
 # TASK_851 — True-env leaf rollouts in the vector search (D19 opt (a); the E1 +5.29 operator)
 
+> **STATUS (2026-07-21): SHIPPED as `task851-true-env-leaf`.** `--leaf-eval {model,true-env}`
+> on `SampledMuZeroVectorSearch`, default `model` bit-identical; wired into training self-play
+> + the 835 eval path, reusing the 831 search-probe operator. Fixture inversion leg (i) PASSES
+> (+6.801 vs −6.778 net@21); E1-consistency anchor (ii) PASSES (fresh-init net: +2.198 true-env
+> vs −10.287 model, floor −3.437). Medium panel, two rounds: **2 MAJOR found + fixed +
+> independently re-verified** (unique-per-env prices dispatch crash; unreproducible headline
+> numbers, root-caused to a concurrent TASK_852 edit transiently mutating the shared
+> `eval_vector.py` file during review — now pinned via LEDGER rows + committed artifacts). Zero
+> regressions (selftest 10/10, full regression suite 28/28). Real binding leg + the Amendment-6
+> ExIt re-try re-arm are the planner's scheduled post-ship chain.
+
 **Status**: READY 2026-07-20 (D19 ruled — operator: "ok seed 851").
 **Size: M. Risk: medium** (search LEAF EVALUATION layer, flag-gated; canon default unchanged —
 every existing invocation bit-identical; touches BOTH training self-play and 835 eval plumbing).
