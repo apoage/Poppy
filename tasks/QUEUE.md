@@ -3,16 +3,19 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-19 (post factory run 13 + planner reads) — Ready = TASK_852; TASK_851 pends the D19
-ruling; factory GREEN (one takeable row).** Run 13 shipped the 849/850 instruments; the planner
-reads then landed the program's sharpest diagnosis (LEDGER 849/leaf): **the value leaf is
-action-blind** — v̂ correlates +0.03 with true reward across candidates while r̂ works (+0.29),
-so search rationally refuses fee-paying trades ⇒ the HOLD attractor behind every collapse
-(preflight, p1b, p1c, ExIt erosion). Fix decision = **D19 (OPEN)**: recommendation (a) true-env
-leaf rollouts in search (the E1 +5.29 operator) as TASK_851. Track 2: the 850 equivalence gate
-FIRED (LEDGER 850/eqgate — daily/minute floor Δ=0.2565, lookahead-shaped, 27/64 shared dates)
-⇒ the binding OOS benchmark is BLOCKED on **TASK_852** (reconciliation, Ready #1). The
-operator's D17 correction stands: OOS = benchmark only, never deployment status.
+**2026-07-21 (post factory run 14) — Ready table EMPTY; factory HELD on DECISIONS D20 (OPEN,
+one wall).** Run 14 shipped **TASK_851** (`task851-true-env-leaf`) — `--leaf-eval true-env`
+wired into search + self-play, both fixture acceptance legs PASS, medium panel 2 rounds clean.
+**TASK_852** reconciled the daily/minute divergence: diagnosis REFUTED the lookahead/+1-day
+hypothesis (LEDGER 850/eqgate); root cause = daily-loader densification of zero-coverage assets
+(78% of the Δ0.2565 gap); fix closes it to Δ0.0555 — still 2.75× the 0.02 tolerance ⇒ **STOP per
+its own acceptance (ii), DECISIONS D20 seeded OPEN** (residual not fully isolated; recommendation
+= audit intra-series gaps first). Verification incidentally caught+fixed a real BLOCKER (the
+fix's own active-mask filter reactivated a dormant duplicate-cycling bug in `create_daily_panel`,
+reproduced live on TASK_852's own scheduled OOS command — 3 of 4 panel members converged on it
+independently) — now fails loud instead. Binding OOS re-run (`832/E5-oos`) and the Amendment-6
+ExIt re-try (post-851, `--leaf-eval true-env`) both stay gated: OOS on D20, ExIt on the planner's
+scheduled real-panel inversion read (≥ +0.74) using 851's new leaf.
 Prior context: D13 redirect; the imprint (+0.839) is the program's first above-floor learned
 policy; the 840/843/846 env stack has run every fee16 rollout with zero bankruptcies.
 The E5 chain executed clean through the night: D15 gate-read (order-code FAIL rel 0.290 /
@@ -24,16 +27,32 @@ floor in the program; strict ±0.10 window missed on the UPSIDE ⇒ PASS-with-ca
 acceptance (iv) → **D16 seeded, then RULED same night: SHIP AS-IS** (binding 64-asset read
 Δ=0.0008 ≪ 0.02, `runs/832_e5/gate_read_post846.json`; fixture Δ known-benign; (a′) rejected
 unsound). Prior context: **2026-07-14 D13 REDIRECT** (operator; H6 = rainy-day contingency) →
-critical path = E5 imprint→ExIt. **Factory: take 846 (wrap-only commit). Once shipped, the
-planner launches the ExIt continuation** (PIN-(c) flags + weight-env flags, ≥3 seeds, fee16,
-DEC-2 bar floor+0.10 + consistency leg). Zero OPEN decisions.
+critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-| # | Task | Size | Note |
-|---|------|------|------|
-| 1 | `tasks/TASK_852_DAILY_MINUTE_RECONCILE.md` | S/M | **LEDGER 850/eqgate (data-integrity)**: daily-vs-minute panel divergence — closes EXACT but 27/64 shared dates, floor Δ=0.2565 (lookahead-shaped). Diagnose (coverage + timestamp convention + the −1-day probe) then fix the DAILY loader only; gate must pass or STOP→DECISIONS. Fail-closed lens mandatory. Gates the binding OOS benchmark. |
-| 2 | `tasks/TASK_851_TRUE_ENV_LEAF.md` | M | **D19 RULED 2026-07-20 ("ok seed 851")**: `--leaf-eval {model,true-env}` — the E1 +5.29 operator (true-env R-step rollout leaf, v̂ tail optional) wired into training self-play + 835 eval; reuse the 831 probe machinery. Acceptance = fixture inversion + E1-consistency anchor + default bit-identical + cost guard. Real binding leg (≥ +0.74) + ExIt re-try re-arm = planner, post-ship. |
+_Empty — both rows shipped/reconciled 2026-07-21 (factory run 14, below). Next row seeds after
+D20 rules._
+
+_Shipped 2026-07-21 factory run 14:_
+- _**TASK_851** (`task851-true-env-leaf`, `41561d4`) — `--leaf-eval {model,true-env}` on the
+  Sampled-MuZero search (D19 opt (a), the E1 +5.29 operator); default `model` bit-identical.
+  Fixture inversion (i) PASS (+6.801 vs −6.778 net@21) + E1-consistency anchor (ii) PASS
+  (fresh-init +2.198 true-env vs −10.287 model, floor −3.437). Medium panel, 2 rounds: **2 MAJOR
+  found + fixed + independently re-verified** (unique-per-env-prices dispatch crash; unreproducible
+  headline numbers — root-caused to a concurrent TASK_852 edit transiently mutating the shared
+  `eval_vector.py` file mid-review, now pinned via LEDGER + committed artifacts). Zero
+  regressions, selftest 10/10. Real binding leg + Amendment-6 ExIt re-try = planner, post-ship._
+- _**TASK_852** (`c105038`, finding-style commit — not tagged, this is a STOP not a ship) —
+  diagnosed + partially fixed the daily/minute panel divergence (LEDGER 850/eqgate). Lookahead
+  hypothesis REFUTED; root cause = densification of zero-coverage assets (78% of the gap).
+  Fix (active-mask filter + fail-loud pad guard) verified — but FLOOR leg still fails its own
+  tolerance (residual Δ0.0555 vs 0.02) ⇒ **STOP, DECISIONS D20 seeded OPEN**. 4-member panel (the
+  task's own mandated fail-closed lens + correctness/regression/flow-verifier) caught a real
+  **BLOCKER**: the fix's active-mask filter reactivated a dormant duplicate-cycling bug in
+  `create_daily_panel`, reproduced on TASK_852's own scheduled command (28/64 dropped → would
+  have double-exposed 28 symbols) — 3 of 4 panel members found it independently; fixed to fail
+  loud instead. All numbers independently re-verified by the orchestrator against the real DB._
 
 _Shipped 2026-07-18 factory run 12 (both D17 instrument builds):_
 - _**TASK_847** (`task847-policy-prior-proposals`, `873effe`) — `policy-prior` scheme; canon pin bit-identical, selftest 8/8, mechanism leg 40/40. **Real-panel numeric leg FAILED post-ship (−7.839 vs ≥+0.74, LEDGER 832/E5-inversion) — the fault moved to leaf-eval selection (⇒ 849); the scheme stays shipped/inert (default unchanged).**_
