@@ -241,6 +241,22 @@ def parse_args() -> TrainingConfig:
                         dest='vector_rebalance_deadband',
                         help='TASK_840: re-trim only when |target-current| exceeds this '
                              '(sentinel <0 => 0.1*w_unit)')
+    # TASK_851: search LEAF evaluator (D19 opt (a); the E1 +5.29 operator, LEDGER 849/leaf).
+    # Default OFF = today's learned model leaf, canon bit-identical.
+    parser.add_argument('--leaf-eval', type=str, default='model',
+                        choices=['model', 'true-env'], dest='leaf_eval',
+                        help="TASK_851: search leaf evaluator. 'true-env' replaces the "
+                             "per-candidate leaf v̂(g(s,a)) with a true-env truncated "
+                             "rollout (+ optional v̂ tail); default 'model' = canon, "
+                             "bit-identical.")
+    parser.add_argument('--leaf-rollout-r', type=int, default=3, dest='leaf_rollout_r',
+                        help='TASK_851: further HOLD steps in the true-env leaf rollout past '
+                             'the candidate action (R; default 3 = the E1 +5.29 operator, '
+                             'R=1 supported; true-env only)')
+    parser.add_argument('--no-leaf-vhat-tail', action='store_false', dest='leaf_vhat_tail',
+                        help='TASK_851: disable the discounted v̂ tail at the true-env '
+                             'leaf horizon (default ON; true-env only; OFF = pure truncated '
+                             'true return)')
     parser.add_argument('--differential-baseline', type=str, default='market', choices=['market', 'zero'])
     parser.add_argument('--differential-weight', type=float, default=1.0)
     parser.add_argument('--burning-money', action='store_true')

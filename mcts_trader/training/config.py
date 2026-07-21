@@ -235,6 +235,13 @@ class TrainingConfig:
     vector_weight_unit: float = -1.0
     vector_weight_max: float = 4.0
     vector_rebalance_deadband: float = -1.0
+    # TASK_851: search LEAF evaluator (D19 opt (a), LEDGER 849/leaf + E1/831 +5.29). Default
+    # OFF = today's learned model leaf, canon bit-identical. 'true-env' replaces the
+    # per-candidate leaf reward/value with a true-env rollout (module docstring in
+    # jax_agent/sampled_search.py has the full design/formula).
+    leaf_eval: str = 'model'                 # 'model' | 'true-env'
+    leaf_rollout_r: int = 3                  # R further true-env HOLD steps past the candidate
+    leaf_vhat_tail: bool = True              # + discounted v̂ at the R-step horizon (true-env only)
     burning_money: bool = False
     burn_market_linked: bool = True
     burn_base_rate: float = 0.00005

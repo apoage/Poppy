@@ -394,6 +394,10 @@ def main():
             explore_slots=getattr(config, 'vector_proposal_explore_slots', 2),
             # TASK_838: per-node action resampling (default OFF = root-reuse).
             per_node_resampling=getattr(config, 'vector_per_node_resample', False),
+            # TASK_851: search leaf evaluator (default OFF = model leaf, canon).
+            leaf_eval=getattr(config, 'leaf_eval', 'model'),
+            leaf_rollout_r=getattr(config, 'leaf_rollout_r', 3),
+            leaf_vhat_tail=getattr(config, 'leaf_vhat_tail', True),
         )
     else:
         search_obj = create_mctx_search(model, num_simulations=config.sims, use_gumbel=True)
@@ -499,6 +503,7 @@ def main():
             max_positions=getattr(config, 'max_positions', 16),
             min_cash_threshold=getattr(config, 'min_cash_threshold', 100.0),
             vector_action=vector_action,  # TASK_828 Stage 3
+            leaf_eval=getattr(config, 'leaf_eval', 'model'),  # TASK_851
         )
     else:
         _, _ = run_self_play(
@@ -1065,6 +1070,7 @@ def main():
                     min_cash_threshold=getattr(config, 'min_cash_threshold', 100.0),
                     on_episode_complete=imprint_callback,  # TASK_125: Causal Expert Imprinting
                     vector_action=vector_action,  # TASK_828 Stage 3
+                    leaf_eval=getattr(config, 'leaf_eval', 'model'),  # TASK_851
                 )
                 score = np.mean(scores)
 

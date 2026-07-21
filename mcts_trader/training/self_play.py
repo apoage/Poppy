@@ -579,6 +579,7 @@ def run_self_play_jax(
     min_cash_threshold: float = 100.0,
     on_episode_complete: Optional[Callable[[Dict, float], None]] = None,  # TASK_125
     vector_action: bool = False,  # TASK_828 Stage 3 (captured STATICALLY at trace)
+    leaf_eval: str = 'model',  # TASK_851: 'model' (canon) | 'true-env' (captured STATICALLY)
 ) -> Tuple[List[Dict], List[float]]:
     """Fully GPU-accelerated self-play using lax.scan to eliminate Python loop overhead.
 
@@ -670,8 +671,17 @@ def run_self_play_jax(
             # (HOLD=1 everywhere per DEC-3 HOLD-maintains-position); pass the same
             # asset-major legal mask; deterministic=False (exploration in self-play).
             book = jnp.ones((n_envs, n_assets), dtype=jnp.int32)
-            action_vec, sampled_vecs, visit_probs, stats = search_fn(
-                params, step_rng, obs, mask, book)
+            # TASK_851: true-env leaf needs the real (pre-action) env state/panel/config
+            # to step a copy of it forward. ``leaf_eval`` is a plain Python str captured
+            # at trace time (like ``vector_action``) — the 'model' branch below is the
+            # UNCHANGED canon call, zero new kwargs, bit-identical.
+            if leaf_eval == 'true-env':
+                action_vec, sampled_vecs, visit_probs, stats = search_fn(
+                    params, step_rng, obs, mask, book, False,
+                    env_state=state, prices=prices, env_config=jax_env_config)
+            else:
+                action_vec, sampled_vecs, visit_probs, stats = search_fn(
+                    params, step_rng, obs, mask, book)
             # C. Value Extraction (root_value is always present in stats)
             values = stats['root_value']
         else:

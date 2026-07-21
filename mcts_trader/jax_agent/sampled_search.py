@@ -57,6 +57,44 @@ Design calls flagged for the verify panel / operator (see task Factory notes):
     keep the correction single-sourced and unbiased.
   * EMBEDDING: joint one-hot → single Dense (VectorActionEmbedding). See
     muzero_model.py for the rationale.
+  * TASK_851 — ``leaf_eval={'model','true-env'}`` (default 'model' = every branch above,
+    canon bit-identical). LEDGER 849/leaf measured the search leaf v̂(g(s,a)) ACTION-BLIND
+    (+0.03 corr vs true one-step reward, vs r̂'s +0.29) — with a flat v̂, maximizing r̂+γv̂
+    sees only the fee cost of trading and search rationally converges to HOLD/churn. E1/831
+    proved the fix with the SAME proposal machinery: a TRUE-ENV R-step rollout leaf scored
+    +5.29 net@21 (vs the model leaf's −6.92). ``leaf_eval='true-env'`` WIRES that proven
+    operator (``experiments/831_search_probe/search_probe.py::build_search_step`` /
+    ``eval_candidate`` — reused verbatim via ``_true_env_leaf_values``, not reinvented) into
+    this shipped Gumbel search path:
+      - candidate generation (``_build_proposal`` / ``_policy_prior_candidates``) is
+        UNTOUCHED — only the per-candidate LEAF reward/value changes.
+      - for each of the K root candidates, step a COPY of the true env forward with that
+        candidate (r0), then ``leaf_rollout_r`` (R, default 3, 831x/C's "+5.29" depth; R=1
+        supported, "already beats the engine ref") further TRUE-env steps under HOLD, giving
+        V = Σ_{t=1}^{R} γ^(t-1)·r_t; if ``leaf_vhat_tail`` (default ON) add γ^R·v̂ at the
+        horizon, where v̂ comes from the MODEL's own latent advanced by the IDENTICAL action
+        sequence (candidate, then R holds) — no observation re-encoding needed. R=0 degenerates
+        to V = v̂ (tail ON) or V = 0 (tail OFF, so Q = r0 exactly — "pure truncated return").
+      - all K candidates' (r0, V) are precomputed ONCE per decision, vmapped over K
+        (cost guard, task scope 3) through the SAME ``batch_step_vector`` self-play/eval
+        already pay for; ``recurrent_fn`` becomes an O(1) table lookup by candidate index.
+      - the mctx call is made with ``max_depth=1``: since the K candidates' values are FIXED
+        per decision (root-planning, matching 831 exactly — no path-dependent recursion),
+        letting the search "go deeper" than depth 1 would just re-derive an arbitrary
+        composite of two UNRELATED one-step-ahead evaluations (mctx's own doc: "a leaf can be
+        expanded multiple times" under a depth cutoff — i.e. re-evaluates the SAME node,
+        never compounds). This keeps the true-env branch semantically identical to 831's
+        flat argmax while still running the REAL Gumbel/Sequential-Halving selection +
+        visit-count statistics (the "wiring in", not a bypass).
+      - determinism/scoping: the rollout reads the SAME panel rows/prices the decision is
+        being made on, bounded to the R-step horizon — identical in kind to E1's probe (a
+        sanctioned in-simulator planning lookahead, not train/test leakage; no lookahead
+        beyond R).
+      - incompatible with ``per_node_resampling=True`` (rejected in ``__init__``): there is
+        no "interior node" left to resample at depth 1, and per-node resampling's own
+        rationale (fresh candidates per node) doesn't apply to a flattened root-planning
+        search. ``root_value`` (the model's raw prior decode) is UNCHANGED by this flag —
+        distilling the true-env leaf back into v̂ is a separate, later task (D19 opt (c)).
 
 CPU / fixture-only for tests. Never GPU-hours in the factory loop.
 """
@@ -101,6 +139,12 @@ class SampledMuZeroVectorSearch:
         # TASK_838: resample K vectors at each expanded interior node (default
         # OFF = root-reuse, bit-identical to the shipped Stage-2/3 behavior).
         per_node_resampling: bool = False,
+        # TASK_851: search LEAF evaluator. 'model' (default) = every branch above,
+        # canon bit-identical. 'true-env' replaces the per-candidate leaf reward/value
+        # with a true-env rollout (module docstring TASK_851 section has the full design).
+        leaf_eval: str = 'model',
+        leaf_rollout_r: int = 3,          # R further true-env HOLD steps past the candidate
+        leaf_vhat_tail: bool = True,      # + discounted v̂ at the R-step horizon (true-env only)
     ):
         self.model_apply_fn = model_apply_fn
         self.n_assets = n_assets
@@ -147,7 +191,28 @@ class SampledMuZeroVectorSearch:
         # prior stage) and the rng stream is untouched.
         self.per_node_resampling = per_node_resampling
 
-        self.search_fn = jax.jit(self._search)
+        # TASK_851 — validated + captured at construction (static Python values; the
+        # untaken leaf_eval branch in _search is never traced, same XLA-DCE discipline).
+        if leaf_eval not in ('model', 'true-env'):
+            raise ValueError(f"leaf_eval must be 'model' or 'true-env', got {leaf_eval!r}")
+        if leaf_eval == 'true-env':
+            if leaf_rollout_r < 0:
+                raise ValueError(f"leaf_rollout_r must be >= 0, got {leaf_rollout_r}")
+            if per_node_resampling:
+                raise ValueError(
+                    "leaf_eval='true-env' is incompatible with per_node_resampling=True: "
+                    "the true-env leaf flattens the search to depth 1 (root-planning over "
+                    "the K candidates — module docstring TASK_851 section) and per-node "
+                    "resampling has no interior node left to resample at depth 1. Use "
+                    "per_node_resampling=False (the default).")
+        self.leaf_eval = leaf_eval
+        self.leaf_rollout_r = leaf_rollout_r
+        self.leaf_vhat_tail = leaf_vhat_tail
+
+        # env_config (TASK_851, true-env only) is a hashable chex.dataclass — static, like
+        # every other jit wrapper in this codebase (e.g. jit_batch_step_vector). Canon calls
+        # never pass it (stays None ⇒ one compiled variant, unaffected).
+        self.search_fn = jax.jit(self._search, static_argnames=['env_config'])
 
     # ---- value/reward categorical → scalar (mirrors mctx_search.py canon) ----
 
@@ -216,6 +281,106 @@ class SampledMuZeroVectorSearch:
         counts = jnp.sum(eq.astype(jnp.int32), axis=-1)        # (B, K): n_a per slot
         beta_hat = counts.astype(jnp.float32) / float(K)       # (B, K)
         return prior_logits, beta_hat
+
+    # ---- TASK_851: true-env leaf evaluator (reuses the 831 operator verbatim) ------------
+
+    def _model_latent_step(self, params, latent, vec):
+        """One ``recurrent_inference_vector`` call, decoded to (next_latent, value_scalar).
+
+        Used ONLY by the true-env leaf's optional v̂ tail (``leaf_vhat_tail``): advances the
+        MODEL's own latent by the SAME action the true env just took, so the tail bootstrap
+        needs no observation re-encoding from the rolled-out env state.
+        """
+        out = self.model_apply_fn(
+            {'params': params}, latent, vec, mode='recurrent_inference_vector')
+        return out['latent_state'], self._categorical_to_scalar(out['value'])
+
+    def _true_env_leaf_values(
+        self, params, env_state, prices, env_config, latent, sampled_vecs
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        """TASK_851 — per-candidate (reward, value) under the true-env leaf.
+
+        Ports ``experiments/831_search_probe/search_probe.py``'s ``build_search_step`` /
+        ``eval_candidate`` (the E1 +5.29 operator, LEDGER 849/leaf) — reused, not reinvented —
+        generalized from a single env instance to the shipped BATCH-of-B search, and extended
+        with the optional discounted v̂ tail (a TASK_851 addition; not part of the 831 probe).
+
+        For candidate k, with R = ``self.leaf_rollout_r`` and γ = ``self.discount``::
+
+            V_k = Σ_{t=1}^{R} γ^(t-1)·r_t                     [true-env HOLD rollout]
+                  + γ^R · v̂(s_{1+R})                          [only if leaf_vhat_tail]
+            leaf_reward_k = r0                 leaf_value_k = V_k
+
+        The caller feeds ``(leaf_reward_k, leaf_value_k)`` to ``RecurrentFnOutput``; mctx's
+        own backup then forms ``Q_k = r0 + γ·V_k`` — exactly 831's ``eval_candidate`` formula
+        (generalized with the optional tail). R=0 ⇒ V_k = v̂(s_1) (tail ON) or 0 (tail OFF, so
+        Q_k = r0 exactly — the "pure truncated return" property).
+
+        Vectorized over the K candidates via ``jax.vmap`` (cost guard, task scope 3): ONE
+        vmapped K-candidate × R-step true-env rollout computed ONCE per decision, through the
+        same ``batch_step_vector`` self-play/eval already pay for.
+
+        Args:
+            env_state: TradingState, batch B — the REAL decision state the search is deciding
+                on (a JAX pytree; "stepping a copy" is automatic/functional, no explicit copy).
+            prices: (T, n_assets) for the SHARED-price batch, or (B, T, n_assets) when each
+                env carries its OWN price series (``--unique-data-per-env``, self_play.py's
+                ``unique_prices_mode``) — the SAME panel the decision is being made on (no
+                lookahead beyond the R-step horizon). Dispatches to ``batch_step_vector`` vs
+                ``batch_step_vector_unique`` on ``prices.ndim`` exactly as self_play.py's real
+                env step already does (fix pass, correctness-judge finding: unique-price runs
+                previously crashed with an opaque broadcast-shape error).
+            env_config: EnvConfig — the SAME fee/slippage tier as the live step.
+            latent: (B, state_dim) — root model latent (read only if leaf_vhat_tail).
+            sampled_vecs: (B, K, n_assets) int32 — the K candidate vectors (UNCHANGED
+                generation; TASK_851 never touches how candidates are proposed).
+
+        Returns:
+            leaf_reward: (B, K) float32 — r0 per candidate.
+            leaf_value:  (B, K) float32 — V per candidate (formula above).
+        """
+        from mcts_trader.env.jax_trading_env import (
+            batch_step_vector, batch_step_vector_unique,
+        )
+        B, K, A = sampled_vecs.shape
+        R = self.leaf_rollout_r
+        discount = self.discount
+        hold_vecs = jnp.ones((B, A), dtype=jnp.int32)
+
+        # Fix pass (correctness-judge MAJOR): ``prices.ndim`` is a STATIC/structural
+        # property (fixed at trace time, not a traced value), so a plain Python dispatch
+        # here mirrors self_play.py:699-708's ``unique_prices_mode`` exactly — never a
+        # lax.cond, no per-call branching cost.
+        unique_prices_mode = prices.ndim == 3
+        step_fn = batch_step_vector_unique if unique_prices_mode else batch_step_vector
+
+        def eval_one_candidate(vec_k):
+            # vec_k: (B, n_assets) — candidate k's vector for every batch element.
+            s1, _, r0, _ = step_fn(env_state, vec_k, prices, env_config)
+
+            if R > 0:
+                def hold_step(carry_state, _):
+                    ns, _, r, _ = step_fn(carry_state, hold_vecs, prices, env_config)
+                    return ns, r
+                _, rs = jax.lax.scan(hold_step, s1, xs=None, length=R)   # rs: (R, B)
+                disc = discount ** jnp.arange(R)                          # (R,)
+                v_trunc = jnp.sum(disc[:, None] * rs, axis=0)             # (B,)
+            else:
+                v_trunc = jnp.zeros_like(r0)
+
+            if self.leaf_vhat_tail:
+                lat, vhat = self._model_latent_step(params, latent, vec_k)
+                for _ in range(R):    # R is a static python int — unrolled, cheap (small R)
+                    lat, vhat = self._model_latent_step(params, lat, hold_vecs)
+                v_total = v_trunc + (discount ** R) * vhat
+            else:
+                v_total = v_trunc
+            return r0, v_total
+
+        leaf_reward_kb, leaf_value_kb = jax.vmap(
+            eval_one_candidate, in_axes=1, out_axes=0)(sampled_vecs)     # (K, B) each
+        return (jnp.transpose(leaf_reward_kb, (1, 0)),
+                jnp.transpose(leaf_value_kb, (1, 0)))                    # (B, K) each
 
     # ---- search --------------------------------------------------------------
 
@@ -382,6 +547,11 @@ class SampledMuZeroVectorSearch:
         action_mask: jnp.ndarray = None,
         book: jnp.ndarray = None,
         deterministic: bool = False,
+        # TASK_851: true-env leaf only. None (canon default everywhere) ⇒ zero-leaf-pytree
+        # args, no tensors added to the trace — the 'model' branch is bit-identical.
+        env_state=None,
+        prices: jnp.ndarray = None,
+        env_config=None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """Run Sampled-MuZero vector search.
 
@@ -390,6 +560,9 @@ class SampledMuZeroVectorSearch:
             book: (B, n_assets) int per-asset maintain-action (v1: HOLD=1), or None.
             deterministic: True → select the applied vector via visit-argmax
                 (eval); False → the gumbel-selected candidate (exploration).
+            env_state, prices, env_config: TASK_851 — required iff
+                ``self.leaf_eval == 'true-env'`` (the true-env leaf needs to step a copy of
+                the real env forward). Ignored by the 'model' leaf (default, canon).
 
         Returns:
             action_vec:   (B, n_assets) int32 — selected candidate vector
@@ -430,11 +603,44 @@ class SampledMuZeroVectorSearch:
 
         B = observation.shape[0]
 
-        # TASK_838: static dispatch on ``per_node_resampling`` (Python bool
-        # captured at construction ⇒ decided at trace time; the untaken branch
-        # is never traced). The OFF branch is the shipped Stage-2/3 code
-        # VERBATIM — bit-identity pinned by tools/tests/test_pernode_parity.py.
-        if self.per_node_resampling:
+        # TASK_851: static dispatch on ``leaf_eval`` (Python str captured at construction ⇒
+        # decided at trace time; the untaken branch is never traced). 'true-env' takes
+        # priority — it's mutually exclusive with per_node_resampling (enforced in
+        # __init__) and flattens the search to depth 1 (module docstring TASK_851 section).
+        # The 'model' branches below (TASK_838's two sub-branches) are UNCHANGED.
+        if self.leaf_eval == 'true-env':
+            if env_state is None or prices is None or env_config is None:
+                raise ValueError(
+                    "leaf_eval='true-env' requires env_state, prices, and env_config (the "
+                    "true-env leaf steps a copy of the real env forward — TASK_851); got "
+                    f"env_state={'set' if env_state is not None else None}, "
+                    f"prices={'set' if prices is not None else None}, "
+                    f"env_config={'set' if env_config is not None else None}.")
+            leaf_reward, leaf_value = self._true_env_leaf_values(
+                params, env_state, prices, env_config, latent, sampled_vecs)
+            root = mctx.RootFnOutput(
+                prior_logits=prior_logits,
+                value=root_value,
+                embedding=latent,
+            )
+
+            def recurrent_fn(params_, rng_, action, embedding):
+                # Pure table lookup: the K candidates' (reward, value) were fully
+                # precomputed above (root-planning, TASK_851) — no per-node model/env
+                # calls here. ``embedding`` is passed through unread (max_depth=1 below
+                # means it is never consumed by a deeper expansion).
+                idx = action.astype(jnp.int32)[:, None]                       # (B,1)
+                reward = jnp.take_along_axis(leaf_reward, idx, axis=1)[:, 0]  # (B,)
+                value = jnp.take_along_axis(leaf_value, idx, axis=1)[:, 0]    # (B,)
+                interior_prior = jnp.zeros((B, self.num_samples), dtype=jnp.float32)
+                recurrent_output = mctx.RecurrentFnOutput(
+                    reward=reward,
+                    discount=jnp.full_like(reward, self.discount),
+                    prior_logits=interior_prior,
+                    value=value,
+                )
+                return recurrent_output, embedding
+        elif self.per_node_resampling:
             # ON: the mctx embedding pytree carries, per node, the latent AND
             # the K vectors sampled AT that node, so slot k at a node maps to
             # that node's own k-th candidate (at the root: the root's samples).
@@ -526,7 +732,15 @@ class SampledMuZeroVectorSearch:
         #    GUARD (TASK_838): per_node_resampling correctness requires max_depth
         #    unset/== num_simulations; a smaller max_depth re-expands visited
         #    nodes and orphans their children's slot statistics (today: no
-        #    max_depth is passed → mctx defaults it to num_simulations — safe).
+        #    max_depth is passed for that branch → mctx defaults it to
+        #    num_simulations — safe).
+        #    TASK_851: leaf_eval='true-env' passes max_depth=1 DELIBERATELY (module
+        #    docstring) — the K candidates' values are precomputed root-planning
+        #    (path-independent), so mctx re-EXPANDS (re-evaluates) an already-visited
+        #    depth-1 node past the cutoff rather than compounding into a spurious
+        #    depth-2 node (mctx `_src/search.py`: "a leaf can be expanded multiple
+        #    times" under max_depth — never a correctness issue, since our
+        #    recurrent_fn is a pure, embedding-independent table lookup).
         policy_output = mctx.gumbel_muzero_policy(
             params=params,
             rng_key=search_rng,
@@ -536,6 +750,7 @@ class SampledMuZeroVectorSearch:
             max_num_considered_actions=self.max_num_considered_actions,
             qtransform=mctx.qtransform_by_parent_and_siblings,
             gumbel_scale=self.gumbel_scale,
+            max_depth=(1 if self.leaf_eval == 'true-env' else None),
         )
 
         gumbel_idx = policy_output.action                    # (B,) exploration pick
@@ -576,9 +791,14 @@ class SampledMuZeroVectorSearch:
         action_mask: jnp.ndarray = None,
         book: jnp.ndarray = None,
         deterministic: bool = False,
+        # TASK_851: true-env leaf only (see _search's docstring).
+        env_state=None,
+        prices: jnp.ndarray = None,
+        env_config=None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """JIT-compiled Sampled-MuZero vector search."""
-        return self.search_fn(params, rng, observation, action_mask, book, deterministic)
+        return self.search_fn(params, rng, observation, action_mask, book, deterministic,
+                              env_state=env_state, prices=prices, env_config=env_config)
 
     def raw_search(
         self,
@@ -588,15 +808,21 @@ class SampledMuZeroVectorSearch:
         action_mask: jnp.ndarray = None,
         book: jnp.ndarray = None,
         deterministic: bool = False,
+        # TASK_851: true-env leaf only (see _search's docstring).
+        env_state=None,
+        prices: jnp.ndarray = None,
+        env_config=None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, dict]:
         """Non-JIT search (for use inside an outer lax.scan / debugging)."""
-        return self._search(params, rng, observation, action_mask, book, deterministic)
+        return self._search(params, rng, observation, action_mask, book, deterministic,
+                            env_state=env_state, prices=prices, env_config=env_config)
 
 
 def create_sampled_vector_search(model, **kwargs):
     """Factory: build a SampledMuZeroVectorSearch from a MuZeroNetworks model.
 
     The model MUST be built with use_vector_action=True. All constructor knobs
-    (incl. TASK_838 ``per_node_resampling``, default OFF) pass through **kwargs.
+    (incl. TASK_838 ``per_node_resampling`` and TASK_851 ``leaf_eval``/
+    ``leaf_rollout_r``/``leaf_vhat_tail``, all default OFF/canon) pass through **kwargs.
     """
     return SampledMuZeroVectorSearch(model_apply_fn=model.apply, **kwargs)

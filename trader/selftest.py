@@ -14,6 +14,11 @@ and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gat
   ST7 shadow-DD throttle: V-shaped dd recovers -> scale re-raises; legacy mode dead-states
   ST8 TASK_847 policy-prior candidates: argmax@slot0, temp monotonicity, explore slots, dedup
       (JAX; import-guarded — SKIPS with notice if the JAX stack is unavailable)
+  ST9 TASK_851 true-env leaf: R=0/tail degenerate cases, R=3 matches an independently-walked
+      true-env rollout, canon 'model' path is a bit-identical no-op for the new kwargs
+      (JAX; same import guard as ST8)
+  ST10 TASK_851 fix pass: unique-per-env prices dispatch to batch_step_vector_unique
+      (correctness-judge MAJOR regression guard; JAX, same import guard as ST8)
 """
 
 import numpy as np
@@ -258,4 +263,174 @@ def self_tests():
     msgs.append(f"[ST8] TASK_847 policy-prior candidates: argmax@slot0 present; temp-monotone "
                 f"distinct {d_cold}<={d_hot}; explore slots inject {n_nonargmax} dithered cands; "
                 f"dedup beta_hat exact; dithered-book ignores the new knobs")
+
+    # 9. TASK_851 true-env leaf: formula properties on the shipped ``_true_env_leaf_values``
+    #    helper (root-planning leaf reward/value for --leaf-eval true-env). A tiny synthetic
+    #    env + a hand-scripted dummy model (peaked categorical logits -> an EXACT known
+    #    decoded value) let the properties be checked against closed-form expectations,
+    #    not just "runs without crashing". Same JAX-import guard as ST8 (never reds the
+    #    numpy determinism gate).
+    from mcts_trader.env.jax_trading_env import EnvConfig, reset, batch_step_vector
+
+    nA9, T9 = 3, 40
+    rng9 = np.random.RandomState(5)
+    prices9_np = (100.0 * np.cumprod(
+        1 + rng9.randn(T9, nA9) * 0.01, axis=0)).astype(np.float32)
+    prices9 = jnp.asarray(prices9_np)
+    cfg9 = EnvConfig(n_assets=nA9, initial_cash=100_000.0, fee_bps=5.0, slippage_bps=2.0,
+                     window_size=5, position_size_pct=0.2, allow_short=True,
+                     tp_sl_enabled=False, max_steps=100, vector_action=True)
+    state9 = reset(jax.random.PRNGKey(0), prices9, cfg9)
+    state9 = jax.tree_util.tree_map(lambda x: x[None], state9)      # batch B=1
+    state9 = state9.replace(episode_start_idx=jnp.array([10]), current_step=jnp.array([0]))
+
+    support_size9 = 401
+    VHAT_IDX, VHAT_VAL = 300, -10.0 + 300 * (20.0 / 400.0)   # support[300] == +5.0 exactly
+    state_dim9 = 8
+
+    def _peak(B, idx=VHAT_IDX):
+        row = jnp.full((support_size9,), -50.0, dtype=jnp.float32).at[idx].set(50.0)
+        return jnp.tile(row[None, :], (B, 1))
+
+    def _dummy_model(variables, *args, method=None, mode=None):
+        # Mirrors the model_apply_fn call conventions _search/_true_env_leaf_values use.
+        if method == 'initial_inference':
+            B = args[0].shape[0]
+            return {'policy_logits': jnp.zeros((B, nA9 * 5), dtype=jnp.float32),
+                    'latent_state': jnp.zeros((B, state_dim9), dtype=jnp.float32),
+                    'value': _peak(B)}
+        if mode == 'recurrent_inference_vector':
+            latent = args[0]
+            return {'reward': _peak(latent.shape[0]), 'value': _peak(latent.shape[0]),
+                    'latent_state': latent}
+        raise ValueError(f"unexpected dummy model call: method={method} mode={mode}")
+
+    Kv9 = 4
+    latent0_9 = jnp.zeros((1, state_dim9), dtype=jnp.float32)
+    book9 = jnp.ones((1, nA9), dtype=jnp.int32)
+    sr9, dr9 = jax.random.split(jax.random.PRNGKey(11))
+    proposal9 = SampledMuZeroVectorSearch(
+        model_apply_fn=_dummy_model, n_assets=nA9, n_actions_per_asset=5,
+        num_samples=Kv9, num_simulations=8, max_num_considered_actions=Kv9,
+        discount=0.99)._build_proposal(
+            jnp.zeros((1, nA9 * 5), dtype=jnp.float32), None, book9, dr9)
+    samples9 = jax.random.categorical(sr9, proposal9, axis=-1, shape=(Kv9, 1, nA9))
+    sampled_vecs9 = jnp.transpose(samples9, (1, 0, 2)).astype(jnp.int32)  # (1,K,nA)
+
+    def _te_search(R, tail):
+        return SampledMuZeroVectorSearch(
+            model_apply_fn=_dummy_model, n_assets=nA9, n_actions_per_asset=5,
+            num_samples=Kv9, num_simulations=8, max_num_considered_actions=Kv9,
+            discount=0.99, leaf_eval='true-env', leaf_rollout_r=R, leaf_vhat_tail=tail)
+
+    # (a) R=0, tail OFF -> V==0 exactly (Q==r0, "pure truncated return" degenerate case).
+    _, v_r0_off = _te_search(0, False)._true_env_leaf_values(
+        {}, state9, prices9, cfg9, latent0_9, sampled_vecs9)
+    assert np.allclose(np.asarray(v_r0_off), 0.0), \
+        f"R=0, tail OFF must give V==0 (pure r0), got {np.asarray(v_r0_off)}"
+
+    # (b) R=0, tail ON -> V==v̂ exactly (the "R=0 degenerates to r0+γ·v̂" property).
+    _, v_r0_on = _te_search(0, True)._true_env_leaf_values(
+        {}, state9, prices9, cfg9, latent0_9, sampled_vecs9)
+    assert np.allclose(np.asarray(v_r0_on), VHAT_VAL, atol=1e-3), \
+        f"R=0, tail ON must give V==v̂=={VHAT_VAL}, got {np.asarray(v_r0_on)}"
+
+    # (c) R=3, tail OFF -> V matches an INDEPENDENTLY-walked true-env HOLD rollout
+    #     (r0 + the 831 build_search_step/eval_candidate formula, ported verbatim).
+    R9 = 3
+    leaf_r_r3, leaf_v_r3 = _te_search(R9, False)._true_env_leaf_values(
+        {}, state9, prices9, cfg9, latent0_9, sampled_vecs9)
+    vec0_9 = sampled_vecs9[:, 0, :]
+    s1_9, _, r0_ref, _ = batch_step_vector(state9, vec0_9, prices9, cfg9)
+    hold9 = jnp.ones((1, nA9), dtype=jnp.int32)
+    sN9, disc_sum = s1_9, 0.0
+    for t in range(R9):
+        sN9, _, rt, _ = batch_step_vector(sN9, hold9, prices9, cfg9)
+        disc_sum += (0.99 ** t) * float(np.asarray(rt)[0])
+    assert abs(float(np.asarray(leaf_r_r3)[0, 0]) - float(np.asarray(r0_ref)[0])) < 1e-5, \
+        "leaf reward must equal the true-env r0 for candidate 0"
+    assert abs(float(np.asarray(leaf_v_r3)[0, 0]) - disc_sum) < 1e-4, \
+        f"R=3 tail OFF: V must equal the independently-walked HOLD rollout, " \
+        f"got {float(np.asarray(leaf_v_r3)[0, 0])} vs ref {disc_sum}"
+
+    # (d) canon 'model' path is a true no-op for the new kwargs: an explicit env_state/
+    #     prices/env_config of None reproduces the default call byte-for-byte.
+    obs9 = jnp.zeros((1, 27, nA9, nA9), dtype=jnp.float32)
+    mask9 = jnp.ones((1, nA9 * 5), dtype=jnp.float32)
+    search_canon = SampledMuZeroVectorSearch(
+        model_apply_fn=_dummy_model, n_assets=nA9, n_actions_per_asset=5,
+        num_samples=Kv9, num_simulations=8, max_num_considered_actions=Kv9, discount=0.99)
+    av_a, _, vp_a, _ = search_canon({}, jax.random.PRNGKey(2), obs9, mask9, book9, True)
+    av_b, _, vp_b, _ = search_canon(
+        {}, jax.random.PRNGKey(2), obs9, mask9, book9, True,
+        env_state=None, prices=None, env_config=None)
+    assert np.array_equal(np.asarray(av_a), np.asarray(av_b)), \
+        "default leaf_eval='model' must be a bit-identical no-op for the new TASK_851 kwargs"
+    assert np.allclose(np.asarray(vp_a), np.asarray(vp_b)), \
+        "default leaf_eval='model' visit_probs must be unaffected by the new TASK_851 kwargs"
+
+    msgs.append("[ST9] TASK_851 true-env leaf: R=0 tail-OFF degenerates to V==0 (Q==r0); "
+                "R=0 tail-ON degenerates to V==v̂ exactly; R=3 tail-OFF matches an "
+                "independently-walked true-env HOLD rollout; canon 'model' path unaffected "
+                "by the new kwargs (bit-identical no-op)")
+
+    # 10. TASK_851 fix pass (correctness-judge MAJOR): _true_env_leaf_values must dispatch
+    #     on unique-vs-shared prices the SAME way self_play.py's real env step already does
+    #     (self_play.py:699-708, driven by --unique-data-per-env). Pre-fix, a (n_envs,
+    #     n_steps, n_assets) unique-price batch crashed batch_step_vector with an opaque
+    #     broadcast-shape error; this pins the fixed dispatch AND that the un-dispatched
+    #     call still fails the same way (proving the test would have caught the regression).
+    from mcts_trader.env.jax_trading_env import batch_reset_unique, batch_step_vector
+
+    nB10 = 2                                            # n_envs, each with its OWN prices
+    rng10 = np.random.RandomState(9)
+    prices10_np = np.stack([
+        (100.0 * np.cumprod(1 + rng10.randn(T9, nA9) * 0.01, axis=0)).astype(np.float32)
+        for _ in range(nB10)
+    ], axis=0)                                          # (B, T, n_assets) — unique per env
+    prices10 = jnp.asarray(prices10_np)
+    keys10 = jax.random.split(jax.random.PRNGKey(1), nB10)
+    state10 = batch_reset_unique(keys10, prices10, cfg9)
+    state10 = state10.replace(episode_start_idx=jnp.array([10, 10]),
+                              current_step=jnp.array([0, 0]))
+
+    search_te10 = _te_search(2, True)
+    latent10 = jnp.zeros((nB10, state_dim9), dtype=jnp.float32)
+    sr10, dr10 = jax.random.split(jax.random.PRNGKey(21))
+    book10 = jnp.ones((nB10, nA9), dtype=jnp.int32)
+    proposal10 = search_te10._build_proposal(
+        jnp.zeros((nB10, nA9 * 5), dtype=jnp.float32), None, book10, dr10)
+    samples10 = jax.random.categorical(sr10, proposal10, axis=-1, shape=(Kv9, nB10, nA9))
+    sampled_vecs10 = jnp.transpose(samples10, (1, 0, 2)).astype(jnp.int32)
+
+    # (a) the fixed dispatch runs clean on unique per-env prices, finite outputs.
+    leaf_r10, leaf_v10 = search_te10._true_env_leaf_values(
+        {}, state10, prices10, cfg9, latent10, sampled_vecs10)
+    assert np.all(np.isfinite(np.asarray(leaf_r10))), "unique-prices leaf reward non-finite"
+    assert np.all(np.isfinite(np.asarray(leaf_v10))), "unique-prices leaf value non-finite"
+
+    # (b) matches an independently-walked reference via the SAME unique-prices step fn.
+    from mcts_trader.env.jax_trading_env import batch_step_vector_unique
+    vec0_10 = sampled_vecs10[:, 0, :]
+    _, _, r0_ref10, _ = batch_step_vector_unique(state10, vec0_10, prices10, cfg9)
+    assert np.allclose(np.asarray(leaf_r10[:, 0]), np.asarray(r0_ref10), atol=1e-5), \
+        "unique-prices leaf reward must match an independent batch_step_vector_unique call"
+
+    # (c) the un-dispatched call (what pre-fix code always did) fails on the SAME 3-D
+    #     prices — proving this test exercises the exact bug the fix closes.
+    try:
+        batch_step_vector(state10, vec0_10, prices10, cfg9)
+        raise AssertionError(
+            "expected batch_step_vector to fail on 3-D unique prices (regression guard); "
+            "if this now succeeds, the env API changed underneath ST10 — re-check")
+    except AssertionError:
+        raise
+    except Exception:
+        pass   # expected: broadcast-shape crash on 3-D prices fed to the SHARED-price step
+
+    msgs.append("[ST10] TASK_851 fix pass: _true_env_leaf_values dispatches unique-per-env "
+                "(B,T,A) prices to batch_step_vector_unique (finite outputs, matches an "
+                "independent reference call); confirmed the un-dispatched shared-price step "
+                "still fails on the same input (regression guard for the correctness-judge "
+                "MAJOR finding)")
     return msgs

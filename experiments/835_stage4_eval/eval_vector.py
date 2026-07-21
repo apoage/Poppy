@@ -594,6 +594,10 @@ def build_search(model, args, n_assets):
         # trained with --vector-per-node-resample must be evaluated with the SAME
         # flag or the measurement is train/eval-asymmetric (default OFF = canon).
         per_node_resampling=args.vector_per_node_resample,
+        # TASK_851: search leaf evaluator (default OFF = model leaf, canon).
+        leaf_eval=args.leaf_eval,
+        leaf_rollout_r=args.leaf_rollout_r,
+        leaf_vhat_tail=args.leaf_vhat_tail,
     )
 
 
@@ -610,7 +614,8 @@ def _trees_allclose(a, b):
 # =============================================================================
 
 def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
-            eval_seed, max_positions, min_cash_threshold, policy_actions=None):
+            eval_seed, max_positions, min_cash_threshold, policy_actions=None,
+            leaf_eval='model'):
     """Walk the full timeline once: obs → mask → deterministic vector search → step_vector.
     Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics.
 
@@ -618,7 +623,12 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     bypassed entirely — decision k replays the precomputed per-asset policy-argmax vector
     directly (no obs/mask/search/dither), the deterministic direct-replay operator lifted from
     832's imprint-sanity. ``policy_actions is None`` (default) keeps the search path
-    character-for-character identical to the shipped operator (acceptance ii)."""
+    character-for-character identical to the shipped operator (acceptance ii).
+
+    TASK_851: ``leaf_eval='true-env'`` passes the REAL pre-action state/panel/config into the
+    search so its true-env leaf can step a copy of the env forward (see sampled_search.py's
+    module docstring). Default 'model' issues the UNCHANGED canon search call — zero new
+    kwargs, bit-identical (acceptance iii)."""
     enc_cfg = EncoderConfig(n_assets=n_assets, window_size=env_cfg.window_size,
                             n_channels=27)                    # self_play.py:627 (27ch)
     book = jnp.ones((1, n_assets), dtype=jnp.int32)           # v1 book = HOLD (DEC-3)
@@ -651,8 +661,15 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
                 state, current_prices, env_cfg, max_positions, min_cash_threshold)
             # B. deterministic Sampled-MuZero vector search (visit-argmax selection)
             key, step_rng = jax.random.split(key)
-            action_vec, _sampled, _visit_probs, _stats = search_obj(
-                params, step_rng, obs, mask, book, True)      # deterministic=True (eval)
+            if leaf_eval == 'true-env':
+                # TASK_851: true-env leaf needs the real (pre-action) env state/panel/
+                # config to step a copy of it forward.
+                action_vec, _sampled, _visit_probs, _stats = search_obj(
+                    params, step_rng, obs, mask, book, True,      # deterministic=True (eval)
+                    env_state=state, prices=prices, env_config=env_cfg)
+            else:
+                action_vec, _sampled, _visit_probs, _stats = search_obj(
+                    params, step_rng, obs, mask, book, True)      # deterministic=True (eval)
         else:
             # B'. TASK_848 policy-argmax replay: the precomputed per-asset argmax vector,
             # no search, no mask (the 832 imprint-sanity direct-replay operator).
@@ -825,7 +842,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         rep = rollout(params, search_obj, prices, env_cfg, state_init,
                       env_cfg0.n_assets, n_decisions, args.eval_seed,
                       args.max_positions, args.min_cash_threshold,
-                      policy_actions=policy_actions)
+                      policy_actions=policy_actions, leaf_eval=args.leaf_eval)
         st = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
                         period_minutes, c, col_symbols, n_decisions)
         # scope-3 fields: teacher floor on the SAME window + policy-vs-floor delta (per tier).
@@ -888,6 +905,9 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             "vector_weight_unit": args.vector_weight_unit,              # TASK_840
             "vector_weight_max": args.vector_weight_max,                # TASK_840
             "vector_rebalance_deadband": args.vector_rebalance_deadband,  # TASK_840
+            "leaf_eval": args.leaf_eval,                       # TASK_851
+            "leaf_rollout_r": args.leaf_rollout_r,             # TASK_851
+            "leaf_vhat_tail": args.leaf_vhat_tail,              # TASK_851
             "gumbel_scale": args.gumbel_scale,
             "max_num_considered_actions": min(args.vector_k, 16),
             "deterministic": True,
@@ -1515,6 +1535,19 @@ def main():
                     dest="vector_rebalance_deadband",
                     help="TASK_840: re-trim only when |target-current| exceeds this "
                          "(sentinel <0 => 0.1*w_unit)")
+    ap.add_argument("--leaf-eval", type=str, default="model", choices=["model", "true-env"],
+                    dest="leaf_eval",
+                    help="TASK_851: search leaf evaluator — MUST match the flag the "
+                         "checkpoint's evaluation is meant to measure (default 'model' = "
+                         "canon learned leaf, bit-identical; 'true-env' replaces the "
+                         "per-candidate leaf with a true-env truncated rollout, the E1 "
+                         "+5.29 operator, LEDGER 849/leaf)")
+    ap.add_argument("--leaf-rollout-r", type=int, default=3, dest="leaf_rollout_r",
+                    help="TASK_851: further HOLD steps in the true-env leaf rollout past "
+                         "the candidate action (R; default 3; true-env only)")
+    ap.add_argument("--no-leaf-vhat-tail", action="store_false", dest="leaf_vhat_tail",
+                    help="TASK_851: disable the discounted v̂ tail at the true-env leaf "
+                         "horizon (default ON; true-env only)")
     ap.add_argument("--discount", type=float, default=0.997)
     ap.add_argument("--gumbel-scale", type=float, default=3.0)
     ap.add_argument("--value-scale", type=float, default=1.0)

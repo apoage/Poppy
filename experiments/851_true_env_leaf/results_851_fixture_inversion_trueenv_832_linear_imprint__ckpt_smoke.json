@@ -1,0 +1,233 @@
+{
+  "tag": "851_fixture_inversion_trueenv",
+  "checkpoint": "experiments/832_linear_imprint/ckpt_smoke",
+  "checkpoint_label": "832_linear_imprint__ckpt_smoke",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2025-09-14",
+    "2025-12-12"
+  ],
+  "bar_minutes": 240,
+  "eval_seed": 0,
+  "panel": {
+    "n_rows": 111,
+    "n_assets": 8,
+    "warm": 60,
+    "n_decisions": 50,
+    "n_loaded_symbols": 8,
+    "padded": false,
+    "position_size_pct": 0.0625,
+    "row_spacing_minutes_median": 240.0
+  },
+  "operator": {
+    "mode": "search",
+    "vector_k": 16,
+    "sims": 32,
+    "hold_bias": 3.0,
+    "dither_scale": 1.0,
+    "proposal_scheme": "dithered-book",
+    "proposal_temp": 1.0,
+    "proposal_explore_slots": 2,
+    "per_node_resampling": false,
+    "vector_budget_step": false,
+    "vector_budget_pct": 0.99,
+    "vector_weight_rebalance": false,
+    "vector_weight_unit": -1.0,
+    "vector_weight_max": 4.0,
+    "vector_rebalance_deadband": -1.0,
+    "leaf_eval": "true-env",
+    "leaf_rollout_r": 3,
+    "leaf_vhat_tail": true,
+    "gumbel_scale": 3.0,
+    "max_num_considered_actions": 16,
+    "deterministic": true,
+    "selection": "visit_probs argmax",
+    "model_size": "small",
+    "h_cycles": 4,
+    "l_cycles": 6,
+    "discount": 0.997
+  },
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "annualization_period_minutes": 240.0,
+  "tiers": {
+    "0": {
+      "sharpe_full": 7.761375044616634,
+      "steps_completed": 50,
+      "steps_expected": 50,
+      "partial": false,
+      "final_pv": 105746.359375,
+      "avg_long": 0.46,
+      "avg_short": 3.34,
+      "pct_hold_agg": 93.5,
+      "pct_hold_per_asset": {
+        "XBT/USD": 92.0,
+        "ETH/USD": 94.0,
+        "LTC/USD": 98.0,
+        "XMR/USD": 92.0,
+        "ZEC/USD": 92.0,
+        "ETC/USD": 98.0,
+        "DASH/USD": 90.0,
+        "REP/USD": 92.0
+      },
+      "action_hist_pct": [
+        2.75,
+        93.5,
+        2.5,
+        0.5,
+        0.75
+      ],
+      "bankrupt_at": -1,
+      "terminated_early_at": -1,
+      "per_window": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.2741764402188885,
+          "ceiling": 26.15052126634109,
+          "above_floor": null
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 1.800250841038113,
+          "ceiling": 42.52792057814209,
+          "above_floor": null
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.6271829687047559,
+          "ceiling": 38.27570958881829,
+          "above_floor": null
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.16304719635591294,
+          "ceiling": 39.56304775006262,
+          "above_floor": null
+        }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
+    },
+    "21": {
+      "sharpe_full": 6.800643218733044,
+      "steps_completed": 50,
+      "steps_expected": 50,
+      "partial": false,
+      "final_pv": 103707.640625,
+      "avg_long": 0.64,
+      "avg_short": 2.42,
+      "pct_hold_agg": 93.75,
+      "pct_hold_per_asset": {
+        "XBT/USD": 98.0,
+        "ETH/USD": 94.0,
+        "LTC/USD": 98.0,
+        "XMR/USD": 92.0,
+        "ZEC/USD": 92.0,
+        "ETC/USD": 98.0,
+        "DASH/USD": 86.0,
+        "REP/USD": 92.0
+      },
+      "action_hist_pct": [
+        2.0,
+        93.75,
+        2.25,
+        1.25,
+        0.75
+      ],
+      "bankrupt_at": -1,
+      "terminated_early_at": -1,
+      "per_window": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.06117675120086839,
+          "ceiling": 24.61791893424685,
+          "above_floor": null
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 1.4339222874485953,
+          "ceiling": 39.586262861039664,
+          "above_floor": null
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.27372580818205516,
+          "ceiling": 36.05767330368743,
+          "above_floor": null
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.5344029368104033,
+          "ceiling": 37.44202529720721,
+          "above_floor": null
+        }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
+    }
+  },
+  "corridor": {
+    "floor_net21": 0.4237793380446761,
+    "reference_net21": 0.7509887330376795,
+    "ceiling_net21": 29.69798287600358,
+    "floor_gross": 0.7532467397811813,
+    "reference_gross": 0.9557594651716449,
+    "ceiling_gross": 31.36710570497202,
+    "source": "experiments/830_corridor/results_real_panel.json",
+    "agent_net21": 6.800643218733044,
+    "agent_gross": 7.761375044616634,
+    "partial_rollout": false,
+    "position_in_corridor_net21": 0.21783219046146537,
+    "beats_floor_net21": true,
+    "beats_reference_net21": true,
+    "hold_collapse": false,
+    "teacher_floor_net21": null,
+    "policy_minus_floor_net21": null
+  },
+  "teacher_floor": null,
+  "out_name": "results_851_fixture_inversion_trueenv_832_linear_imprint__ckpt_smoke.json",
+  "out_pointer": "experiments/851_true_env_leaf/results_851_fixture_inversion_trueenv_832_linear_imprint__ckpt_smoke.json",
+  "ledger_row": "| 835/S4 | 2026-07-21 | H1 (learned) | Stage-4 eval 832_linear_imprint__ckpt_smoke: deterministic full-timeline vector rollout (2025-09-14..2025-12-12, bar_minutes=240, seed 0) vs the corridor | net@21 +6.801 \u00b7 gross +7.761; final PV 103708; avgL 0.6 avgS 2.4; no HOLD collapse (pct_hold 93.8%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). Scheduled-run numbers; PASS verdict applied by the planner (gate ladder). | agent +6.801 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/851_true_env_leaf/results_851_fixture_inversion_trueenv_832_linear_imprint__ckpt_smoke.json |"
+}
