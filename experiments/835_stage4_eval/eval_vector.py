@@ -302,6 +302,31 @@ def _minute_ranked_symbols(db_path, start_date, end_date, n_assets):
     return syms
 
 
+def _daily_coverage_ids(db_path, asset_ids, s_ts, e_ts):
+    """Subset of `asset_ids` with >=1 real ``ohlcv_daily`` row in epoch window [s_ts, e_ts].
+    Shared coverage definition (TASK_852) for the daily loader's active-mask filter AND the
+    equivalence gate's FLOOR-leg universe intersection — one query shape, not two divergent
+    ones. Read-only; opens its own connection (mirrors ``_daily_table_exists`` style)."""
+    if not asset_ids:
+        return set()
+    conn = sqlite3.connect(db_path)
+    try:
+        ph = ",".join("?" * len(asset_ids))
+        # close IS NOT NULL AND != 0 (MINOR-2 hardening): row EXISTENCE alone isn't coverage —
+        # a future placeholder/garbage row with a null or zero close would otherwise be waved
+        # through as "covered" and produce exactly the flat-zero densified column this filter
+        # exists to eliminate, just through the other door. Latent today (no such rows on the
+        # real DB) but cheap to close now.
+        rows = conn.execute(
+            f"""SELECT asset_id FROM ohlcv_daily WHERE asset_id IN ({ph})
+                AND timestamp >= ? AND timestamp <= ?
+                AND close IS NOT NULL AND close != 0 GROUP BY asset_id""",
+            (*asset_ids, s_ts, e_ts)).fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
+
+
 def load_daily_prices(db_path, start_date, end_date, specific_symbols, n_assets):
     """Read the panel close matrix from ``ohlcv_daily`` — a read-only mirror of
     ``VectorBTTradingEnv._load_database_prices`` (symbol selection, distinct-timestamp axis,
@@ -346,6 +371,32 @@ def load_daily_prices(db_path, start_date, end_date, specific_symbols, n_assets)
         raise RuntimeError(
             f"--panel-source daily: no assets resolved in {db_path} ohlcv_daily for the "
             f"requested universe/window [{start_date}..{end_date}] (empty window).")
+    # ACTIVE-MASK coverage filter (TASK_852, LEDGER 850/eqgate): an asset resolved in
+    # `assets` can still have ZERO ohlcv_daily rows in this window (e.g. 37/64 of the
+    # minute-ranked universe pre-2025 — the daily table simply wasn't backfilled that far
+    # back for them). Forward-filling such a column from a nonexistent anchor keeps it at a
+    # flat zero for the WHOLE window — a fake, silently-densified "asset" that never
+    # actually traded here. The minute loader never has this failure mode (its default
+    # universe is ranked BY minute coverage, so a zero-coverage symbol is never selected);
+    # reproduce that ACTIVE-MASK semantics here by dropping zero-coverage symbols instead of
+    # densifying them. Real BUT PARTIAL histories (e.g. a coin that listed mid-window) are
+    # untouched — book_target_signs' own first_active/present_mask already ages those in
+    # correctly once loaded.
+    covered_ids = _daily_coverage_ids(db_path, asset_ids, s_ts, e_ts)
+    dropped = [sym for aid, sym in zip(asset_ids, symbols) if aid not in covered_ids]
+    if dropped:
+        print(f"[850] --panel-source daily ACTIVE-MASK: dropping {len(dropped)}/{len(asset_ids)} "
+              f"requested symbols with ZERO ohlcv_daily rows in [{start_date}..{end_date}] (no "
+              f"real daily history here; not densifying a fake flat column): "
+              f"{dropped[:10]}{' ...' if len(dropped) > 10 else ''}")
+        kept = [(aid, sym) for aid, sym in zip(asset_ids, symbols) if aid in covered_ids]
+        asset_ids = [aid for aid, _ in kept]
+        symbols = [sym for _, sym in kept]
+    if not asset_ids:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-source daily: every requested symbol has ZERO ohlcv_daily rows in "
+            f"[{start_date}..{end_date}] after the active-mask coverage filter (empty window).")
     id_to_col = {aid: i for i, aid in enumerate(asset_ids)}
     ph = ",".join("?" * len(asset_ids))
     timestamps = [r[0] for r in cur.execute(
@@ -389,9 +440,29 @@ def create_daily_panel(args):
     prices_np, symbols, row_ts = load_daily_prices(
         args.db, args.start, args.end, args.symbols, args.n_assets)
     n_assets = args.n_assets
-    if prices_np.shape[1] < n_assets:                    # pad (env_factory.py:412-415)
-        n_loaded = prices_np.shape[1]
-        prices_np = prices_np[:, [i % n_loaded for i in range(n_assets)]]
+    if prices_np.shape[1] < n_assets:
+        # TASK_852: this branch was mirrored from env_factory.py:412-415's pad-by-cycling
+        # fallback, which only ever fires on the MINUTE path's rare/explicit under-supply of
+        # symbols. On the daily path it is now ROUTINELY reachable — the active-mask coverage
+        # filter above deliberately DROPS zero-coverage symbols instead of densifying them, so
+        # any real-world window with imperfect ohlcv_daily backfill will under-supply. Silently
+        # cycling the survivors back up to n_assets would duplicate real assets across multiple
+        # independent panel columns, each separately sized by the env's per-asset weight-cap/
+        # budget logic — doubling (or worse) their effective exposure with nothing raising or
+        # printing a loud signal. Fail loud instead (the exact failure class this task exists
+        # to eliminate, one layer up): the caller must explicitly opt into the smaller real
+        # universe rather than have it silently densified via duplication.
+        raise RuntimeError(
+            f"--panel-source daily: only {prices_np.shape[1]}/{n_assets} requested assets have "
+            f"real ohlcv_daily coverage in [{args.start}..{args.end}] after the active-mask "
+            f"filter (the rest have zero rows there and were dropped, not densified). Padding "
+            f"by cycling/duplicating the {prices_np.shape[1]} real columns back up to "
+            f"{n_assets} would silently double-count their exposure — refusing. Fix: pass "
+            f"--symbols {','.join(symbols)} (the exact {prices_np.shape[1]} that survived this "
+            f"filter) with --n-assets {prices_np.shape[1]}. NOTE: retrying with only "
+            f"--n-assets {prices_np.shape[1]} (no --symbols) is NOT guaranteed to converge — "
+            f"the no-symbols path RE-RANKS a fresh top-{prices_np.shape[1]} minute-coverage "
+            f"universe at that N, which can have its own, different coverage gap.")
     elif prices_np.shape[1] > n_assets:
         prices_np = prices_np[:, :n_assets]
     prices_j = jnp.array(prices_np, dtype=jnp.float32)
@@ -1234,22 +1305,64 @@ def run_equivalence_gate(args):
         # let the two sources' no-symbols selection diverge (that would compare teacher
         # floors on DISJOINT portfolios and pass/fail spuriously). Explicit pinning tests
         # equivalence rather than relying on the loaders happening to agree.
-        args.symbols = list(universe)
-        args.panel_source = "daily"
+        #
+        # TASK_852: that universe is minute-coverage-ranked and can include symbols with ZERO
+        # ohlcv_daily rows in this window (LEDGER 850/eqgate: 37/64 on the real 2021-2025
+        # overlap). The daily loader's own active-mask filter (above) now drops those rather
+        # than densifying them — but left as-is here, args.n_assets would stay pinned at the
+        # ORIGINAL 64, so create_daily_panel would pad the ~27 real columns back up to 64 by
+        # CYCLING (duplicating) them, multiplying their effective exposure and comparing a
+        # duplicate-heavy daily book against a genuinely-distinct 64-real-asset minute book —
+        # not the coverage-symmetric comparison the gate exists to run. Intersect the universe
+        # against real ohlcv_daily coverage FIRST and shrink n_assets to match, so both FLOOR
+        # panels are built on the identical, coverage-safe symbol set (verified in isolation:
+        # this collapses the bulk of the divergence — see run log).
+        s_ts0, e_ts0 = _to_epoch(args.start, 0), _to_epoch(args.end, 9999999999)
+        conn0 = sqlite3.connect(args.db)
         try:
-            pd_ = build_panel(args)
-        except RuntimeError as e:
-            pd_ = None
-            floor_note = f"daily panel could not build @1440 ({e})"
-        args.panel_source = "minute"
-        pm_ = None
-        if pd_ is not None:
+            ph0 = ",".join("?" * len(universe))
+            id_rows0 = conn0.execute(
+                f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph0})",
+                universe).fetchall()
+        finally:
+            conn0.close()
+        sym_to_id0 = {sym: aid for aid, sym in id_rows0}
+        uni_ids0 = [sym_to_id0[s] for s in universe if s in sym_to_id0]
+        covered_ids0 = _daily_coverage_ids(args.db, uni_ids0, s_ts0, e_ts0)
+        covered_syms0 = {sym for sym, aid in sym_to_id0.items() if aid in covered_ids0}
+        floor_universe = [s for s in universe if s in covered_syms0]
+        if len(floor_universe) < len(universe):
+            # MINOR-1 (flow-verifier): name the excluded symbols, not just the count — a
+            # planner acting on this diagnostic (D20) needs to audit WHICH assets got dropped
+            # without writing ad hoc SQL.
+            excluded0 = [s for s in universe if s not in covered_syms0]
+            print(f"FLOOR leg ACTIVE-MASK (TASK_852): {len(excluded0)}/{len(universe)} "
+                  f"comparison-universe symbols have ZERO ohlcv_daily rows in "
+                  f"[{args.start}..{args.end}] — excluded from BOTH panels for this leg "
+                  f"(coverage-symmetric comparison); {len(floor_universe)} remain. Excluded: "
+                  f"{excluded0[:20]}{' ...' if len(excluded0) > 20 else ''}")
+        pd_ = pm_ = None
+        if not floor_universe:
+            floor_note = ("no symbol in the comparison universe has any ohlcv_daily coverage "
+                          "in this window — FLOOR leg DEFERRED (active-mask filter left nothing "
+                          "to compare).")
+        else:
+            args.symbols = list(floor_universe)
+            args.n_assets = len(floor_universe)
+            args.panel_source = "daily"
             try:
-                pm_ = build_panel(args)
+                pd_ = build_panel(args)
             except RuntimeError as e:
-                floor_note = (f"minute panel too short @1440 on this window ({e}) — FLOOR leg "
-                              f"DEFERRED to the planner's scheduled real-db run (the fixture "
-                              f"minute slice cannot build a 1440 panel).")
+                pd_ = None
+                floor_note = f"daily panel could not build @1440 ({e})"
+            args.panel_source = "minute"
+            if pd_ is not None:
+                try:
+                    pm_ = build_panel(args)
+                except RuntimeError as e:
+                    floor_note = (f"minute panel too short @1440 on this window ({e}) — FLOOR leg "
+                                  f"DEFERRED to the planner's scheduled real-db run (the fixture "
+                                  f"minute slice cannot build a 1440 panel).")
         if pd_ is not None and pm_ is not None:
             pm = float(args.bar_minutes)
             tf_d, _ = compute_teacher_floor(pd_[0], pd_[1], int(pd_[1].window_size),
