@@ -1,10 +1,35 @@
-# Factory run 15 — D20 intra-series-gap audit (handoff)
+# Factory run 15 — TASK_853 ship + D20 intra-series-gap audit (handoff)
 
 **Date:** 2026-07-22
 **Thread:** dark-factory implementer
-**Disposition:** diagnostic-only run — NO code change, NO ship, NO commit-of-code. Advanced the
-one OPEN wall (DECISIONS D20) with the zero-cost read-only audit its own recommendation named as
-the cheap first step. Result is decision-changing.
+
+## Run summary (two deliverables)
+1. **TASK_853 SHIPPED** (`task853-inactive-mask-oos-panel`, commit `c8ee701` + changelog `c31af95`
+   + banner `3cedef2`, tag `task853-inactive-mask-oos-panel`): fixed-frame daily OOS panel with
+   inactive masking — `--panel-frame-from-checkpoint` (default OFF = bit-identical). Correctness +
+   fail-closed + regression + flow-verifier (2 rounds); no BLOCKER/MAJOR; fix pass closed 2 MINOR
+   (duplicate-symbol fail-loud guard; partial mid-window-listing pre-listing LEAK — loader now
+   leaves pre-listing rows flat-zero + policy-argmax force-HOLD is price-validity-based, closing it
+   for both operators) + 1 NIT (empty-flag guard), all re-verified; selftest 10/10; OFF bit-identical
+   (SHAs measured on both trees). Real-DB acceptance (i) numeric + the binding ~240-decision OOS
+   benchmark are the planner's scheduled run (needs a provenance JSON = the imprint's 64 training
+   symbols in recorded order; fixture carries neither the trained ckpt nor the window).
+2. **D20 audit** (below) — the read-only diagnostic that un-gated 853; independently confirmed the
+   planner's concurrent D20 ruling.
+
+## New wall seeded during the run: DECISIONS D21 (OPEN)
+851's real binding leg missed (best −1.44 vs ≥ +0.74, LEDGER 832/E5-inversion2); isolation ladder
+points at the PRIOR TERM in Gumbel selection (E1's +5.29 used pure true-rollout-Q, no prior).
+tier0 search now BEATS raw policy (+3.85 vs +1.45) — the true-env leaf restored planning capacity.
+Recommendation = **TASK_854 (S): `--prior-weight` scalar on Gumbel scoring (default 1.0 bit-identical;
+0.0 = pure-Q = E1) + fix the inert `--value-scale`**; acceptance = the inversion re-run at
+prior-weight 0.0. NOT seeded — awaits a one-word operator ruling. The factory did not guess past it.
+
+---
+
+## D20 intra-series-gap audit
+**Disposition:** diagnostic-only — NO code change. Advanced the (then-)OPEN wall DECISIONS D20 with
+the zero-cost read-only audit its own recommendation named as the cheap first step. Decision-changing.
 
 ## Why this run existed
 
