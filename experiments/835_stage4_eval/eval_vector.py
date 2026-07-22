@@ -493,6 +493,282 @@ def create_daily_panel(args):
 
 
 # =============================================================================
+# TASK_853 — fixed-frame daily panel with inactive masking (the OOS-read mechanic)
+# =============================================================================
+# The imprint checkpoint's encoder FLATTENS assets (kernel = 27 feats x n_assets slots):
+# slot k IS asset k, POSITIONALLY. In an OOS window only a subset of the 64 training assets
+# have real ohlcv_daily coverage; the TASK_852 loader correctly refuses to densify (fake
+# columns) or shrink to a sub-panel (which would mis-shape the net AND scramble slot
+# identities — two fail-louds fired, LEDGER 832/E5-oos). The correct mechanic (same as the
+# TRAINING panel's handling of mid-window listings): keep the checkpoint's full 64-slot frame
+# in its EXACT recorded training ORDER, one column per slot, and mark zero-coverage slots
+# INACTIVE via the env's EXISTING active-mask semantics (compute_action_mask's
+# ``price_valid = current_prices > 0`` gate). A zero-coverage column forward-fills to a flat
+# ZERO (no real anchor), so ``price_valid`` is False for the whole window -> the env mask
+# admits only HOLD there (no fills, no fees, no n_present renormalization) — reused, not
+# reinvented. Under the search operator the mask does this automatically; under the 848
+# policy-argmax replay (which bypasses the mask) the same inactive slots are forced to HOLD in
+# the replayed vector (evaluate_checkpoint) — an application of the SAME price_valid rule.
+# FLAG-GATED (--panel-frame-from-checkpoint), default OFF; the minute/daily paths are untouched.
+
+def _load_frame_provenance(path, n_assets, cli_symbols):
+    """Read the checkpoint's recorded training symbol FRAME (one column per positional slot)
+    from a provenance JSON. Fail-loud (task scope 4): file/key absent, frame length !=
+    n_assets (positional slot mismatch — the 972-vs-1728 kernel error this task exists to
+    avoid), or an explicit --symbols list that disagrees with the recorded order.
+
+    Schema: a JSON object carrying an ORDERED symbol list under ``frame_symbols`` (or
+    ``symbols``); any other keys (train_window/db/n_assets/source) are carried through as
+    provenance for the artifact. The frame is authoritative — the panel is built column-by-slot
+    in this exact order so slot identity matches the checkpoint's encoder."""
+    if not os.path.exists(path):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance file not found: {path}. The fixed-frame "
+            f"panel needs the checkpoint's RECORDED training symbol order (one column per "
+            f"encoder slot); it cannot be inferred from an OOS window (re-ranking there yields a "
+            f"DIFFERENT universe/order and scrambles slot identity). Point this at the JSON that "
+            f"records the imprint run's ordered symbol frame.")
+    try:
+        with open(path) as fh:
+            prov = json.load(fh)
+    except (ValueError, OSError) as e:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: cannot read provenance {path} "
+            f"({type(e).__name__}: {e}).")
+    if not isinstance(prov, dict):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} is not a JSON object "
+            f"(got {type(prov).__name__}).")
+    frame = prov.get("frame_symbols", prov.get("symbols"))
+    if not (isinstance(frame, list) and frame and all(isinstance(s, str) and s for s in frame)):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} has no non-empty ordered symbol "
+            f"list under 'frame_symbols' (or 'symbols'). The recorded training frame is ABSENT — "
+            f"refusing to guess it (task scope 4 fail-loud).")
+    if len(set(frame)) != len(frame):
+        from collections import Counter
+        dupes = sorted(s for s, n in Counter(frame).items() if n > 1)
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} has DUPLICATE symbol(s) in the "
+            f"frame: {dupes}. Each positional slot must be a DISTINCT asset (slot k IS asset k); "
+            f"a repeated symbol silently collapses two slots onto one column and scrambles slot "
+            f"identity — the exact failure this fixed-frame loader exists to prevent (scope 4).")
+    if len(frame) != n_assets:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: recorded frame has {len(frame)} symbols but "
+            f"--n-assets is {n_assets}. Slot k IS asset k positionally, so the frame MUST have "
+            f"exactly n_assets columns — a mismatched count mis-shapes the encoder kernel "
+            f"(the 27x{n_assets} vs 27x{len(frame)} failure). Pass --n-assets {len(frame)} to "
+            f"match the recorded frame, or use the provenance that matches this checkpoint.")
+    if cli_symbols is not None and list(cli_symbols) != list(frame):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: explicit --symbols disagrees with the recorded "
+            f"training frame (order mismatch). The frame is authoritative and order-sensitive "
+            f"(slot identity); drop --symbols, or make it match the recorded order exactly.")
+    return list(frame), prov
+
+
+def load_daily_prices_framed(db_path, start_date, end_date, frame_symbols):
+    """Fixed-frame daily close matrix: ONE column per recorded frame symbol IN ORDER (no drop,
+    no pad-by-cycling — the identity-preserving contrast to ``load_daily_prices``). Zero-coverage
+    frame symbols are KEPT as flat-zero columns (the env's price>0 mask renders them inactive).
+    Returns (prices_np (T, n_frame), frame_symbols, row_ts int64 (T,), coverage) where
+    ``coverage`` lists per-slot status/spans. Fail-loud: missing daily table, an unknown symbol
+    (not in ``assets``), or an empty window / all-slots-inactive (task scope 4)."""
+    if not _daily_table_exists(db_path):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: no `ohlcv_daily` table in {db_path}. The fixed-frame "
+            f"panel reads that table directly; it is absent here.")
+    s_ts = _to_epoch(start_date, 0)
+    e_ts = _to_epoch(end_date, 9999999999)
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    ph = ",".join("?" * len(frame_symbols))
+    rows = cur.execute(
+        f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})",
+        frame_symbols).fetchall()
+    sym_to_id = {r[1]: r[0] for r in rows}
+    unknown = [s for s in frame_symbols if s not in sym_to_id]
+    if unknown:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: {len(unknown)} recorded frame symbol(s) are not in "
+            f"the `assets` table of {db_path} (unknown symbols — the frame cannot be dropped or "
+            f"reordered to skip them without scrambling slot identity): "
+            f"{unknown[:10]}{' ...' if len(unknown) > 10 else ''}")
+    # One asset_id per slot, in recorded frame order (slot k IS asset k).
+    asset_ids = [sym_to_id[s] for s in frame_symbols]
+    # Shared coverage definition (TASK_852 _daily_coverage_ids): >=1 real close row in window.
+    covered_ids = _daily_coverage_ids(db_path, asset_ids, s_ts, e_ts)
+    covered_ids_ordered = [aid for aid in asset_ids if aid in covered_ids]
+    if not covered_ids_ordered:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: EVERY slot in the recorded frame has ZERO "
+            f"ohlcv_daily coverage in [{start_date}..{end_date}] — the panel would be entirely "
+            f"inactive (all HOLD). Nothing to evaluate; widen --start/--end or check the frame.")
+    # Row axis: DISTINCT daily timestamps over the COVERED slots (verbatim mirror of
+    # load_daily_prices' axis query — uncovered slots contribute no rows anyway).
+    phc = ",".join("?" * len(covered_ids_ordered))
+    timestamps = [r[0] for r in cur.execute(
+        f"""SELECT DISTINCT timestamp FROM ohlcv_daily
+            WHERE asset_id IN ({phc}) AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp""",
+        (*covered_ids_ordered, s_ts, e_ts)).fetchall()]
+    if not timestamps:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: ohlcv_daily has no rows for the frame in "
+            f"[{start_date}..{end_date}] (empty window). Widen --start/--end.")
+    ts_to_idx = {ts: i for i, ts in enumerate(timestamps)}
+    id_to_col = {aid: i for i, aid in enumerate(asset_ids)}     # slot == frame position
+    n_steps = len(timestamps)
+    prices = np.zeros((n_steps, len(frame_symbols)), dtype=np.float32)
+    for asset_id, ts, close in cur.execute(
+        f"""SELECT asset_id, timestamp, close FROM ohlcv_daily
+            WHERE asset_id IN ({phc}) AND timestamp >= ? AND timestamp <= ?""",
+        (*covered_ids_ordered, s_ts, e_ts)).fetchall():
+        if ts in ts_to_idx and asset_id in id_to_col:
+            prices[ts_to_idx[ts], id_to_col[asset_id]] = close
+    conn.close()
+    # Inactive-span report BEFORE the fill (the fill back-/forward-fills covered columns; a
+    # zero-coverage column has no anchor and stays flat-zero, which is exactly the inactive
+    # signal). raw_nonzero[:, col] tells real vs filled.
+    raw_nonzero = prices != 0
+    coverage = []
+    for col, sym in enumerate(frame_symbols):
+        aid = asset_ids[col]
+        n_nz = int(raw_nonzero[:, col].sum())
+        if aid not in covered_ids or n_nz == 0:
+            coverage.append({"slot": col, "symbol": sym, "status": "inactive",
+                             "reason": "zero ohlcv_daily coverage in window",
+                             "span": [start_date, end_date]})
+        else:
+            first = int(np.argmax(raw_nonzero[:, col]))
+            entry = {"slot": col, "symbol": sym, "status": "active",
+                     "covered_rows": n_nz, "n_rows": n_steps}
+            if first > 0:                       # listed mid-window: leading rows had no data
+                entry["status"] = "partial"
+                entry["first_covered_ts"] = int(timestamps[first])
+                entry["leading_inactive_rows"] = first
+            coverage.append(entry)
+    # Fill: forward-fill INTERIOR gaps only (from each slot's first real close onward). Leading
+    # pre-coverage rows are LEFT flat-zero — a DELIBERATE divergence from the coverage-ranked
+    # load_daily_prices (whose universe has no uncovered leading region, so it back-fills). In the
+    # fixed frame a slot may be zero-coverage (fully inactive) OR list mid-window (partial); either
+    # way its no-real-price rows must read INACTIVE, not carry a fabricated pre-listing price. Left
+    # flat-zero, the env price>0 mask HOLDs them under search, the teacher-floor present-mask ages
+    # them in, and the policy-argmax price-validity guard (evaluate_checkpoint) HOLDs them too — no
+    # tradeable pre-listing region for EITHER operator (leak-free invariant).
+    for col in range(prices.shape[1]):
+        col_nz = prices[:, col] != 0
+        if not col_nz.any():
+            continue                                    # fully-inactive slot: stays flat-zero
+        first_nz = int(np.argmax(col_nz))               # first real close (0 if covered from open)
+        for i in range(first_nz + 1, n_steps):          # forward-fill interior gaps post-listing
+            if prices[i, col] == 0:
+                prices[i, col] = prices[i - 1, col]
+    return prices, list(frame_symbols), np.asarray(timestamps, dtype=np.int64), coverage
+
+
+def create_daily_panel_framed(args, frame_symbols):
+    """Fixed-frame analogue of ``create_daily_panel``: load the framed daily closes (one column
+    per recorded slot, zero-coverage columns kept flat-zero), build the SAME EnvConfig, reset.
+    Returns (states0, prices_j, env_cfg, row_ts, frame_symbols, coverage). No pad/truncate — the
+    frame is exactly n_assets columns by construction (asserted by _load_frame_provenance)."""
+    prices_np, symbols, row_ts, coverage = load_daily_prices_framed(
+        args.db, args.start, args.end, frame_symbols)
+    n_assets = args.n_assets
+    if prices_np.shape[1] != n_assets:          # defensive: frame length already checked upstream
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: framed panel has {prices_np.shape[1]} columns but "
+            f"--n-assets is {n_assets} (should be equal by construction).")
+    prices_j = jnp.array(prices_np, dtype=jnp.float32)
+    config = EnvConfig(                          # identical to create_daily_panel's block
+        n_assets=n_assets,
+        initial_cash=100_000.0,
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        max_steps=400,
+        window_size=60,
+        position_size_pct=args.position_size_pct,
+        vector_action=True,
+        vector_budget_step=args.vector_budget_step,
+        vector_budget_pct=args.vector_budget_pct,
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
+    )
+    keys = jax.random.split(jax.random.PRNGKey(args.eval_seed), 1)
+    states = jit_batch_reset(keys, prices_j, config)
+    return states, prices_j, config, row_ts, symbols, coverage
+
+
+def _build_panel_framed(args):
+    """TASK_853 fixed-frame source: build the daily panel on the checkpoint's recorded training
+    symbol frame (exact order, one column per slot) and mark zero-coverage slots INACTIVE. Valid
+    ONLY with --bar-minutes 1440 (the daily-table rule; fail-loud otherwise). Reports every
+    inactive span to stdout AND (via panel_info) into the JSON artifact so a 36/64-live-slot
+    benchmark is impossible to mistake for a 64-live one (task scope 2)."""
+    if args.bar_minutes != 1440:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint requires --bar-minutes 1440 (got {args.bar_minutes}); "
+            f"the frame is read from the daily ohlcv_daily table (any other stride is an "
+            f"incoherent second resample of already-daily rows).")
+    frame_symbols, prov = _load_frame_provenance(
+        args.panel_frame_from_checkpoint, args.n_assets, args.symbols)
+    states0, prices, env_cfg, row_ts, loaded_syms, coverage = create_daily_panel_framed(
+        args, frame_symbols)
+    result = _finalize_panel(states0, prices, env_cfg, row_ts, loaded_syms, args)
+    prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info = result
+    inactive = [c for c in coverage if c["status"] == "inactive"]
+    partial = [c for c in coverage if c["status"] == "partial"]
+    inactive_slots = [c["slot"] for c in inactive]
+    n_active = args.n_assets - len(inactive_slots)
+    # --- stdout report (task scope 2: impossible to mistake 36/64-live for 64-live) ---
+    print("=" * 84)
+    print(f"[853] FIXED-FRAME daily panel from checkpoint provenance "
+          f"({_display_path(args.panel_frame_from_checkpoint)}): {args.n_assets} slots, "
+          f"{n_active} ACTIVE / {len(inactive_slots)} INACTIVE (zero coverage) in "
+          f"[{args.start}..{args.end}]")
+    if inactive:
+        print(f"[853] INACTIVE slots ({len(inactive)}) — no fills/fees, HOLD-only (env price>0 "
+              f"active-mask); every span reported:")
+        for c in inactive:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} INACTIVE "
+                  f"[{c['span'][0]}..{c['span'][1]}]  ({c['reason']})")
+    if partial:
+        print(f"[853] PARTIAL slots ({len(partial)}) — listed mid-window: pre-listing rows are "
+              f"flat-zero => INACTIVE (HOLD under BOTH operators via price>0 / price-validity), "
+              f"active from the listing day onward:")
+        for c in partial:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} first covered ts "
+                  f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows)")
+    if not inactive and not partial:
+        print("[853] all slots fully covered on this window (no inactive/partial spans).")
+    print("=" * 84)
+    panel_info["panel_frame"] = {
+        "source": "checkpoint-provenance-fixed-frame (TASK_853)",
+        "provenance_path": _display_path(args.panel_frame_from_checkpoint),
+        "provenance_meta": {k: v for k, v in prov.items()
+                            if k not in ("frame_symbols", "symbols")},
+        "n_slots": int(args.n_assets),
+        "n_active_slots": int(n_active),
+        "n_inactive_slots": int(len(inactive_slots)),
+        "n_partial_slots": int(len(partial)),
+        "inactive_slots": list(inactive_slots),
+        "inactive_spans": inactive,
+        "partial_spans": partial,
+        "coverage": coverage,
+    }
+    # Carried to the rollout: force these slots to HOLD on the 848 policy-argmax replay (which
+    # bypasses the env mask); the search operator already masks them. See evaluate_checkpoint.
+    panel_info["inactive_slots"] = list(inactive_slots)
+    return prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info
+
+
+# =============================================================================
 # scorecard conventions — corridor constants + 831-EXT windows (LOADED, not hardcoded)
 # =============================================================================
 
@@ -897,6 +1173,20 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         obs_all = imp.encode_training_obs(prices, warm, n_decisions, env_cfg0)
         policy_actions = imp.policy_argmax_actions(model, params, obs_all,
                                                    int(env_cfg0.n_assets))
+        # TASK_853: on the fixed-frame OOS panel a slot has NO real price at a decision row when
+        # it is fully-inactive (flat-zero all window) OR partial and the row is BEFORE its
+        # mid-window listing (left flat-zero by the framed loader). The env action mask
+        # (price_valid = price>0) HOLDs those under search; policy-argmax replay BYPASSES the mask,
+        # so apply the SAME rule per (decision, slot) here. Forcing HOLD on a zero-price cell is
+        # always correct (no tradeable market) and can never HOLD a genuinely-active decision (its
+        # price is >0), so it is alignment-safe. Framed path only (panel_frame present) → non-framed
+        # policy-argmax stays byte-identical.
+        if panel_info.get("panel_frame") is not None:
+            dec_prices = np.asarray(prices[warm:warm + n_decisions])   # (n_decisions, n_assets)
+            _invalid = dec_prices <= 0
+            if _invalid.any():
+                policy_actions = np.array(policy_actions, copy=True)
+                policy_actions[_invalid] = HOLD
 
     # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
     teacher_floor = book_warm = None
@@ -1000,6 +1290,10 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             "per_tier": {str(c): teacher_floor[c] for c in GATE_COSTS},
         }),
     }
+    # TASK_853: fixed-frame inactive-mask block (present only when --panel-frame-from-checkpoint).
+    # Every inactive span lands in the JSON here AND on stdout at build time (task scope 2).
+    if panel_info.get("panel_frame") is not None:
+        result["panel_frame"] = panel_info["panel_frame"]
     # ledger_row is rendered by the caller once the ACTUAL output path is known
     # (out_pointer) — a hardcoded pointer here would dangle for scheduled runs.
     return result
@@ -1110,7 +1404,19 @@ def build_panel(args):
     tiers derive from it via .replace(fee/slip) — prices identical by construction.
 
     TASK_850: --panel-source daily reads ohlcv_daily directly (the minute `ohlcv` table's
-    coverage dies ~2025-10); default 'minute' is byte-identical to the pre-850 path."""
+    coverage dies ~2025-10); default 'minute' is byte-identical to the pre-850 path.
+
+    TASK_853: --panel-frame-from-checkpoint builds the fixed 64-slot frame in the checkpoint's
+    recorded training order with zero-coverage slots INACTIVE (the OOS-read mechanic); default
+    (flag unset) is byte-identical to the minute/daily paths above."""
+    _frame_path = getattr(args, "panel_frame_from_checkpoint", None)
+    if _frame_path is not None and not str(_frame_path).strip():
+        raise RuntimeError(
+            "--panel-frame-from-checkpoint was given an EMPTY path; refusing to silently fall "
+            "back to the minute/daily universe (that would score a DIFFERENT universe under the "
+            "fixed-frame flag). Pass the provenance JSON path, or omit the flag entirely.")
+    if _frame_path:
+        return _build_panel_framed(args)
     if getattr(args, "panel_source", "minute") == "daily":
         return _build_panel_daily(args)
     states0, prices, env_cfg = create_jax_env_historical(
@@ -1427,6 +1733,14 @@ def print_summary(r):
     print(f"panel: {r['panel']['n_assets']} assets × {r['panel']['n_rows']} rows "
           f"(bar_minutes={r['bar_minutes']}), warm={r['panel']['warm']}, "
           f"decisions={r['panel']['n_decisions']}, eval_seed={r['eval_seed']}")
+    pf = r.get("panel_frame")
+    if pf is not None:
+        print(f"FIXED-FRAME (TASK_853): {pf['n_slots']} slots, {pf['n_active_slots']} ACTIVE / "
+              f"{pf['n_inactive_slots']} INACTIVE / {pf['n_partial_slots']} partial "
+              f"(provenance {pf['provenance_path']})")
+        for c in pf["inactive_spans"]:
+            print(f"   INACTIVE slot {c['slot']:>3} {c['symbol']:<16} "
+                  f"[{c['span'][0]}..{c['span'][1]}] ({c['reason']})")
     _op = r['operator']
     if _op.get('mode') == 'policy-argmax':
         print("operator: policy-argmax (initial_inference -> per-asset argmax -> step_vector; "
@@ -1557,6 +1871,15 @@ def main():
                          "'daily' reads the current `ohlcv_daily` table directly (same symbol "
                          "selection + warm/decision semantics, valid ONLY with --bar-minutes "
                          "1440) — unlocks the OOS window the minute table no longer covers")
+    ap.add_argument("--panel-frame-from-checkpoint", default=None,
+                    dest="panel_frame_from_checkpoint",
+                    help="TASK_853: path to a JSON recording the checkpoint's ORDERED training "
+                         "symbol frame ('frame_symbols' or 'symbols'). Builds the fixed n_assets-"
+                         "slot daily panel in that EXACT order (slot k == asset k, matching the "
+                         "positionally universe-locked encoder) and marks zero-coverage slots "
+                         "INACTIVE via the env's existing price>0 active-mask (no fills/fees, "
+                         "HOLD-only) — the OOS-read mechanic. Requires --bar-minutes 1440. "
+                         "Default OFF = the minute/daily paths are byte-identical to HEAD")
     ap.add_argument("--n-assets", type=int, default=64)
     ap.add_argument("--checkpoint", action="append", default=[],
                     help="checkpoint dir (repeatable; jax_ckpt_fast/<name>/snapshot_ep<N>/ or final)")
