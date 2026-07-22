@@ -19,6 +19,10 @@ and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gat
       (JAX; same import guard as ST8)
   ST10 TASK_851 fix pass: unique-per-env prices dispatch to batch_step_vector_unique
       (correctness-judge MAJOR regression guard; JAX, same import guard as ST8)
+  ST11 TASK_854 prior-weight on Gumbel candidate scoring: pw=0 => proposal/candidate draw
+      invariant to policy_logits (pure-Q/E1); pw=1.0 => bit-identical to today; linear
+      interpolation between; value_scale fail-loud in the inert true-env no-tail combo
+      (JAX; same import guard as ST8)
 """
 
 import numpy as np
@@ -433,4 +437,79 @@ def self_tests():
                 "independent reference call); confirmed the un-dispatched shared-price step "
                 "still fails on the same input (regression guard for the correctness-judge "
                 "MAJOR finding)")
+
+    # 11. TASK_854 (D21) prior-weight on the Gumbel candidate-scoring / proposal path.
+    #     The learned policy prior enters the vector search ONLY through candidate
+    #     generation (the mctx RootFnOutput prior is the uniform empirical 1/K prior —
+    #     _empirical_prior — at every depth), so --prior-weight scales the policy_logits
+    #     term of the dithered-book proposal: score = prior_weight·policy_logits +
+    #     hold_bias·book + dither·g. Asserts the three pre-registered properties (task
+    #     scope 3): prior_weight 0 => scoring invariant to logits; 1.0 => byte-identical
+    #     to today; monotone (linear) interpolation between. Same JAX guard as ST8-ST10.
+    nA11, Av11, K11 = 6, 5, 12
+    rng11 = np.random.RandomState(23)
+    logits_a = jnp.asarray((rng11.randn(1, nA11 * Av11) * 2.0).astype(np.float32))
+    logits_b = jnp.asarray((rng11.randn(1, nA11 * Av11) * 2.0).astype(np.float32))  # different prior
+    book11 = jnp.ones((1, nA11), dtype=jnp.int32)
+    dr11 = jax.random.PRNGKey(31)
+
+    def _mk_pw(pw):
+        return SampledMuZeroVectorSearch(
+            model_apply_fn=None, n_assets=nA11, n_actions_per_asset=Av11,
+            num_samples=K11, num_simulations=8, max_num_considered_actions=min(K11, 8),
+            hold_bias=3.0, dither_scale=1.0, proposal_scheme='dithered-book',
+            prior_weight=pw)
+
+    # Reference (no mask so the score is the clean linear form): proposals share the SAME
+    # dither rng, so everything except prior_weight·policy_logits is constant across weights.
+    prop_a = {pw: np.asarray(_mk_pw(pw)._build_proposal(logits_a, None, book11, dr11))
+              for pw in (0.0, 0.25, 0.5, 1.0)}
+    prop_b0 = np.asarray(_mk_pw(0.0)._build_proposal(logits_b, None, book11, dr11))
+
+    # (a) prior_weight=0 => candidate scoring INVARIANT to policy_logits (two different
+    #     priors give an identical proposal — hence identical candidate distribution).
+    assert np.allclose(prop_a[0.0], prop_b0, atol=1e-6), \
+        "prior_weight=0 must make the proposal invariant to policy_logits (pure-Q selection)"
+
+    # (b) prior_weight=1.0 => byte-identical to today: the proposal minus the policy-free
+    #     baseline recovers EXACTLY the reshaped policy logits (the canon pre-854 term).
+    logits_a_grid = np.asarray(logits_a).reshape(1, nA11, Av11)
+    assert np.allclose(prop_a[1.0] - prop_a[0.0], logits_a_grid, atol=1e-5), \
+        "prior_weight=1.0 must reproduce today's full policy_logits term (bit-identical)"
+
+    # (c) monotone (linear) interpolation: proposal(pw) - proposal(0) == pw·(proposal(1) - proposal(0)).
+    delta = prop_a[1.0] - prop_a[0.0]
+    for pw in (0.25, 0.5):
+        assert np.allclose(prop_a[pw] - prop_a[0.0], pw * delta, atol=1e-5), \
+            f"prior_weight interpolation must be linear/monotone at pw={pw}"
+
+    # (d) sampled candidate SET is invariant to logits at prior_weight=0 (the scoring
+    #     property carried through the actual Gumbel-max candidate draw, same rng).
+    sr11 = jax.random.PRNGKey(41)
+    def _draw(prop):
+        s = jax.random.categorical(sr11, jnp.asarray(prop), axis=-1, shape=(K11, 1, nA11))
+        return np.asarray(jnp.transpose(s, (1, 0, 2)))
+    assert np.array_equal(_draw(prop_a[0.0]), _draw(prop_b0)), \
+        "prior_weight=0 candidate draw must not depend on policy_logits"
+
+    # (e) TASK_854 scope 2: value_scale is fail-loud in the provably-inert true-env no-tail
+    #     combo, and truthfully accepted everywhere it bites (model leaf; true-env + tail).
+    def _ctor(**kw):
+        return SampledMuZeroVectorSearch(
+            model_apply_fn=None, n_assets=nA11, n_actions_per_asset=Av11,
+            num_samples=K11, num_simulations=8, max_num_considered_actions=min(K11, 8), **kw)
+    try:
+        _ctor(leaf_eval='true-env', leaf_vhat_tail=False, value_scale=2.0)
+        raise AssertionError("value_scale!=1 with true-env no-tail must fail-loud (TASK_854)")
+    except ValueError:
+        pass
+    _ctor(leaf_eval='true-env', leaf_vhat_tail=True, value_scale=2.0)   # tail routes it — OK
+    _ctor(leaf_eval='model', value_scale=2.0)                          # model leaf uses it — OK
+    _ctor(leaf_eval='true-env', leaf_vhat_tail=False, value_scale=1.0)  # default — OK
+
+    msgs.append("[ST11] TASK_854 prior-weight: pw=0 proposal+candidate-draw invariant to "
+                "policy_logits (pure-Q); pw=1.0 recovers today's policy term exactly "
+                "(bit-identical); linear/monotone interpolation at pw={0.25,0.5}; "
+                "value_scale fail-loud in the inert true-env no-tail combo, accepted where "
+                "it bites")
     return msgs

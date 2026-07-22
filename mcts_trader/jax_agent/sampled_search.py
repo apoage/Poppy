@@ -136,6 +136,22 @@ class SampledMuZeroVectorSearch:
         # the default paths stay bit-identical — see _build_candidates).
         proposal_temp: float = 1.0,         # temperature on the per-asset marginals
         explore_slots: int = 2,             # N dither-machinery slots retained (of K)
+        # TASK_854 (D21): scalar weight on the LEARNED policy prior in the Gumbel
+        # candidate-scoring / proposal path. The candidate set is drawn by Gumbel-max
+        # from `prior_weight·policy_logits + book/hold bias + dither·g` (dithered-book)
+        # or from `prior_weight·policy_logits` (iid / policy-prior slots). Default 1.0 =
+        # today, BIT-IDENTICAL (the scaling branch is not even traced). 0.0 = pure-Q =
+        # the E1 selection: with the learned prior removed the candidate scoring is
+        # invariant to policy_logits (E1's dithered-book fed zero policy, only the HOLD
+        # bias). See LEDGER 832/E5-inversion2 + DECISIONS D21 for why this is the LAST
+        # learned component in the true-env-leaf loop. NOTE (verify panel): the empirical
+        # Sampled-MuZero prior fed to mctx's RootFnOutput is uniform (1/K) at ALL depths
+        # (`_empirical_prior`), so the learned prior enters ONLY through candidate
+        # generation, never through mctx's internal `logits + g + σ(Q)` root selection —
+        # scaling mctx's uniform prior_logits would be a no-op (exactly the `--value-scale`
+        # inert-flag hazard this task also fixes). This knob therefore gates the learned
+        # policy where it actually lives: the proposal that scores/produces the candidates.
+        prior_weight: float = 1.0,
         # TASK_838: resample K vectors at each expanded interior node (default
         # OFF = root-reuse, bit-identical to the shipped Stage-2/3 behavior).
         per_node_resampling: bool = False,
@@ -165,6 +181,9 @@ class SampledMuZeroVectorSearch:
         # TASK_847 policy-prior knobs (static; ignored unless scheme is policy-prior).
         self.proposal_temp = proposal_temp
         self.explore_slots = explore_slots
+        # TASK_854 (D21): learned-prior weight in the candidate scoring/proposal (static
+        # Python float captured at trace; == 1.0 leaves the proposal graph untouched).
+        self.prior_weight = prior_weight
         if proposal_scheme == 'policy-prior':
             # Fail-loud on misconfiguration (candidate 0 is always the argmax vector).
             if not (0 <= explore_slots <= num_samples - 1):
@@ -208,6 +227,24 @@ class SampledMuZeroVectorSearch:
         self.leaf_eval = leaf_eval
         self.leaf_rollout_r = leaf_rollout_r
         self.leaf_vhat_tail = leaf_vhat_tail
+
+        # TASK_854 scope 2 (D21): fail-loud on the INERT `value_scale` combination rather
+        # than silently accepting a knob with no effect (the verification hazard that burned
+        # a GPU run — LEDGER 832/E5-inversion2). `value_scale` scales the MODEL's categorical
+        # value decode (`_categorical_to_scalar`). In the true-env leaf the per-candidate Q =
+        # r0 + γ·V is a TRUE-env rollout (`_true_env_leaf_values`) and only the optional v̂
+        # TAIL routes through the model value decode — so with the tail OFF, value_scale
+        # touches nothing that reaches candidate selection (byte-identical, as the probe
+        # found). It stays truthfully wired everywhere it DOES bite (the model leaf, and the
+        # true-env leaf WITH tail); only the provably-inert combination is rejected.
+        if (leaf_eval == 'true-env' and not leaf_vhat_tail
+                and float(value_scale) != 1.0):
+            raise ValueError(
+                f"value_scale={value_scale} has no effect with leaf_eval='true-env' and "
+                f"leaf_vhat_tail=False: the true-env leaf Q is a pure true-env rollout, so "
+                f"value_scale (which only scales the MODEL value decode) never reaches "
+                f"candidate selection. Enable leaf_vhat_tail to route it through the v̂ tail, "
+                f"or drop --value-scale (leave it 1.0). Fail-loud per TASK_854 scope 2.")
 
         # env_config (TASK_851, true-env only) is a hashable chex.dataclass — static, like
         # every other jit wrapper in this codebase (e.g. jit_batch_step_vector). Canon calls
@@ -414,6 +451,13 @@ class SampledMuZeroVectorSearch:
         B = policy_logits.shape[0]
         n_assets, A = self.n_assets, self.n_actions_per_asset
         proposal = policy_logits.reshape(B, n_assets, A)
+        # TASK_854 (D21): scale the LEARNED policy prior. Static Python guard ⇒ at the
+        # default 1.0 the graph is untouched (bit-identical); 0.0 zeroes the policy so the
+        # candidate scoring below is invariant to policy_logits (E1's dithered-book fed
+        # zero policy). Applied BEFORE the book/HOLD bias + dither so those structural
+        # terms are unaffected by prior_weight (they are not the learned component).
+        if self.prior_weight != 1.0:
+            proposal = self.prior_weight * proposal
 
         if scheme == 'dithered-book':
             if book is not None:
@@ -482,6 +526,13 @@ class SampledMuZeroVectorSearch:
         K, N = self.num_samples, self.explore_slots
 
         logits = policy_logits.reshape(B, n_assets, A)
+        # TASK_854 (D21): scale the learned prior BEFORE masking, matching _build_proposal
+        # (static guard ⇒ 1.0 = bit-identical). At 0.0 both the argmax slot and the tempered
+        # samples below draw from the masked-uniform marginals — the learned prior no longer
+        # steers the policy-prior candidate set. (The N explore slots reuse _build_proposal,
+        # which applies the same scaling — so the whole policy-prior set is gated coherently.)
+        if self.prior_weight != 1.0:
+            logits = self.prior_weight * logits
         if action_mask is not None:
             mask_bool = action_mask.reshape(B, n_assets, A).astype(bool)
             logits = jnp.where(mask_bool, logits, -1e9)
@@ -822,7 +873,8 @@ def create_sampled_vector_search(model, **kwargs):
     """Factory: build a SampledMuZeroVectorSearch from a MuZeroNetworks model.
 
     The model MUST be built with use_vector_action=True. All constructor knobs
-    (incl. TASK_838 ``per_node_resampling`` and TASK_851 ``leaf_eval``/
-    ``leaf_rollout_r``/``leaf_vhat_tail``, all default OFF/canon) pass through **kwargs.
+    (incl. TASK_838 ``per_node_resampling``, TASK_851 ``leaf_eval``/
+    ``leaf_rollout_r``/``leaf_vhat_tail``, and TASK_854 ``prior_weight``, all
+    default OFF/canon) pass through **kwargs.
     """
     return SampledMuZeroVectorSearch(model_apply_fn=model.apply, **kwargs)

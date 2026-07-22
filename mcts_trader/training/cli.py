@@ -212,6 +212,12 @@ def parse_args() -> TrainingConfig:
                         dest='vector_proposal_explore_slots',
                         help='TASK_847: N of K candidates drawn from the dither machinery under '
                              'the policy-prior scheme (default 2 of K=16; policy-prior only)')
+    parser.add_argument('--prior-weight', type=float, default=1.0, dest='prior_weight',
+                        help='TASK_854 (D21): scalar weight on the LEARNED policy prior in the '
+                             'Gumbel candidate scoring/proposal. Default 1.0 = today, '
+                             'bit-identical; 0.0 = pure-Q (E1 selection — candidate scoring '
+                             'invariant to policy_logits). Same knob for self-play target '
+                             'generation and the 835 eval operator.')
     parser.add_argument('--vector-per-node-resample', action='store_true',
                         dest='vector_per_node_resample',
                         help='TASK_838: resample K action-vectors at each expanded interior '

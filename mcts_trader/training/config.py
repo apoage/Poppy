@@ -220,6 +220,11 @@ class TrainingConfig:
     # default scheme unchanged ⇒ every existing invocation stays bit-identical).
     vector_proposal_temp: float = 1.0        # temperature on the per-asset policy marginals
     vector_proposal_explore_slots: int = 2   # N dither-machinery slots retained (of K)
+    # TASK_854 (D21): scalar weight on the LEARNED policy prior in the Gumbel candidate
+    # scoring/proposal. Default 1.0 = today, bit-identical; 0.0 = pure-Q (E1 selection, the
+    # candidate scoring becomes invariant to policy_logits). Threaded to the vector search
+    # (both self-play target generation here and the 835 eval operator — one owner).
+    prior_weight: float = 1.0
     # TASK_838: resample K vectors at each expanded interior node (default OFF =
     # root-reuse, bit-identical to the shipped Stage-2/3 vector search).
     vector_per_node_resample: bool = False

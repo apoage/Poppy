@@ -937,6 +937,9 @@ def build_search(model, args, n_assets):
         # TASK_847: policy-prior knobs (ignored unless scheme='policy-prior').
         proposal_temp=args.vector_proposal_temp,
         explore_slots=args.vector_proposal_explore_slots,
+        # TASK_854 (D21): learned-prior weight in candidate scoring (default 1.0 = canon;
+        # 0.0 = pure-Q / E1 selection — the last learned component vs the E1 anchor).
+        prior_weight=args.prior_weight,
         # TASK_838: eval operator must match the training operator — a checkpoint
         # trained with --vector-per-node-resample must be evaluated with the SAME
         # flag or the measurement is train/eval-asymmetric (default OFF = canon).
@@ -1259,6 +1262,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             "proposal_scheme": args.vector_proposal_scheme,
             "proposal_temp": args.vector_proposal_temp,              # TASK_847
             "proposal_explore_slots": args.vector_proposal_explore_slots,  # TASK_847
+            "prior_weight": args.prior_weight,                       # TASK_854
             "per_node_resampling": args.vector_per_node_resample,  # TASK_838
             "vector_budget_step": args.vector_budget_step,   # TASK_839
             "vector_budget_pct": args.vector_budget_pct,     # TASK_839
@@ -1749,8 +1753,10 @@ def print_summary(r):
         _scheme = _op['proposal_scheme']
         _extra = (f" temp={_op['proposal_temp']} explore_slots={_op['proposal_explore_slots']}"
                   if _scheme == 'policy-prior' else f" hold_bias={_op['hold_bias']}")
+        _pw = _op.get('prior_weight', 1.0)                        # TASK_854
+        _pw_str = f" prior_weight={_pw}" if _pw != 1.0 else ""
         print(f"operator: search[{_scheme}] K={_op['vector_k']} sims={_op['sims']}"
-              f"{_extra} deterministic(visit-argmax)")
+              f"{_extra}{_pw_str} deterministic(visit-argmax)")
     if cor["partial_rollout"]:
         print("*" * 84)
         print("*** PARTIAL ROLLOUT — a tier terminated early (env done / bankruptcy); "
@@ -1940,6 +1946,13 @@ def main():
                     dest="vector_proposal_explore_slots",
                     help="TASK_847: N of K candidates from the dither machinery under "
                          "policy-prior (default 2 of K=16; policy-prior only)")
+    ap.add_argument("--prior-weight", type=float, default=1.0, dest="prior_weight",
+                    help="TASK_854 (D21): scalar weight on the LEARNED policy prior in the "
+                         "Gumbel candidate scoring/proposal. Default 1.0 = today, "
+                         "bit-identical; 0.0 = pure-Q (E1 selection — candidate scoring "
+                         "invariant to policy_logits; the last learned component vs the E1 "
+                         "+5.29 anchor, LEDGER 832/E5-inversion2). The inversion re-run leg "
+                         "uses --prior-weight 0.0.")
     ap.add_argument("--vector-per-node-resample", action="store_true",
                     dest="vector_per_node_resample",
                     help="TASK_838: per-node action resampling in the search operator — "

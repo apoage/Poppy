@@ -392,6 +392,8 @@ def main():
             # TASK_847: policy-prior knobs (ignored unless scheme='policy-prior').
             proposal_temp=getattr(config, 'vector_proposal_temp', 1.0),
             explore_slots=getattr(config, 'vector_proposal_explore_slots', 2),
+            # TASK_854 (D21): learned-prior weight in candidate scoring (default 1.0 = canon).
+            prior_weight=getattr(config, 'prior_weight', 1.0),
             # TASK_838: per-node action resampling (default OFF = root-reuse).
             per_node_resampling=getattr(config, 'vector_per_node_resample', False),
             # TASK_851: search leaf evaluator (default OFF = model leaf, canon).

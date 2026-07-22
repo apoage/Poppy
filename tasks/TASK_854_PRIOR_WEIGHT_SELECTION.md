@@ -1,6 +1,18 @@
-# TASK_854 — Prior-weight hook on Gumbel selection (D21; the last delta vs E1)
+> **STATUS (2026-07-22): SHIPPED as `task854-prior-weight-selection`.** `--prior-weight` on the
+> Sampled-MuZero candidate-generation scoring (default 1.0 = bit-identical; 0.0 = pure-Q = E1
+> selection), wired into eval + self-play target-gen via one implementation; `--value-scale`
+> made fail-loud in its provably-inert combo. Default BIT-IDENTICAL (tiers SHA `ca72a38c7462ce24`
+> + 25 pin tests); selftest 11/11 (new ST11). Fixture inversion (i) PASS: pw=0.0 net@21 +17.162
+> ≫ replay −6.778, non-inert (pw=1.0 +8.316). 4-member panel (correctness + regression +
+> flag-wiring + flow-verifier), NO BLOCKER/MAJOR, no fix pass; all numbers reproduced ×4.
+> **Design deviation (panel-cleared)**: the literal spec named mctx's root prior, which is the
+> uniform empirical prior (zeros → scaling = no-op, the inert-flag hazard); the learned prior
+> enters only via candidate generation, gated there. **Remainder → planner**: real binding leg
+> (`runs/832_e5/ckpt_imprint_full`, bar ≥ +0.74; a MISS falsifies the isolation) is the scheduled
+> run. 2 out-of-scope MINORs to planner: `value_shift` sibling inert hazard; stale committed
+> smoke-baseline operator metadata.
 
-**Status**: READY 2026-07-22 (D21 ruled — operator, factory run-15 wrap).
+**Status**: SHIPPED 2026-07-22 (was READY; D21 ruled — operator, factory run-15 wrap).
 **Size: S. Risk: medium** (search SELECTION scoring, flag-gated; default bit-identical; wired
 into eval + ExIt target generation — the same path trains the policy if the re-try re-arms).
 
