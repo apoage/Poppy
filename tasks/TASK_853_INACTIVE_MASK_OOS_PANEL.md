@@ -1,3 +1,15 @@
+> **STATUS (2026-07-22): SHIPPED as `task853-inactive-mask-oos-panel`** (factory run 15). Flag
+> `--panel-frame-from-checkpoint` default OFF = bit-identical; fixed 64-slot frame in checkpoint
+> order, zero-coverage + partial(pre-listing) slots INACTIVE, all spans dual-disclosed (JSON +
+> stdout), fail-loud on every identity-scrambling condition. Panel: correctness + fail-closed +
+> regression + flow-verifier (2 rounds); no BLOCKER/MAJOR; fix pass closed 2 MINOR (duplicate-symbol
+> guard; partial-slot pre-listing leak — now flat-zero + price-validity force-HOLD, both operators)
+> + 1 NIT (empty-flag guard), all re-verified; selftest 10/10; OFF bit-identical (SHAs on both trees).
+> **Remainder (planner-owned, scheduled real-DB run):** acceptance (i) numeric (+0.839 ±0.06 on
+> `runs/832_e5/ckpt_imprint_full`) + the binding ~240-decision OOS benchmark (LEDGER 832/E5-oos,
+> BENCHMARK only per the D17 operator correction) — needs a provenance JSON with the imprint's 64
+> training symbols in recorded order; the fixture carries neither the trained ckpt nor the window.
+
 # TASK_853 — Fixed-frame daily panel with inactive masking (the last OOS-read mechanic)
 
 **Status**: READY 2026-07-22 (planner seed; D20-scoped daily source, D17 Track 2).
