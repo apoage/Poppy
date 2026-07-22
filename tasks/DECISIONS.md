@@ -8,6 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
+| D22 | **The binding OOS benchmark of the imprint is blocked by DATA, not instruments** (LEDGER 853/numeric-leg): the checkpoint is minute-panel-native and positionally 64-slot-locked; the minute table dies 2025-10 for most of the universe (thin n=31 OOS read), and the daily table covers only 27/64 in-sample ⇒ the 853 round-trip can never pass, so daily-source OOS numbers are unattributable for THIS artifact. How does the program get a real OOS benchmark? | **Recommendation: (a) MINUTE BACKFILL (ops, zero model code): run the existing fetcher (`fetch_log`/kraken REST pipeline) to extend the minute table for the 64-symbol universe 2025-10 → present; then the CANON minute path reaches OOS natively and the shipped 848 read just works (~9 months, ~270 decisions). Cost = API time, no GPU, DB is the workstation source-of-record (backup before ingest; `zstd→rsync` does not detect source corruption — known ops note).** Alternates: (b) accept the 36-active-slot daily read as a permanently-caveated scoped benchmark (recorded unattributable tonight — weak); (c) wait for paper-forward data to accumulate (slowest, cleanest). | _OPEN 2026-07-22 — ops decision; does not block the 854/ExIt critical path_ |
 
 ## DECIDED
 
