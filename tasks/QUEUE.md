@@ -31,8 +31,9 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_Empty — both rows shipped/reconciled 2026-07-21 (factory run 14, below). Next row seeds after
-D20 rules._
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_853_INACTIVE_MASK_OOS_PANEL.md` | S | **The last OOS-read mechanic (D20 ruled 2026-07-22: daily source, within-panel grading)**: fixed 64-slot daily panel in checkpoint order with inactive masking for the 28 uncovered assets — the encoder is positionally universe-locked (kernel 1728 = 27×64); tonight two fail-louds correctly blocked both densify and sub-panel. Round-trip acceptance on the training window proves slot identities. Un-gates the binding ~240-decision OOS benchmark. |
 
 _Shipped 2026-07-21 factory run 14:_
 - _**TASK_851** (`task851-true-env-leaf`, `41561d4`) — `--leaf-eval {model,true-env}` on the
