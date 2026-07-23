@@ -198,3 +198,17 @@ hb0.0/d1.0 dither params feed the explore slots, D11 watchdog 2700, `Restored en
    shape vs the Amendment-5 curve is the mechanism read.
 3. Tripwires + invariants carry over from Amendment 5 unchanged (collapse, bankruptcy=846
    defect, wedge watchdog).
+
+### Amendment 6 addendum (2026-07-23, planner — the re-arm: operator chosen, battery launched)
+Gate CLEARED: LEDGER 832/E5-inversion3 (+8.024 vs bar +0.74) then the pre-registered sweep
+(dithered-book, tier21 net@21): pw0.0/R6 **+8.343** · pw0.0/R3 **+8.024** · pw0.25/R3 +7.049 ·
+pw0.25/R6 +5.023 · pw0.5/R3 +3.164 · pw0.5/R6 +1.820 — monotone in prior-weight, confirming the
+D21 isolation. **Chosen ExIt operator (training AND grading — one operator, no cross-operator
+mismatch): dithered-book K16, hb3.0/d1.0, `--leaf-eval true-env --no-leaf-vhat-tail
+--prior-weight 0.0`, R=3** (R6's +4% not worth 2× leaf env-steps in self-play; R=3 = E1 canon).
+SUPERSEDES Amendment 6's "hb0.0/d1.0" line — the ladder measured hb0.0 as a churn driver and
+the chosen operator is the E1 setting hb3.0 (pre-registered here BEFORE the battery result).
+Battery `e5exit2_pq_s{0,1,2}` = the Amendment-6 command with the chosen operator flags; 300 ep,
+snapshot-every 50, fee16/slip5, PIN-(c) from `ckpt_imprint_full`, D11 watchdog 2700, entropy
+hard check. Reads 1–3 of Amendment 6 unchanged (prior-survival ≥ +0.74 both operators on ≥2/3
+seeds at ep300; erosion curve via 848; tripwires/invariants carried).
