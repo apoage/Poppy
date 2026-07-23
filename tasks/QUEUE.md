@@ -38,7 +38,7 @@ critical path = E5 imprint→ExIt.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_854_PRIOR_WEIGHT_SELECTION.md` | S | **D21 RULED 2026-07-22**: `--prior-weight` scalar on Gumbel scoring (1.0 = bit-identical today; 0.0 = pure-Q = the E1 selection) wired into eval + ExIt target-gen, one implementation; value-scale wired-or-removed FAIL-LOUD. Acceptance = fixture inversion at prior-weight 0.0 + default SHAs + scoring property tests. Real binding leg (≥ +0.74; a miss FALSIFIES the isolation) = planner post-ship. |
+| 1 | `tasks/TASK_855_FLAG_HYGIENE_MINORS.md` | XS (filler) | Run-16 panel MINORs: `value_shift` inert-hazard fail-loud + 835 smoke-baseline metadata refresh (parity byte-for-byte on pre-existing keys). |
 
 _Shipped 2026-07-22 factory run 15:_
 - _**TASK_853** (`task853-inactive-mask-oos-panel`, `c8ee701`) — `--panel-frame-from-checkpoint`:
