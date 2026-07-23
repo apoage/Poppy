@@ -1,5 +1,17 @@
 # TASK_856 — Decision-rule probe on the distilled marginals + net-dependent grading fix (D23 step 1)
 
+> **STATUS (2026-07-23): SHIPPED as `task856-decision-rule-probe`.** `--decision-rule {argmax,threshold,top-m}`
+> (+ `--decision-tau`/`--decision-m`) on the 848 replay operator + scope-2 `net_dependent` grading fix
+> (unconditional key + loud WARNING on zero-learned-component operators). Default `argmax` bit-identical
+> (sole delta vs HEAD = one additive `net_dependent` line; scored keys byte-identical). Panel found+fixed
+> 1 MAJOR (top-m was vacuous in the collapse regime — now assigns the best non-HOLD action so the M
+> selected assets always trade, 0→4 trades/step on collapsed input; mutation-tested guard) + 1 MINOR +
+> 1 NIT; independently re-verified. selftest 11/11, 10 property tests, fixture smoke.
+> **Remainders → planner**: (1) the REAL rule-grid sweep (ep300 ckpts × rule grid vs floor bar +0.424) is
+> the scheduled run — decides tuning-vs-architecture for ExIt2 distillation; (2) `results_fixture_smoke.json`
+> refresh (TASK_855 scope 2 — now also stale by the `net_dependent` key); (3) spec prose line 29
+> (`M=64+τ=0 ⇒ argmax`) is superseded by the top-m fix (now `⇒ threshold τ=0`) — correct the line.
+
 **Status**: READY 2026-07-23 (D23 ruled — operator: "scope both to factory .. aswell as fix ..").
 **Size: XS/S. Risk: low** (eval operator extension + grading hygiene; zero training-path code).
 

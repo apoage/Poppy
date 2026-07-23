@@ -107,6 +107,7 @@ FEE_BPS, SLIP_BPS = 16.0, 5.0
 HOLD = 1
 N_ACTIONS_PER_ASSET = 5
 HOLD_COLLAPSE_PCT = 99.0      # the 821 failure signature: pct_hold pinned >99
+DECISION_RULES = ("argmax", "threshold", "top-m")   # TASK_856: policy-replay decision rules
 
 # 830/E0-REAL official corridor, net@21 [floor +0.424, ceil +29.698], engine ref +0.751
 # (gross +0.753 / +0.956 / +31.367). Provenance: experiments/LEDGER.md row 830/E0-REAL +
@@ -149,6 +150,104 @@ def load_imprint_module():
         spec.loader.exec_module(mod)
         _IMPRINT_MOD = mod
     return _IMPRINT_MOD
+
+
+# =============================================================================
+# TASK_856 — decision rules on the 848 policy-replay operator
+# =============================================================================
+# The ExIt2 policy trains toward the fixed search's visit targets (~94% hold / ~6% sparse
+# trades) but a per-asset ARGMAX rounds to 100% HOLD while CE stays far from a point-mass —
+# the trade signal survives IN THE DISTRIBUTION. These rules re-decode that distribution
+# without touching training: 'argmax' (default) is byte-identical to the 848 replay; the
+# other two read the per-asset softmax MARGINALS and act only where the mass warrants it,
+# HOLDing everywhere else.
+#   * threshold: per asset, act on the best non-HOLD action iff its marginal mass > tau.
+#   * top-m:     per step, act on the M assets with the highest non-HOLD mass, forcing each of
+#                them onto its BEST NON-HOLD action (the selected assets ALWAYS trade — the
+#                point of the probe: extract ~M trades/step even when the argmax collapses to
+#                100% HOLD); the rest HOLD. Assigning the full argmax would re-collapse to HOLD
+#                on the collapsed ep300 checkpoints and make top-m == argmax (vacuous).
+
+def _apply_decision_rule(probs, rule, tau, m, n_assets):
+    """Map per-asset action MARGINALS (probs: (N, A, 5), softmax over the 5 actions) to a
+    per-decision action vector (N, A) int32 in {0..4}. HOLD == 1. 'non-HOLD mass' = the
+    largest marginal over the four non-HOLD actions. Pure numpy — no model, so the property
+    tests exercise it directly."""
+    if rule not in DECISION_RULES:
+        raise ValueError(f"unknown decision rule: {rule!r} (choices: {DECISION_RULES})")
+    N = probs.shape[0]
+    hold_vec = np.full((N, n_assets), HOLD, dtype=np.int32)
+    # Mask HOLD out with a sentinel below any real probability so the argmax/max pick a
+    # genuine non-HOLD action (argmax and max are taken over the SAME masked array => the
+    # returned action's mass IS best_nonhold_mass).
+    masked = np.array(probs, dtype=np.float64, copy=True)
+    masked[:, :, HOLD] = -1.0
+    best_nonhold_action = masked.argmax(axis=-1).astype(np.int32)        # (N, A)
+    best_nonhold_mass = masked.max(axis=-1)                              # (N, A)
+    if rule == "argmax":
+        # Pure-numpy analogue of the logit argmax (softmax is strictly monotonic, so the
+        # argmax index is identical). The model path routes 'argmax' through the verbatim
+        # imprint operator instead — this branch exists only for the property tests.
+        return probs.argmax(axis=-1).astype(np.int32)
+    if rule == "threshold":
+        acted = best_nonhold_mass > float(tau)                          # (N, A)
+        return np.where(acted, best_nonhold_action, hold_vec).astype(np.int32)
+    if rule == "top-m":
+        out = hold_vec.copy()
+        m_eff = int(max(0, min(int(m), n_assets)))
+        if m_eff > 0:
+            # per decision: the M assets with the highest non-HOLD mass (ties -> lower slot
+            # index via a STABLE sort => deterministic). Each selected asset is forced onto its
+            # BEST NON-HOLD action (never the full argmax — that would re-collapse to HOLD on a
+            # HOLD-argmax checkpoint and defeat the probe); the M chosen assets ALWAYS trade.
+            order = np.argsort(-best_nonhold_mass, axis=1, kind="stable")  # (N, A)
+            sel = order[:, :m_eff]                                         # (N, m_eff)
+            rows = np.arange(N)[:, None]
+            out[rows, sel] = best_nonhold_action[rows, sel]
+        return out
+    raise ValueError(f"unknown decision rule: {rule!r}")                 # unreachable
+
+
+def policy_decision_actions(model, params, obs_np, n_assets, rule, tau, m, block=128):
+    """TASK_856: the 848 policy-replay operator under a decision rule. rule='argmax' (default)
+    delegates VERBATIM to ``imprint.policy_argmax_actions`` (byte-identical to HEAD — the
+    per-asset logit argmax); 'threshold'/'top-m' read the per-asset softmax marginals via the
+    same batched ``initial_inference`` pass and re-decode with ``_apply_decision_rule``."""
+    imp = load_imprint_module()
+    if rule == "argmax":
+        return imp.policy_argmax_actions(model, params, obs_np, n_assets, block=block)
+
+    @jax.jit
+    def fwd(o):
+        out = model.apply({'params': params}, o, mode='initial_inference')
+        logits = out['policy_logits'].reshape(o.shape[0], n_assets, N_ACTIONS_PER_ASSET)
+        return jax.nn.softmax(logits, axis=-1)
+    probs = []
+    for i in range(0, obs_np.shape[0], block):
+        p = fwd(jnp.asarray(obs_np[i:i + block]))
+        jax.block_until_ready(p)
+        probs.append(np.asarray(p, dtype=np.float64))
+    probs = np.concatenate(probs, axis=0)                               # (N, A, 5)
+    return _apply_decision_rule(probs, rule, tau, m, n_assets)
+
+
+def operator_net_dependent(args):
+    """TASK_856 scope 2 — does the configured operator READ the learned checkpoint at all?
+    The 832/E5-exit2 vacuous-leg hole: a search operator with pw0 + true-env leaf + no v-hat
+    tail + a non-policy proposal scheme touches NONE of the net's learned heads, so grading a
+    checkpoint returns bit-identical (teacher-only) numbers regardless of the weights. Fail-loud
+    on that config rather than silently 'grade' it.
+      * policy-argmax replay -> True (it IS the policy net, under any decision rule).
+      * search -> True iff it uses the learned policy prior (prior_weight != 0 OR the
+        policy-prior proposal scheme), OR the learned model leaf (leaf_eval='model' => value
+        head + dynamics), OR the learned v-hat tail (true-env leaf WITH --leaf-vhat-tail)."""
+    if args.operator == "policy-argmax":
+        return True
+    uses_policy_prior = (args.prior_weight != 0.0
+                         or args.vector_proposal_scheme == "policy-prior")
+    uses_model_leaf = (args.leaf_eval == "model")
+    uses_vhat_tail = (args.leaf_eval == "true-env" and args.leaf_vhat_tail)
+    return bool(uses_policy_prior or uses_model_leaf or uses_vhat_tail)
 
 
 # =============================================================================
@@ -1174,8 +1273,12 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         _tgt, book_warm_op = book_target_signs(prices)
         guard_book_warm(book_warm_op, warm)
         obs_all = imp.encode_training_obs(prices, warm, n_decisions, env_cfg0)
-        policy_actions = imp.policy_argmax_actions(model, params, obs_all,
-                                                   int(env_cfg0.n_assets))
+        # TASK_856: decision rule over the policy marginals. 'argmax' (default) delegates
+        # VERBATIM to imprint.policy_argmax_actions (byte-identical to HEAD); 'threshold'/
+        # 'top-m' re-decode the same softmax marginals.
+        policy_actions = policy_decision_actions(
+            model, params, obs_all, int(env_cfg0.n_assets),
+            args.decision_rule, args.decision_tau, args.decision_m)
         # TASK_853: on the fixed-frame OOS panel a slot has NO real price at a decision row when
         # it is fully-inactive (flat-zero all window) OR partial and the row is BEFORE its
         # mid-window listing (left flat-zero by the framed loader). The env action mask
@@ -1298,6 +1401,37 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # Every inactive span lands in the JSON here AND on stdout at build time (task scope 2).
     if panel_info.get("panel_frame") is not None:
         result["panel_frame"] = panel_info["panel_frame"]
+    # TASK_856 scope 1: decision-rule provenance. Flag-gated (default 'argmax' adds NOTHING =>
+    # byte-identical to HEAD); a non-default rule records its knobs and rewrites the operator
+    # selection string so the artifact is self-describing.
+    if args.operator == "policy-argmax" and args.decision_rule != "argmax":
+        op = result["operator"]
+        op["decision_rule"] = args.decision_rule
+        op["decision_tau"] = args.decision_tau
+        op["decision_m"] = args.decision_m
+        op["selection"] = (
+            f"per-asset policy marginal decision-rule '{args.decision_rule}' "
+            f"(tau={args.decision_tau}, m={args.decision_m}; initial_inference, no search)")
+    # TASK_856 scope 2: net-dependence grade. Written for EVERY run (an ADDITIVE provenance key,
+    # not a scored quantity — scored keys + action arrays stay byte-identical vs HEAD): the 848
+    # replay and every pw>0 / model-leaf / v-hat-leaf operator record `true`; a VACUOUS operator
+    # (zero learned components — pw0 + true-env leaf + no v-hat tail + non-policy proposal)
+    # records `false` AND fires a loud WARNING (the read cannot grade a checkpoint — bit-identical
+    # teacher-only numbers regardless of weights, LEDGER 832/E5-exit2 item 2). run_queue consumers
+    # can assert on result["net_dependent"] without a KeyError.
+    result["net_dependent"] = operator_net_dependent(args)
+    if not result["net_dependent"]:
+        print("*" * 84)
+        print("*** WARNING [856]: net_dependent=false — the configured operator has ZERO learned "
+              "components")
+        print("*** (prior_weight=0, true-env leaf, no v-hat tail, non-policy proposal). This read "
+              "CANNOT")
+        print("*** grade a checkpoint: the result is teacher/heuristic-only and bit-identical "
+              "across")
+        print(f"*** weights. Operator={args.operator} prior_weight={args.prior_weight} "
+              f"leaf_eval={args.leaf_eval} vhat_tail={args.leaf_vhat_tail} "
+              f"proposal={args.vector_proposal_scheme}")
+        print("*" * 84)
     # ledger_row is rendered by the caller once the ACTUAL output path is known
     # (out_pointer) — a hardcoded pointer here would dangle for scheduled runs.
     return result
@@ -1915,6 +2049,21 @@ def main():
                          "replay: initial_inference -> per-asset argmax -> step_vector, no "
                          "search/dither). policy-argmax bypasses the proposal/search path "
                          "entirely (orthogonal to the TASK_847 --vector-proposal-* knobs)")
+    ap.add_argument("--decision-rule", choices=list(DECISION_RULES), default="argmax",
+                    dest="decision_rule",
+                    help="TASK_856: decision rule for the policy-argmax replay (policy-argmax "
+                         "operator only). 'argmax' (default) = byte-identical to HEAD (per-asset "
+                         "logit argmax); 'threshold' acts on the best non-HOLD action per asset "
+                         "iff its marginal mass > --decision-tau; 'top-m' acts on the "
+                         "--decision-m assets per step with the highest non-HOLD mass (forcing "
+                         "each onto its BEST NON-HOLD action, so they always trade), HOLD "
+                         "elsewhere")
+    ap.add_argument("--decision-tau", type=float, default=0.5, dest="decision_tau",
+                    help="TASK_856: threshold rule mass cutoff (act iff best non-HOLD marginal "
+                         "mass > tau; 'threshold' rule only)")
+    ap.add_argument("--decision-m", type=int, default=4, dest="decision_m",
+                    help="TASK_856: top-m rule trade count per step (M assets with the highest "
+                         "non-HOLD mass act; ~6%%x64 search trade rate; 'top-m' rule only)")
     ap.add_argument("--teacher-floor", dest="teacher_floor", action="store_true", default=False,
                     help="TASK_848: also walk 832's weight-native ladder teacher "
                          "(_make_weight_native_teacher_fn, same sentinels) on the SAME decision "
