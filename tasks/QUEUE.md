@@ -38,7 +38,9 @@ critical path = E5 imprint→ExIt.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_855_FLAG_HYGIENE_MINORS.md` | XS (filler) | Run-16 panel MINORs: `value_shift` inert-hazard fail-loud + 835 smoke-baseline metadata refresh (parity byte-for-byte on pre-existing keys). |
+| 1 | `tasks/TASK_856_DECISION_RULE_PROBE.md` | XS/S | **D23 (1)**: `--decision-rule {argmax,threshold,top-m}` on the 848 replay operator (extract the trade signal argmax rounds away) **+ the vacuous-grading fix** (`net_dependent` flag, warning on zero-learned-component operators). Default bit-identical. Real rule-grid sweep = planner post-ship. |
+| 2 | `tasks/TASK_857_VHAT_LEAF_DISTILL.md` | M | **D23 (2)**: counterfactual dataset (state, candidate, true R3 return) → value-head imprint (bar: 849 calibration +0.03 → ≥ +0.5) → `--leaf-eval vhat-distilled` = the SAME +8.02 search with a LEARNED leaf, deployable (no lookahead). First deployable-operator corridor read = planner post-ship. |
+| 3 | `tasks/TASK_855_FLAG_HYGIENE_MINORS.md` | XS (filler) | Run-16 panel MINORs: `value_shift` inert-hazard fail-loud + 835 smoke-baseline metadata refresh (parity byte-for-byte on pre-existing keys). |
 
 _Shipped 2026-07-22 factory run 15:_
 - _**TASK_853** (`task853-inactive-mask-oos-panel`, `c8ee701`) — `--panel-frame-from-checkpoint`:
