@@ -3,6 +3,16 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-24 (post factory run 17 — D23 queue CLEARED) — Ready = EMPTY; factory IDLE.**
+Run 17 shipped all three rows (856/857/855, below) and seeded **D24 OPEN** (frozen reward head
+caps the deployed-Q ranking — read-then-decide fork). Planner ruling 2026-07-24: both binding
+reads SCHEDULED on gpu-server per the pre-registrations — (a) the 856 rule-grid sweep (ep300
+ckpts × threshold-τ/top-m grid vs floor +0.424) and (b) the 857 real distill (3 seeds, warm from
+`ckpt_imprint_full`) → calibration (bar ≥ +0.5) → the FIRST deployable-operator corridor read
+(`--leaf-eval vhat-distilled`, floor +0.424 bar, +8.02 true-leaf ceiling reference), with a
+pre-distill baseline leg for attribution. Next Ready rows seed from those verdicts (D24 fork:
+reward-head co-distill = operator wall). D22 (minute backfill, ops) stays OPEN non-blocking.
+Prior grooming (run 15):
 **2026-07-22 (post factory run 15 + D21 ruling) — Ready = TASK_854; factory GREEN.** Run 15
 shipped **TASK_853** (fixed-frame OOS panel, below) and independently confirmed the D20 audit;
 the planner's 851 isolation ladder (6 variants, LEDGER 832/E5-inversion2) missed the +0.74 bar
@@ -36,11 +46,25 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-| # | Task | Size | Note |
-|---|------|------|------|
-| 1 | `tasks/TASK_856_DECISION_RULE_PROBE.md` | XS/S | **D23 (1)**: `--decision-rule {argmax,threshold,top-m}` on the 848 replay operator (extract the trade signal argmax rounds away) **+ the vacuous-grading fix** (`net_dependent` flag, warning on zero-learned-component operators). Default bit-identical. Real rule-grid sweep = planner post-ship. |
-| 2 | `tasks/TASK_857_VHAT_LEAF_DISTILL.md` | M | **D23 (2)**: counterfactual dataset (state, candidate, true R3 return) → value-head imprint (bar: 849 calibration +0.03 → ≥ +0.5) → `--leaf-eval vhat-distilled` = the SAME +8.02 search with a LEARNED leaf, deployable (no lookahead). First deployable-operator corridor read = planner post-ship. |
-| 3 | `tasks/TASK_855_FLAG_HYGIENE_MINORS.md` | XS (filler) | Run-16 panel MINORs: `value_shift` inert-hazard fail-loud + 835 smoke-baseline metadata refresh (parity byte-for-byte on pre-existing keys). |
+_EMPTY (2026-07-24). Both binding reads are planner-scheduled server runs; next rows seed from
+their verdicts + the D24 ruling._
+
+_Shipped 2026-07-24 factory run 17 (D23 queue cleared):_
+- _**TASK_856** (`task856-decision-rule-probe`, `861ea63`) — `--decision-rule {argmax,threshold,top-m}`
+  (+ `--decision-tau`/`--decision-m`) on the 848 replay operator + the `net_dependent` grading-hygiene
+  fix (fail-loud on zero-learned-component operators). Panel MAJOR: top-m originally vacuous in the
+  collapse regime (assigned full argmax incl. HOLD) — fixed to best NON-HOLD on selected assets,
+  mutation-tested. Default bit-identical. **Remainder → planner: the real rule-grid sweep (scheduled).**_
+- _**TASK_857** (`task857-vhat-leaf-distill`, `15a80f5`) — `experiments/857_vhat_distill/distill.py`
+  (counterfactual dataset via the 851 true-env leaf → value-head imprint, dynamics+value only) +
+  `--leaf-eval vhat-distilled` (deployable model-leaf on the distilled ckpt; `net_dependent: true`).
+  3 fix rounds; calibration instrument hardened (held-out per-state Pearson; deployed-Q leg;
+  `--shuffle-targets` falsification hook). **Decision-changing finding → D24 (OPEN): v̂-alone improves
+  (+0.233→+0.342 fixture) but deployed-Q (r_model+γ·v̂) does NOT lift — frozen 832 reward head is a
+  poor r0 estimator (corr≈0.27). Remainder → planner: real distill + corridor read (scheduled).**_
+- _**TASK_855** (`task855-flag-hygiene-minors`, `a19c528`) — `value_shift` inert-combo fail-loud
+  (sibling to 854's `value_scale`), ST11 pins both; 835 smoke baseline refreshed (additive keys only,
+  tiers-SHA unchanged)._
 
 _Shipped 2026-07-22 factory run 15:_
 - _**TASK_853** (`task853-inactive-mask-oos-panel`, `c8ee701`) — `--panel-frame-from-checkpoint`:

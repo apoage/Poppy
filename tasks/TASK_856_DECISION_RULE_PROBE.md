@@ -38,7 +38,9 @@ zero training spend to find out: the ep300 checkpoints already exist
    beats silently-vacuous — this exists because a 3-checkpoint grading run returned bit-identical
    teacher numbers.
 3. Fixture smoke: rules produce differing books on the fixture ckpt; property tests (τ→1 ⇒
-   argmax-when-confident-else-hold; M=64+τ=0 ⇒ argmax).
+   argmax-when-confident-else-hold; M=64 ⇒ threshold τ=0 — CORRECTED post-ship: the panel's
+   top-m fix forces selected assets to take the best NON-HOLD action, so top-m never reduces
+   to argmax; the original `M=64+τ=0 ⇒ argmax` identity no longer holds by design).
 
 ## Acceptance (gates)
 - (i) Default bit-identical (SHAs); selftest green; property tests.
