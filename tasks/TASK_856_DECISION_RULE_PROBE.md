@@ -11,6 +11,12 @@
 > the scheduled run — decides tuning-vs-architecture for ExIt2 distillation; (2) `results_fixture_smoke.json`
 > refresh (TASK_855 scope 2 — now also stale by the `net_dependent` key); (3) spec prose line 29
 > (`M=64+τ=0 ⇒ argmax`) is superseded by the top-m fix (now `⇒ threshold τ=0`) — correct the line.
+>
+> **READ (2026-07-24, LEDGER `856/rule-grid`): PARTIAL PASS — tuning, not architecture.** Best cell
+> top-m M=2: net@21 +0.635/+0.584/+0.084 (2/3 seeds above floor +0.424, 3/3 non-degenerate); M=4
+> replicates; threshold fires only at τ≈0.05 (thin marginals), τ≥0.20 argmax-degenerate. Signal is
+> real but seed-fragile (s0 never clears) and best cells stay BELOW the +0.839 imprint — ExIt2 still
+> hasn't improved on its warm start. Benchmark read only (D17). Remainders (1)+(3) DONE.
 
 **Status**: READY 2026-07-23 (D23 ruled — operator: "scope both to factory .. aswell as fix ..").
 **Size: XS/S. Risk: low** (eval operator extension + grading hygiene; zero training-path code).
