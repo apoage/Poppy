@@ -246,6 +246,20 @@ class SampledMuZeroVectorSearch:
                 f"candidate selection. Enable leaf_vhat_tail to route it through the v̂ tail, "
                 f"or drop --value-scale (leave it 1.0). Fail-loud per TASK_854 scope 2.")
 
+        # TASK_855 scope 1: `value_shift` shares the IDENTICAL silent-inert hazard as
+        # `value_scale` above — it is an additive shift on the MODEL value decode
+        # (`_categorical_to_scalar`: raw_value*value_scale + value_shift; inert default 0.0),
+        # so with the true-env leaf and no v̂ tail it never reaches candidate selection either.
+        # Fail-loud on that provably-inert combination; truthfully wired everywhere it DOES bite.
+        if (leaf_eval == 'true-env' and not leaf_vhat_tail
+                and float(value_shift) != 0.0):
+            raise ValueError(
+                f"value_shift={value_shift} has no effect with leaf_eval='true-env' and "
+                f"leaf_vhat_tail=False: the true-env leaf Q is a pure true-env rollout, so "
+                f"value_shift (which only shifts the MODEL value decode) never reaches "
+                f"candidate selection. Enable leaf_vhat_tail to route it through the v̂ tail, "
+                f"or drop --value-shift (leave it 0.0). Fail-loud per TASK_855 scope 1.")
+
         # env_config (TASK_851, true-env only) is a hashable chex.dataclass — static, like
         # every other jit wrapper in this codebase (e.g. jit_batch_step_vector). Canon calls
         # never pass it (stays None ⇒ one compiled variant, unaffected).

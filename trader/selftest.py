@@ -511,11 +511,22 @@ def self_tests():
     _ctor(leaf_eval='model', value_scale=2.0)                          # model leaf uses it — OK
     _ctor(leaf_eval='true-env', leaf_vhat_tail=False, value_scale=1.0)  # default — OK
 
+    # (f) TASK_855 scope 1: value_shift shares the identical silent-inert hazard (additive
+    #     shift on the model value decode; inert default 0.0) — fail-loud in the same
+    #     provably-inert true-env no-tail combo, silent at the 0.0 default.
+    try:
+        _ctor(leaf_eval='true-env', leaf_vhat_tail=False, value_shift=0.5)
+        raise AssertionError("value_shift!=0 with true-env no-tail must fail-loud (TASK_855)")
+    except ValueError:
+        pass
+    _ctor(leaf_eval='true-env', leaf_vhat_tail=False, value_shift=0.0)  # default — OK
+
     msgs.append("[ST11] TASK_854 prior-weight: pw=0 proposal+candidate-draw invariant to "
                 "policy_logits (pure-Q); pw=1.0 recovers today's policy term exactly "
                 "(bit-identical); linear/monotone interpolation at pw={0.25,0.5}; "
                 "value_scale fail-loud in the inert true-env no-tail combo, accepted where "
-                "it bites")
+                "it bites; value_shift fail-loud in the same combo, silent at default 0.0 "
+                "(TASK_855)")
 
     # 12. TASK_857 vhat-distilled deployable leaf + distill freeze partition. The deployable
     #     v̂-leaf read is eval_vector.py --leaf-eval vhat-distilled: MECHANICALLY the canon
