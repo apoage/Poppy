@@ -128,6 +128,21 @@
           "above_floor": null
         }
       },
+      "activity": {
+        "hold_pct": 0.646875,
+        "trades_per_step": 2.825,
+        "n_trades_total": 113,
+        "n_long": 67,
+        "n_short": 46,
+        "active_assets": 8,
+        "top5_traded": {
+          "ETH/USD": 20,
+          "DASH/USD": 20,
+          "XMR/USD": 16,
+          "XBT/USD": 14,
+          "ZEC/USD": 14
+        }
+      },
       "teacher_floor_inenv": null,
       "corridor_position": null
     },
@@ -203,6 +218,21 @@
           "floor": -0.5344029368104033,
           "ceiling": 37.44202529720721,
           "above_floor": null
+        }
+      },
+      "activity": {
+        "hold_pct": 0.646875,
+        "trades_per_step": 2.825,
+        "n_trades_total": 113,
+        "n_long": 67,
+        "n_short": 46,
+        "active_assets": 8,
+        "top5_traded": {
+          "ETH/USD": 20,
+          "DASH/USD": 20,
+          "XMR/USD": 16,
+          "XBT/USD": 14,
+          "ZEC/USD": 14
         }
       },
       "teacher_floor_inenv": null,

@@ -1160,6 +1160,13 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
         rets = pvs[1:] / np.maximum(pvs[:-1], 1e-8) - 1.0
     rets = np.where(np.isfinite(rets), rets, 0.0)
     denom = max(n_exec, 1)
+    # TASK_859 — trade-activity metadata from the SAME decoded action stream (no new compute,
+    # no extra pass): per-asset non-HOLD trade counts + long/short action split. Action codes
+    # (jax_trading_env: [0]Sell [1]Hold [2]Buy [3]LimitSell [4]LimitBuy) => long = Buy+LimitBuy,
+    # short = Sell+LimitSell. trades_per_asset[i] = n_exec - hold_count[i] (each decision assigns
+    # asset i exactly one action). Emitted for BOTH operators / all decision rules (this is the
+    # single decode path). Raw counts here; score_tier attaches symbols (needs col_symbols).
+    trades_per_asset = (n_exec - hold_count).astype(np.int64)
     return {
         "rets": rets, "n_exec": n_exec, "final_pv": float(pvs[-1]),
         "pct_hold_per_asset": 100.0 * hold_count / denom,
@@ -1167,6 +1174,9 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
         "action_hist_pct": (100.0 * action_hist / max(action_hist.sum(), 1)).tolist(),
         "avg_long": n_long_total / denom, "avg_short": n_short_total / denom,
         "bankrupt_at": bankrupt_at, "terminated_early_at": terminated_early_at,
+        "trades_per_asset": trades_per_asset,
+        "activity_n_long": int(action_hist[2] + action_hist[4]),
+        "activity_n_short": int(action_hist[0] + action_hist[3]),
     }
 
 
@@ -1192,6 +1202,29 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
             "floor": floor, "ceiling": ceil,
             "above_floor": (None if sh is None or floor is None else bool(sh >= floor)),
         }
+    # TASK_859 — self-describing trade-activity block (additive; pre-existing keys untouched,
+    # so the SHA over the old key set is unchanged). Built from rollout's decoded action stream:
+    # per-asset non-HOLD trade counts + the long/short action split. hold_pct is a FRACTION
+    # (0..1) = pct_hold_agg/100 by construction; trades_per_step is the mean non-HOLD actions per
+    # decision. Post-856-fix a top-m M run trades M assets every step => trades_per_step == M; a
+    # 100%-HOLD run => hold_pct == 1.0, n_trades_total == 0 (acceptance ii).
+    tpa = np.asarray(rep["trades_per_asset"], dtype=np.int64)
+    n_exec = rep["n_exec"]
+    denom = max(n_exec, 1)
+    n_assets = len(col_symbols)
+    n_trades_total = int(tpa.sum())
+    per_asset_traded = {sym: int(c) for sym, c in zip(col_symbols, tpa)}
+    top5 = dict(sorted(((s, c) for s, c in per_asset_traded.items() if c > 0),
+                       key=lambda kv: -kv[1])[:5])
+    activity = {
+        "hold_pct": 1.0 - n_trades_total / (denom * n_assets),
+        "trades_per_step": n_trades_total / denom,
+        "n_trades_total": n_trades_total,
+        "n_long": int(rep["activity_n_long"]),
+        "n_short": int(rep["activity_n_short"]),
+        "active_assets": int((tpa >= 1).sum()),
+        "top5_traded": top5,
+    }
     return {
         "sharpe_full": _f(_sharpe(rets, period_minutes)),
         "steps_completed": rep["n_exec"],
@@ -1206,6 +1239,7 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
         "bankrupt_at": rep["bankrupt_at"],
         "terminated_early_at": rep["terminated_early_at"],
         "per_window": per_window,
+        "activity": activity,
     }
 
 

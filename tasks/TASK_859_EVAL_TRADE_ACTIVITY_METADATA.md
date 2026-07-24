@@ -1,5 +1,14 @@
 # TASK_859 — Trade-activity metadata in eval result JSONs (XS filler)
 
+> **STATUS (2026-07-24): SHIPPED as `task859-eval-activity-metadata`** — additive `activity` block
+> (`hold_pct`, `trades_per_step`, `n_trades_total`, `n_long`, `n_short`, `active_assets`, `top5_traded`)
+> in every Stage-4 eval result JSON, both operators + all decision rules, from the existing decoded
+> action stream (no new compute). Pre-existing scored keys byte-identical (diff 30/0; tiers-SHA + old-keyset
+> SHA unchanged; 855 discipline); selftest 12/12. Verified by a small panel (correctness + regression):
+> NO findings at either lens. One by-design NIT → planner: `n_long`/`n_short` count action-code intent
+> (a Sell closing a long buckets as "short"), not net-position direction — as the spec's "decoded action
+> stream" wording intends.
+
 **Status**: READY 2026-07-24 (planner-seeded instrument hygiene; operator-approved with 858).
 **Size: XS. Risk: low** (additive result keys only; zero scored-value changes — the 855 discipline).
 
