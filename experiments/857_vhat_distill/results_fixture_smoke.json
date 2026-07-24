@@ -1,0 +1,278 @@
+{
+  "tag": "fixture-smoke",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2025-09-14",
+    "2025-12-12"
+  ],
+  "bar_minutes": 240,
+  "n_assets": 8,
+  "n_panel_rows": 111,
+  "warm": 31,
+  "start_row": 60,
+  "n_decisions": 30,
+  "warm_start": "experiments/832_linear_imprint/ckpt_smoke",
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "dataset": {
+    "mechanism": "true-env-leaf counterfactuals (851 _true_env_leaf_values, tail OFF): teacher + true-env-leaf-greedy walks x {gross,net@21}; K dithered-book candidates (hb=3.0) + policy-argmax; G=r0+gamma*V (R=3)",
+    "n_decisions_total": 120,
+    "candidates_per_decision": 9,
+    "n_tuples_total": 1080,
+    "n_train_decisions": 108,
+    "n_heldout_decisions": 12,
+    "passes": [
+      {
+        "policy": "teacher",
+        "cost": 0,
+        "n_decisions": 30
+      },
+      {
+        "policy": "teacher",
+        "cost": 21,
+        "n_decisions": 30
+      },
+      {
+        "policy": "search",
+        "cost": 0,
+        "n_decisions": 30
+      },
+      {
+        "policy": "search",
+        "cost": 21,
+        "n_decisions": 30
+      }
+    ],
+    "storage": "RAM (numpy); no disk I/O in the train loop (efficiency invariant)"
+  },
+  "imprint": {
+    "recipe": "BC value regression v\u0302(g(s,a))->true R-step return; dynamics+value gradients only, policy/reward/encoder frozen (optax multi_transform); PopArt-normalized two-hot targets (shipped value-loss form)",
+    "config": {
+      "iters": 80,
+      "batch_size": 64,
+      "lr": 0.001,
+      "discount": 0.997,
+      "leaf_rollout_r": 3,
+      "vector_k": 8,
+      "sims": 8,
+      "hold_bias": 3.0,
+      "dither_scale": 1.0,
+      "state_dim": 64,
+      "h_cycles": 4,
+      "l_cycles": 6,
+      "seed": 0
+    },
+    "history": {
+      "value_ce_first": 5.364241898059845,
+      "value_ce_last": 2.2083633840084076,
+      "value_ce_head_mean": 3.7822735011577606,
+      "value_ce_tail_mean": 2.2173445969820023,
+      "all_finite": true,
+      "decreased": true,
+      "trajectory": [
+        5.364241898059845,
+        3.98699089884758,
+        3.487836107611656,
+        3.169362351298332,
+        2.9029362499713898,
+        2.765894889831543,
+        2.6986466348171234,
+        2.688591241836548,
+        2.567603573203087,
+        2.5628802329301834,
+        2.5201968997716904,
+        2.5034209191799164,
+        2.4545144736766815,
+        2.433951884508133,
+        2.4154984205961227,
+        2.4019891768693924,
+        2.3424869179725647,
+        2.354643374681473,
+        2.3473094403743744,
+        2.3577995896339417,
+        2.34227691590786,
+        2.344710722565651,
+        2.3314721137285233,
+        2.330415427684784,
+        2.3498179763555527,
+        2.321336567401886,
+        2.300684303045273,
+        2.2881478667259216,
+        2.291781187057495,
+        2.2825752049684525,
+        2.3006508499383926,
+        2.29691281914711,
+        2.2786040753126144,
+        2.2850804328918457,
+        2.2831906527280807,
+        2.2623668760061264,
+        2.2498108595609665,
+        2.2736930400133133,
+        2.275351792573929,
+        2.271092340350151,
+        2.271328404545784,
+        2.2638663351535797,
+        2.2748717963695526,
+        2.256003901362419,
+        2.2538277208805084,
+        2.239480748772621,
+        2.2448820173740387,
+        2.250523865222931,
+        2.24038864672184,
+        2.231274276971817,
+        2.2375364154577255,
+        2.2299202382564545,
+        2.242162048816681,
+        2.256106436252594,
+        2.23688106238842,
+        2.243122845888138,
+        2.2507051825523376,
+        2.2254525274038315,
+        2.2370626777410507,
+        2.2287562042474747,
+        2.2412361204624176,
+        2.241603821516037,
+        2.236729845404625,
+        2.240848630666733,
+        2.2446904480457306,
+        2.2345860451459885,
+        2.2372608333826065,
+        2.2414849251508713,
+        2.250239208340645,
+        2.2557572722434998,
+        2.262578994035721,
+        2.2402454912662506,
+        2.226580858230591,
+        2.2220672965049744,
+        2.2264366149902344,
+        2.218957856297493,
+        2.2128492444753647,
+        2.2264270782470703,
+        2.2201254218816757,
+        2.2083633840084076
+      ],
+      "n_train_leaves": 16,
+      "n_freeze_leaves": 188,
+      "n_tuples": 972,
+      "target_norm_stats": {
+        "mean": 9.811463996811653e-08,
+        "std": 1.0,
+        "min": -3.729646921157837,
+        "max": 5.563576698303223
+      }
+    },
+    "freeze_invariants": {
+      "policy_head_frozen": true,
+      "reward_head_frozen": true,
+      "dynamics_next_state_moved": true,
+      "value_head_moved": true
+    }
+  },
+  "calibration": {
+    "instrument": "849 calibration column = MEAN PER-STATE Pearson of the predictor vs the true R-step return, across candidates WITHIN a state, meaned over HELD-OUT states (mean_per_state_pearson = PRIMARY; pooled_pearson = inflated secondary). Two predictors: 'vhat_alone' (the spec's literal (i)) and 'deployed_q' = r_model+gamma*v_hat (what the leaf actually ranks by \u2014 the honest deployment predictor + the one that tracks ranking-transfer). Real-leg bar +0.5 on HELD-OUT per-state; graded on the REAL panel by the planner.",
+    "headline_statistic": "mean_per_state_pearson on HELD-OUT states",
+    "bar_real_leg": 0.5,
+    "vhat_alone": {
+      "held_out": {
+        "pre": {
+          "mean_per_state_pearson": 0.23305550501033112,
+          "pooled_pearson": 0.34947207022132026,
+          "n_states": 12,
+          "n_pairs": 108,
+          "n_states_finite": 8
+        },
+        "post": {
+          "mean_per_state_pearson": 0.3416432851254595,
+          "pooled_pearson": 0.3918573665060877,
+          "n_states": 12,
+          "n_pairs": 108,
+          "n_states_finite": 8
+        },
+        "per_state_delta": 0.10858778011512837
+      },
+      "full": {
+        "pre": {
+          "mean_per_state_pearson": 0.23002240406890873,
+          "pooled_pearson": 0.0579623067946001,
+          "n_states": 120,
+          "n_pairs": 1080,
+          "n_states_finite": 48
+        },
+        "post": {
+          "mean_per_state_pearson": 0.656926053130141,
+          "pooled_pearson": 0.8331461916859868,
+          "n_states": 120,
+          "n_pairs": 1080,
+          "n_states_finite": 48
+        }
+      }
+    },
+    "deployed_q": {
+      "note": "r_model + gamma*v_hat \u2014 the DEPLOYED model-leaf ranking quantity; this (not vhat_alone) is what the (ii) fail-closed-safe floor keys on (see deployable_ranking_gate). It does NOT improve here (frozen reward head) and is within-noise/seed-dependent at fixture scale \u2014 the (ii) floor only rejects strong sabotage, it is NOT a lift/positive-validation claim.",
+      "held_out": {
+        "pre": {
+          "mean_per_state_pearson": 0.12504008567682284,
+          "pooled_pearson": 0.3323870711548922,
+          "n_states": 12,
+          "n_pairs": 108,
+          "n_states_finite": 8
+        },
+        "post": {
+          "mean_per_state_pearson": 0.1152504240798882,
+          "pooled_pearson": 0.3687637524613363,
+          "n_states": 12,
+          "n_pairs": 108,
+          "n_states_finite": 8
+        },
+        "per_state_delta": -0.009789661596934646
+      },
+      "full": {
+        "pre": {
+          "mean_per_state_pearson": 0.15406818912443532,
+          "pooled_pearson": 0.3966687538882776,
+          "n_states": 120,
+          "n_pairs": 1080,
+          "n_states_finite": 48
+        },
+        "post": {
+          "mean_per_state_pearson": 0.479572741793804,
+          "pooled_pearson": 0.7990589735192545,
+          "n_states": 120,
+          "n_pairs": 1080,
+          "n_states_finite": 48
+        }
+      }
+    },
+    "deployment_predictor_gap": {
+      "vhat_alone_held_out_per_state_post": 0.3416432851254595,
+      "deployed_q_held_out_per_state_post": 0.1152504240798882,
+      "gap": 0.2263928610455713,
+      "reason": "frozen 832 reward head is a poor r0 estimator; drags the deployable ranking below the v\u0302-in-isolation calibration. Reward head = candidate next locus (planner decision; TASK_857 does not touch it)."
+    },
+    "improved_held_out_per_state": true
+  },
+  "deployable_ranking_gate": {
+    "instrument": "deployed-Q (r_model+gamma*v_hat) held-out MEAN PER-STATE Pearson vs the true-env per-candidate return G \u2014 the DEPLOYED leaf's ranking quantity. This MOVES with the value head (target-shuffle sabotage collapses it to ~-0.5), unlike argmax-choice agreement.",
+    "gate": "deployed_q held-out mean-per-state Pearson is finite AND > -0.25. FAIL-CLOSED-SAFE non-degeneracy floor: it rejects STRONG anti-correlation / --shuffle-targets sabotage (~-0.5) but is NOT a positive validation of deployed-ranking lift. The LEGITIMATE distill's absolute deployed-Q is within-noise and seed-dependent at fixture scale ({+0.115,-0.014,-0.119,+0.491} across seeds 0-3; frozen reward head gives no reliable lift) \u2014 so the floor sits below that band and above sabotage. The deployed-ranking VERDICT is the planner's real-data corridor read.",
+    "deployed_q_held_out_per_state": 0.1152504240798882,
+    "floor": -0.25,
+    "passes_floor": true,
+    "seed_note": "absolute deployed-Q is within-noise/seed-dependent at fixture scale; this floor is fail-closed-safe (rejects sabotage), NOT a lift claim.",
+    "real_leg_bar": ">=0.70 argmax-choice agreement on the real panel (planner's leg)"
+  },
+  "ranking_transfer": {
+    "instrument": "ARGMAX-choice agreement: v\u0302-leaf (model-leaf == eval_vector --leaf-eval vhat-distilled) vs true-env-leaf SELECTED-VECTOR agreement on held-out states (same rng => same candidate set; only the leaf differs). REPORTED DIAGNOSTIC ONLY \u2014 the spec's literal (ii); the >=70% bar is the planner's real-data leg. NOT discriminative at fixture scale: shared rng draws + the frozen reward head dominate SELECTION, so a good and a degenerate leaf both score ~58% (the fail-closed-safe (ii) floor is deployable_ranking_gate). chance = 100/M is an informational bound, not the acceptance gate.",
+    "pct_agree": 58.333333333333336,
+    "n_states": 12,
+    "chance_pct": 11.11111111111111,
+    "n_candidates": 9,
+    "discriminative": false
+  },
+  "deployable_read": {
+    "note": "the graded corridor read is a SCHEDULED planner run: eval_vector.py --operator search --leaf-eval vhat-distilled on the real panel vs floor +0.424 (first) / +8.02 true-leaf ceiling (honest reference). net_dependent=true (the v\u0302 leaf is the learned component, even at pw0).",
+    "eval_command": "python experiments/835_stage4_eval/eval_vector.py --operator search --leaf-eval vhat-distilled --checkpoint <distilled_ckpt>"
+  },
+  "checkpoint": "/home/lukas/Trader/experiments/857_vhat_distill/ckpt_smoke"
+}

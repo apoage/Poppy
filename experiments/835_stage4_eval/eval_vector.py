@@ -240,12 +240,15 @@ def operator_net_dependent(args):
       * policy-argmax replay -> True (it IS the policy net, under any decision rule).
       * search -> True iff it uses the learned policy prior (prior_weight != 0 OR the
         policy-prior proposal scheme), OR the learned model leaf (leaf_eval='model' => value
-        head + dynamics), OR the learned v-hat tail (true-env leaf WITH --leaf-vhat-tail)."""
+        head + dynamics), OR the learned v-hat tail (true-env leaf WITH --leaf-vhat-tail).
+      * TASK_857: leaf_eval='vhat-distilled' (the deployable v̂-leaf — the distilled value
+        head IS the leaf, no lookahead) -> True. Mechanically the model leaf (value head +
+        dynamics), so it reads the learned checkpoint exactly as leaf_eval='model' does."""
     if args.operator == "policy-argmax":
         return True
     uses_policy_prior = (args.prior_weight != 0.0
                          or args.vector_proposal_scheme == "policy-prior")
-    uses_model_leaf = (args.leaf_eval == "model")
+    uses_model_leaf = (args.leaf_eval in ("model", "vhat-distilled"))
     uses_vhat_tail = (args.leaf_eval == "true-env" and args.leaf_vhat_tail)
     return bool(uses_policy_prior or uses_model_leaf or uses_vhat_tail)
 
@@ -1023,7 +1026,17 @@ def check_checkpoint_arch(ckpt_path, args):
 
 def build_search(model, args, n_assets):
     """Mirror of train_jax_fast.py:375-385 — the shipped Stage-2/3 search operator.
-    ``vector_gumbel_scale_eval`` is reserved/unwired upstream and is NOT touched here."""
+    ``vector_gumbel_scale_eval`` is reserved/unwired upstream and is NOT touched here.
+
+    TASK_857: ``--leaf-eval vhat-distilled`` is the DEPLOYABLE v̂-leaf read (the distilled
+    value head IS the leaf, no true-env lookahead). Mechanically it is the canon MODEL leaf
+    (value head + dynamics via mctx's recurrent inference), so the search constructor is fed
+    ``leaf_eval='model'`` — the search is BIT-IDENTICAL to a ``--leaf-eval model`` run on the
+    same checkpoint. The distinction is provenance only: it names the counterfactual-distilled
+    read and (via ``operator_net_dependent``) records net_dependent=true even at prior_weight=0
+    (the v̂ leaf is the learned component). sampled_search.py is UNTOUCHED — the new mode lives
+    entirely in this operator harness (task scope 3)."""
+    search_leaf_eval = "model" if args.leaf_eval == "vhat-distilled" else args.leaf_eval
     return create_sampled_vector_search(
         model, n_assets=n_assets, n_actions_per_asset=N_ACTIONS_PER_ASSET,
         num_samples=args.vector_k, num_simulations=args.sims,
@@ -1044,7 +1057,8 @@ def build_search(model, args, n_assets):
         # flag or the measurement is train/eval-asymmetric (default OFF = canon).
         per_node_resampling=args.vector_per_node_resample,
         # TASK_851: search leaf evaluator (default OFF = model leaf, canon).
-        leaf_eval=args.leaf_eval,
+        # TASK_857: 'vhat-distilled' -> 'model' here (mechanically the model leaf; see docstring).
+        leaf_eval=search_leaf_eval,
         leaf_rollout_r=args.leaf_rollout_r,
         leaf_vhat_tail=args.leaf_vhat_tail,
     )
@@ -2133,13 +2147,17 @@ def main():
                     dest="vector_rebalance_deadband",
                     help="TASK_840: re-trim only when |target-current| exceeds this "
                          "(sentinel <0 => 0.1*w_unit)")
-    ap.add_argument("--leaf-eval", type=str, default="model", choices=["model", "true-env"],
+    ap.add_argument("--leaf-eval", type=str, default="model",
+                    choices=["model", "true-env", "vhat-distilled"],
                     dest="leaf_eval",
-                    help="TASK_851: search leaf evaluator — MUST match the flag the "
+                    help="TASK_851/857: search leaf evaluator — MUST match the flag the "
                          "checkpoint's evaluation is meant to measure (default 'model' = "
                          "canon learned leaf, bit-identical; 'true-env' replaces the "
                          "per-candidate leaf with a true-env truncated rollout, the E1 "
-                         "+5.29 operator, LEDGER 849/leaf)")
+                         "+5.29 operator, LEDGER 849/leaf; 'vhat-distilled' (TASK_857) = the "
+                         "DEPLOYABLE v̂ leaf — mechanically the model leaf, bit-identical to "
+                         "'model' search, but flags the counterfactual-distilled read and is "
+                         "net_dependent=true even at prior_weight=0)")
     ap.add_argument("--leaf-rollout-r", type=int, default=3, dest="leaf_rollout_r",
                     help="TASK_851: further HOLD steps in the true-env leaf rollout past "
                          "the candidate action (R; default 3; true-env only)")

@@ -1,5 +1,21 @@
 # TASK_857 — Counterfactual value imprint → v̂-leaf search (D23 step 2; the deployable-search path)
 
+> **STATUS (2026-07-24): SHIPPED as `task857-vhat-leaf-distill`.** Deployable `--leaf-eval vhat-distilled`
+> operator (= the canon model leaf on a distilled ckpt; `sampled_search.py` untouched, `net_dependent:true`)
+> + `experiments/857_vhat_distill/distill.py` counterfactual value-head imprint (dynamics+value only,
+> policy/reward frozen). Canon + `model`/`true-env` leaf modes BIT-IDENTICAL; selftest 12/12. Medium panel
+> across THREE fix rounds (regression clean throughout): fixed pooled-vs-849-instrument calibration,
+> v̂-alone-vs-deployed-Q measurement, two hollow gates, and a seed-fragile floor → now a fail-closed-safe
+> deployed-Q floor (> −0.25; `--shuffle-targets` FAILS + writes nothing, normal PASSES). Fixture acceptance:
+> (i) 849 instrument v̂-alone +0.2331→+0.3416; (ii) deployed-Q floor +0.1153 > −0.25.
+> **LOAD-BEARING FINDING → DECISIONS D24**: v̂ improves on its own axis but the DEPLOYED-Q ranking
+> (`r_model+γ·v̂`) does NOT lift at fixture scale (frozen 832 reward head caps it) — clearing the v̂-alone
+> ≥+0.5 bar does not alone prove the deployable operator ranks like the true env.
+> **Remainder → planner**: the real-data corridor read of vhat-distilled (warm-start `ckpt_imprint_full`)
+> vs floor +0.424 / +8.02 ceiling — the first DEPLOYABLE-operator corridor read; D24 = the read-then-decide
+> fork on co-distilling the reward head. Carried MINORs: (i)-before-(ii) assert order (fail-closed-safe;
+> (ii) independently bites); the floor can't distinguish good-vs-noop at fixture scale (frozen-reward-head limit).
+
 **Status**: READY 2026-07-23 (D23 ruled — operator; D19 opt (b/c) with exact targets).
 **Size: M. Risk: medium** (new offline training recipe for the VALUE head + a v̂-leaf eval mode;
 the policy/canon training paths untouched; flag-gated everywhere).

@@ -23,6 +23,10 @@ and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gat
       invariant to policy_logits (pure-Q/E1); pw=1.0 => bit-identical to today; linear
       interpolation between; value_scale fail-loud in the inert true-env no-tail combo
       (JAX; same import guard as ST8)
+  ST12 TASK_857 vhat-distilled deployable leaf: net_dependent True at pw0 (the v̂ leaf is the
+      learned component) vs the vacuous true-env-no-tail pw0 (False); build_search maps
+      'vhat-distilled' to the canon model leaf (bit-identical search); distill freeze partition
+      trains dynamics+value only (JAX; same import guard as ST8)
 """
 
 import numpy as np
@@ -512,4 +516,82 @@ def self_tests():
                 "(bit-identical); linear/monotone interpolation at pw={0.25,0.5}; "
                 "value_scale fail-loud in the inert true-env no-tail combo, accepted where "
                 "it bites")
+
+    # 12. TASK_857 vhat-distilled deployable leaf + distill freeze partition. The deployable
+    #     v̂-leaf read is eval_vector.py --leaf-eval vhat-distilled: MECHANICALLY the canon
+    #     model leaf (value head + dynamics, no lookahead), so it must (a) grade as
+    #     net_dependent even at prior_weight=0 (the v̂ leaf IS the learned component) while the
+    #     truly-vacuous true-env-no-tail pw0 config stays False, and (b) build a search that is
+    #     BIT-IDENTICAL to --leaf-eval model on the same checkpoint/rng. (c) the offline distill
+    #     freezes everything except the dynamics + value-head leaves. Reuses ST9's tiny dummy
+    #     model / obs / mask; same JAX guard (ST8) so it can only ever SKIP, never red numpy.
+    import os as _os
+    import argparse as _argparse
+    import importlib.util as _ilu
+    _repo = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+    def _load_by_path(name, relpath):
+        spec = _ilu.spec_from_file_location(name, _os.path.join(_repo, relpath))
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    ev = _load_by_path("eval_vector857", "experiments/835_stage4_eval/eval_vector.py")
+    di = _load_by_path("distill857", "experiments/857_vhat_distill/distill.py")
+
+    # (a) net-dependence: vhat-distilled True even at pw0 / non-policy proposal; the vacuous
+    #     true-env-no-tail pw0 config is the ONE False (the 856 grading hole) — regression guard
+    #     that the new mode is genuinely distinguished from it.
+    def _nda(**kw):
+        d = dict(operator="search", prior_weight=0.0, vector_proposal_scheme="dithered-book",
+                 leaf_eval="model", leaf_vhat_tail=True)
+        d.update(kw)
+        return ev.operator_net_dependent(_argparse.Namespace(**d))
+    assert _nda(leaf_eval="vhat-distilled", leaf_vhat_tail=False) is True, \
+        "vhat-distilled must grade net_dependent=True even at prior_weight=0 (the v̂ leaf is learned)"
+    assert _nda(leaf_eval="true-env", leaf_vhat_tail=False) is False, \
+        "true-env no-tail pw0 dithered-book must stay net_dependent=False (856 vacuous guard)"
+    assert _nda(leaf_eval="model") is True and \
+        _nda(leaf_eval="true-env", leaf_vhat_tail=True) is True, \
+        "model leaf and true-env WITH v̂ tail must both grade net_dependent=True"
+
+    # (b) build_search('vhat-distilled') is bit-identical to build_search('model'): it maps to
+    #     the model leaf in the sampled_search constructor, and the search selects the same
+    #     vector + visit probs on the fixed ST9 dummy model / rng.
+    class _Shim:                                   # create_sampled_vector_search reads model.apply
+        apply = staticmethod(_dummy_model)
+
+    def _bargs(leaf_eval):
+        return _argparse.Namespace(
+            vector_k=Kv9, sims=8, discount=0.99, gumbel_scale=3.0, value_scale=1.0,
+            value_shift=0.0, vector_hold_bias=3.0, vector_dither_scale=1.0,
+            vector_proposal_scheme="dithered-book", vector_proposal_temp=1.0,
+            vector_proposal_explore_slots=2, prior_weight=1.0,
+            vector_per_node_resample=False, leaf_eval=leaf_eval, leaf_rollout_r=3,
+            leaf_vhat_tail=True)
+    s_model = ev.build_search(_Shim(), _bargs("model"), nA9)
+    s_vhat = ev.build_search(_Shim(), _bargs("vhat-distilled"), nA9)
+    assert s_vhat.leaf_eval == "model", \
+        "build_search must map leaf_eval='vhat-distilled' to the canon 'model' leaf"
+    avm, _, vpm, _ = s_model({}, jax.random.PRNGKey(7), obs9, mask9, book9, True)
+    avv, _, vpv, _ = s_vhat({}, jax.random.PRNGKey(7), obs9, mask9, book9, True)
+    assert np.array_equal(np.asarray(avm), np.asarray(avv)), \
+        "vhat-distilled search must select the SAME vector as the model-leaf search (bit-identical)"
+    assert np.allclose(np.asarray(vpm), np.asarray(vpv)), \
+        "vhat-distilled search visit_probs must match the model-leaf search (bit-identical)"
+
+    # (c) distill freeze partition: dynamics + value-head trainable; encoder / reasoning refiners
+    #     / policy output / reward (scalar action_embedding) frozen.
+    assert di._is_trainable(("dynamics_dense1", "kernel"))
+    assert di._is_trainable(("vector_action_embedding", "vec_act_proj", "kernel"))
+    assert di._is_trainable(("trm", "reasoning", "value_head_2", "kernel"))
+    assert not di._is_trainable(("trm", "encoder", "global_state_projection", "kernel"))
+    assert not di._is_trainable(("trm", "reasoning", "output_refiner_h0_2", "kernel"))
+    assert not di._is_trainable(("trm", "reasoning", "latent_refiner_h0_l0_1", "kernel"))
+    assert not di._is_trainable(("action_embedding", "embedding"))
+
+    msgs.append("[ST12] TASK_857 vhat-distilled: net_dependent True at pw0 (v̂ leaf is learned) "
+                "while the vacuous true-env-no-tail pw0 stays False; build_search maps it to the "
+                "canon model leaf (bit-identical selected vector + visit probs vs --leaf-eval "
+                "model); distill freeze partition trains dynamics+value only")
     return msgs

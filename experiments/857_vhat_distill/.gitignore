@@ -1,0 +1,7 @@
+# Compiled artifacts — the importlib load of 832's imprint.py / 830's corridor.py writes here.
+__pycache__/
+*.pyc
+# Distilled value-head checkpoints (flax checkpoint dirs; smoke + scheduled-run outputs
+# stay local — rebuild the fixture ckpt with `python experiments/857_vhat_distill/distill.py`).
+ckpt_smoke/
+ckpt_distilled/
