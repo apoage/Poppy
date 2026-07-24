@@ -46,8 +46,18 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_EMPTY (2026-07-24). Both binding reads are planner-scheduled server runs; next rows seed from
-their verdicts + the D24 ruling._
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_858_MINUTE_BACKFILL.md` | S/M | **D22 RULED (operator, 2026-07-24)**: guarded append-only minute-table backfill 2025-10→present for the 64-universe. THE ONLY SANCTIONED WRITE to `trading_data.db` — backup gate + conflict-abort + coverage report are the load-bearing scope. Primary = Kraken quarterly CSV dumps via the existing importer (the fetcher's OHLC endpoint caps at ~720 candles); if dumps can't be acquired non-interactively, STOP after the fixture+append-only gates and report the download requirement. Unblocks the binding OOS reads (848/853 instruments already shipped). |
+| 2 | `tasks/TASK_859_EVAL_TRADE_ACTIVITY_METADATA.md` | XS (filler) | Additive `activity` block (hold_pct, trades_per_step, per-asset counts) in every eval result JSON; pre-existing keys byte-identical (855 discipline). Born from the 856 grid compile having to infer trade activity indirectly. |
+
+_Independence note: 858 touches the data pipeline (`tools/`), 859 touches `eval_vector.py` result
+metadata — zero file overlap with each other AND with the in-flight 857 server runs (which only
+read the DB and write to `runs/`). 858's real-ingest leg (iii) runs on the WORKSTATION (the DB
+source of record lives here); do not run it on the server DB._
+
+_Context: the 857 binding reads (3 distill+corridor chains) are running on gpu-server overnight;
+their verdicts + the D24 fork are planner lane, not queue rows._
 
 _Shipped 2026-07-24 factory run 17 (D23 queue cleared):_
 - _**TASK_856** (`task856-decision-rule-probe`, `861ea63`) — `--decision-rule {argmax,threshold,top-m}`
