@@ -1,5 +1,18 @@
 # TASK_858 — Guarded minute-table backfill 2025-10 → present (D22 ruled: option (a))
 
+> **STATUS (2026-07-24): SHIPPED as `task858-minute-backfill` (tool + guards; real ingest = operator remainder).**
+> `tools/backfill_minute.py` — the single sanctioned append-only write path to `trading_data.db`. Acceptance
+> (i) fixture leg 17/17 + (ii) append-only proof PASS (both mutation-tested); (iii) real ingest STOPPED per spec
+> (no Kraken dumps on disk, not acquirable non-interactively); (iv) 848 OOS smoke gated on (iii). Verified by a
+> 4-member panel (correctness + fail-closed + regression + flow-verifier); a fix round closed **2 BLOCKER + 2
+> MAJOR + 1 MINOR** in the guard architecture (commit-before-guards → atomic; whole-window proof → subset proof;
+> mtime-only backup gate → hardened; 11/64 unreachable dump spellings → `_canon_key` routing, 64 distinct/zero
+> collisions; unmatched-file reporting) — both re-verify lenses then returned no findings. selftest 12/12.
+> **REMAINDER (operator, unblocks iii + the binding OOS reads)**: download Kraken OHLCVT CSV dumps
+> (Q4-2025…Q3-2026, `{PAIR}_1.csv`), take a fresh DB backup, then run `backfill_minute.py run …` ON THE
+> WORKSTATION (see CHANGELOG for the exact command). Residuals documented (backup gate = freshness/size
+> heuristic not content proof; `--tail-topup` opt-in writes outside the proof; bad candle halts the run).
+
 **Status**: READY 2026-07-24 (D22 RULED — operator: "ok prepare factory"; option (a) minute backfill).
 **Size: S/M. Risk: medium** — this task WRITES to `trading_data.db`, the source-of-record that is
 otherwise read-only by standing constraint. That is exactly why it was an operator wall (D22);
