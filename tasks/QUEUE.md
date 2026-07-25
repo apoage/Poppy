@@ -46,10 +46,20 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-| # | Task | Size | Note |
-|---|------|------|------|
-| 1 | `tasks/TASK_858_MINUTE_BACKFILL.md` | S/M | **D22 RULED (operator, 2026-07-24)**: guarded append-only minute-table backfill 2025-10→present for the 64-universe. THE ONLY SANCTIONED WRITE to `trading_data.db` — backup gate + conflict-abort + coverage report are the load-bearing scope. Primary = Kraken quarterly CSV dumps via the existing importer (the fetcher's OHLC endpoint caps at ~720 candles); if dumps can't be acquired non-interactively, STOP after the fixture+append-only gates and report the download requirement. Unblocks the binding OOS reads (848/853 instruments already shipped). |
-| 2 | `tasks/TASK_859_EVAL_TRADE_ACTIVITY_METADATA.md` | XS (filler) | Additive `activity` block (hold_pct, trades_per_step, per-asset counts) in every eval result JSON; pre-existing keys byte-identical (855 discipline). Born from the 856 grid compile having to infer trade activity indirectly. |
+_EMPTY (2026-07-25, post factory run 18). Next rows seed from the 857 corridor verdict (D24 fork —
+reward-head co-distill is the leading candidate, pending s2 + operator ruling) and from the
+Kraken-dump acquisition (858 real-ingest remainder → unblocks the OOS battery)._
+
+_Shipped 2026-07-24 factory run 18:_
+- _**TASK_858** (`task858-minute-backfill`, `19f955c`) — `tools/backfill_minute.py`, the single
+  sanctioned append-only write path to `trading_data.db`. Panel closed 2 BLOCKER + 2 MAJOR in the
+  guard architecture (commit-before-guards → atomic; false-firing append-only proof → subset proof;
+  fail-open backup gate → hardened; 11/64 unreachable dump spellings → `_canon_key`). Real ingest
+  correctly STOPPED (no dumps on disk). **Remainder → operator/planner: acquire Kraken OHLCVT
+  quarterly dumps (Q4-2025…Q3-2026), fresh DB backup, run on the WORKSTATION.**_
+- _**TASK_859** (`task859-eval-activity-metadata`, `d32c64a`) — additive `activity` block in eval
+  JSONs; no panel findings. Caveat: `n_long`/`n_short` = action-code intent, not net-position
+  direction (a Sell closing a long buckets as "short")._
 
 _Independence note: 858 touches the data pipeline (`tools/`), 859 touches `eval_vector.py` result
 metadata — zero file overlap with each other AND with the in-flight 857 server runs (which only
