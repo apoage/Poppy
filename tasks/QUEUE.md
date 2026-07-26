@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-26 (post D24 ruling) — Ready = TASK_860 (reward-head co-distill); factory GREEN.**
+Prior grooming (run 17):
 **2026-07-24 (post factory run 17 — D23 queue CLEARED) — Ready = EMPTY; factory IDLE.**
 Run 17 shipped all three rows (856/857/855, below) and seeded **D24 OPEN** (frozen reward head
 caps the deployed-Q ranking — read-then-decide fork). Planner ruling 2026-07-24: both binding
