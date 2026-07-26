@@ -46,9 +46,14 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_EMPTY (2026-07-25, post factory run 18). Next rows seed from the 857 corridor verdict (D24 fork —
-reward-head co-distill is the leading candidate, pending s2 + operator ruling) and from the
-Kraken-dump acquisition (858 real-ingest remainder → unblocks the OOS battery)._
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_860_REWARD_HEAD_CODISTILL.md` | S/M | **D24 RULED (operator, 2026-07-26): "seed co-distill."** Extend the shipped 857 recipe: emit true-r0 targets, `--codistill-reward` unfreezes the `dynamics_dense2` reward projection (λ-weighted reward CE alongside the value CE); r_model calibration column added to the instrument. OFF = shipped-857 bit-identical. Real bars = planner post-ship: deployed-Q ≥ +0.5 → the same corridor (floor +0.424; value-only best-seed reference −4.23). |
+
+_Context: 858 real ingest DONE (8.28M rows, 62/64 → 2026-03-31); first binding OOS reads landed —
+imprint +0.898 net@21 OOS (Δ+2.33 over the on-window floor, LEDGER 832/E5-oos-real); 856 top-m NOT
+confirmed OOS. The imprint is the deployable-artifact frontrunner; its walk-forward battery is
+planner lane._
 
 _Shipped 2026-07-24 factory run 18:_
 - _**TASK_858** (`task858-minute-backfill`, `19f955c`) — `tools/backfill_minute.py`, the single
