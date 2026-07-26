@@ -8,6 +8,14 @@
 > MAJOR + 1 MINOR** in the guard architecture (commit-before-guards → atomic; whole-window proof → subset proof;
 > mtime-only backup gate → hardened; 11/64 unreachable dump spellings → `_canon_key` routing, 64 distinct/zero
 > collisions; unmatched-file reporting) — both re-verify lenses then returned no findings. selftest 12/12.
+> **REAL INGEST DONE (2026-07-26, planner-executed): acceptance (iii) PASS (amended).** Dumps Q4-2025 +
+> Q1-2026 acquired (Q2-2026 not yet published by Kraken ⇒ coverage bar amended ≥2026-03); D25 quarantine
+> cleared the ghost-cluster conflicts (139,157 divergent fetcher-era rows → `ohlcv_quarantine`, atomic,
+> quick_check ok); ingest committed **8,275,185 rows / 124 files**: **62/64 symbols reach 2026-03-31,
+> zero >1d gaps in the OOS window**; laggards FTM/USD + MATIC/USD are Kraken ticker migrations (FTM→S,
+> MATIC→POL — structurally dead slots, handled by the 853 inactive-slot mechanic). Backups:
+> pre-quarantine + post-quarantine retained. (iv) OOS smoke + binding reads = in flight.
+>
 > **REMAINDER (operator, unblocks iii + the binding OOS reads)**: download Kraken OHLCVT CSV dumps
 > (Q4-2025…Q3-2026, `{PAIR}_1.csv`), take a fresh DB backup, then run `backfill_minute.py run …` ON THE
 > WORKSTATION (see CHANGELOG for the exact command). Residuals documented (backup gate = freshness/size
