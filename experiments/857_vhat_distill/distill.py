@@ -85,6 +85,17 @@ HOLD = 1
 # and WELL ABOVE target-shuffled sabotage (~-0.49, consistent across seeds). NOT a lift/positive-
 # validation bar (that verdict is the planner's real-data corridor read). See the (ii) gate.
 DEPLOYED_Q_DEGENERACY_FLOOR = -0.25
+# TASK_860 co-distill falsification gate (spec acceptance iv): a LEGIT run's trained heads fit the
+# TRUE (never-shuffled) targets on the TRAIN set with high pooled correlation; a --shuffle-targets
+# run fits a PERMUTATION of true, so its correlation vs TRUE collapses toward 0. Measured seed-sweep
+# (seeds 0-3, n=972 train tuples/run, min over the two heads r_model·true-r0 and v̂·true-G):
+#   LEGIT    min +0.833  (band [+0.833, +0.943])  -> PASS
+#   SHUFFLE  max +0.055  (band [-0.187, +0.055])  -> FAIL
+# The floor sits in that wide gap (cushion ~0.39 above sabotage-max, ~0.38 below legit-min). This is
+# the high-SNR discriminator the noisy n=12 held-out per-state Q/r_model metrics CANNOT provide
+# (those overlap and invert per-seed — reported directions only, never gated). Both heads must clear
+# it (shuffle permutes BOTH the value G and reward r0 targets, so both fits collapse).
+TRAIN_FIT_FLOOR = 0.45
 
 # The dynamics + value-head parameter subtree — the ONLY leaves that receive gradient.
 # Everything else (encoder, TRM reasoning refiners, policy output head, scalar action
@@ -177,7 +188,19 @@ def _make_value_fns(model, discount):
         v = jnp.sum(jax.nn.softmax(value, axis=-1) * support, axis=-1)    # _categorical_to_scalar
         return r + discount * v
 
-    return jax.jit(vhat_scalar), jax.jit(deployed_q), jax.jit(value_logits)
+    # TASK_860 co-distill: the reward-head logits (dynamics_dense2 reward columns) and their
+    # scalar decode (softmax·support = the search's ``_reward_to_scalar``). ``reward_logits`` is
+    # the CE-training head; ``r_model_scalar`` is the calibration predictor vs the true r0.
+    def reward_logits(params, latent, vec):
+        _next_state, reward = _next_and_reward(params, latent, vec)
+        return reward
+
+    def r_model_scalar(params, latent, vec):
+        _next_state, reward = _next_and_reward(params, latent, vec)
+        return jnp.sum(jax.nn.softmax(reward, axis=-1) * support, axis=-1)   # _reward_to_scalar
+
+    return (jax.jit(vhat_scalar), jax.jit(deployed_q), jax.jit(value_logits),
+            jax.jit(reward_logits), jax.jit(r_model_scalar))
 
 
 # =============================================================================
@@ -208,12 +231,13 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
         dec_obs   (D, 27, A, A) float32 — one obs per visited decision
         cand      (D, M, A)     int32   — M = K+1 candidate vectors per decision
         G         (D, M)        float32 — true R-step discounted return per candidate
+        r0        (D, M)        float32 — the r0 component of G (TASK_860 reward-codistill target)
         states    list[pytree]  B=1 TradingState snapshots (for the ranking-transfer search)
     (D <= N; the walk stops early if the env terminates.)
     """
     book = jnp.ones((1, A), dtype=jnp.int32)
     state = _reset_walk(prices_j, cfg, start_row, N + R + 2)
-    dec_obs, cand_dump, G_dump, states = [], [], [], []
+    dec_obs, cand_dump, G_dump, r0_dump, states = [], [], [], [], []
     for k in range(N):
         obs_k = jnp.asarray(obs_all[k])[None]                     # (1,27,A,A)
         root = model.apply({"params": params}, obs_k, method="initial_inference")
@@ -237,6 +261,9 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
         dec_obs.append(np.asarray(obs_all[k], dtype=np.float32))
         cand_dump.append(np.asarray(cand[0], dtype=np.int32))
         G_dump.append(np.asarray(G[0], dtype=np.float32))
+        # TASK_860: emit the r0 component as its own target (near-zero extra compute — r0 is
+        # already returned by the leaf helper above; only stored, never re-computed).
+        r0_dump.append(np.asarray(r0[0], dtype=np.float32))
         states.append(jax.tree_util.tree_map(lambda x: np.asarray(x), state))
         # walk action
         if policy == "teacher":
@@ -253,6 +280,7 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
         "dec_obs": np.asarray(dec_obs, dtype=np.float32),
         "cand": np.asarray(cand_dump, dtype=np.int32),
         "G": np.asarray(G_dump, dtype=np.float32),
+        "r0": np.asarray(r0_dump, dtype=np.float32),
         "states": states,
     }
 
@@ -377,12 +405,21 @@ def ranking_transfer(model, params, prices_j, env_cfg, held_states, held_obs, A,
 # distill training loop (RAM minibatches; dynamics+value only)
 # =============================================================================
 
-def distill_value_head(model, trainer, value_logits_fn, latents, cands, Gs, args):
+def distill_value_head(model, trainer, value_logits_fn, latents, cands, Gs, args,
+                       reward_logits_fn=None, r0s=None):
     """BC value regression: v̂(g(s,a)) → the true R-step return over the counterfactual set.
     PopArt-normalizes the targets (spread across the 401-bin support) then trains the
     dynamics+value partition with a two-hot categorical CE (the shipped value-loss form).
+
+    TASK_860 co-distill (``args.codistill_reward``, default OFF = bit-identical to shipped 857):
+    when ON, ADD a λ·reward-CE term on the true-r0 targets (``r0s``) using the SAME PopArt/two-hot
+    reward-loss form the shipped trainer uses (reward_popart-normalize → ``_scalar_to_categorical``
+    → CE on the reward logits). The reward CE supplies gradient to the ``dynamics_dense2`` reward
+    columns — the ONE new leg that trains — so they move from frozen-in-effect (zero grad under the
+    value-only loss) to trained; policy head + encoder stay frozen by the same partition.
     Returns (distilled_params, history dict)."""
     params0 = trainer.state.params
+    codistill = bool(getattr(args, "codistill_reward", False)) and reward_logits_fn is not None
     # flatten to per-tuple arrays (repeat the decision latent across its M candidates)
     D, M, A = cands.shape
     lat_flat = np.repeat(latents, M, axis=0)              # (D*M, dim)
@@ -414,39 +451,92 @@ def distill_value_head(model, trainer, value_logits_fn, latents, cands, Gs, args
         norm = ((G_flat - mu) / sd).astype(np.float32)
     targets = np.asarray(trainer._scalar_to_categorical(jnp.asarray(norm)), dtype=np.float32)
 
+    # TASK_860 reward-codistill targets — the SAME PopArt/two-hot form as the value path above,
+    # but on the true-r0 component and the reward head's own PopArt normalizer. Built only when ON
+    # (OFF ⇒ this block is skipped and the whole function stays bit-identical to shipped 857).
+    rtargets, rlw, rnorm = None, 1.0, None
+    if codistill:
+        r0_flat = r0s.reshape(D * M).copy()                   # (D*M,)
+        rlw = float(getattr(args, "reward_loss_weight", 1.0))
+        if getattr(args, "shuffle_targets", False):
+            # Falsification: break the state↔r0 correspondence too, so r_model calibration cannot
+            # improve and the (ii) reward gate must FAIL alongside the value gate.
+            np.random.RandomState(args.seed + 4243).shuffle(r0_flat)
+        if trainer.reward_hybrid and trainer.reward_popart is not None:
+            trainer.reward_popart.state = update_statistics(
+                trainer.reward_popart.state, jnp.asarray(r0_flat), beta=1.0)
+            rnorm = np.asarray(trainer.reward_popart.normalize(jnp.asarray(r0_flat)),
+                               dtype=np.float32)
+        else:
+            rmu, rsd = float(r0_flat.mean()), float(max(r0_flat.std(), 1e-6))
+            rnorm = ((r0_flat - rmu) / rsd).astype(np.float32)
+        rtargets = np.asarray(trainer._scalar_to_categorical(jnp.asarray(rnorm)), dtype=np.float32)
+
     tx, _label_tree, n_train, n_freeze = make_partition_optimizer(params0, args.lr)
     print(f"[857] freeze partition: {n_train} trainable leaves (dynamics+value), "
-          f"{n_freeze} frozen (encoder/reasoning/policy/reward)")
+          f"{n_freeze} frozen (encoder/reasoning/policy/reward)"
+          + (f" | +reward CE (λ={rlw:g}) → dynamics_dense2 reward columns UNFROZEN"
+             if codistill else ""))
     opt_state = tx.init(params0)
 
-    def loss_fn(params, lat_b, vec_b, tgt_b):
-        logits = value_logits_fn(params, lat_b, vec_b)          # (B, support)
-        logp = jax.nn.log_softmax(logits, axis=-1)
-        return jnp.mean(-jnp.sum(tgt_b * logp, axis=-1))
+    if not codistill:
+        # ---- shipped 857 value-only path (bit-identical) ----
+        def loss_fn(params, lat_b, vec_b, tgt_b):
+            logits = value_logits_fn(params, lat_b, vec_b)          # (B, support)
+            logp = jax.nn.log_softmax(logits, axis=-1)
+            return jnp.mean(-jnp.sum(tgt_b * logp, axis=-1))
 
-    @jax.jit
-    def train_step(params, opt_state, lat_b, vec_b, tgt_b):
-        loss, grads = jax.value_and_grad(loss_fn)(params, lat_b, vec_b, tgt_b)
-        updates, opt_state = tx.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss
+        @jax.jit
+        def train_step(params, opt_state, lat_b, vec_b, tgt_b):
+            loss, grads = jax.value_and_grad(loss_fn)(params, lat_b, vec_b, tgt_b)
+            updates, opt_state = tx.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            return params, opt_state, loss
+    else:
+        # ---- TASK_860 co-distill path: value CE + λ·reward CE ----
+        def loss_fn(params, lat_b, vec_b, tgt_b, rtgt_b):
+            vlogits = value_logits_fn(params, lat_b, vec_b)         # (B, support)
+            vlogp = jax.nn.log_softmax(vlogits, axis=-1)
+            vloss = jnp.mean(-jnp.sum(tgt_b * vlogp, axis=-1))
+            rlogits = reward_logits_fn(params, lat_b, vec_b)        # (B, support)
+            rlogp = jax.nn.log_softmax(rlogits, axis=-1)
+            rloss = jnp.mean(-jnp.sum(rtgt_b * rlogp, axis=-1))
+            return vloss + rlw * rloss, (vloss, rloss)
+
+        @jax.jit
+        def train_step(params, opt_state, lat_b, vec_b, tgt_b, rtgt_b):
+            (loss, (vloss, rloss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+                params, lat_b, vec_b, tgt_b, rtgt_b)
+            updates, opt_state = tx.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            return params, opt_state, vloss, rloss
 
     params = params0
     n = lat_flat.shape[0]
     bs = min(args.batch_size, n)
     rng = np.random.RandomState(args.seed + 1)
-    losses = []
+    losses, rlosses = [], []
     for it in range(args.iters):
         perm = rng.permutation(n)
-        ep_loss = []
+        ep_loss, ep_rloss = [], []
         for b in range(0, n, bs):
             idx = perm[b:b + bs]
-            params, opt_state, loss = train_step(
-                params, opt_state,
-                jnp.asarray(lat_flat[idx]), jnp.asarray(vec_flat[idx]),
-                jnp.asarray(targets[idx]))
-            ep_loss.append(float(loss))
+            if not codistill:
+                params, opt_state, loss = train_step(
+                    params, opt_state,
+                    jnp.asarray(lat_flat[idx]), jnp.asarray(vec_flat[idx]),
+                    jnp.asarray(targets[idx]))
+                ep_loss.append(float(loss))
+            else:
+                params, opt_state, vloss, rloss = train_step(
+                    params, opt_state,
+                    jnp.asarray(lat_flat[idx]), jnp.asarray(vec_flat[idx]),
+                    jnp.asarray(targets[idx]), jnp.asarray(rtargets[idx]))
+                ep_loss.append(float(vloss))     # value CE (consistent with the OFF history labels)
+                ep_rloss.append(float(rloss))
         losses.append(float(np.mean(ep_loss)))
+        if codistill:
+            rlosses.append(float(np.mean(ep_rloss)))
     history = {
         "value_ce_first": losses[0], "value_ce_last": losses[-1],
         "value_ce_head_mean": float(np.mean(losses[:5])),
@@ -459,6 +549,18 @@ def distill_value_head(model, trainer, value_logits_fn, latents, cands, Gs, args
         "target_norm_stats": {"mean": float(norm.mean()), "std": float(norm.std()),
                               "min": float(norm.min()), "max": float(norm.max())},
     }
+    if codistill:
+        history["reward_codistill"] = True
+        history["reward_loss_weight"] = rlw
+        history["reward_ce_first"] = rlosses[0]
+        history["reward_ce_last"] = rlosses[-1]
+        history["reward_ce_head_mean"] = float(np.mean(rlosses[:5]))
+        history["reward_ce_tail_mean"] = float(np.mean(rlosses[-5:]))
+        history["reward_all_finite"] = bool(np.all(np.isfinite(rlosses)))
+        history["reward_decreased"] = bool(rlosses[-1] < rlosses[0])
+        history["reward_target_norm_stats"] = {
+            "mean": float(rnorm.mean()), "std": float(rnorm.std()),
+            "min": float(rnorm.min()), "max": float(rnorm.max())}
     return params, history
 
 
@@ -540,8 +642,11 @@ def run(args, out_path, tag):
     # ---- training observations for the decision rows (reuse 832 encoder path) ----
     obs_all = imp.encode_training_obs(prices_j, start_row, N, env_cfg)   # (N,27,A,A)
 
+    codistill = bool(getattr(args, "codistill_reward", False))
+
     # ---- counterfactual dataset (RAM) ----
-    vhat_fn, deployed_q_fn, value_logits_fn = _make_value_fns(model, args.discount)
+    vhat_fn, deployed_q_fn, value_logits_fn, reward_logits_fn, r_model_fn = \
+        _make_value_fns(model, args.discount)
     passes, _last_cfg = build_counterfactual_dataset(
         model, params_warm, prices_j, env_cfg, obs_all, tgt, corridor,
         start_row, N, A, args)
@@ -553,6 +658,7 @@ def run(args, out_path, tag):
     all_obs = _stack("dec_obs")           # (D,27,A,A)
     all_cand = _stack("cand")             # (D,M,A)
     all_G = _stack("G")                   # (D,M)
+    all_r0 = _stack("r0")                 # (D,M) — TASK_860 reward target
     all_states = [s for p in passes for s in p["states"]]
     D = all_obs.shape[0]
     if D < 4:
@@ -580,22 +686,27 @@ def run(args, out_path, tag):
     # Q = r_model + γ·v̂ (what the model leaf actually ranks by — the honest deployment
     # predictor). HELD-OUT per-state = the +0.5-bar statistic (graded on the REAL panel by the
     # planner); FULL is secondary context. Pooled inside each is the inflated secondary number.
-    def _bundle(pred_fn, params, lat):
+    def _bundle(pred_fn, params, lat, tgt_arr=all_G):
         return {
             "held_out": calibration(pred_fn, params, lat[held_idx],
-                                    all_cand[held_idx], all_G[held_idx]),
-            "full": calibration(pred_fn, params, lat, all_cand, all_G),
+                                    all_cand[held_idx], tgt_arr[held_idx]),
+            "full": calibration(pred_fn, params, lat, all_cand, tgt_arr),
         }
     cal_vhat_pre = _bundle(vhat_fn, params_warm, lat_warm_all)
     cal_q_pre = _bundle(deployed_q_fn, params_warm, lat_warm_all)
+    # TASK_860: the r_model-vs-true-r0 calibration column (the direct measure this task fixes),
+    # against the r0 targets (NOT G). Computed only when co-distilling (OFF ⇒ shipped 857).
+    cal_r_pre = _bundle(r_model_fn, params_warm, lat_warm_all, tgt_arr=all_r0) if codistill else None
     print(f"[857] calibration PRE  (mean per-state Pearson, HELD-OUT — the +0.5-bar statistic): "
           f"v̂-alone r={cal_vhat_pre['held_out']['mean_per_state_pearson']:+.4f} | "
           f"deployed-Q r={cal_q_pre['held_out']['mean_per_state_pearson']:+.4f}")
 
-    # ---- (2) value-head imprint (dynamics+value only) on TRAIN decisions ----
+    # ---- (2) value-head imprint (dynamics+value only) on TRAIN decisions
+    #      + TASK_860: optional reward co-distill on true-r0 targets (--codistill-reward) ----
     distilled, history = distill_value_head(
         model, trainer, value_logits_fn,
-        lat_warm_all[train_idx], all_cand[train_idx], all_G[train_idx], args)
+        lat_warm_all[train_idx], all_cand[train_idx], all_G[train_idx], args,
+        reward_logits_fn=reward_logits_fn, r0s=all_r0[train_idx])
     print(f"[857] distill value CE: {history['value_ce_first']:.4f} -> "
           f"{history['value_ce_last']:.4f} (head5 {history['value_ce_head_mean']:.4f} -> "
           f"tail5 {history['value_ce_tail_mean']:.4f}) decreased={history['decreased']} "
@@ -617,6 +728,40 @@ def run(args, out_path, tag):
     print(f"[857]   secondary (pooled, inflated): v̂-alone held-out "
           f"{cal_vhat_post['held_out']['pooled_pearson']:+.4f} | full "
           f"{cal_vhat_post['full']['mean_per_state_pearson']:+.4f} per-state")
+
+    # ---- TASK_860 (3): r_model-vs-true-r0 calibration column (the direct measure this fixes) ----
+    cal_r_post = r_held_pre = r_held_post = None
+    r_train_fit = v_train_fit = None
+    if codistill:
+        cal_r_post = _bundle(r_model_fn, distilled, lat_post_all, tgt_arr=all_r0)
+        r_held_pre = cal_r_pre["held_out"]["mean_per_state_pearson"]
+        r_held_post = cal_r_post["held_out"]["mean_per_state_pearson"]
+        print(f"[857] REWARD co-distill (TASK_860): r_model vs true-r0 held-out per-state "
+              f"r={r_held_post:+.4f} (from {r_held_pre:+.4f}) [frozen baseline ~+0.27 pooled] | "
+              f"reward CE {history['reward_ce_first']:.4f} -> {history['reward_ce_last']:.4f} "
+              f"decreased={history['reward_decreased']}")
+        # TASK_860 FALSIFICATION-ROBUST SIGNAL (fixes the fail-closed blocker: held-out per-state
+        # Q / r_model at n=12 are pure noise and INVERT per-seed, so no threshold on them separates
+        # legit from --shuffle-targets sabotage). Instead measure the TRAIN-SET pooled correlation
+        # of the POST-distill heads against the TRUE (never-shuffled) targets: a legit run fits true
+        # r0/G ⇒ high corr; --shuffle-targets fits a PERMUTATION of true ⇒ the head matches the
+        # permutation, so corr vs TRUE is ~0. Large-n pooled ⇒ high SNR ⇒ robustly separable.
+        def _pooled_pred(pred_fn, params, lat_np, cand_np):
+            outs = []
+            for d in range(cand_np.shape[0]):
+                lat = jnp.asarray(np.repeat(lat_np[d][None], cand_np.shape[1], axis=0))
+                outs.append(np.asarray(pred_fn(params, lat, jnp.asarray(cand_np[d])),
+                                       dtype=np.float64))
+            return np.concatenate(outs)
+        r_train_fit = _pearson(
+            _pooled_pred(r_model_fn, distilled, lat_post_all[train_idx], all_cand[train_idx]),
+            all_r0[train_idx].reshape(-1))
+        v_train_fit = _pearson(
+            _pooled_pred(vhat_fn, distilled, lat_post_all[train_idx], all_cand[train_idx]),
+            all_G[train_idx].reshape(-1))
+        print(f"[857] TASK_860 falsification gate — TRAIN-SET fit vs TRUE targets "
+              f"(n={int(train_idx.size * all_cand.shape[1])}): r_model·true-r0={r_train_fit:+.4f} | "
+              f"v̂·true-G={v_train_fit:+.4f} (legit high; --shuffle-targets ~0)")
     # LOUD, scientifically load-bearing note for the planner: deployed-Q < v̂-alone because the
     # FROZEN 832 reward head is a poor r0 estimator (corr(r_model, true r0) is low), dragging the
     # deployable ranking below the v̂-in-isolation calibration. Clearing a v̂-alone bar does NOT
@@ -791,6 +936,61 @@ def run(args, out_path, tag):
         "checkpoint": ckpt_path,
     }
 
+    # ---- TASK_860: reward co-distill deliverables (added ONLY when --codistill-reward; OFF ⇒
+    #      the result dict above is bit-identical to the shipped 857 output) ----
+    reward_improved = None
+    if codistill:
+        reward_improved = bool(np.isfinite(r_held_post) and np.isfinite(r_held_pre)
+                               and r_held_post > r_held_pre)
+        result["calibration"]["r_model"] = {
+            "note": "r_model (softmax·support of the reward logits) vs the TRUE r0 per candidate — "
+                    "the direct measure TASK_860 fixes (the frozen 832 reward head baseline is "
+                    "~+0.27 pooled). Held-out MEAN PER-STATE Pearson, pre vs post co-distill.",
+            "held_out": {"pre": cal_r_pre["held_out"], "post": cal_r_post["held_out"],
+                         "per_state_delta": (r_held_post - r_held_pre)},
+            "full": {"pre": cal_r_pre["full"], "post": cal_r_post["full"]},
+            # MINOR 2: this held-out per-state delta is REPORTED, NOT a gate. It is NON-DISCRIMINATIVE
+            # at fixture scale (n=12): --shuffle-targets sabotage often shows a LARGER 'improvement'
+            # than a legit run (fits a permutation whose per-state ordering happens to correlate).
+            # Do NOT read this flag as validation — the robust signal is train_fit_vs_true below.
+            "improved_held_out_per_state": reward_improved,
+            "non_discriminative_at_fixture_scale": True,
+        }
+        result["codistill_reward"] = {
+            "enabled": True,
+            "reward_loss_weight": float(getattr(args, "reward_loss_weight", 1.0)),
+            # MINOR 1: honest loss-form claim. The shipped trainer's reward_hybrid loss is
+            # 0.8*Huber + 0.2*CE; here we use the SAME PopArt(reward_popart) normalizer + two-hot
+            # TARGET but a pure-CE loss (matching 857's value-path simplification and the spec's
+            # "λ·reward CE" wording) — NOT the trainer's Huber/CE blend.
+            "recipe": "value CE (as shipped 857) + λ·reward CE on the true-r0 counterfactual "
+                      "targets; same PopArt(reward_popart) normalizer + two-hot TARGET as the "
+                      "shipped trainer, CE loss (matching 857's value path; NOT the trainer's "
+                      "0.8*Huber+0.2*CE reward_hybrid blend). The added reward CE supplies gradient "
+                      "to the dynamics_dense2 reward columns — the ONE new leg that trains; policy "
+                      "head + encoder stay frozen.",
+            "reward_head_moved": bool(not invariants["reward_head_frozen"]),
+            # THE hard falsification gate (fail-closed-robust across seeds 0-3): TRAIN-SET pooled
+            # correlation of the POST-distill heads vs the TRUE (never-shuffled) targets. Legit fits
+            # true ⇒ high; --shuffle-targets fits a permutation ⇒ ~0. Large-n ⇒ high SNR.
+            "train_fit_vs_true": {
+                "r_model_pooled_corr_true_r0": r_train_fit,
+                "vhat_pooled_corr_true_G": v_train_fit,
+                "n_train_tuples": int(train_idx.size * all_cand.shape[1]),
+                "floor": TRAIN_FIT_FLOOR,
+                "passes_gate": bool(np.isfinite(r_train_fit) and np.isfinite(v_train_fit)
+                                    and r_train_fit > TRAIN_FIT_FLOOR
+                                    and v_train_fit > TRAIN_FIT_FLOOR),
+                "note": "the ROBUST falsification gate (spec acceptance iv): legit-pass / "
+                        "--shuffle-targets-fail on every seed 0-3. Held-out per-state Q and r_model "
+                        "(n=12) are pure noise here and INVERT per-seed — reported directions only.",
+            },
+            "note_deployed_q": "deployed-Q (r_model+γ·v̂) held-out per-state is a REPORTED direction "
+                               "only; at fixture n=12 it is noise and seed-dependent (legit and "
+                               "sabotage overlap/invert), so it is NOT the gate. The deployed-ranking "
+                               "VERDICT is the planner's scheduled real-panel corridor read.",
+        }
+
     # ---- smoke gates (raise BEFORE any deliverable is written — FIX B) ----
     if args.smoke_assert:
         assert history["all_finite"], "SMOKE FAIL: non-finite distill loss"
@@ -798,31 +998,57 @@ def run(args, out_path, tag):
             f"SMOKE FAIL: value CE did not decrease "
             f"({history['value_ce_head_mean']:.4f} -> {history['value_ce_tail_mean']:.4f})")
         assert invariants["policy_head_frozen"], "SMOKE FAIL: policy head not frozen"
-        assert invariants["reward_head_frozen"], "SMOKE FAIL: reward head not frozen"
+        if codistill:
+            # TASK_860: the reward projection is now the ONE new leg that trains.
+            assert not invariants["reward_head_frozen"], (
+                "SMOKE FAIL: (codistill) dynamics_dense2 reward columns did not train")
+            assert history.get("reward_all_finite", False), \
+                "SMOKE FAIL: (codistill) non-finite reward CE"
+        else:
+            assert invariants["reward_head_frozen"], "SMOKE FAIL: reward head not frozen"
         assert invariants["value_head_moved"], "SMOKE FAIL: value head did not train"
-        # (i) — the 849 instrument: HELD-OUT mean per-state Pearson (v̂-alone), finite AND
-        # IMPROVED (both-finite AND positive delta). This is the number the real +0.5 gate reads.
+        # held-out per-state calibration must be finite (both predictors) — a plumbing check.
         assert np.isfinite(vhat_held_post) and np.isfinite(q_held_post), \
             "SMOKE FAIL: held-out per-state calibration non-finite (v̂-alone or deployed-Q)"
-        assert result["calibration"]["improved_held_out_per_state"], (
-            f"SMOKE FAIL: (i) held-out per-state calibration (the 849 instrument) did not improve "
-            f"(v̂-alone pre {vhat_held_pre:+.4f} -> post {vhat_held_post:+.4f})")
-        # (ii) — the FAIL-CLOSED-SAFE deployable-ranking floor: the DEPLOYED leaf (Q = r_model+γ·v̂)
-        # must not be STRONGLY anti-correlated with the true-env ranking (finite AND > the floor).
-        # Bites --shuffle-targets sabotage (deployed-Q ~-0.49 < -0.25 FAILS) while passing every
-        # legitimate seed (deployed-Q min ~-0.12 across seeds 0-3 > -0.25). NOT the argmax-% (hollow
-        # at fixture scale), NOT a must-improve gate, NOT a positive lift validation (frozen reward
-        # head: legit deployed-Q is within-noise/seed-dependent — that verdict is the planner's leg).
-        assert deployed_ranking_ok, (
-            f"SMOKE FAIL: (ii) deployable-ranking floor — deployed-Q (r_model+γ·v̂) held-out "
-            f"per-state calibration {q_held_post:+.4f} is non-finite or <= the degeneracy floor "
-            f"{DEPLOYED_Q_DEGENERACY_FLOOR:+.2f}; the DEPLOYED leaf is strongly anti-correlated with "
-            f"the true-env ranking (target-shuffle-sabotage-like degeneracy)")
-        print("[857] SMOKE PASS: finite+decreasing value CE; policy/reward frozen + value "
-              "trained; (i) 849 instrument (HELD-OUT mean per-state Pearson) IMPROVED "
-              f"[v̂-alone {vhat_held_pre:+.4f}->{vhat_held_post:+.4f}]; (ii) deployable-ranking "
-              f"floor deployed-Q held-out r={q_held_post:+.4f} > {DEPLOYED_Q_DEGENERACY_FLOOR:+.2f} "
-              f"(fail-closed-safe, not a lift claim); argmax-% diagnostic {pct_agree:.1f}% (reported)")
+        if not codistill:
+            # ===== shipped 857 value-only gates — UNCHANGED (OFF stays byte-identical) =====
+            # (i) v̂-in-isolation is the gated quantity (frozen reward head ⇒ deployed-Q can't lift).
+            assert result["calibration"]["improved_held_out_per_state"], (
+                f"SMOKE FAIL: (i) held-out per-state calibration (the 849 instrument) did not improve "
+                f"(v̂-alone pre {vhat_held_pre:+.4f} -> post {vhat_held_post:+.4f})")
+            # (ii) FAIL-CLOSED-SAFE deployable-ranking floor: reject strong degeneracy / --shuffle
+            # sabotage on the deployed-Q axis (frozen reward head ⇒ this floor is discriminative HERE).
+            assert deployed_ranking_ok, (
+                f"SMOKE FAIL: (ii) deployable-ranking floor — deployed-Q (r_model+γ·v̂) held-out "
+                f"per-state calibration {q_held_post:+.4f} is non-finite or <= the degeneracy floor "
+                f"{DEPLOYED_Q_DEGENERACY_FLOOR:+.2f}; the DEPLOYED leaf is strongly anti-correlated "
+                f"with the true-env ranking (target-shuffle-sabotage-like degeneracy)")
+            print("[857] SMOKE PASS: finite+decreasing value CE; policy/reward frozen + value "
+                  "trained; (i) 849 instrument (HELD-OUT mean per-state Pearson) IMPROVED "
+                  f"[v̂-alone {vhat_held_pre:+.4f}->{vhat_held_post:+.4f}]; (ii) deployable-ranking "
+                  f"floor deployed-Q held-out r={q_held_post:+.4f} > {DEPLOYED_Q_DEGENERACY_FLOOR:+.2f} "
+                  f"(fail-closed-safe, not a lift claim); argmax-% diagnostic {pct_agree:.1f}% (reported)")
+        else:
+            # ===== TASK_860 co-distill gates — ROBUST at fixture scale (spec acceptance iv) =====
+            # THE falsification gate: the trained heads must FIT THE TRUE (never-shuffled) targets on
+            # the TRAIN set (large n ⇒ high SNR). Legit ⇒ high corr; --shuffle-targets trains on a
+            # PERMUTATION of true ⇒ corr vs true ~0 ⇒ FAILS. This is what separates signal from
+            # sabotage on EVERY seed 0-3 — unlike the held-out per-state Q / r_model which at n=12 are
+            # pure noise and INVERT per-seed (those are reported directions only, never gated).
+            assert np.isfinite(r_train_fit) and np.isfinite(v_train_fit), \
+                "SMOKE FAIL: (codistill) train-set fit-vs-true non-finite"
+            assert r_train_fit > TRAIN_FIT_FLOOR and v_train_fit > TRAIN_FIT_FLOOR, (
+                f"SMOKE FAIL: (codistill falsification gate, spec-iv) the trained heads did NOT fit "
+                f"the TRUE targets on the train set (r_model·true-r0={r_train_fit:+.4f}, "
+                f"v̂·true-G={v_train_fit:+.4f}; floor {TRAIN_FIT_FLOOR:+.2f}). Either training failed "
+                f"or the targets were permuted (--shuffle-targets sabotage).")
+            print(f"[857] (reported directions, NOISY at n=12 — NOT gated): deployed-Q held-out "
+                  f"{q_held_pre:+.4f}->{q_held_post:+.4f} | r_model·true-r0 held-out "
+                  f"{r_held_pre:+.4f}->{r_held_post:+.4f} (real grading = planner's real-panel leg)")
+            print(f"[857] SMOKE PASS (codistill/TASK_860): finite+decreasing value+reward CE; policy "
+                  f"frozen + value trained + REWARD columns trained; FALSIFICATION GATE (spec-iv) "
+                  f"TRAIN-SET fit vs TRUE: r_model·true-r0={r_train_fit:+.4f}, v̂·true-G="
+                  f"{v_train_fit:+.4f} (both > {TRAIN_FIT_FLOOR:+.2f}; --shuffle-targets FAILS this)")
 
     # ---- deliverables — written ONLY after all smoke asserts pass (FIX B). A failing run
     #      raises above and never reaches here; a --shuffle-targets falsification run NEVER
@@ -908,6 +1134,16 @@ def main():
                     help="FALSIFICATION spot-check (default OFF): permute the training targets so "
                          "the distill is degenerate — the (i)/(ii) smoke gates must FAIL. Proves "
                          "the gates are non-hollow.")
+    # TASK_860 — reward-head co-distill (default OFF = shipped 857 behavior bit-identical)
+    ap.add_argument("--codistill-reward", dest="codistill_reward", action="store_true",
+                    default=False,
+                    help="TASK_860 (default OFF): co-distill the reward head on true-r0 "
+                         "counterfactual targets ALONGSIDE the value imprint. Unfreezes the "
+                         "dynamics_dense2 reward-projection columns via an added λ·reward-CE term "
+                         "(SAME PopArt/two-hot form as the shipped trainer); policy head + encoder "
+                         "stay frozen. OFF reproduces the shipped 857 deliverables byte-for-byte.")
+    ap.add_argument("--reward-loss-weight", type=float, default=1.0,
+                    help="TASK_860 λ on the reward CE term (co-distill only; default 1.0).")
     args = ap.parse_args()
 
     is_fixture = os.path.abspath(args.db) == os.path.abspath(FIXTURE_DB)

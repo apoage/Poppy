@@ -1,3 +1,15 @@
+> **STATUS (2026-07-26): SHIPPED as `task860-reward-head-codistill`** — flag-gated `--codistill-reward`
+> (default OFF = shipped-857 bit-identical) reward-head co-distill in `experiments/857_vhat_distill/distill.py`.
+> Task-mandated medium panel (correctness + regression + fail-closed) + a fresh fail-closed re-verify.
+> Regression clean (OFF byte-identical: 615/615 leaves diff 0, selftest 12/12). Correctness: 2 MINOR fixed.
+> **Fail-closed: 1 BLOCKER fixed + re-verified** — the `--shuffle-targets` falsification (acceptance iv) passed
+> the ON smoke on seeds 1,2 (deployed-Q noise at fixture n=12); replaced the gate with a high-SNR train-set
+> fit gate (both heads vs never-shuffled true targets over ~n=972, floor +0.45); 8/8 seed sweep now passes
+> (legit 0-3 exit 0, shuffle 0-3 exit non-zero). Acceptance (i)-(iv) all PASS.
+> **Remainder → planner (scheduled, pre-registered below)**: the REAL distill (3 seeds, warm from
+> `runs/832_e5/ckpt_imprint_full`) → deployed-Q held-out per-state ≥ +0.5 → the same corridor read
+> (floor +0.424; +8.02 true-leaf ceiling; −4.23 value-only reference). OOS routes through 858-extended canon after.
+
 # TASK_860 — Reward-head co-distill (D24 ruled: "seed co-distill"; D19 opt (c) with exact targets)
 
 **Status**: READY 2026-07-26 (D24 RULED — operator).
