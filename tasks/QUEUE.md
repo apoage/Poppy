@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-27 (D26 RULED: "prepare dark factory tasks") — Ready = TASK_861 + TASK_862 (filler); factory GREEN.**
+Prior grooming (run 19):
 **2026-07-27 (post factory run 19) — Ready = EMPTY; factory IDLE; 860 real leg RUNNING on srv (planner).**
 Prior grooming (D24):
 **2026-07-26 (post D24 ruling) — Ready = TASK_860 (reward-head co-distill); factory GREEN.**
@@ -50,8 +52,15 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_EMPTY (2026-07-27, post factory run 19). Next rows seed from the 860 real-leg verdict (in flight
-on gpu-server) and the openBella lane (own repo/queue at ~/openBella)._
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_861_SEARCH_TEACHER_IMPRINT.md` | M | **D26 RULED (operator, 2026-07-27): "prepare dark factory tasks" — opt (a).** Marry the two proven pieces: the +8.024 true-env-leaf search operator (PINNED verbatim per `runs/832_e5/results_e5inv854_db_pw0_*.json`) as an OFFLINE teacher × the exact 832 weight-native imprint recipe (+0.839/+0.898-validated). Two flag-gated extensions: `--collect-chosen-vectors` on the search walk (`eval_vector.py`, pure recording — walk numbers identical ON/OFF) + `--teacher-vectors` on `imprint.py` (hard chosen-vector targets, fail-loud provenance gate; NOT visit-distribution CE — the ExIt2 collapse mode). Falsification gate must be high-SNR (the 860 lesson — no small-n held-out quantities). OFF = bit-identical both modules. **Real bars = planner post-ship (pre-registered in the spec): teacher pass on the pinned `--end 2025-10-04` panel (1673 dec, flagged) → imprint → sanity replay > +0.839 → 858-extended OOS + WF quarters.** |
+| 2 | `tasks/TASK_862_IMPRINT_SCORECARD.md` | S | FILLER (parallel-safe). Codify the imprint's D17 battery into one command + one fail-loud scorecard artifact: DEC-2 regime windows (floors from `runs/831_ext/*.json`) + OOS window + WF quarters via the 848 policy-argmax read-of-record configuration. **NEW FILES ONLY — must not edit `eval_vector.py`/`imprint.py` (861's surface); merge-safe by construction.** No silent window skips; schema documented (the eventual gate-ladder submission cites it). Real leg = planner (workstation, DB source of record). |
+
+_Independence note: 861 edits `eval_vector.py` + `imprint.py`; 862 adds
+`experiments/835_stage4_eval/scorecard.py` + a windows manifest and is FORBIDDEN from editing
+861's files — zero file overlap, parallel lanes safe. Neither row trains anything; all GPU legs
+are planner-scheduled. Search-leaf lane (857/860 distill line) is PARKED per D26 — no rows._
 
 _Shipped 2026-07-26 factory run 19:_
 - _**TASK_860** (`task860-reward-head-codistill`, `736fdc6`) — `--codistill-reward` (OFF =
