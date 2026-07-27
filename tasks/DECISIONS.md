@@ -8,6 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
+| D26 | **The v̂-leaf search lane hit diminishing returns (LEDGER 860/codistill-corridor): two distill rounds moved deployed-Q +0.03→+0.23→+0.31 but the ≥+0.5 steering bar and the corridor floor are still missed 3/3 (best −4.02 vs +0.424), with the residual error now in the dynamics embedding, not the heads.** Meanwhile the imprint lane keeps winning (OOS +0.898, walk-forward both quarters positive-delta). What is the next build? | **Recommendation: (a) PARK the search-leaf lane (record, no further distill rounds) and seed TASK_861 — SEARCH-TEACHER IMPRINT: run the proven +8.02 true-env-leaf operator ONCE over the panel as an offline teacher, collect its chosen action VECTORS, and BC-imprint the policy on them with the EXACT 832 recipe (hard chosen-vector targets — the recipe that produced +0.839; NOT the visit-distribution CE that collapsed in ExIt2). Cheap (one teacher pass + one imprint), directly tests whether a better teacher lifts the proven policy-lane recipe; corridor + OOS grading pre-registered (in-sample bar: > +0.839 imprint reference; then the 858-extended OOS window).** Alternates: (b) one more search-lane round (unfreeze dynamics / λ·R sweep) — diminishing returns say no; (c) imprint-lane benchmarking only (regime scorecard, paper-forward prep) — happens anyway in the planner lane. | _OPEN 2026-07-27 — one word ("seed 861") arms the factory._ |
 
 ## DECIDED
 
