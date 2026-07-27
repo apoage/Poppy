@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-27 (post factory run 19) — Ready = EMPTY; factory IDLE; 860 real leg RUNNING on srv (planner).**
+Prior grooming (D24):
 **2026-07-26 (post D24 ruling) — Ready = TASK_860 (reward-head co-distill); factory GREEN.**
 Prior grooming (run 17):
 **2026-07-24 (post factory run 17 — D23 queue CLEARED) — Ready = EMPTY; factory IDLE.**
@@ -48,9 +50,19 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-| # | Task | Size | Note |
-|---|------|------|------|
-| 1 | `tasks/TASK_860_REWARD_HEAD_CODISTILL.md` | S/M | **D24 RULED (operator, 2026-07-26): "seed co-distill."** Extend the shipped 857 recipe: emit true-r0 targets, `--codistill-reward` unfreezes the `dynamics_dense2` reward projection (λ-weighted reward CE alongside the value CE); r_model calibration column added to the instrument. OFF = shipped-857 bit-identical. Real bars = planner post-ship: deployed-Q ≥ +0.5 → the same corridor (floor +0.424; value-only best-seed reference −4.23). |
+_EMPTY (2026-07-27, post factory run 19). Next rows seed from the 860 real-leg verdict (in flight
+on gpu-server) and the openBella lane (own repo/queue at ~/openBella)._
+
+_Shipped 2026-07-26 factory run 19:_
+- _**TASK_860** (`task860-reward-head-codistill`, `736fdc6`) — `--codistill-reward` (OFF =
+  shipped-857 bit-identical, 615/615 leaves diff 0): reward head trained on true-r0 counterfactual
+  targets alongside the value imprint. Panel BLOCKER: the shuffle-falsification gate was fixture-noise
+  (deployed-Q at n=12) AND the newly-trainable reward head defeated the frozen-reward assumption —
+  replaced with a high-SNR train-set fit gate (~n=972, floor +0.45, 0.38 cushion), 8/8 seed sweep
+  re-verified. **Remainder → planner: real 3-seed co-distill + corridor (RUNNING).**_
+
+_(prior Ready row, superseded:)_
+_| 1 | `tasks/TASK_860_REWARD_HEAD_CODISTILL.md` | S/M | **D24 RULED (operator, 2026-07-26): "seed co-distill."** Extend the shipped 857 recipe: emit true-r0 targets, `--codistill-reward` unfreezes the `dynamics_dense2` reward projection (λ-weighted reward CE alongside the value CE); r_model calibration column added to the instrument. OFF = shipped-857 bit-identical. Real bars = planner post-ship: deployed-Q ≥ +0.5 → the same corridor (floor +0.424; value-only best-seed reference −4.23). |
 
 _Context: 858 real ingest DONE (8.28M rows, 62/64 → 2026-03-31); first binding OOS reads landed —
 imprint +0.898 net@21 OOS (Δ+2.33 over the on-window floor, LEDGER 832/E5-oos-real); 856 top-m NOT
