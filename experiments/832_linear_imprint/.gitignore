@@ -8,3 +8,5 @@ ckpt_imprint*/
 # TASK_861 --teacher-vectors default outputs are SUFFIXED results (never the canon parity
 # baseline results_fixture_smoke.json, which IS checked in) — keep them out of the tree.
 results_fixture_smoke_teacher_vectors*.json
+# TASK_863 --panel-frame-from-checkpoint default outputs are suffixed the same way.
+results_fixture_smoke*_frame_pin.json

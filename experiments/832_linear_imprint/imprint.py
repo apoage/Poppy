@@ -38,6 +38,26 @@ carries non-integer action codes, or (d) does not replay in-env to the walk scor
 recorded for itself. Default OFF = byte-identical to the shipped module (proven by the canon
 pins in ``experiments/861_search_teacher_imprint/smoke_e2e.py``).
 
+TASK_863 (D28 opt (a)) — ``--panel-frame-from-checkpoint <provenance.json>`` pins the panel to a
+checkpoint's RECORDED training symbol frame with the SHIPPED TASK_853 semantics (the loader and
+frame validator are CALLED from ``experiments/835_stage4_eval/eval_vector.py``, not re-derived):
+a fixed ``n_assets``-slot panel in the frame's exact positional order, zero-coverage and
+pre-listing PANEL CELLS left flat-zero and forced to HOLD on every in-env walk, dual-disclosed on
+stdout AND in the artifact. (Fix pass FIX C — precise claim: the flat-zero thing is the PANEL
+cell. The ENCODED features of a fully-inactive slot are CONSTANT across every decision but NOT
+all-zero: the guarded vol-ratio channels 8-11 carry a constant 0.2 = clip(1.0,0,5)/5 out of the
+0/0 volume ratio, i.e. 896 of 6048 feature cells per inactive slot on the fixture panel. Constant
+=> no signal, so there is no leak; the claim is GUARDED, not merely restated, by
+``check_inactive_slot_features`` on every pinned run.) Needed because the 858 backfill moved the
+coverage ranking, so the
+unpinned ``ORDER BY COUNT(*) DESC LIMIT n_assets`` universe no longer reproduces
+``runs/832_e5/frame_provenance_imprint.json`` (59/64 positional slots differ) — and slot k IS
+asset k positionally, so an unpinned imprint would train a net whose slots do not line up with
+the references it is graded against. The 861 provenance gate is FAIL-CLOSED in BOTH directions:
+a frame-pinned collection may only be imprinted by an identically-pinned imprint (frame identity
+= symbol list AND order; the provenance PATH may differ) and vice versa. Default OFF (no flag) =
+bit-identical to the shipped module.
+
 FACTORY / SCHEDULED split: this module + its fixture smoke are the factory
 deliverable. The real imprint (+ ExIt continuation) is the scheduled <=1-GPU-day run
 (DEC-2); it exports JAX_PLATFORMS=cuda — the default here is CPU (house style).
@@ -65,7 +85,7 @@ if _REPO not in sys.path:
 
 from trader import backtest
 from mcts_trader.env.jax_trading_env import (
-    reset, step_vector, get_current_prices, compute_portfolio_value,
+    EnvConfig, reset, step_vector, get_current_prices, compute_portfolio_value,
 )
 from mcts_trader.env.jax_encoder import (
     EncoderConfig as FullEncoderConfig, jit_batch_encode_simple,
@@ -81,6 +101,12 @@ FEE_BPS, SLIP_BPS = 16.0, 5.0          # net@21 = fee16 (Kraken taker) + slip5 b
 GATE_COSTS = (0, 21)                    # cost tiers, mirroring 830/831
 N_ACTIONS_PER_ASSET = 5
 HOLD_ACTION_CODE = 1                    # == eval_vector.HOLD; {0,3}=short {2,4}=long
+# TASK_863 fix pass FIX C — the ONLY encoder channels a fully-inactive (flat-zero panel) slot may
+# carry a non-zero value on: vol_ratio_5/15/30/60 (jax_encoder.py:239-242), whose 0/0 volume ratio
+# is guarded to 1.0 and normalised to clip(1.0,0,5)/5 = 0.2. Every other channel of a dead slot is
+# exactly 0, and all of them are CONSTANT across decisions (=> no information, no leak). Used by
+# check_inactive_slot_features, which REFUSES any pinned run that violates either half.
+INACTIVE_SLOT_CONSTANT_CHANNELS = (8, 9, 10, 11)
 
 # ---- TASK_861: offline search-teacher target stream (--teacher-vectors) --------------------
 # Tolerance on the payload-vs-header action-composition cross-check (percentage POINTS of the
@@ -270,15 +296,250 @@ def load_training_panel(args):
 
 
 # =============================================================================
+# TASK_863 — PINNED-FRAME panel (--panel-frame-from-checkpoint): the 853 mechanic
+# =============================================================================
+# The encoder kernel is 27 feats x n_assets SLOTS, so slot k IS asset k positionally. The default
+# panel above derives its universe from ``ORDER BY COUNT(*) DESC LIMIT n_assets`` over the given
+# window (vectorbt_env.py:579-590) — a ranking the 858 backfill MOVED, so it no longer reproduces
+# the frame ``runs/832_e5/ckpt_imprint_full`` was trained on (59/64 slots differ; D28). Under the
+# flag the panel is instead built on the checkpoint's RECORDED frame, in its EXACT order, with
+# zero-coverage / pre-listing cells INACTIVE.
+#
+# NOT re-derived: ``eval_vector._load_frame_provenance`` (frame schema + fail-loud on identity
+# scrambling: absent list, duplicate symbol, wrong length) and ``eval_vector.load_daily_prices_
+# framed`` (one column per slot in order, unknown symbol refused, zero-coverage columns left
+# flat-zero, interior-only forward fill so pre-listing rows stay flat-zero) are CALLED here — the
+# shipped, proven 853 implementations. This module adds only (a) the EnvConfig the imprint walks
+# (mirroring create_jax_env_historical's block, since the framed loader replaces that loader) and
+# (b) the price-validity force-HOLD, which 853 applies in eval_vector.evaluate_checkpoint: every
+# in-env walk here supplies its action vector DIRECTLY to step_vector and therefore bypasses the
+# env's compute_action_mask, so the SAME ``price_valid = price > 0`` rule is applied per
+# (decision, slot) to the teacher targets, the injected BC labels and the sanity replay.
+#
+# CONSEQUENCE, disclosed: like 853's, this panel is DAILY-SOURCED (``ohlcv_daily``) and therefore
+# requires --bar-minutes 1440. The unpinned path stays minute-sourced (PIN b) and untouched. Both
+# 861 legs must pin (the provenance gate below refuses any pinned/unpinned mix), so leg 1's
+# framed panel and leg 2's framed panel come out of the SAME loader on the SAME window.
+
+def load_framed_panel(args):
+    """Fixed-frame analogue of ``load_training_panel``. Returns
+    (prices_j (T,A) float32 jnp, logc (T,A) float64 np, env_cfg, frame) where ``frame`` carries
+    the ordered frame symbols, the panel's row-timestamp axis, the per-slot coverage report and
+    the 853-shaped ``panel_frame`` artifact block."""
+    ev = _load_eval_module()
+    if int(args.bar_minutes) != 1440:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint requires --bar-minutes 1440 (got {args.bar_minutes}); "
+            f"the frame is read from the daily `ohlcv_daily` table (the same rule as the shipped "
+            f"853 path, eval_vector._build_panel_framed) and any other stride would be an "
+            f"incoherent second resample of already-daily rows.")
+    frame_symbols, prov = ev._load_frame_provenance(
+        args.panel_frame_from_checkpoint, int(args.n_assets), None)
+    prices_np32, loaded_syms, row_ts, coverage = ev.load_daily_prices_framed(
+        args.db, args.start, args.end, frame_symbols)
+    # Fail-loud on identity scrambling: the framed loader must hand back EXACTLY the recorded
+    # frame, one column per slot, in order. (It refuses unknown symbols upstream; this is the
+    # positional assertion — a silently dropped or reordered column would misalign every slot.)
+    if list(loaded_syms) != list(frame_symbols) or prices_np32.shape[1] != int(args.n_assets):
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: the framed loader returned "
+            f"{prices_np32.shape[1]} column(s) for {len(frame_symbols)} recorded slot(s) "
+            f"(--n-assets {args.n_assets}) / a different symbol order:\n"
+            f"  recorded frame {list(frame_symbols)}\n  loaded columns {list(loaded_syms)}\n"
+            f"  Slot k IS asset k positionally — refusing to imprint on a scrambled frame.")
+    # The EnvConfig create_jax_env_historical would have built for these arguments (env_factory.py
+    # :422-450), reproduced here because the framed loader REPLACES that loader. Every field not
+    # listed is the EnvConfig default, which is also env_factory's default for that field.
+    env_cfg = EnvConfig(
+        n_assets=int(args.n_assets),
+        initial_cash=100_000.0,
+        fee_bps=float(args.fee_bps),
+        slippage_bps=float(args.slip_bps),
+        max_steps=8,                             # walk state overrides max_episode_steps
+        window_size=60,
+        position_size_pct=args.position_size_pct,
+        reward_attributable=args.reward_attributable,
+        vector_action=True,
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
+    )
+    prices_j = jnp.asarray(prices_np32, dtype=jnp.float32)
+    prices_np = np.asarray(prices_np32, dtype=np.float64)
+    logc = np.log(np.maximum(prices_np, 1e-12))
+    inactive = [c for c in coverage if c["status"] == "inactive"]
+    partial = [c for c in coverage if c["status"] == "partial"]
+    inactive_slots = [int(c["slot"]) for c in inactive]
+    # Fix pass FIX A(3): a PARTIAL slot is counted inside n_active_slots and is ABSENT from
+    # ``inactive_slots``, so a consumer that reads only that list sees a slot which was dead for
+    # most of the window as fully live. The partial slots are therefore ALSO discoverable at top
+    # level (``partial_slots``), next to ``inactive_slots``, with the spans unchanged in meaning.
+    partial_slots = [int(c["slot"]) for c in partial]
+    n_active = int(args.n_assets) - len(inactive_slots)
+    frame = {
+        "frame_symbols": list(frame_symbols),
+        "row_ts": np.asarray(row_ts, dtype=np.int64),
+        "coverage": coverage,
+        "inactive_slots": inactive_slots,
+        "partial_slots": partial_slots,
+        # 853-shaped disclosure block (mirrors eval_vector._build_panel_framed's panel_frame).
+        "panel_frame": {
+            "source": "checkpoint-provenance-fixed-frame (TASK_853 semantics, TASK_863 port)",
+            "provenance_path": _display_path(args.panel_frame_from_checkpoint),
+            "provenance_meta": {k: v for k, v in prov.items()
+                                if k not in ("frame_symbols", "symbols")},
+            "panel_price_source": "ohlcv_daily via eval_vector.load_daily_prices_framed",
+            "n_slots": int(args.n_assets),
+            "n_active_slots": n_active,
+            "n_inactive_slots": len(inactive_slots),
+            "n_partial_slots": len(partial),
+            "inactive_slots": list(inactive_slots),
+            # FIX A(3): partial slots at the same altitude as the inactive ones (they are INSIDE
+            # n_active_slots and absent from inactive_slots — do not read one without the other).
+            "partial_slots": list(partial_slots),
+            "inactive_spans": inactive,
+            "partial_spans": partial,
+            "coverage": coverage,
+            "force_hold_rule": "price_valid = price > 0 applied per (decision row, slot) to the "
+                               "teacher target vectors, the injected one-hot BC labels and the "
+                               "policy-argmax sanity replay — every walk here feeds step_vector "
+                               "directly and so bypasses the env's compute_action_mask",
+            # FIX C: the precise, MEASURED claim about what a dead slot shows the encoder. The
+            # PANEL cell is flat-zero; the ENCODED features are CONSTANT across every decision but
+            # NOT all-zero (the guarded 0/0 vol-ratio channels sit at clip(1.0,0,5)/5 = 0.2).
+            # Constant => carries no signal => no leak; asserted by check_inactive_slot_features.
+            "inactive_slot_feature_rule":
+                "an inactive slot's PANEL cells are flat-zero; its ENCODED features are CONSTANT "
+                "across all decisions but NOT all-zero — the guarded vol-ratio channels "
+                f"{list(INACTIVE_SLOT_CONSTANT_CHANNELS)} (vol_ratio_5/15/30/60) carry a constant "
+                "clip(1.0,0,5)/5 = 0.2 from the 0/0 volume ratio. Constant across decisions => no "
+                "information, so no leak; ASSERTED per pinned run by "
+                "check_inactive_slot_features (any decision-varying cell, or a non-zero cell on "
+                "any other channel, is a REFUSAL)",
+        },
+    }
+    print("=" * 84)
+    print(f"[863] PINNED-FRAME panel from checkpoint provenance "
+          f"({_display_path(args.panel_frame_from_checkpoint)}): {args.n_assets} slots, "
+          f"{n_active} ACTIVE / {len(inactive_slots)} INACTIVE (zero coverage) in "
+          f"[{args.start}..{args.end}] — 853 semantics, slot k IS asset k")
+    if inactive:
+        print(f"[863] INACTIVE slots ({len(inactive)}) — flat-zero PANEL cells, forced HOLD on "
+              f"every in-env walk (no fills/fees); their ENCODED features are CONSTANT across "
+              f"every decision but NOT all-zero (guarded vol-ratio channels "
+              f"{list(INACTIVE_SLOT_CONSTANT_CHANNELS)} = 0.2; constant => no signal => no leak, "
+              f"asserted below); every span reported:")
+        for c in inactive:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} INACTIVE "
+                  f"[{c['span'][0]}..{c['span'][1]}]  ({c['reason']})")
+    if partial:
+        print(f"[863] PARTIAL slots ({len(partial)}) — listed mid-window: pre-listing rows are "
+              f"flat-zero => forced HOLD there, active from the listing day onward:")
+        for c in partial:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} first covered ts "
+                  f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows)")
+    if not inactive and not partial:
+        print("[863] all slots fully covered on this window (no inactive/partial spans).")
+    print("=" * 84)
+    return prices_j, logc, env_cfg, frame
+
+
+def frame_hold_mask(prices_j, start_row, n_decisions):
+    """(N, A) bool: True where the panel has NO real price at that (decision row, slot) — the
+    853 ``price_valid = current_prices > 0`` rule, evaluated on the decision rows this run walks
+    (``walk_env`` reads ``prices[start_row + k]`` at decision k). ``None`` when nothing is
+    inactive, so a fully-covered pinned window takes the unmasked code path."""
+    dec = np.asarray(prices_j[start_row:start_row + n_decisions], dtype=np.float64)
+    mask = dec <= 0.0
+    return mask if mask.any() else None
+
+
+def check_inactive_slot_features(obs, inactive_slots):
+    """TASK_863 fix pass FIX C — GUARD (not a restatement) of what a dead slot shows the encoder.
+
+    ``obs`` is (N, 27, A, A) from ``encode_training_obs``; axis 2 is the asset SLOT and axis 3 is
+    the tiled width (jax_encoder._compute_per_asset_channels: ``output.at[ch].set(tile(x[:, -1:],
+    (1, n)))`` over a (n_assets, n_assets) block), so slot s occupies ``obs[:, :, s, :]``.
+
+    For every FULLY-INACTIVE slot (flat-zero panel column) this REFUSES unless
+      (a) the slot's features are IDENTICAL across all N decisions, and
+      (b) the only non-zero channels are ``INACTIVE_SLOT_CONSTANT_CHANNELS`` (the guarded 0/0
+          vol-ratio channels at 0.2).
+    Measured on the framed fixture panel: 896 of 6048 cells per inactive slot are non-zero, all on
+    channels 8-11, all 0.2, identical for both dead slots and across every decision. A future
+    encoder change that leaked real (decision-varying, or any other channel's) signal into a dead
+    slot would fail here instead of silently training on it. PARTIAL slots are NOT checked: their
+    pre-listing rows are flat-zero and their post-listing rows are real, so decision-varying
+    features are CORRECT there (the price-validity mask, not this check, protects those rows).
+    Returns a disclosure dict recorded in the artifact."""
+    obs = np.asarray(obs)
+    report = {
+        "rule": "fully-inactive slot: features CONSTANT across decisions, non-zero ONLY on the "
+                "guarded vol-ratio channels",
+        "allowed_nonzero_channels": list(INACTIVE_SLOT_CONSTANT_CHANNELS),
+        "n_decisions": int(obs.shape[0]), "obs_shape": list(obs.shape),
+        "slot_axis": 2, "checked_slots": [], "passed": True,
+    }
+    for s in [int(x) for x in inactive_slots]:
+        f = np.asarray(obs[:, :, s, :], dtype=np.float64)             # (N, C, A)
+        f0 = f[0]
+        if not np.array_equal(f, np.broadcast_to(f0, f.shape)):
+            k = int(np.argmax(np.any(f != f0, axis=(1, 2))))
+            ch = sorted({int(c) for c in np.nonzero(f[k] != f0)[0]})
+            raise RuntimeError(
+                f"--panel-frame-from-checkpoint FIX-C GUARD: INACTIVE slot {s} has encoded "
+                f"features that VARY across decisions (first divergence at decision {k}, "
+                f"channel(s) {ch}). A slot with a flat-zero panel column must encode to the same "
+                f"constant every decision — a decision-varying feature there is real signal "
+                f"leaking into a dead slot, which the force-HOLD mask does NOT remove from the "
+                f"policy's input. Refusing to imprint on it.")
+        nz = sorted({int(c) for c in np.nonzero(f0)[0]})
+        leak = [c for c in nz if c not in INACTIVE_SLOT_CONSTANT_CHANNELS]
+        if leak:
+            raise RuntimeError(
+                f"--panel-frame-from-checkpoint FIX-C GUARD: INACTIVE slot {s} encodes a non-zero "
+                f"value on channel(s) {leak}, outside the guarded vol-ratio set "
+                f"{list(INACTIVE_SLOT_CONSTANT_CHANNELS)} (values "
+                f"{[float(f0[c].reshape(-1)[0]) for c in leak]}). A flat-zero panel column may "
+                f"only produce the guarded 0/0 vol-ratio constant; anything else means the encoder "
+                f"now derives something from a dead slot. Refusing to imprint on it.")
+        report["checked_slots"].append({
+            "slot": s,
+            "n_feature_cells": int(f.size),
+            "n_nonzero_feature_cells": int((f != 0).sum()),
+            "nonzero_channels": nz,
+            "nonzero_channel_values": {str(c): float(np.unique(f0[c])[0]) for c in nz
+                                       if np.unique(f0[c]).size == 1},
+            "constant_across_decisions": True,
+        })
+    return report
+
+
+def _display_path(p):
+    """Repo-relative when inside the repo, absolute otherwise (mirror of
+    eval_vector._display_path: committed artifacts must not embed ephemeral tmp paths)."""
+    p = os.path.abspath(p)
+    rel = os.path.relpath(p, _REPO)
+    return p if rel.startswith("..") else rel
+
+
+# =============================================================================
 # in-env walks (teacher replay / imprinted-policy sanity replay)
 # =============================================================================
 
-def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
+def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None):
     """Deterministic single-episode walk from panel row ``start_row`` through
     ``step_vector`` (the corridor/831 replay pattern, on the TRAINING panel/config).
     ``action_fn(k, state) -> (A,) int32`` (state = the pre-step TradingState, so a
     state-greedy mapping can read ``pos_side`` and, for the weight-native ladder,
-    reconstruct the current signed weight). Returns per-decision returns + diag."""
+    reconstruct the current signed weight). Returns per-decision returns + diag.
+
+    TASK_863: ``hold_mask`` (N, A) bool, when given, forces HOLD wherever the panel has no real
+    price at that (decision, slot) — the 853 price-validity rule, applied here because this walk
+    hands its vector straight to ``step_vector`` and so bypasses the env's action mask. The
+    RECORDED ``actions`` are the masked ones, so the injected BC labels are what was walked.
+    Default ``None`` = the unpinned path, unchanged."""
     initial_cash = float(cfg.initial_cash)
     state = reset(jax.random.PRNGKey(0), prices_j, cfg).replace(
         episode_start_idx=jnp.array(start_row), current_step=jnp.array(0),
@@ -294,9 +555,15 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
     pvs = np.empty(n_decisions + 1, dtype=np.float64)
     pvs[0] = initial_cash
     n_long = n_short = 0
+    # Fix pass FIX A: under the pin, the reported avg_long/avg_short average over ALL slots,
+    # including the force-HOLD ones that can never carry a position — so they are not comparable
+    # to an unpinned (fully-covered) reference. Count an ACTIVE-CELLS-ONLY companion alongside.
+    n_long_active = n_short_active = 0
     bankrupt_at = -1
     for k in range(n_decisions):
         act = np.asarray(action_fn(k, state), dtype=np.int32)
+        if hold_mask is not None:
+            act = np.where(hold_mask[k], HOLD_ACTION_CODE, act).astype(np.int32)
         state, _, r, d = jstep(state, jnp.asarray(act))
         jax.block_until_ready(r)
         actions[k] = act
@@ -307,6 +574,10 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
         pvs[k + 1] = pv
         sd = np.asarray(state.pos_side)
         n_long += int((sd == 1).sum()); n_short += int((sd == 2).sum())
+        if hold_mask is not None:
+            live = ~hold_mask[k]
+            n_long_active += int(((sd == 1) & live).sum())
+            n_short_active += int(((sd == 2) & live).sum())
         if bankrupt_at < 0 and pv <= initial_cash * cfg.liquidation_threshold_pct:
             bankrupt_at = k
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -317,6 +588,11 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn):
         "final_pv": float(pvs[-1]),
         "avg_long": n_long / max(n_decisions, 1),
         "avg_short": n_short / max(n_decisions, 1),
+        # FIX A companions — None on the unpinned path (nothing is masked there).
+        "avg_long_active": (None if hold_mask is None
+                            else n_long_active / max(n_decisions, 1)),
+        "avg_short_active": (None if hold_mask is None
+                             else n_short_active / max(n_decisions, 1)),
         "bankrupt_at": bankrupt_at,
     }
 
@@ -483,20 +759,21 @@ def _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, n_assets):
     return fn
 
 
-def order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N, bar_minutes):
+def order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N, bar_minutes,
+                          hold_mask=None):
     """The FIXED order-semantics floor: the canonical order-code teacher
     (``corridor._to_action_vec``, via ``teacher_fn``) walked at net@21 through the ORDER
     env (weight OFF). This is the 830/831 corridor floor and the SAME reference both the
     primary and the weight-native re-gate are scored against."""
     order_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
                                 vector_weight_rebalance=False)
-    wo = walk_env(prices_j, order_cfg, start_row, N, teacher_fn)
+    wo = walk_env(prices_j, order_cfg, start_row, N, teacher_fn, hold_mask=hold_mask)
     return {"s": _sharpe(wo["rets"], bar_minutes),
             "final_pv": wo["final_pv"], "bankrupt_at": wo["bankrupt_at"]}
 
 
 def expressibility_gate(prices_j, env_cfg, weight_teacher_fn, start_row, N, bar_minutes,
-                        order_ref, mapping, tol=0.10):
+                        order_ref, mapping, tol=0.10, hold_mask=None):
     """Pre-registered teacher-expressibility gate (TASK_845, the real deliverable).
 
     Walks ``weight_teacher_fn`` at net@21 through the WEIGHT env (weight ON) on the
@@ -513,7 +790,7 @@ def expressibility_gate(prices_j, env_cfg, weight_teacher_fn, start_row, N, bar_
     against the SAME order_ref (DEC-2 core-risk check)."""
     weight_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
                                  vector_weight_rebalance=True)
-    ww = walk_env(prices_j, weight_cfg, start_row, N, weight_teacher_fn)
+    ww = walk_env(prices_j, weight_cfg, start_row, N, weight_teacher_fn, hold_mask=hold_mask)
     s_o = order_ref["s"]
     s_w = _sharpe(ww["rets"], bar_minutes)
     rel = _rel(s_w, s_o)
@@ -588,7 +865,7 @@ def load_teacher_vectors(path):
     return doc
 
 
-def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T):
+def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T, frame=None):
     """FAIL-LOUD provenance gate (task scope 2). The collected target stream may only be
     imprinted when the imprint run reproduces the EXACT panel and env the walk was recorded on:
     db, window, bar/universe frame, decision rows (index AND timestamp), and the whole EnvConfig
@@ -599,7 +876,13 @@ def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T):
     Fix pass: the gate ALSO pins the teacher OPERATOR and CHECKPOINT (FIX 1 —
     ``TV_OPERATOR_PIN`` / ``TV_CHECKPOINT_PIN``; TASK_861 line 35 "any deviation is a different
     experiment and must fail loud") and validates the payload's integrality (FIX 2). Only
-    ``--allow-off-pin-teacher`` downgrades the pin to a loud, RECORDED deviation."""
+    ``--allow-off-pin-teacher`` downgrades the pin to a loud, RECORDED deviation.
+
+    TASK_863 scope 2: the panel-frame check is FAIL-CLOSED IN BOTH DIRECTIONS. A frame-pinned
+    collection may only be imprinted by an imprint pinned to the IDENTICAL frame (symbol list AND
+    order — the provenance path may differ); a pinned collection with an unpinned imprint, or a
+    pinned imprint with an unpinned collection, is REFUSED with both directions named.
+    Unpinned-on-both-sides stays allowed: that is the legacy path, unchanged."""
     ev = _load_eval_module()
     p = doc["provenance"]
     d = doc["decisions"]
@@ -619,18 +902,195 @@ def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T):
     chk("bar_minutes", p.get("bar_minutes"), int(args.bar_minutes))
     chk("n_assets", p.get("n_assets"), int(args.n_assets))
 
-    # --- panel FRAME: this runner is minute-sourced only (create_jax_env_historical) ---
-    if p.get("panel_source") != "minute":
+    # --- panel FRAME (TASK_863 scope 2): FAIL-CLOSED IN BOTH DIRECTIONS -----------------------
+    # Before 863 this was a one-directional refusal ("the 853 fixed-frame panel has no counterpart
+    # here"), which is no longer true: --panel-frame-from-checkpoint gives it one. The dangerous
+    # case the old text could not express is the REVERSE mix (a pinned imprint on an unpinned
+    # collection), and the case it must now police is a pinned/pinned pair whose frames DIFFER —
+    # including a same-membership REORDER, which is invisible to any set comparison but misaligns
+    # every slot (slot k IS asset k).
+    coll_frame_path = p.get("panel_frame_from_checkpoint")
+    # FIX D (fix pass): a TRUTHY NON-DICT panel_frame (valid JSON, wrong type — e.g. the string
+    # "fixed-frame") used to reach ``.get("coverage")`` below and raise a bare AttributeError. It
+    # was fail-closed in effect, but house style (eval_vector.check_checkpoint_arch handles this
+    # exact valid-JSON/wrong-type case) is a NAMED refusal. Guard + name it; still fail-closed.
+    coll_frame_raw = p.get("panel_frame")
+    coll_frame_block = coll_frame_raw if isinstance(coll_frame_raw, dict) else {}
+    # FIX 2.4 (round 2): a PRESENT but EMPTY panel_frame object was the one malformed value that
+    # slipped through BOTH guards — it IS a dict (so the FIX D type check below skips it) and it is
+    # FALSY (so ``coll_pinned`` read False), so a TRUNCATED 853 disclosure block silently
+    # DOWNGRADED to the legacy/unpinned path instead of refusing. Every other malformed value ([],
+    # false, 0, 7, "fixed-frame", true) already draws the named panel_frame TYPE refusal. What
+    # makes this safe is the ABSENT/EMPTY distinction: eval_vector records ``panel_frame: null`` on
+    # every UNPINNED collection (the legitimate legacy header — see
+    # 861_search_teacher_imprint/chosen_vectors_fixture.json), so ONLY a present, EMPTY OBJECT is
+    # treated as corrupt here; null/absent keeps the legacy path byte-for-byte.
+    coll_frame_empty = isinstance(coll_frame_raw, dict) and not coll_frame_raw
+    coll_pinned = bool(coll_frame_path or coll_frame_raw or coll_frame_empty)
+    imp_pinned = frame is not None
+    frame_gate = {
+        "collection_pinned": bool(coll_pinned),
+        "imprint_pinned": bool(imp_pinned),
+        "collection_provenance_path": coll_frame_path,
+        "imprint_provenance_path": (_display_path(args.panel_frame_from_checkpoint)
+                                    if imp_pinned else None),
+        "identity_matched": None,
+        "identity_source": None,
+        # FIX B: what the collection RECORDED as its panel source vs what this run's panel
+        # actually IS. Under the pin the recorded flag is the --panel-source DEFAULT string
+        # ('minute'), which eval_vector.build_panel:1827 OVERRIDES by dispatching to the framed
+        # (daily) loader before the panel_source branch is even read — so the recorded value
+        # verifies nothing under a frame pin and cannot be compared to 'minute' as if it did.
+        "collection_panel_source_recorded": p.get("panel_source"),
+        "imprint_panel_source_actual": ("daily-framed" if imp_pinned else "minute"),
+    }
+    if coll_frame_raw is not None and not isinstance(coll_frame_raw, dict):
+        mism.append(
+            f"    panel_frame TYPE: the collection header's provenance.panel_frame is a "
+            f"{type(coll_frame_raw).__name__}, not a JSON object "
+            f"({str(coll_frame_raw)[:80]!r}) -> the 853 frame-disclosure block is MALFORMED, so "
+            f"the frame it walked cannot be read at all (per-slot symbols, coverage, spans). "
+            f"Re-collect with the current eval_vector.py; a malformed frame record is not "
+            f"imprintable (the same rule as an absent one)")
+        frame_gate["collection_panel_frame_type"] = type(coll_frame_raw).__name__
+    elif coll_frame_empty:
+        # FIX 2.4 (round 2) — the named refusal for the truncated block.
+        mism.append(
+            "    panel_frame EMPTY: the collection header carries provenance.panel_frame as an "
+            "EMPTY JSON object -> the 853 frame-disclosure block is TRUNCATED (no per-slot "
+            "symbols, no coverage, no spans), so the frame it walked cannot be read at all. An "
+            "ABSENT panel_frame key — or the `null` one every UNPINNED collection records — is the "
+            "legitimate legacy header and still takes the legacy path; a PRESENT but empty object "
+            "is a corrupt/truncated record and is not imprintable (the same rule as a malformed or "
+            "an absent frame). Re-collect with the current eval_vector.py")
+        frame_gate["collection_panel_frame_empty"] = True
+    # --- panel SOURCE: which loader built the panel this run walks ---
+    if imp_pinned:
+        # Under --panel-frame-from-checkpoint this run's panel is NOT minute-sourced: it is the
+        # DAILY framed panel. A frame-pinned collection records either 'minute' (the --panel-source
+        # default, left untouched because the frame path overrides it) or 'daily' — the framed
+        # loader is dispatched BEFORE that branch, so the panel is bit-identical either way and
+        # refusing 'daily' would reject a perfectly frame-matched pair.
+        if p.get("panel_source") not in ("minute", "daily"):
+            mism.append(
+                f"    panel_source: collection={p.get('panel_source')!r}  "
+                f"imprint='daily-framed'  -> under --panel-frame-from-checkpoint BOTH runs build "
+                f"the DAILY framed panel (ohlcv_daily via eval_vector.load_daily_prices_framed, "
+                f"--bar-minutes 1440), and a frame-pinned collection records 'minute' (the "
+                f"--panel-source default the frame path overrides) or 'daily' here — this value "
+                f"is neither, so the collection's panel loader is unknown")
+    elif p.get("panel_source") != "minute":
+        # Unpinned/legacy path — message and behavior byte-identical to shipped 861.
         mism.append(f"    panel_source: collection={p.get('panel_source')!r}  imprint='minute'"
                     f"  -> this runner builds its panel through create_jax_env_historical (the "
                     f"1-min ohlcv table, PIN b); it cannot reproduce a daily/framed panel")
-    if p.get("panel_frame_from_checkpoint") or p.get("panel_frame"):
-        mism.append(f"    panel_frame: collection=fixed-frame "
-                    f"({p.get('panel_frame_from_checkpoint')!r})  imprint=coverage-ranked  -> "
-                    f"the 853 fixed-frame panel has no counterpart here (slot identity would "
-                    f"not match)")
-    row_ts, loaded_syms = ev.load_row_timestamps(
-        args.db, args.start, args.end, None, int(args.n_assets), int(args.bar_minutes))
+    if coll_pinned and not imp_pinned:
+        mism.append(
+            f"    panel_frame PIN MISMATCH (pinned collection, UNPINNED imprint): "
+            f"collection=FIXED-FRAME ({coll_frame_path!r})  imprint=coverage-ranked  -> the "
+            f"collection walked a fixed positional frame while this imprint would derive its "
+            f"universe from ORDER BY COUNT(*) DESC LIMIT {args.n_assets} over the window; slot k "
+            f"IS asset k, so the recorded target vectors would be applied to DIFFERENT assets. "
+            f"Pass --panel-frame-from-checkpoint <the collection's frame> (TASK_863 scope 2: "
+            f"BOTH legs pin the frame, or NEITHER does)")
+    elif imp_pinned and not coll_pinned:
+        mism.append(
+            f"    panel_frame PIN MISMATCH (PINNED imprint, unpinned collection): "
+            f"collection=coverage-ranked  imprint=FIXED-FRAME "
+            f"({_display_path(args.panel_frame_from_checkpoint)})  -> this imprint walks a fixed "
+            f"positional frame the collection never used, so the recorded vectors belong to the "
+            f"collection's coverage-ranked slots, not to these. Re-collect with `eval_vector.py "
+            f"--panel-frame-from-checkpoint` on the SAME frame, or drop the flag here (TASK_863 "
+            f"scope 2: BOTH legs pin the frame, or NEITHER does)")
+    elif coll_pinned and imp_pinned:
+        # Frame IDENTITY = the ordered symbol list. Prefer the per-slot record (853 writes one
+        # coverage entry per slot); fall back to loaded_symbols, which the framed loader fills
+        # with the full frame in order. If NEITHER is present the frame is unverifiable -> REFUSE
+        # (a claim we cannot check is worse than a refusal — the FIX 6 lesson).
+        want_frame = list(frame["frame_symbols"])
+        cov = coll_frame_block.get("coverage")
+        got_frame = src_id = cov_bad = None
+        # FIX 2.2 / FIX 2.3 (round 2): the old predicate checked only that the "slot"/"symbol" KEYS
+        # existed, never their TYPES — so ``int(c["slot"])`` raised a raw ValueError on "abc" and a
+        # raw TypeError on null (the same valid-JSON/wrong-TYPE class FIX D exists to name; this
+        # deliverable's contract is "no raw tracebacks") — and it accepted slot multisets that
+        # CANNOT be a per-slot map (e.g. [0,0,2,3,4,5,6,7]: two records for slot 0, none for slot 1)
+        # which sort stably into a plausible-looking symbol sequence that was then recorded as
+        # ``identity_matched: true`` positional proof. Validate the types AND that the slots are
+        # exactly 0..n-1. A coverage record that is PRESENT but malformed is REFUSED (it does NOT
+        # silently fall back to loaded_symbols: a corrupt header cannot vouch for itself); an
+        # ABSENT coverage keeps the pre-existing loaded_symbols fallback.
+        if cov is not None:
+            if not isinstance(cov, list) or len(cov) != len(want_frame):
+                cov_bad = (f"expected a JSON list of {len(want_frame)} per-slot records, got a "
+                           f"{type(cov).__name__}"
+                           + (f" of length {len(cov)}" if isinstance(cov, list) else ""))
+            else:
+                bad_i = next((i for i, c in enumerate(cov) if not (
+                    isinstance(c, dict) and isinstance(c.get("symbol"), str)
+                    and isinstance(c.get("slot"), int)
+                    and not isinstance(c.get("slot"), bool))), None)
+                slots = None if bad_i is not None else sorted(int(c["slot"]) for c in cov)
+                if bad_i is not None:
+                    cov_bad = (f"record {bad_i} is not an object carrying an INT 'slot' and a STR "
+                               f"'symbol' ({str(cov[bad_i])[:100]!r})")
+                elif slots != list(range(len(want_frame))):
+                    cov_bad = (f"the 'slot' values {slots} are not a complete per-slot map of "
+                               f"0..{len(want_frame) - 1} (duplicated and/or missing slots), so "
+                               f"the record cannot establish POSITIONAL identity at all")
+                else:
+                    got_frame = [c["symbol"] for c in sorted(cov, key=lambda c: int(c["slot"]))]
+                    src_id = "provenance.panel_frame.coverage (per-slot symbol record)"
+        if got_frame is None and cov_bad is None and isinstance(p.get("loaded_symbols"), list):
+            got_frame = list(p["loaded_symbols"])
+            src_id = "provenance.loaded_symbols"
+        frame_gate["identity_source"] = src_id
+        if cov_bad is not None:
+            frame_gate["collection_coverage_malformed"] = cov_bad
+            mism.append(
+                f"    panel_frame.coverage MALFORMED: {cov_bad}. That per-slot record is the "
+                f"collection's positional proof (slot k IS asset k); a record that cannot be read "
+                f"as one leaves the frame it walked UNVERIFIABLE, and provenance.loaded_symbols is "
+                f"NOT accepted in its place (a corrupt frame header cannot vouch for itself). "
+                f"Re-collect with the current eval_vector.py; an unverifiable frame is not "
+                f"imprintable")
+        elif got_frame is None:
+            mism.append(
+                f"    panel_frame identity: the collection header records a frame pin "
+                f"({coll_frame_path!r}) but carries no per-slot symbol record "
+                f"(panel_frame.coverage / loaded_symbols), so the frame it walked cannot be "
+                f"compared against this run's frame. Re-collect with the current eval_vector.py; "
+                f"an unverifiable frame is not imprintable")
+        elif got_frame != want_frame:
+            k = next((i for i in range(min(len(want_frame), len(got_frame)))
+                      if want_frame[i] != got_frame[i]), min(len(want_frame), len(got_frame)))
+            same_membership = sorted(got_frame) == sorted(want_frame)
+            mism.append(
+                f"    panel_frame identity MISMATCH at slot {k}: collection="
+                f"{got_frame[k] if k < len(got_frame) else None!r}  imprint="
+                f"{want_frame[k] if k < len(want_frame) else None!r} (source: {src_id})\n"
+                f"      collection frame {got_frame}\n      imprint    frame {want_frame}\n"
+                f"      -> the two runs pin DIFFERENT frames. "
+                + ("The MEMBERSHIP is identical and only the ORDER differs — that is exactly the "
+                   "failure this gate exists to catch: slot k IS asset k positionally (the "
+                   "encoder kernel is 27 feats x n_assets slots), so a reordered frame silently "
+                   "applies every target vector to the wrong asset while every set-based check "
+                   "passes. Membership-only matching is NOT accepted."
+                   if same_membership else
+                   "The frames differ in membership as well as position.")
+                + " Point both legs at the same frame provenance (the PATH may differ; the "
+                  "ordered symbol list may not)")
+        else:
+            frame_gate["identity_matched"] = True
+    # Row-timestamp axis + universe: under the pin they come from the framed panel this run
+    # actually built (the minute loader mirror would reconstruct the coverage-ranked universe and
+    # the minute row axis — neither of which this run walks).
+    if imp_pinned:
+        row_ts = frame["row_ts"]
+        loaded_syms = list(frame["frame_symbols"])
+    else:
+        row_ts, loaded_syms = ev.load_row_timestamps(
+            args.db, args.start, args.end, None, int(args.n_assets), int(args.bar_minutes))
     chk("loaded_symbols", p.get("loaded_symbols"), list(loaded_syms),
         "the universes differ (slot k IS asset k positionally) — the target vectors would be "
         "applied to the wrong assets")
@@ -826,6 +1286,10 @@ def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T):
           f"{len(exempt_applied)} exempt: {exempt_applied}); operator pin "
           f"{'OFF-PIN (allowed)' if off_pin else 'MATCHED'}; payload sha256 OK; "
           f"timestamps_verified={ts_checked}")
+    if imp_pinned or coll_pinned:
+        print(f"[863] frame pin gate PASS: collection PINNED={coll_pinned} imprint "
+              f"PINNED={imp_pinned}; frame identity (symbol list AND order) matched on "
+              f"{args.n_assets} slots via {frame_gate['identity_source']}")
     return {
         "path": os.path.relpath(os.path.abspath(path), _REPO),
         "schema": doc.get("schema"),
@@ -848,6 +1312,10 @@ def gate_teacher_vectors(doc, path, args, tier_cfg, start_row, N, T):
             "operator_off_pin_fields": [ln.strip().split(":", 1)[0] for ln in off_pin],
             "operator_off_pin_detail": [ln.strip() for ln in off_pin],
             "allow_off_pin_teacher_flag": bool(args.allow_off_pin_teacher),
+            # TASK_863 scope 2: the both-directions frame-pin verdict. ADDITIVE and appended LAST
+            # so it is ABSENT (and every key above is byte-order-unchanged) when neither side is
+            # pinned — the legacy unpinned-both artifact stays bit-identical to shipped 861.
+            **({"frame_pin": frame_gate} if (imp_pinned or coll_pinned) else {}),
         },
         # The recorded walk score the caller replays and asserts against (FIX 2b).
         "recorded_walk": {
@@ -985,7 +1453,14 @@ def run(args, out_path, tag):
     corridor = _load_corridor()
 
     # ---- panel (TRAINING path, PIN b) + book signs on THAT panel ----
-    prices_j, logc, env_cfg = load_training_panel(args)
+    # TASK_863: --panel-frame-from-checkpoint swaps in the 853 fixed-frame panel (flag absent =>
+    # the PIN-b minute panel, untouched). ``frame`` stays None on the unpinned path and every
+    # frame-derived object below (hold_mask, the artifact block) is then None/absent.
+    frame = None
+    if args.panel_frame_from_checkpoint is not None:
+        prices_j, logc, env_cfg, frame = load_framed_panel(args)
+    else:
+        prices_j, logc, env_cfg = load_training_panel(args)
     T, A = logc.shape
     tgt, pres, warm = corridor.book_target_signs(logc)
     start_row = max(int(warm), int(env_cfg.window_size))
@@ -998,6 +1473,22 @@ def run(args, out_path, tag):
             f"(fixture smoke needs --bar-minutes small enough, see SPEC)")
     print(f"[832] panel T={T} A={A} warm={warm} start_row={start_row} N={N} "
           f"bar_minutes={args.bar_minutes}")
+    # TASK_863: the 853 price-validity rule on THIS run's decision rows. None (and every walk
+    # below takes the unmasked path) when unpinned or when no slot is inactive.
+    hold_mask = None if frame is None else frame_hold_mask(prices_j, start_row, N)
+    if frame is not None:
+        n_hold_cells = 0 if hold_mask is None else int(hold_mask.sum())
+        print(f"[863] force-HOLD cells (no real price at that decision row / slot): "
+              f"{n_hold_cells} of {N * A} ({100.0 * n_hold_cells / max(N * A, 1):.2f}%) — "
+              f"applied to the teacher targets, the injected BC labels and the sanity replay")
+        frame["panel_frame"]["n_force_hold_cells"] = n_hold_cells
+        frame["panel_frame"]["n_decision_cells"] = int(N * A)
+        # Fix pass FIX A: the dilution FRACTION, recorded next to the counts. Every reported
+        # per-cell scalar below (teacher_action_agreement, policy_action_hist, avg_long/short, the
+        # 861 fit block) averages over ALL cells including these dead ones, so it is NOT comparable
+        # to an unpinned reference — hence the active-cells-only companions and this fraction.
+        frame["panel_frame"]["masked_cell_fraction"] = (
+            float(n_hold_cells) / float(max(N * A, 1)))
 
     # ---- teacher walks, one per cost tier (same mapping; costs differ) ----
     def teacher_fn(k, state):
@@ -1016,7 +1507,7 @@ def run(args, out_path, tag):
     if args.teacher_vectors is not None:
         tv_doc = load_teacher_vectors(args.teacher_vectors)
         tv_prov = gate_teacher_vectors(tv_doc, args.teacher_vectors, args,
-                                       tier_cfg[GATE_COSTS[-1]], start_row, N, T)
+                                       tier_cfg[GATE_COSTS[-1]], start_row, N, T, frame=frame)
         tv_actions_original = np.asarray(
             tv_doc["decisions"]["chosen_vectors"], dtype=np.int32)
         tv_actions = tv_actions_original
@@ -1049,23 +1540,26 @@ def run(args, out_path, tag):
     # the canon path (flag OFF) runs exactly as before, so the pins stay byte-identical.
     teacher = floor = gate = None
     if tv_actions is None:
-        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, teacher_fn)
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, teacher_fn,
+                               hold_mask=hold_mask)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] teacher floor in-env: gross {floor[0]:+.3f}  net@21 {floor[21]:+.3f}")
 
         wn_fn = _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, A)
         order_ref = order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N,
-                                          args.bar_minutes)
+                                          args.bar_minutes, hold_mask=hold_mask)
         gate = expressibility_gate(prices_j, env_cfg, teacher_fn, start_row, N, args.bar_minutes,
-                                   order_ref, "order-code (corridor._to_action_vec)")
+                                   order_ref, "order-code (corridor._to_action_vec)",
+                                   hold_mask=hold_mask)
         _gate_line(gate)
         if not gate["passed"]:
             # FAIL => re-gate the weight-native ladder mapping against the SAME order-code floor
             # reference (pre-registered contingency; the same wn_fn can be IMPRINTED, below).
             wn_gate = expressibility_gate(
                 prices_j, env_cfg, wn_fn, start_row, N, args.bar_minutes, order_ref,
-                "weight-native ladder (sign(w_target - w_cur) | |dw|>deadband)")
+                "weight-native ladder (sign(w_target - w_cur) | |dw|>deadband)",
+                hold_mask=hold_mask)
             _gate_line(wn_gate)
             gate["weight_native_regate"] = wn_gate
     else:
@@ -1102,7 +1596,7 @@ def run(args, out_path, tag):
                 "certifies the weight-env teacher, not the order-env one (TASK_845 MINOR, "
                 "preserved across the 861 --teacher-vectors path)")
         tv_fn = lambda k, state: tv_actions[k]                          # noqa: E731
-        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, tv_fn)
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, tv_fn, hold_mask=hold_mask)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] IMPRINT MAPPING = {imprint_mapping} (861 collected chosen vectors); "
@@ -1124,7 +1618,7 @@ def run(args, out_path, tag):
             "--imprint-mapping weight-native requires --vector-weight-rebalance so the teacher "
             "walk, obs encoding, and ExIt env all run weight semantics; the gate certifies the "
             "weight-env teacher, not the order-env one")
-        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, wn_fn)
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, wn_fn, hold_mask=hold_mask)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] IMPRINT MAPPING = weight-native ladder; teacher floor in-env: "
@@ -1134,6 +1628,19 @@ def run(args, out_path, tag):
 
     # ---- training observations for the SAME decision rows (PIN b) ----
     obs = encode_training_obs(prices_j, start_row, N, env_cfg)
+    # Fix pass FIX C: GUARD the dead-slot feature claim on the obs actually injected (pinned runs
+    # with at least one fully-inactive slot). Fails loud — see check_inactive_slot_features.
+    if frame is not None and frame["inactive_slots"]:
+        frame["panel_frame"]["inactive_slot_feature_check"] = check_inactive_slot_features(
+            obs, frame["inactive_slots"])
+        chk_ = frame["panel_frame"]["inactive_slot_feature_check"]
+        for s_ in chk_["checked_slots"]:
+            print(f"[863] inactive-slot feature GUARD slot {s_['slot']:>3}: constant across all "
+                  f"{chk_['n_decisions']} decisions; {s_['n_nonzero_feature_cells']} of "
+                  f"{s_['n_feature_cells']} feature cells non-zero, channels "
+                  f"{s_['nonzero_channels']} (guarded vol-ratio) = "
+                  f"{sorted(set(s_['nonzero_channel_values'].values()))} — flat-zero PANEL cells, "
+                  f"CONSTANT (not all-zero) encoded features, so no signal and no leak")
 
     # ---- model + trainer + buffer-injection (the pinned mechanism) ----
     model, trainer = build_model_and_trainer(args, A)
@@ -1186,23 +1693,56 @@ def run(args, out_path, tag):
 
     # ---- imprint-sanity: deterministic policy-argmax replay in-env ----
     pol_actions = policy_argmax_actions(model, trainer.state.params, obs, A)
+    # TASK_863: the policy-argmax replay bypasses the env action mask, so apply the SAME
+    # price-validity rule 853 applies in eval_vector.evaluate_checkpoint. Forcing HOLD on a
+    # zero-price cell is always correct (no tradeable market there) and can never HOLD a
+    # genuinely-active decision, so it is alignment-safe. Unpinned path: hold_mask is None.
+    if hold_mask is not None:
+        pol_actions = np.where(hold_mask, HOLD_ACTION_CODE, pol_actions).astype(np.int32)
     agreement = float(np.mean(pol_actions == teacher[net_tier]["actions"]))
     # TASK_861 acceptance (iv): the train-set fit measured against the NEVER-SHUFFLED targets.
     tv_fit = None
     if tv_actions_original is not None:
-        tv_fit = teacher_vectors_fit(
-            policy_action_log_marginals(model, trainer.state.params, obs, A),
-            tv_actions_original)
+        tv_logp = policy_action_log_marginals(model, trainer.state.params, obs, A)
+        tv_fit = teacher_vectors_fit(tv_logp, tv_actions_original)
+        # Fix pass FIX A: every scalar in this block (NLL, marginal baseline, argmax agreement,
+        # modal_action_rate — and therefore argmax_excess_over_modal, whose floor is SHIFTED by the
+        # forced cells) is computed over ALL N x A label cells, including the force-HOLD ones. Add
+        # the ACTIVE-CELLS-ONLY companion (same estimator, cells restricted to ~hold_mask) without
+        # touching the existing keys. Pinned-only: absent on the legacy path.
+        if hold_mask is not None:
+            act_ = ~hold_mask
+            if int(act_.sum()):
+                tv_fit["active_cells_only"] = teacher_vectors_fit(
+                    tv_logp[act_][:, None, :], tv_actions_original[act_][:, None])
+            else:
+                tv_fit["active_cells_only"] = None
+            tv_fit["masked_cell_fraction"] = float(hold_mask.mean())
+            tv_fit["active_cells_note"] = (
+                "the keys above average over ALL label cells, INCLUDING the force-HOLD cells of "
+                "inactive/pre-listing slots (see masked_cell_fraction). 'active_cells_only' is the "
+                "SAME estimator on the ~hold_mask cells and is the figure to compare across "
+                "frames; neither is comparable to an unpinned, fully-covered reference")
         print(f"[861] teacher-vector fit vs the NEVER-SHUFFLED targets "
               f"(n={tv_fit['n_label_cells']} cells): NLL {tv_fit['nll_vs_original_targets']:.4f} "
               f"vs marginal baseline {tv_fit['nll_marginal_baseline']:.4f} -> reduction "
               f"{tv_fit['nll_reduction']:+.4f} (floor {tv_fit['nll_reduction_floor']:+.2f}); "
               f"argmax agreement {tv_fit['argmax_agreement_vs_original']:.3f} vs modal rate "
               f"{tv_fit['modal_action_rate']:.3f}")
+        if tv_fit.get("active_cells_only"):
+            a_ = tv_fit["active_cells_only"]
+            print(f"[863] the line above is DILUTED by the force-HOLD cells "
+                  f"({100.0 * tv_fit['masked_cell_fraction']:.2f}% of cells). ACTIVE-CELLS-ONLY "
+                  f"companion (n={a_['n_label_cells']}): NLL "
+                  f"{a_['nll_vs_original_targets']:.4f} vs marginal baseline "
+                  f"{a_['nll_marginal_baseline']:.4f} -> reduction {a_['nll_reduction']:+.4f}; "
+                  f"argmax agreement {a_['argmax_agreement_vs_original']:.3f} vs modal rate "
+                  f"{a_['modal_action_rate']:.3f} (the modal floor above is SHIFTED by the forced "
+                  f"HOLDs, so argmax_excess_over_modal is measured against a moved floor)")
     sanity = {}
     for c in GATE_COSTS:
         rep = walk_env(prices_j, tier_cfg[c], start_row, N,
-                       lambda k, state: pol_actions[k])
+                       lambda k, state: pol_actions[k], hold_mask=hold_mask)
         s = _sharpe(rep["rets"], args.bar_minutes)
         sanity[c] = {
             "policy_inenv": float(s) if np.isfinite(s) else None,
@@ -1212,8 +1752,120 @@ def run(args, out_path, tag):
             "final_pv": rep["final_pv"], "avg_long": rep["avg_long"],
             "avg_short": rep["avg_short"], "bankrupt_at": rep["bankrupt_at"],
         }
+        # Fix pass FIX A — APPENDED (so the legacy dict is byte-identical): avg_long/avg_short
+        # average open positions over ALL slots, dead ones included. Active-cells-only companions.
+        if hold_mask is not None:
+            sanity[c]["avg_long_active_cells"] = rep["avg_long_active"]
+            sanity[c]["avg_short_active_cells"] = rep["avg_short_active"]
 
     hist = lambda a: {str(i): int((a == i).sum()) for i in range(N_ACTIONS_PER_ASSET)}
+    pol_hist = hist(pol_actions)
+    # ============================ fix pass FIX 0 + FIX A (PINNED RUNS ONLY) ======================
+    # FIX 0 (MAJOR): a degenerate PINNED run used to exit 0 and write a green-looking artifact. An
+    # under-trained pinned imprint can collapse the policy to total HOLD, which makes every replay
+    # return a zero-variance return series => Sharpe non-finite => policy_inenv/corridor_position
+    # null, sitting next to all_losses_finite:true and policy_ce_decreased:true with NO failure
+    # marker of any kind. With --smoke-assert OFF (the default for ANY db that is not byte-equal to
+    # the repo fixture path — i.e. INCLUDING the scheduled real leg) the run exited 0 and nothing
+    # downstream could tell it from a healthy one. Under the pin (and ONLY under the pin — the
+    # unpinned/legacy behavior is PRE-EXISTING and deliberately untouched) a non-finite/None sanity
+    # Sharpe on EITHER cost tier is now a fail-loud condition INDEPENDENT of --smoke-assert: the
+    # verdict is decided HERE, before anything is written, the artifact carries an explicit marker,
+    # and the run exits non-zero (see the refusal after the write below).
+    # FIX 2.1 (round 2): the verdict examines EVERY Sharpe-valued sanity.per_tier field, not just
+    # policy_inenv. corridor_position IS the ledger metric (ledger_row.
+    # imprint_corridor_position_net21) and teacher_floor_inenv is the bar it is measured against, so
+    # a null in either is just as degenerate — and a run that recorded degenerate_replay:FALSE with
+    # a null corridor_position was making a POSITIVE health assertion about a degenerate run, which
+    # is worse than carrying no marker at all. The TEACHER-side null gets its OWN diagnosis: it
+    # means the teacher never opened a position, which no amount of extra --iters can fix.
+    sanity_extra = {}
+    degenerate_reason = None
+    if frame is not None:
+        sharpe_fields = ("policy_inenv", "teacher_floor_inenv", "corridor_position")
+        null_by_tier = {c: [f for f in sharpe_fields if sanity[c][f] is None] for c in GATE_COSTS}
+        degenerate = [c for c in GATE_COSTS if null_by_tier[c]]
+        collapsed = [c for c in GATE_COSTS if "policy_inenv" in null_by_tier[c]]
+        teacher_flat = [c for c in GATE_COSTS if "teacher_floor_inenv" in null_by_tier[c]]
+
+        def tier_names(cs):
+            return ", ".join(("gross" if c == 0 else f"net@{c}") for c in cs)
+
+        n_cells = int(N * A)
+        n_masked = 0 if hold_mask is None else int(hold_mask.sum())
+        if degenerate:
+            parts = [
+                "PINNED-FRAME run produced a DEGENERATE sanity replay: a null (non-finite) "
+                "Sharpe-valued sanity.per_tier field on cost tier(s) " + tier_names(degenerate)
+                + " — " + "; ".join(f"{tier_names([c])}: " + ", ".join(null_by_tier[c]) + " null"
+                                    for c in degenerate)
+                + ". corridor_position is the LEDGER metric "
+                  "(ledger_row.imprint_corridor_position_net21), so a null there is not a cosmetic "
+                  "gap: there is no result to record."]
+            if collapsed:
+                parts.append(
+                    "STUDENT SIDE (policy_inenv null on " + tier_names(collapsed) + f"): the "
+                    f"policy-argmax action histogram is {pol_hist} out of {n_cells} decision cells "
+                    f"({N_ACTIONS_PER_ASSET}-code space; {HOLD_ACTION_CODE}=HOLD)"
+                    + (" — a total-HOLD policy has a zero-variance return series, so the Sharpe "
+                       "is undefined, NOT zero"
+                       if pol_hist[str(HOLD_ACTION_CODE)] == n_cells else "")
+                    + f". {n_masked} of {n_cells} cells were force-HOLD by the frame mask, so the "
+                    f"pinned panel reaches this collapse on FEWER free decisions than an unpinned "
+                    f"one; under-training (too few --iters) is a known cause, but the collapse "
+                    f"BAND is CONFIGURATION-dependent (teacher stream, frame, seed, --iters, "
+                    f"deadband) and has to be MEASURED for the configuration at hand — there is "
+                    f"NO universal --iters boundary (measured counter-example on this fixture "
+                    f"frame: the "
+                    f"default-teacher pinned path at --iters 20, seed 0, weight-native is already "
+                    f"HEALTHY, corridor_position net@21 +1.84).")
+            if teacher_flat:
+                parts.append(
+                    "TEACHER SIDE (teacher_floor_inenv null on " + tier_names(teacher_flat)
+                    + f"): the TEACHER's OWN replay has no finite Sharpe — its action histogram "
+                    f"is {hist(teacher[net_tier]['actions'])} out of {n_cells} cells, i.e. the "
+                    f"teacher never opened a position on these rows, so the corridor has NO floor "
+                    f"to measure the student against. This is a DIFFERENT diagnosis from a "
+                    f"collapsed student and MORE --iters cannot fix it: the teacher/env "
+                    f"configuration (e.g. a "
+                    f"--vector-rebalance-deadband so wide that every target is HOLD), the window, "
+                    f"or the frame is at fault.")
+            parts.append("This artifact is NOT a result.")
+            degenerate_reason = " ".join(parts)
+        sanity_extra["degenerate_replay"] = bool(degenerate)
+        sanity_extra["degenerate_replay_reason"] = degenerate_reason
+        sanity_extra["n_decision_cells"] = n_cells
+        sanity_extra["n_masked_cells"] = n_masked
+        sanity_extra["masked_cell_fraction"] = float(n_masked) / float(max(n_cells, 1))
+        # FIX A: active-cells-only companions for every diluted per-cell scalar above. The existing
+        # keys keep their (diluted) values; these are the frame-comparable ones.
+        if hold_mask is not None:
+            act_cells = ~hold_mask
+            n_act = int(act_cells.sum())
+            sanity_extra["active_cells_only"] = {
+                "n_active_cells": n_act,
+                "teacher_action_agreement": (
+                    float(np.mean(pol_actions[act_cells]
+                                  == teacher[net_tier]["actions"][act_cells])) if n_act else None),
+                "policy_action_hist": hist(pol_actions[act_cells]) if n_act else None,
+                "per_tier_avg_long": {str(c): sanity[c]["avg_long_active_cells"]
+                                      for c in GATE_COSTS},
+                "per_tier_avg_short": {str(c): sanity[c]["avg_short_active_cells"]
+                                       for c in GATE_COSTS},
+            }
+            sanity_extra["dilution_note"] = (
+                f"teacher_action_agreement, policy_action_hist and avg_long/avg_short above are "
+                f"computed over ALL {n_cells} decision cells, {n_masked} of which "
+                f"({100.0 * n_masked / max(n_cells, 1):.2f}%) are force-HOLD by the frame mask on "
+                f"both sides — so they are INFLATED/deflated by cells no policy could influence "
+                f"and are NOT comparable to an unpinned reference (e.g. the +0.839 run's 97.5% "
+                f"agreement was measured on a fully-covered minute panel). Use "
+                f"'active_cells_only'.")
+        else:
+            sanity_extra["active_cells_only"] = None
+            sanity_extra["dilution_note"] = (
+                "no cell is force-HOLD on this pinned window (every slot fully covered), so the "
+                "reported figures are already active-cells-only")
     result = {
         "tag": tag, "db": args.db, "window": [args.start, args.end],
         "bar_minutes": args.bar_minutes, "n_assets": A, "n_panel_rows": T,
@@ -1265,7 +1917,11 @@ def run(args, out_path, tag):
                       "no search) on the identical decision rows",
             "per_tier": {str(c): sanity[c] for c in GATE_COSTS},
             "teacher_action_agreement": agreement,
-            "policy_action_hist": hist(pol_actions),
+            "policy_action_hist": pol_hist,
+            # TASK_863 fix pass — pinned-only, APPENDED LAST so the legacy block is byte-identical
+            # (empty dict on the unpinned path): the FIX 0 degeneracy verdict + the FIX A
+            # masked-cell disclosure and active-cells-only companions.
+            **sanity_extra,
         },
         "ledger_row": {
             "metric": "imprint corridor position = policy_argmax in-env net@21 Sharpe "
@@ -1293,6 +1949,19 @@ def run(args, out_path, tag):
         },
         "checkpoint": ckpt_path,
     }
+
+    # TASK_863: flag-gated ADDITIVE disclosure block — absent (and every key above byte-identical)
+    # when --panel-frame-from-checkpoint is not passed. Present, a 6/8-live-slot imprint is
+    # impossible to mistake for an 8/8-live one (the 853 dual-disclosure requirement).
+    if frame is not None:
+        result["panel_frame_from_checkpoint"] = _display_path(args.panel_frame_from_checkpoint)
+        result["panel_frame"] = frame["panel_frame"]
+        result["inactive_slots"] = list(frame["inactive_slots"])
+        # FIX A(3): a PARTIAL slot is inside n_active_slots and absent from inactive_slots — a
+        # consumer reading only inactive_slots would see a slot that was dead for most of the
+        # window as fully live. Discoverable at top level, next to inactive_slots.
+        result["partial_slots"] = list(frame["partial_slots"])
+        result["frame_symbols"] = list(frame["frame_symbols"])
 
     # TASK_861: flag-gated ADDITIVE block — absent (and every key above unchanged) when
     # --teacher-vectors is not passed, so the default artifact is byte-identical to shipped 832.
@@ -1331,6 +2000,43 @@ def run(args, out_path, tag):
         with open(out_path, "w") as fh:
             json.dump(result, fh, indent=2, default=float)
         print(f"\n[832] wrote {out_path}")
+
+    # ---- fix pass FIX 0: PINNED degenerate replay = fail loud, regardless of --smoke-assert ----
+    # The verdict was decided BEFORE the artifact was built, so whatever is on disk carries
+    # sanity.degenerate_replay = true and the reason. The checkpoint was written earlier (the
+    # replay needs the trained net), so it is STAMPED with the same marker here — nothing this run
+    # leaves behind may read as a complete result. Unpinned/legacy runs are untouched.
+    if degenerate_reason is not None:
+        marker = os.path.join(ckpt_path, "DEGENERATE_REPLAY.json")
+        stamped = []
+        try:
+            with open(marker, "w") as fh:
+                json.dump({"degenerate_replay": True, "reason": degenerate_reason, "tag": tag,
+                           "artifact": out_path, "iters": int(args.iters),
+                           "seed": int(args.seed),
+                           "panel_frame_from_checkpoint":
+                               _display_path(args.panel_frame_from_checkpoint),
+                           "warning": "this checkpoint is the net of a FAILED "
+                                      "(degenerate-replay) pinned imprint run — it is NOT an "
+                                      "ExIt warm start"}, fh, indent=2)
+            stamped.append(marker)
+        except OSError as e:                        # never mask the refusal with an IO error
+            print(f"[863] WARN: could not stamp {marker} ({type(e).__name__}: {e})")
+        raise SystemExit(
+            "\n" + "=" * 84 + "\n"
+            f"[863] REFUSED — {degenerate_reason}\n"
+            f"  exit non-zero INDEPENDENT of --smoke-assert (smoke_assert={bool(args.smoke_assert)}"
+            f"): a pinned run whose sanity replay has no finite Sharpe is not a result. FIX 2.6: "
+            f"the EXIT CODE is the only wiring — as of this change nothing downstream reads "
+            f"sanity.degenerate_replay or DEGENERATE_REPLAY.json (835's scorecard.py never opens "
+            f"an imprint.py artifact); the marker and the stamp are ADVISORY forensics for the "
+            f"operator, available for a consumer to assert on but not yet consumed by one.\n"
+            + (f"  the artifact WAS written for forensics and CARRIES the marker: {out_path} "
+               f"(sanity.degenerate_replay=true, sanity.degenerate_replay_reason=...)\n"
+               if out_path else "  no artifact was written (no --out)\n")
+            + (f"  checkpoint stamped (advisory): {', '.join(stamped)}\n" if stamped else "")
+            + f"  the checkpoint directory {ckpt_path} holds the net of a FAILED run — do NOT "
+              f"warm-start ExIt from it.\n" + "=" * 84)
 
     if args.smoke_assert:
         assert finite, "SMOKE FAIL: non-finite loss in imprint history"
@@ -1422,6 +2128,63 @@ def _print_report(r):
         label = "gross" if c == 0 else f"net@{c}"
         print(f"{label:>8} | {_fmt(s['policy_inenv']):>12} {_fmt(s['teacher_floor_inenv']):>11} "
               f"{_fmt(s['corridor_position']):>9}")
+    pf = r.get("panel_frame")                            # TASK_863 (absent when unpinned)
+    if pf is not None:
+        print("-" * 84)
+        print(f"[863] PINNED FRAME: {pf['n_slots']} slots, {pf['n_active_slots']} ACTIVE / "
+              f"{pf['n_inactive_slots']} INACTIVE / {pf['n_partial_slots']} partial "
+              f"(provenance {pf['provenance_path']})")
+        for c in pf["inactive_spans"]:
+            print(f"   INACTIVE slot {c['slot']:>3} {c['symbol']:<16} "
+                  f"[{c['span'][0]}..{c['span'][1]}] ({c['reason']})")
+        for c in pf["partial_spans"]:
+            print(f"   PARTIAL  slot {c['slot']:>3} {c['symbol']:<16} first covered ts "
+                  f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows) "
+                  f"— INSIDE n_active_slots, ABSENT from inactive_slots (see partial_slots)")
+        print(f"   forced-HOLD cells: {pf.get('n_force_hold_cells')} of "
+              f"{pf.get('n_decision_cells')} (teacher targets == BC labels == replay)")
+        # FIX C: state the MEASURED claim, not "flat-zero features".
+        fchk = pf.get("inactive_slot_feature_check")
+        if fchk is not None:
+            for s in fchk["checked_slots"]:
+                print(f"   inactive slot {s['slot']:>3} features: PANEL cells flat-zero; ENCODED "
+                      f"features CONSTANT across all {fchk['n_decisions']} decisions but NOT "
+                      f"all-zero — {s['n_nonzero_feature_cells']} of {s['n_feature_cells']} cells "
+                      f"non-zero on guarded vol-ratio channels {s['nonzero_channels']} "
+                      f"(= {sorted(set(s['nonzero_channel_values'].values()))}); constant => no "
+                      f"signal => no leak (GUARDED, not just claimed)")
+        # FIX A(2): make the masked-cell dilution of every reported scalar explicit.
+        sn = r.get("sanity") or {}
+        ac = sn.get("active_cells_only")
+        if sn.get("masked_cell_fraction") is not None:
+            print(f"   MASKED-CELL DILUTION: {sn.get('n_masked_cells')} of "
+                  f"{sn.get('n_decision_cells')} decision cells "
+                  f"({100.0 * sn['masked_cell_fraction']:.2f}%) are force-HOLD on BOTH sides, so "
+                  f"the figures below are NOT comparable to an unpinned reference (the +0.839 "
+                  f"run's 97.5% agreement was measured on a fully-covered minute panel):")
+            print(f"     teacher_action_agreement reported "
+                  f"{sn.get('teacher_action_agreement'):.4f}"
+                  + (f" | ACTIVE-CELLS-ONLY {ac['teacher_action_agreement']:.4f} "
+                     f"(n={ac['n_active_cells']})" if ac and
+                     ac.get("teacher_action_agreement") is not None else " | active-only n/a"))
+            print(f"     policy_action_hist reported {sn.get('policy_action_hist')}"
+                  + (f" | ACTIVE-CELLS-ONLY {ac['policy_action_hist']}" if ac and
+                     ac.get("policy_action_hist") is not None else ""))
+            if ac:
+                print(f"     avg_long/avg_short ACTIVE-CELLS-ONLY per tier: "
+                      f"long {ac['per_tier_avg_long']}  short {ac['per_tier_avg_short']}")
+        tvf = ((r.get("teacher_vectors") or {}).get("fit_vs_original_targets")) or {}
+        if tvf.get("active_cells_only"):
+            a = tvf["active_cells_only"]
+            print(f"     861 fit block is diluted the same way: NLL reduction reported "
+                  f"{tvf['nll_reduction']:+.4f} | ACTIVE-CELLS-ONLY {a['nll_reduction']:+.4f}; "
+                  f"argmax agreement {tvf['argmax_agreement_vs_original']:.3f} -> "
+                  f"{a['argmax_agreement_vs_original']:.3f} vs modal rate "
+                  f"{tvf['modal_action_rate']:.3f} -> {a['modal_action_rate']:.3f} (the modal "
+                  f"floor itself moves, so argmax_excess_over_modal was measured against a "
+                  f"shifted floor)")
+        if sn.get("degenerate_replay"):
+            print(f"   *** DEGENERATE REPLAY (863 FIX 0): {sn.get('degenerate_replay_reason')}")
     g = r.get("expressibility_gate")
     if g is not None:
         fg = g.get("weight_native_regate", g)
@@ -1520,6 +2283,21 @@ def main():
                          "expressibility gate re-measures — pre-registered contingency when "
                          "the order-code teacher fails the weight-env gate). Default keeps "
                          "the byte-identical default output.")
+    ap.add_argument("--panel-frame-from-checkpoint", default=None,
+                    dest="panel_frame_from_checkpoint",
+                    help="TASK_863 (D28): path to a JSON recording a checkpoint's ORDERED "
+                         "training symbol frame ('frame_symbols' or 'symbols'). Builds the fixed "
+                         "n_assets-slot panel in that EXACT order (slot k == asset k, matching "
+                         "the positionally universe-locked encoder) with zero-coverage and "
+                         "pre-listing PANEL CELLS left flat-zero and forced to HOLD on every "
+                         "in-env walk (a dead slot's ENCODED features are CONSTANT but not "
+                         "all-zero: guarded vol-ratio channels at 0.2 — asserted per run) "
+                         "— the SHIPPED TASK_853 semantics (eval_vector.py's frame validator "
+                         "and framed loader are called, not re-derived). Requires --bar-minutes "
+                         "1440 (the frame is read from `ohlcv_daily`). The 861 provenance gate is "
+                         "fail-closed in BOTH directions: a pinned collection needs an "
+                         "identically-pinned imprint and vice versa. Default OFF = the "
+                         "coverage-ranked minute panel, bit-identical to shipped 832/861")
     ap.add_argument("--teacher-vectors", default=None, dest="teacher_vectors",
                     help="TASK_861: JSON collection written by `eval_vector.py "
                          "--collect-chosen-vectors` — the per-decision action vectors the "
@@ -1565,6 +2343,15 @@ def main():
         ap.error("--teacher-vectors was given an EMPTY path; pass the collection JSON (an unset "
                  "shell variable would otherwise silently run the DEFAULT 819-book teacher and "
                  "clobber the canon fixture-smoke baseline).")
+    # TASK_863: same fail-closed rule for the frame pin (the 835 precedent, build_panel). An unset
+    # shell variable must never silently fall back to the coverage-ranked universe under a flag
+    # whose whole point is that the universe is PINNED.
+    if (args.panel_frame_from_checkpoint is not None
+            and not args.panel_frame_from_checkpoint.strip()):
+        ap.error("--panel-frame-from-checkpoint was given an EMPTY path; refusing to silently "
+                 "fall back to the coverage-ranked universe under the fixed-frame flag (that "
+                 "would train a DIFFERENT universe while the artifact claims a pinned frame). "
+                 "Pass the provenance JSON path, or omit the flag entirely.")
     if args.shuffle_teacher_vectors and args.teacher_vectors is None:
         ap.error("--shuffle-teacher-vectors requires --teacher-vectors (it permutes that stream)")
     if args.allow_off_pin_teacher and args.teacher_vectors is None:
@@ -1596,9 +2383,15 @@ def main():
     # TASK_861: a --teacher-vectors run is a DIFFERENT experiment from the canon smoke, so its
     # default outputs are suffixed — a verification run can never clobber the checked-in parity
     # baseline (the 835 fix-pass precedent, eval_vector.py::main).
+    # TASK_863: a frame-PINNED run is likewise a different experiment from the canon smoke (a
+    # different panel source AND a different universe), so it suffixes its default outputs too —
+    # `results_fixture_smoke.json` / `ckpt_smoke` are the CHECKED-IN parity baseline and no
+    # verification run may overwrite them.
     tv_suffix = ""
     if args.teacher_vectors is not None:
         tv_suffix = "_teacher_vectors" + ("_shuffled" if args.shuffle_teacher_vectors else "")
+    if args.panel_frame_from_checkpoint is not None:
+        tv_suffix += "_frame_pin"
     if args.ckpt_out is None:
         args.ckpt_out = os.path.join(
             exp_dir, ("ckpt_smoke" if is_fixture else "ckpt_imprint") + tv_suffix)
