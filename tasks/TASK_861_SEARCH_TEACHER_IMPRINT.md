@@ -96,7 +96,21 @@ ceiling on the actual target distribution first.
 
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
 
-**CO-RUNNABILITY CORRECTION (fix pass 2026-07-27).** The two recipes as originally written were
+> **D28 RESOLUTION ADDENDUM (2026-07-28, planner ruled opt (a); operator may override) — the
+> legs below are AMENDED, gated on TASK_863 shipping:**
+> 1. **Frame pin, both legs**: leg 1 adds `--panel-frame-from-checkpoint
+>    runs/832_e5/frame_provenance_imprint.json`; leg 2 adds the same via TASK_863's new flag.
+>    This restores direct comparability to +0.839 / +0.898 / the OOS+WF battery; symbols that
+>    lost coverage ride the 853 inactive-slot mechanics (dual-disclosed). Leg 4 reuses
+>    `frame_provenance_imprint.json` unchanged; TASK_862's canonical manifest stays valid.
+> 2. **Leg 2/3 is a 3-imprint-seed battery** (`--seed 0/1/2`), graded per-seed + median vs
+>    +0.839: the banner's recorded sanity-replay seed noise (−8.93…+12.74 across 10 seeds) makes
+>    any single-seed read against a +0.839 bar uninterpretable. Standing ≥3-seed discipline
+>    applies; the bar is met only if the MEDIAN clears +0.839 with ≥2/3 seeds above it.
+> 3. **Leg 1's "≈ +8.02" check stays SOFT and is now doubly off-reference** (the inversion read
+>    used a different window AND the unpinned pre-backfill universe): expect "large positive,
+>    same behavior class (hold ~94%, narrow book)", not numeric reproduction. A negative or
+>    near-zero walk = STOP and diagnose; a ±2-point delta from +8.02 alone does not. The two recipes as originally written were
 not co-runnable and leg 1→2 would have hard-refused on first launch:
 (a) the teacher of record records `position_size_pct = 0.1` while `jobs_imprint_full.manifest`
 uses `0.5/64 = 0.0078125`, and `position_size_pct` is one of the 33 gated EnvConfig fields. The

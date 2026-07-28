@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-28 (post factory run 20; D27+D28 planner-RULED opt (a)) — Ready = TASK_863 → TASK_864 (SERIAL, same surface); factory GREEN.**
+Prior grooming (D26):
 **2026-07-27 (D26 RULED: "prepare dark factory tasks") — Ready = TASK_861 + TASK_862 (filler); factory GREEN.**
 Prior grooming (run 19):
 **2026-07-27 (post factory run 19) — Ready = EMPTY; factory IDLE; 860 real leg RUNNING on srv (planner).**
@@ -52,13 +54,17 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_(empty — factory run 20 shipped both rows. **Two OPEN decisions now gate the follow-on work:
-D28 BLOCKS the TASK_861 real legs** (cross-universe frame drift, measured 59/64 slots) and D27
-rules on the TASK_862 battery's consistency basis. Neither is a factory row.)_
+_D27 + D28 planner-RULED 2026-07-28 (both opt (a); operator may override — see DECISIONS). D28's
+follow-up is seeded below; 862's shipped basis split is RATIFIED as-is (no code row needed)._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| — | _no unblocked rows_ | — | Next rows seed from D27/D28. If D28 picks option (a), the natural follow-up is a SMALL task teaching `imprint.py` the shipped 853 `--panel-frame-from-checkpoint` flag (eval_vector already has it; 862's battery already pins it) — that unblocks the whole 861 real-leg chain. |
+| 1 | `tasks/TASK_863_IMPRINT_FRAME_PIN.md` | S | **D28 RULED opt (a).** Port the shipped 853 `--panel-frame-from-checkpoint` to `imprint.py` (mirror `eval_vector.py`'s proven semantics: positional frame, inactive slots dual-disclosed, fail-loud on scrambling) + upgrade the 861 frame WARN to a fail-closed BOTH-DIRECTIONS gate (pinned↔unpinned mismatch refuses; reordered same-membership frame refuses — order is load-bearing). Default/legacy bit-identical to `task861-search-teacher-imprint`. **Unblocks the entire 861 real-leg chain** (legs re-registered in the task file's D28 addendum: frame pinned both legs, leg 2/3 = 3 imprint seeds, median > +0.839 with ≥2/3 seeds above). |
+| 2 | `tasks/TASK_864_PARITY_BASELINE_HYGIENE.md` | XS/S | FILLER — **SAME-FILE as #1 (`experiments/832_linear_imprint/`): take strictly AFTER 863 ships, never in parallel.** The tracked parity baseline `results_fixture_smoke.json` is rewritten in place by the module's own default invocation and is ~74 commits stale (drift from `c2f1ba5`/846; run 20 nearly clobbered it). Default writes → untracked path; tracked overwrite = explicit flag + per-field diff + dirty-refuse; then ONE deliberate reconcile: refresh with a per-field attribution table, or STOP with unexplained fields named. |
+
+_Sequencing note: the two rows share a surface — this is a SERIAL queue this run, not parallel
+lanes. All GPU legs remain planner-scheduled (the amended 861 chain launches only after 863
+ships and is verified)._
 
 _Shipped 2026-07-28 factory run 20 (861 + 862 parallel lanes, disjoint surfaces as planned):_
 - _**TASK_861** (`task861-search-teacher-imprint`) — `--collect-chosen-vectors` (eval_vector) +
