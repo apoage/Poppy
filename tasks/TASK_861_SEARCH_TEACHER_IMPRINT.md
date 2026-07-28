@@ -1,5 +1,20 @@
 # TASK_861 — Search-teacher imprint (D26 ruled: park the search-leaf lane, test the better-teacher × proven-recipe combination)
 
+> **STATUS (2026-07-28): SHIPPED as `task861-search-teacher-imprint`** (factory run 20).
+> Both flags OFF bit-identical (orchestrator-reproduced vs `HEAD`: 0 differing leaves on both
+> modules; selftest 12/12). 3-member panel over 2 fix rounds, **5 MAJOR found and closed**:
+> ungated teacher operator · no payload integrity · empty-string flags failing OPEN (one
+> clobbered the tracked parity baseline) · pre-registered legs mutually un-runnable · and the
+> replay guard being a TRAJECTORY not a TARGET check (78.8% of BC targets rewritable with
+> net@21 bit-identical — closed by a payload-vs-header action-composition check).
+> **REMAINDER (planner-owned) is BLOCKED on DECISIONS D28**: the pre-registered real legs would
+> grade a CROSS-UNIVERSE comparison (measured: 59/64 positional slots differ from the
+> checkpoint's recorded frame). Do NOT launch legs 1–4 as written — see the "MEASURED
+> PRE-REGISTRATION DEFECT" block below and D28.
+> Scope limits recorded, deliberately not closed: acceptance (iv) certifies the FIXTURE pipeline
+> only (the gate never fires on the real panel); the digest+replay pair is accident-detection,
+> not tamper-detection; sanity-replay seed noise spans −8.93 … +12.74 across 10 seeds.
+
 **Status**: READY 2026-07-27 (D26 RULED — operator: "prepare dark factory tasks").
 **Size: M. Risk: medium-low** (two flag-gated extensions to shipped modules; canon defaults
 bit-identical; zero training in the factory half — real legs are planner-scheduled).
@@ -65,18 +80,145 @@ deterministic, weight-rebalance env flags as in that artifact, checkpoint
 - (iv) Falsification: imprint on shuffled vectors fails its gate; legit run passes; seed-swept
   (the 860 fail-closed pattern).
 
+**SCOPE LIMIT of (iv) — recorded from verification, do not over-read it.** The gate is
+`nll_reduction = 1 − NLL/H(marginal)`, an entropy RATIO whose denominator is the *target*
+distribution's entropy, and it is calibrated on the fixture (76.75 % HOLD, H = 0.8632). The real
+teacher of record is **94.2 % HOLD (H ≈ 0.30)**, where both arms compress toward zero — so the
+0.05 floor is a fixture-local number, not a panel-invariant one. Additionally `smoke_assert`
+defaults to `is_fixture`, so **on the real panel the gate is computed and printed but never
+enforced**. Acceptance (iv) therefore certifies the fixture pipeline, NOT the real leg.
+Verified headroom: the strongest shuffle-invariant degenerate (the per-asset marginal — under a
+row permutation `p(a|asset j)` is the exact ceiling of the sabotage arm) measures **+0.0347** on
+the shipped collection, i.e. 1.4× under the 0.05 floor (it was 2.9× under the old 0.10). Nothing
+measures that ceiling at runtime; the artifact's `modal_action_rate` is the GLOBAL modal rate and
+is not the null the shuffle preserves. If this gate is ever re-tuned, measure the per-asset
+ceiling on the actual target distribution first.
+
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
+
+**CO-RUNNABILITY CORRECTION (fix pass 2026-07-27).** The two recipes as originally written were
+not co-runnable and leg 1→2 would have hard-refused on first launch:
+(a) the teacher of record records `position_size_pct = 0.1` while `jobs_imprint_full.manifest`
+uses `0.5/64 = 0.0078125`, and `position_size_pct` is one of the 33 gated EnvConfig fields. The
+field is now a **conditional** exemption — exempt iff `vector_weight_rebalance` is true on BOTH
+sides (verified inert: the pinned operator walked at 0.1 vs 0.0625 gives 1.000 chosen-vector
+agreement and identical net@21 / final_pv; with weight-rebalance OFF the same pair diverges, so
+the exemption does not apply there and the run is refused as before).
+(b) `--teacher-vectors` + `--imprint-mapping weight-native` used to be an argparse error, but
+weight-native IS in the pinned manifest; the combination is now accepted (`imprint_mapping` is
+only a label on this path) with the 845 `--vector-weight-rebalance` fail-closed assert kept live.
+(c) the window must be **identical** on both legs (the provenance gate compares it), so leg 2
+runs `--end 2025-10-04` too — not the manifest's original `2025-09-01`.
+Both legs run WITHOUT `--allow-off-pin-teacher`: the collection is recorded under the pinned
+operator + `runs/832_e5/ckpt_imprint_full`, and the imprint now REFUSES any off-pin teacher.
 
 1. **Teacher pass** on the real panel, window pinned `--end 2025-10-04` (post-858-backfill this
    yields **1673 decisions, not the canonical 1670** — flagged in LEDGER 860/codistill-corridor;
    floor references nominal). One walk, deterministic; sanity check: walk net@21 reproduces
    ≈ +8.02 (it is the same command + a recorder).
-2. **Imprint** per the exact `jobs_imprint_full.manifest` recipe (fresh init, iters 2000,
-   weight-native) with `--teacher-vectors` from leg 1.
+
+   ```
+   python experiments/835_stage4_eval/eval_vector.py \
+     --db trading_data.db --start 2021-01-01 --end 2025-10-04 \
+     --bar-minutes 1440 --n-assets 64 --position-size-pct 0.1 \
+     --operator search --vector-proposal-scheme dithered-book --vector-k 16 --sims 32 \
+     --vector-hold-bias 3.0 --vector-dither-scale 1.0 --vector-proposal-temp 1.0 \
+     --vector-proposal-explore-slots 2 --prior-weight 0.0 \
+     --leaf-eval true-env --leaf-rollout-r 3 --no-leaf-vhat-tail --gumbel-scale 3.0 \
+     --vector-weight-rebalance \
+     --checkpoint runs/832_e5/ckpt_imprint_full \
+     --out-dir runs/861_teacher --tag 861teacher \
+     --collect-chosen-vectors runs/861_teacher/chosen_vectors_real.json
+   ```
+   The recorder preflights the output path before the walk starts and stamps the walk's own
+   `walk_net21` / `final_pv` / `bankrupt_at` + a payload sha256 into the collection header.
+
+   **⚠ MEASURED PRE-REGISTRATION DEFECT — UNIVERSE DRIFT (blocks leg 3/4 grading as written).**
+   The check demanded below was RUN (read-only, 2026-07-28). **Result: the frame does NOT match.**
+   `frame_symbols` in `runs/832_e5/frame_provenance_imprint.json` vs the leg-1-window top-64:
+   **59 of 64 positional slots differ**, and membership differs (≥10 symbols each way — e.g.
+   frame-only `AKT/USD, ARB/USD, FET/USD, GALA/USD, GRT/USD, ICP/USD`; leg-1-only `/EURGBP,
+   /USDCAD, AVAX/USD, DAI/USD, ATOM/EUR`). The frame does not even reproduce from its OWN recorded
+   `train_window` (2021-01-01→2025-09-01) any more — the 858 backfill moved the coverage ranking
+   under it.
+   **What this does NOT break:** the teacher walk. The pinned operator is `prior_weight 0.0` +
+   `dithered-book` + `true-env` leaf + no v̂ tail ⇒ `operator_net_dependent(...) == False`
+   (`eval_vector.py:253-272`) — the checkpoint is NOT read, so misaligned slots cannot corrupt the
+   teacher. Legs 1 and 2 also stay consistent with each other (same db/window/n_assets ⇒ same
+   derived universe ⇒ the provenance gate passes legitimately).
+   **What it DOES break — the grading:** leg 2 trains on a 64-asset universe that is ~92%
+   positionally different from the one `ckpt_imprint_full` was trained on. Therefore
+   (a) **leg 3's ">+0.839" bar is a CROSS-UNIVERSE comparison** — +0.839 was measured on the old
+   universe; a delta against it confounds "better teacher" with "different assets", which is the
+   single question this task exists to answer. (b) The ≈+8.02 teacher reference is likewise from a
+   different universe AND window. (c) **Leg 4 cannot reuse `frame_provenance_imprint.json`** — the
+   OOS/WF reads must pin a NEW frame provenance recorded from leg 2's own panel, or they will
+   grade the new net through the old net's slots. (d) TASK_862's canonical battery manifest pins
+   the OLD frame + OLD checkpoint and remains valid for THAT artifact only; benchmarking the 861
+   imprint needs its own manifest.
+   **Resolution required before GPU spend — see DECISIONS D28.** The cheap option is to pin both
+   legs to the frame (needs `imprint.py` taught the 853 flag); the honest-comparison option is to
+   re-measure the +0.839 reference on the leg-1 universe.
+
+   _Original hazard note (the check that produced the result above):_
+   **⚠ OPEN PRE-REGISTRATION HAZARD — POSITIONAL FRAME (resolve before spending the GPU).**
+   Neither leg passes `--panel-frame-from-checkpoint` (default OFF), and `imprint.py` does not
+   support it at all (it only WARNS if the collection used one — `imprint.py:620`, "imprint =
+   coverage-ranked"). So both legs derive their universe from
+   `ORDER BY COUNT(*) DESC LIMIT n_assets` over the given window (`vectorbt_env.py:579-590`,
+   minute `ohlcv` table). That makes the two legs agree with EACH OTHER — the provenance gate
+   compares `loaded_symbols`, so it passes — but it does NOT make either agree with the frame
+   `runs/832_e5/ckpt_imprint_full` was trained on. That frame was coverage-ranked over
+   **2021-01-01 → 2025-09-01 BEFORE the 858 backfill**; leg 1 ranks over
+   **2021-01-01 → 2025-10-04 AFTER it** (+8.28M minute rows across 62/64 symbols). Because
+   **slot k IS asset k positionally** and the encoder kernel is 27 feats × n_assets slots, any
+   change in either membership or ORDER silently misaligns every slot — this is precisely the
+   failure TASK_853 was built to prevent, and the gate cannot see it (both sides are wrong
+   identically). The only detector as written is leg 1's soft "≈ +8.02" sanity check, which is
+   itself compared against a number measured on a THIRD window (`..2025-12-01`) — so a scrambled
+   frame could read as an ordinary miss. **Before launching: verify `frame_symbols` in
+   `runs/832_e5/frame_provenance_imprint.json` equals the leg-1-window top-64 ORDER-EXACTLY.**
+   If it does not, either pin the window to the frame's own `train_window` end (`2025-09-01`) on
+   both legs, or teach `imprint.py` the 853 frame flag so both legs pin explicitly. Do not
+   proceed on a membership-only match — the order is load-bearing.
+
+2. **Imprint** per the `jobs_imprint_full.manifest` recipe (fresh init, iters 2000,
+   weight-native) with `--teacher-vectors` from leg 1, on the SAME window:
+
+   ```
+   python experiments/832_linear_imprint/imprint.py \
+     --db trading_data.db --start 2021-01-01 --end 2025-10-04 \
+     --bar-minutes 1440 --n-assets 64 --iters 2000 --batch-size 256 \
+     --vector-weight-rebalance --imprint-mapping weight-native \
+     --teacher-vectors runs/861_teacher/chosen_vectors_real.json \
+     --ckpt-out runs/861_imprint/ckpt_imprint_full \
+     --tag 861_imprint_full --out runs/861_imprint/results.json
+   ```
+   `position_size_pct` defaults to `0.5/64` here (the manifest value) and is conditionally
+   exempted with a recorded WARN. `reward_attributable` is also exempt (imprint defaults True,
+   835 always records False): trajectory-inert, but it defines THIS run's reward stream, which
+   `inject_teacher` turns into MC value targets — so the student's value/reward heads are fit
+   under a reward definition the search teacher never optimised (the POLICY/BC targets, the
+   object of this experiment, are unaffected). Pass `--no-reward-attributable` if the operator
+   wants the two definitions aligned; that is a deliberate choice, not the default.
+
 3. **In-sample bar**: sanity replay (policy-argmax) net@21 **> +0.839** (the 832 imprint
-   reference), above floor BOTH tiers, zero bankruptcies. Expectation management: the argmax
-   policy will NOT reproduce the search's +8.02 (timing lives in the lookahead); the question is
-   whether a better teacher lifts the proven recipe above its current mark.
+   reference), zero bankruptcies. Expectation management: the argmax policy will NOT reproduce
+   the search's +8.02 (timing lives in the lookahead); the question is whether a better teacher
+   lifts the proven recipe above its current mark.
+
+   **FLOOR REFERENT CORRECTION (fix pass — read this before grading).** On the `--teacher-vectors`
+   path the 819-book teacher walk is deliberately SKIPPED (it was 4-7 discarded full-panel walks),
+   so `teacher.floor_inenv`, `sanity.corridor_position` and `ledger_row.*_corridor_position_net21`
+   in this run's artifact are all measured against the **SEARCH** teacher (≈ +8.02), NOT the
+   ~floor-grade 819 book (+0.542) those fields carried on the 832 path. Consequence: the phrase
+   "above floor both tiers" is **unreachable by construction here** and has been removed from
+   this bar — an argmax policy cannot clear its own lookahead teacher, and reading a ≈ −7
+   `corridor_position` as a failure would be a grading error. Grade leg 3 as:
+   (a) **primary** — net@21 vs the +0.839 832-imprint reference (same window, same recipe, better
+   teacher = the actual question this task asks);
+   (b) **corridor** — vs the +0.424 official floor / +0.751 ref from LEDGER 830/E0-REAL, or a
+   dedicated on-window book-floor read; do NOT use this artifact's `floor_inenv` for it.
 4. **OOS** (only if leg 3 clears): the 858-extended window 2025-10-05 → 2026-03-31, policy-argmax
    + on-window teacher floor, then the walk-forward quarters per
    `runs/858_oos/WALKFORWARD_PREREG.md`. Per D17: benchmark reads only — NO gate status.

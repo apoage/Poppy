@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# fresh-init teacher checkpoint + imprint checkpoints minted by the fixture smoke
+ckpt_*/
+# per-leg run artifacts + logs from smoke_e2e.py (the committed evidence is
+# results_fixture_smoke.json + chosen_vectors_fixture.json)
+smoke_runs/

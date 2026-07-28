@@ -1,0 +1,324 @@
+{
+  "legs": {
+    "i_canon_835": {
+      "passed": true,
+      "baseline": "committed experiments/835_stage4_eval/results_fixture_smoke.json",
+      "excluded_keys": [
+        "out_name",
+        "out_pointer",
+        "ledger_row",
+        "checkpoint",
+        "roundtrip.ckpt_dir"
+      ],
+      "excluded_reason": "invocation-dependent (out-dir / smoke-ckpt-dir paths) or calendar-dependent (the LEDGER row stamps date.today()); every SCORED key is compared byte-for-byte"
+    },
+    "i_canon_832": {
+      "passed": true,
+      "pins": {
+        "policy_net21": -6.777552797287864,
+        "floor_net21": -3.4366469676609452,
+        "floor_gross": -1.8107111093013257,
+        "teacher_action_agreement": 0.8725,
+        "policy_ce_first": 2.5999953746795654,
+        "policy_ce_last": 0.299086332321167,
+        "gate_rel_diff": 0.09477011466699295,
+        "final_pv_net21": 95567.6015625
+      },
+      "observed": {
+        "policy_net21": -6.777552797287864,
+        "floor_net21": -3.4366469676609452,
+        "floor_gross": -1.8107111093013257,
+        "teacher_action_agreement": 0.8725,
+        "policy_ce_first": 2.5999953746795654,
+        "policy_ce_last": 0.299086332321167,
+        "gate_rel_diff": 0.09477011466699295,
+        "final_pv_net21": 95567.6015625
+      },
+      "additive_block_absent": true
+    },
+    "ii_pure_recorder": {
+      "passed": true,
+      "n_decisions": 50,
+      "collection_walk_net21": 13.89300020243101,
+      "schema": "861/chosen-vectors/v1"
+    },
+    "iii_provenance": {
+      "window": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "window.start",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "frame": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "loaded_symbols",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "env_flags": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "env_flags.vector_weight_rebalance",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "env_psp_conditional": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "env_flags.position_size_pct",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "off_pin_operator": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "operator.sims",
+        "keyword": "OFF-PIN TEACHER REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "payload_digest": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "PAYLOAD DIGEST MISMATCH",
+        "keyword": "PAYLOAD DIGEST MISMATCH",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "payload_non_integer": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "NON-INTEGER action code",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "replay_integrity": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "REPLAY INTEGRITY FAILURE",
+        "keyword": "REPLAY INTEGRITY FAILURE",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "multi_checkpoint": {
+        "passed": true,
+        "exit_code": 2
+      }
+    },
+    "iiib_empty_flags": {
+      "eval_empty_collect_path": {
+        "passed": true,
+        "exit_code": 2,
+        "seconds": 1.05,
+        "walk_started": false
+      },
+      "eval_unwritable_collect_path": {
+        "passed": true,
+        "exit_code": 2,
+        "seconds": 1.03,
+        "walk_started": false
+      },
+      "imprint_empty_teacher_vectors": {
+        "passed": true,
+        "exit_code": 2,
+        "canon_832_baseline_untouched": true,
+        "baseline": "experiments/832_linear_imprint/results_fixture_smoke.json"
+      }
+    },
+    "iv_falsification": {
+      "legit": [
+        {
+          "seed": 0,
+          "exit_code": 0,
+          "nll_reduction": 0.36180147231220816,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.8075,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 1,
+          "exit_code": 0,
+          "nll_reduction": 0.1943804944491569,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.77,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 2,
+          "exit_code": 0,
+          "nll_reduction": 0.24004938255873476,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7775,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 3,
+          "exit_code": 0,
+          "nll_reduction": 0.3159160266767784,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.795,
+          "modal_action_rate": 0.7675
+        }
+      ],
+      "shuffled": [
+        {
+          "seed": 0,
+          "exit_code": 1,
+          "nll_reduction": -0.21338548340900232,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7525,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 1,
+          "exit_code": 1,
+          "nll_reduction": -0.11595200936863495,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.74,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 2,
+          "exit_code": 1,
+          "nll_reduction": -0.16094269782748577,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.735,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 3,
+          "exit_code": 1,
+          "nll_reduction": -0.17010462571311852,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7475,
+          "modal_action_rate": 0.7675
+        }
+      ]
+    },
+    "ivb_escape_hatch_honesty": {
+      "passed": true,
+      "operator_off_pin": true,
+      "operator_off_pin_fields": [
+        "checkpoint"
+      ],
+      "position_size_pct_exemption_exercised": true,
+      "env_exempt_mismatches": [
+        "max_steps: collection=400 imprint=8 (episode-length knob only: BOTH walkers override max_episode_steps on the STATE (835 _finalize_panel / this module's walk_env), so the config value is inert for the replay)",
+        "position_size_pct: collection=0.1 imprint=0.0625 (CONDITIONAL on vector_weight_rebalance being true on BOTH sides (refused otherwise). Under weight-rebalance, step_vector overwrites cash/positions wholesale (jax_trading_env.py:1791-1798), limit legs are sized w_unit*PV (:1785) reserving 0 (:1561), so ideal_trade_value = PV*position_size_pct (:1418) is DEAD CODE. Verified empirically at fixture scale (fix pass): the pinned operator walked at --position-size-pct 0.1 vs 0.0625 gives 1.000 chosen-vector agreement, 1.000 realized-book agreement, net@21 +13.89300020243101 BOTH and final_pv 107485.84375 BOTH, with position_size_pct the ONLY differing env field. The same pair walked with weight-rebalance OFF diverges (net@21 +17.2151 vs +17.1620, final_pv 109773.20 vs 106052.72) \u2014 which is exactly why the exemption is CONDITIONAL. Needed because the teacher of record records 0.1 while the pinned imprint manifest (runs/832_e5/jobs_imprint_full.manifest) uses 0.5/64 = 0.0078125 \u2014 without this the two pre-registered real legs cannot run together.)",
+        "reward_attributable: collection=False imprint=True (TRAJECTORY-inert but NOT consequence-free. It is a reward-only term (jax_trading_env.py:1854): it never touches the state transition, so the recorded action vectors replay to the identical PV path and the identical teacher floor. The 835 harness exposes no flag for it (its panel is always False) while this runner defaults True, so a hard refusal would block the pre-registered real leg. CONSEQUENCE, recorded because the WARN fires on 100% of legitimate pairings and a warning that always fires carries no signal: inject_teacher turns THIS run's reward stream into the MC value targets, so the student's value/reward heads are fit under a reward definition the search teacher never optimised. The POLICY targets (the BC objective this task is about) are unaffected. Pass --no-reward-attributable to align the two definitions.)"
+      ],
+      "in_runner_replay_integrity": {
+        "checked": true,
+        "recorded_walk_net21": 13.89300020243101,
+        "replayed_floor_net21": 13.892973302731274,
+        "abs_delta": 2.689969973523887e-05,
+        "rel_delta": 1.9362052359670976e-06,
+        "rel_tolerance": 0.0001,
+        "passed": true
+      },
+      "floor": {
+        "floor": 0.05,
+        "was": 0.1,
+        "why": "n=10 seeds (fixture panel, 80 iters): legit min +0.1248 / max +0.3618 / mean +0.2649 / sd 0.0717 vs shuffled min -0.2265 / max -0.0799 / mean -0.1611 / sd 0.0428. Cloud gap 0.2047 (Cohen's d 7.2) \u2014 the separation is excellent, the placement was not: at 0.10 the legit margin is only 0.0248 (0.35 sd, ~1% false-FAIL per seed, ~4% over a 4-seed sweep). 0.05 leaves 1.04 sd on the legit side and 3.04 sd on the sabotage side, and still sits above the 0.0 a constant marginal predictor can never beat."
+      },
+      "legit_nll_reduction_min": 0.1943804944491569,
+      "shuffled_nll_reduction_max": -0.11595200936863495
+    },
+    "v_pinned_recipe_corunnable": {
+      "passed": true,
+      "exit_code": 0,
+      "imprint_mapping": "search-teacher-vectors",
+      "note": "leg 1 argv (teacher of record, position_size_pct 0.1) and leg 2 argv (jobs_imprint_full.manifest recipe: weight-native, 0.5/n sizing) run together; the 845 --vector-weight-rebalance fail-closed assert is still enforced on this path"
+    },
+    "roundtrip_teacher_floor": {
+      "passed": true,
+      "imprint_floor_net21": 13.892973302731274,
+      "collection_walk_net21": 13.89300020243101,
+      "abs_delta": 2.689969973523887e-05,
+      "rel_delta": 1.9362052359670976e-06,
+      "rel_tolerance": 0.0001,
+      "note": "same actions, same rows, same env \u2014 walked by 835 rollout (batched vmap PV) and 832 walk_env (unbatched PV); agreement to float32 rounding proves the recorded target stream replays as the identical trajectory"
+    }
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "imprint_sanity_first_seed": {
+    "policy_net21": 12.736197747762771,
+    "teacher_floor_net21": 13.892973302731274,
+    "corridor_position_net21": -1.1567755549685028,
+    "teacher_action_agreement": 0.8075,
+    "note": "fixture plumbing numbers \u2014 NO threshold applied (the binding in-sample bar is the planner's real-panel leg 3: sanity replay net@21 > +0.839)"
+  },
+  "verdict": {
+    "i_canon_835": true,
+    "i_canon_832": true,
+    "ii_pure_recorder": true,
+    "iii_provenance": true,
+    "iiib_empty_flags": true,
+    "iv_falsification": true,
+    "ivb_escape_hatch_honesty": true,
+    "v_pinned_recipe_corunnable": true,
+    "roundtrip_teacher_floor": true
+  },
+  "all_passed": true,
+  "elapsed_seconds": 703.4,
+  "panel": {
+    "db": "fixtures/trading_fixture.db",
+    "window": [
+      "2025-09-14",
+      "2025-12-12"
+    ],
+    "bar_minutes": 240,
+    "n_assets": 8,
+    "n_decisions": 50,
+    "collect_position_size_pct": 0.1,
+    "imprint_position_size_pct": 0.0625
+  },
+  "teacher_operator": [
+    "--operator",
+    "search",
+    "--vector-proposal-scheme",
+    "dithered-book",
+    "--vector-k",
+    "16",
+    "--sims",
+    "32",
+    "--vector-hold-bias",
+    "3.0",
+    "--vector-dither-scale",
+    "1.0",
+    "--vector-proposal-temp",
+    "1.0",
+    "--vector-proposal-explore-slots",
+    "2",
+    "--prior-weight",
+    "0.0",
+    "--leaf-eval",
+    "true-env",
+    "--leaf-rollout-r",
+    "3",
+    "--no-leaf-vhat-tail",
+    "--gumbel-scale",
+    "3.0",
+    "--vector-weight-rebalance"
+  ]
+}

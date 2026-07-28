@@ -2,5 +2,9 @@
 __pycache__/
 *.pyc
 # Imprint checkpoints (flax checkpoint dirs; smoke + scheduled-run outputs stay local).
-ckpt_smoke/
-ckpt_imprint/
+# TASK_861 adds suffixed variants (ckpt_smoke_teacher_vectors*, ...) — glob the prefixes.
+ckpt_smoke*/
+ckpt_imprint*/
+# TASK_861 --teacher-vectors default outputs are SUFFIXED results (never the canon parity
+# baseline results_fixture_smoke.json, which IS checked in) — keep them out of the tree.
+results_fixture_smoke_teacher_vectors*.json

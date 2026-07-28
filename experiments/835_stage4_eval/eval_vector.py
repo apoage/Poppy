@@ -48,6 +48,14 @@ Fidelity contract (every piece mirrors the training stack — no reimplementatio
     engine ref +0.751 / ceiling +29.698 — pinned fallback constants below carry the
     same provenance if the file is absent). One LEDGER-convention row per run.
 
+TASK_861 (D26) — ``--collect-chosen-vectors <out>`` is a PURE RECORDER bolted onto the walk:
+it writes the per-decision action vector the operator CHOSE on the net@21 rollout (plus the
+realized book, diagnostics) and a provenance header (checkpoint, full operator block, db,
+window, panel-frame provenance, EnvConfig fingerprint, decision count). It draws no RNG and
+issues no extra env/model call, so the walk and this module's scorecard JSON are byte-identical
+with and without the flag. The consumer is ``experiments/832_linear_imprint/imprint.py
+--teacher-vectors``, which re-gates the whole header before imprinting on the stream.
+
 FACTORY / SCHEDULED split (830/831 house style): this module + the fixture smoke are the
 factory deliverable. Real Stage-4 numbers (battery snapshots × seeds over the read-only
 ``trading_data.db`` panel) are a SCHEDULED run — never inside the factory loop. Default
@@ -67,11 +75,13 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import argparse
+import dataclasses
+import hashlib
 import importlib.util
 import json
 import sqlite3
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import numpy as np
 import jax
@@ -108,6 +118,15 @@ HOLD = 1
 N_ACTIONS_PER_ASSET = 5
 HOLD_COLLAPSE_PCT = 99.0      # the 821 failure signature: pct_hold pinned >99
 DECISION_RULES = ("argmax", "threshold", "top-m")   # TASK_856: policy-replay decision rules
+
+# TASK_861 — chosen-vector collection (the search-teacher imprint's target stream).
+# TIER PIN: the 832 imprint recipe injects the COST-HONEST trajectory (imprint.py
+# ``net_tier = GATE_COSTS[-1]``) and the +8.024 teacher read of record is the net@21 walk
+# (LEDGER 832/E5-inversion3), so the recorder pins the net@21 rollout. Recording the gross
+# tier as well would emit a SECOND, different action stream into one file and invite an
+# accidental cross-tier imprint.
+COLLECT_TIER_BP = 21
+CHOSEN_VECTORS_SCHEMA = "861/chosen-vectors/v1"
 
 # 830/E0-REAL official corridor, net@21 [floor +0.424, ceil +29.698], engine ref +0.751
 # (gross +0.753 / +0.956 / +31.367). Provenance: experiments/LEDGER.md row 830/E0-REAL +
@@ -1078,7 +1097,7 @@ def _trees_allclose(a, b):
 
 def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
             eval_seed, max_positions, min_cash_threshold, policy_actions=None,
-            leaf_eval='model'):
+            leaf_eval='model', collect=None):
     """Walk the full timeline once: obs → mask → deterministic vector search → step_vector.
     Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics.
 
@@ -1091,7 +1110,12 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     TASK_851: ``leaf_eval='true-env'`` passes the REAL pre-action state/panel/config into the
     search so its true-env leaf can step a copy of the env forward (see sampled_search.py's
     module docstring). Default 'model' issues the UNCHANGED canon search call — zero new
-    kwargs, bit-identical (acceptance iii)."""
+    kwargs, bit-identical (acceptance iii).
+
+    TASK_861: ``collect`` (default None) is a PURE RECORDER — a dict of two lists that receive
+    the per-decision CHOSEN action vector and the post-step realized book. It draws no RNG,
+    issues no extra env/model call and changes no control flow, so a collecting walk is
+    numerically IDENTICAL to a non-collecting one (acceptance ii)."""
     enc_cfg = EncoderConfig(n_assets=n_assets, window_size=env_cfg.window_size,
                             n_channels=27)                    # self_play.py:627 (27ch)
     book = jnp.ones((1, n_assets), dtype=jnp.int32)           # v1 book = HOLD (DEC-3)
@@ -1144,6 +1168,11 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
         pv = float(np.asarray(pv_arr)[0])
         av = np.asarray(action_vec)[0]
         sd = np.asarray(state.pos_side)[0]
+        # TASK_861 pure recording: both arrays are ones the diagnostics below already
+        # materialized — appending them cannot perturb the walk (acceptance ii).
+        if collect is not None:
+            collect["chosen_vectors"].append(av.astype(np.int32).tolist())
+            collect["realized_book"].append(sd.astype(np.int32).tolist())
         pvs[k + 1] = pv
         hold_count += (av == HOLD)
         action_hist += np.bincount(av, minlength=N_ACTIONS_PER_ASSET)
@@ -1241,6 +1270,177 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
         "per_window": per_window,
         "activity": activity,
     }
+
+
+# =============================================================================
+# TASK_861 — chosen-vector collection (offline search-teacher target stream)
+# =============================================================================
+# The +8.024 true-env-leaf search (LEDGER 832/E5-inversion3) is the best teacher the program
+# has measured, but its leaf is an R-step LOOKAHEAD so it can never trade live. It CAN however
+# teach offline: run it once over the panel and record the action vector it CHOOSES at each
+# decision — the same semantic object the env executes and the 832 weight-native BC loss
+# consumes (one weight vector per decision, NOT ExIt2's visit distribution, whose per-asset
+# argmax rounds to 100% HOLD — LEDGER 832/E5-exit2). This module only RECORDS; the consumer is
+# imprint.py --teacher-vectors, which re-gates the whole provenance header before using it.
+
+def _scalar(v):
+    """JSON-safe python scalar from a config field (bool stays bool; jnp/np 0-d unwraps)."""
+    if isinstance(v, bool):
+        return bool(v)
+    a = np.asarray(v)
+    if a.shape != ():
+        return a.tolist()
+    return int(a) if np.issubdtype(a.dtype, np.integer) else float(a)
+
+
+def env_flag_block(env_cfg):
+    """EVERY EnvConfig field of the walked config, as plain python — the collection's env
+    fingerprint. The imprint consumer compares this field-by-field so a target stream recorded
+    under different env semantics can never be imprinted silently (task scope 2 fail-loud)."""
+    return {f.name: _scalar(getattr(env_cfg, f.name))
+            for f in dataclasses.fields(env_cfg)}
+
+
+def payload_digest(decisions):
+    """sha256 over the CANONICAL serialization of the decisions payload (fix pass FIX 2). The
+    imprint consumer recomputes it, so a byte-level edit of the target stream — a truncated
+    code, a shifted row, a hand-patched vector — is caught before any training starts."""
+    blob = json.dumps({k: v for k, v in decisions.items() if k != "note"},
+                      sort_keys=True, separators=(",", ":"), default=float)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier_bp,
+                             walk_stats):
+    """Assemble the collection artifact: the recorded per-decision chosen vectors plus the
+    provenance header the imprint runner gates on (checkpoint, full operator block, db, window,
+    panel-frame provenance, env fingerprint, decision count).
+
+    FIX PASS (FIX 2) — the header also carries the COLLECTION WALK'S OWN SCORE
+    (``walk_net21`` / ``walk_final_pv`` / ``walk_bankrupt_at``, from the very rollout that
+    produced the stream) plus a sha256 of the payload. The imprint consumer replays the stream
+    in-env and asserts the replayed floor reproduces ``walk_net21``: one number that
+    independently catches an off-pin operator, a corrupted payload and any future silent drift,
+    because a stream that does not reproduce the recorded score is not the stream that was
+    scored."""
+    prices, env_cfg0, state_init, row_ts, col_symbols, panel_info = panel
+    warm = int(env_cfg0.window_size)
+    n_expected = int(panel_info["n_decisions"])
+    n_coll = len(collected["chosen_vectors"])
+    n_loaded = int(panel_info["n_loaded_symbols"])
+    fee, slip = ((FEE_BPS, SLIP_BPS) if tier_bp else (0.0, 0.0))
+    tier_cfg = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
+    rows = list(range(warm, warm + n_coll))
+    decisions = {
+        "note": "chosen_vectors[k] is the per-asset action vector the operator SELECTED at "
+                "decision k (panel row row_index[k]); codes are the env's "
+                "[0]Sell [1]Hold [2]Buy [3]LimitSell [4]LimitBuy — the same object "
+                "step_vector executes and the 832 BC loss one-hots. realized_book[k] is the "
+                "post-step pos_side (0 flat / 1 long / 2 short), DIAGNOSTICS ONLY.",
+        "row_index": rows,
+        "timestamp": [int(row_ts[r]) for r in rows],
+        "chosen_vectors": collected["chosen_vectors"],
+        "realized_book": collected["realized_book"],
+    }
+    return {
+        "schema": CHOSEN_VECTORS_SCHEMA,
+        "provenance": {
+            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "producer": "experiments/835_stage4_eval/eval_vector.py --collect-chosen-vectors",
+            "tag": args.tag,
+            "checkpoint": label["path"], "checkpoint_label": label["name"],
+            "db": args.db, "db_abspath": os.path.abspath(args.db),
+            "window": [args.start, args.end],
+            "bar_minutes": int(args.bar_minutes),
+            "n_assets": int(args.n_assets),
+            "panel_source": getattr(args, "panel_source", "minute"),
+            "panel_frame_from_checkpoint": getattr(args, "panel_frame_from_checkpoint", None),
+            "panel_frame": panel_info.get("panel_frame"),
+            "symbols_cli": list(args.symbols) if args.symbols else None,
+            "loaded_symbols": list(col_symbols[:n_loaded]),
+            "col_symbols": list(col_symbols),
+            "n_loaded_symbols": n_loaded,
+            "padded": bool(panel_info["padded"]),
+            "n_rows": int(panel_info["n_rows"]),
+            "warm": warm,
+            "start_row": warm,
+            "n_decisions_expected": n_expected,
+            "n_decisions_collected": n_coll,
+            "partial": bool(n_coll < n_expected),
+            "max_decisions": args.max_decisions,
+            "position_size_pct": float(env_cfg0.position_size_pct),
+            "eval_seed": int(args.eval_seed),
+            "cost_tier_bp": int(tier_bp),
+            "fee_bps": float(fee), "slip_bps": float(slip),
+            "operator": operator_block,
+            "env_flags": env_flag_block(tier_cfg),
+            # FIX 2 — the walk's OWN score, from the rollout that produced this exact stream.
+            # The consumer replays the stream and must reproduce walk_net21 (rel 1e-4).
+            "walk_note": f"scores of the net@{int(tier_bp)} rollout that RECORDED this stream "
+                         f"(835 score_tier on the same rets); imprint.py --teacher-vectors "
+                         f"replays the stream in-env and refuses unless its teacher floor "
+                         f"reproduces walk_net21",
+            "walk_net21": walk_stats.get("sharpe_full"),
+            "walk_final_pv": walk_stats.get("final_pv"),
+            "walk_bankrupt_at": walk_stats.get("bankrupt_at"),
+            "walk_terminated_early_at": walk_stats.get("terminated_early_at"),
+            "walk_steps_completed": walk_stats.get("steps_completed"),
+            "walk_pct_hold_agg": walk_stats.get("pct_hold_agg"),
+            "payload_sha256": payload_digest(decisions),
+        },
+        "decisions": decisions,
+    }
+
+
+def preflight_collect_path(path):
+    """FIX 3 — prove the collection output is WRITABLE before the walk starts.
+
+    The stream is written only after the full rollout AND all scoring, so a bad path (or an
+    unwritable parent) discovered at write time discards the whole teacher pass — on the real
+    leg that is a multi-hour 1670-decision true-env-leaf walk. Create the parent directory and
+    actually open the target for append here; remove it again if we created it. Returns the
+    resolved absolute path, raises OSError/ValueError on anything unusable."""
+    if not str(path).strip():
+        raise ValueError(
+            "--collect-chosen-vectors was given an EMPTY path; refusing to guess an output "
+            "location for the teacher target stream.")
+    out = os.path.abspath(path)
+    if os.path.isdir(out):
+        raise ValueError(f"--collect-chosen-vectors: {out} is a DIRECTORY, not a file path.")
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    existed = os.path.exists(out)
+    with open(out, "a"):
+        pass
+    if not existed:
+        os.remove(out)
+    return out
+
+
+def write_chosen_vectors(path, doc):
+    """Write the collection artifact (JSON). Fail-loud on an empty/blank path."""
+    if not str(path).strip():
+        raise RuntimeError(
+            "--collect-chosen-vectors was given an EMPTY path; refusing to guess an output "
+            "location for the teacher target stream.")
+    out = os.path.abspath(path)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out, "w") as fh:
+        json.dump(doc, fh, indent=1, default=float)
+    p = doc["provenance"]
+    print(f"[861] collected {p['n_decisions_collected']}/{p['n_decisions_expected']} chosen "
+          f"action vectors (cost tier net@{p['cost_tier_bp']}, rows "
+          f"{p['start_row']}..{p['start_row'] + p['n_decisions_collected'] - 1}, "
+          f"{p['n_assets']} slots) -> {_display_path(out)}")
+    wn = "None" if p["walk_net21"] is None else f"{p['walk_net21']:+.6f}"
+    print(f"[861] recorded walk score (the consumer's integrity anchor): "
+          f"net@{p['cost_tier_bp']} {wn}  final_pv {p['walk_final_pv']}  "
+          f"bankrupt_at {p['walk_bankrupt_at']}  payload sha256 {p['payload_sha256'][:16]}...")
+    if p["partial"]:
+        print(f"[861] WARN: the collection walk terminated EARLY (env done / bankruptcy) — the "
+              f"stream covers {p['n_decisions_collected']} of {p['n_decisions_expected']} "
+              f"decisions. imprint.py --teacher-vectors will REFUSE it unless its own panel "
+              f"yields exactly that many decision rows.")
+    return out
 
 
 # =============================================================================
@@ -1348,16 +1548,26 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         teacher_floor, book_warm = compute_teacher_floor(
             prices, env_cfg0, warm, n_decisions, period_minutes)
 
+    # TASK_861: pure recorder on the PINNED collection tier (net@21). None everywhere else, and
+    # None entirely when the flag is absent => the walks are bit-identical to HEAD.
+    collect_path = getattr(args, "collect_chosen_vectors", None)
+    collected = None
+
     tiers = {}
     for c in GATE_COSTS:
         fee, slip = (0.0, 0.0) if c == 0 else (FEE_BPS, SLIP_BPS)
         # cost tier enters via the env config ONLY; identical panel + seed per tier
         # (the 830/831 separate-rollout convention — fee-aware trajectories differ).
         env_cfg = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
+        collect = ({"chosen_vectors": [], "realized_book": []}
+                   if (collect_path is not None and c == COLLECT_TIER_BP) else None)
         rep = rollout(params, search_obj, prices, env_cfg, state_init,
                       env_cfg0.n_assets, n_decisions, args.eval_seed,
                       args.max_positions, args.min_cash_threshold,
-                      policy_actions=policy_actions, leaf_eval=args.leaf_eval)
+                      policy_actions=policy_actions, leaf_eval=args.leaf_eval,
+                      collect=collect)
+        if collect is not None:
+            collected = collect
         st = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
                         period_minutes, c, col_symbols, n_decisions)
         # scope-3 fields: teacher floor on the SAME window + policy-vs-floor delta (per tier).
@@ -1480,6 +1690,19 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
               f"leaf_eval={args.leaf_eval} vhat_tail={args.leaf_vhat_tail} "
               f"proposal={args.vector_proposal_scheme}")
         print("*" * 84)
+    # TASK_861 scope 1: write the collected chosen-vector stream. Deliberately writes NOTHING
+    # into ``result`` — the scorecard JSON stays byte-identical to a flag-OFF run so acceptance
+    # (ii) is a plain file diff; all provenance lives in the collection artifact itself.
+    if collect_path is not None:
+        if collected is None:
+            raise RuntimeError(
+                f"--collect-chosen-vectors: no walk ran on the pinned collection tier "
+                f"net@{COLLECT_TIER_BP} (cost tiers were {list(GATE_COSTS)}) — nothing recorded. "
+                f"Refusing to write an empty teacher target stream.")
+        write_chosen_vectors(collect_path, build_chosen_vectors_doc(
+            args, label, panel, collected, result["operator"], COLLECT_TIER_BP,
+            tiers[str(COLLECT_TIER_BP)]))
+
     # ledger_row is rendered by the caller once the ACTUAL output path is known
     # (out_pointer) — a hardcoded pointer here would dangle for scheduled runs.
     return result
@@ -2112,6 +2335,19 @@ def main():
     ap.add_argument("--decision-m", type=int, default=4, dest="decision_m",
                     help="TASK_856: top-m rule trade count per step (M assets with the highest "
                          "non-HOLD mass act; ~6%%x64 search trade rate; 'top-m' rule only)")
+    ap.add_argument("--collect-chosen-vectors", default=None, dest="collect_chosen_vectors",
+                    help="TASK_861: PURE RECORDER — write the per-decision action vector the "
+                         f"operator CHOOSES on the net@{COLLECT_TIER_BP} walk (plus the realized "
+                         "book, diagnostics only) to this JSON, with a provenance header "
+                         "(checkpoint, full operator block, db, window, panel frame, env "
+                         "fingerprint, decision count). Consumed by imprint.py "
+                         "--teacher-vectors as the offline search-teacher target stream. "
+                         "Records only: the walk, the scorecard and this module's JSON output "
+                         "are IDENTICAL with and without the flag; flag absent = byte-identical "
+                         "module behavior. Requires --operator search, refuses a blank path, and "
+                         "PROVES the path writable before the walk starts (fix pass FIX 3). The "
+                         "header carries the walk's own net@21 / final_pv / bankrupt_at plus a "
+                         "payload sha256 so the consumer can verify the stream (FIX 2)")
     ap.add_argument("--teacher-floor", dest="teacher_floor", action="store_true", default=False,
                     help="TASK_848: also walk 832's weight-native ladder teacher "
                          "(_make_weight_native_teacher_fn, same sentinels) on the SAME decision "
@@ -2299,6 +2535,34 @@ def main():
             ckpts += [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
     if not ckpts:
         ap.error("no checkpoint given (use --checkpoint/--checkpoint-list, or --smoke)")
+    # TASK_861 fail-loud: one collection path can only hold ONE walk's target stream; with N
+    # checkpoints each would silently overwrite the previous one and the imprint would train on
+    # whichever ran last (a wrong-teacher result, not a crash).
+    if args.collect_chosen_vectors is not None and len(ckpts) > 1:
+        ap.error(
+            f"--collect-chosen-vectors takes a single walk but {len(ckpts)} checkpoints were "
+            f"given; each would overwrite the same file. Run one checkpoint per collection "
+            f"(the teacher pass is one deterministic walk).")
+    # FIX 3 (fix pass): the flag must FAIL CLOSED. `--collect-chosen-vectors ""` used to run the
+    # whole walk, write nothing and exit 0 — on the pre-registered real leg 1 an unset
+    # $TEACHER_OUT would silently discard a multi-hour true-env-leaf teacher pass. Validate the
+    # path here, and PROVE it writable before a single decision is stepped (the stream is
+    # serialized only after the walk AND all scoring, so a late failure costs the whole pass).
+    if args.collect_chosen_vectors is not None:
+        if not args.collect_chosen_vectors.strip():
+            ap.error("--collect-chosen-vectors was given an EMPTY path; pass a real output file "
+                     "(an unset shell variable would otherwise discard the whole teacher pass).")
+        if args.operator != "search":
+            ap.error(
+                f"--collect-chosen-vectors records the SEARCH teacher's chosen vectors but "
+                f"--operator is '{args.operator}'; a policy-argmax walk would silently yield a "
+                f"'chosen vectors' file that is just the student's own argmax.")
+        try:
+            _pre = preflight_collect_path(args.collect_chosen_vectors)
+        except (OSError, ValueError) as e:
+            ap.error(f"--collect-chosen-vectors path is not writable: {type(e).__name__}: {e}")
+        print(f"[861] collection output preflight OK (writable before the walk): "
+              f"{_display_path(_pre)}")
 
     panel = build_panel(args)
     results = []
