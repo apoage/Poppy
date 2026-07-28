@@ -52,8 +52,38 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
+_(empty — factory run 20 shipped both rows. **Two OPEN decisions now gate the follow-on work:
+D28 BLOCKS the TASK_861 real legs** (cross-universe frame drift, measured 59/64 slots) and D27
+rules on the TASK_862 battery's consistency basis. Neither is a factory row.)_
+
 | # | Task | Size | Note |
 |---|------|------|------|
+| — | _no unblocked rows_ | — | Next rows seed from D27/D28. If D28 picks option (a), the natural follow-up is a SMALL task teaching `imprint.py` the shipped 853 `--panel-frame-from-checkpoint` flag (eval_vector already has it; 862's battery already pins it) — that unblocks the whole 861 real-leg chain. |
+
+_Shipped 2026-07-28 factory run 20 (861 + 862 parallel lanes, disjoint surfaces as planned):_
+- _**TASK_861** (`task861-search-teacher-imprint`) — `--collect-chosen-vectors` (eval_vector) +
+  `--teacher-vectors` (imprint); both flags OFF **bit-identical** (orchestrator-reproduced vs
+  `HEAD`: 0 differing leaves on both modules). 3-member panel, **2 fix rounds, 5 MAJOR closed** —
+  the pinned +8.024 operator was ungated (3 verifiers imprinted garbage teachers with green
+  gates, and the falsification metric scored garbage HIGHER than the real teacher); no payload
+  integrity (`x−0.5` codes swapped a +13.893 teacher for −0.649); empty-string flags failed OPEN
+  (one clobbered the tracked parity baseline); the two pre-registered legs were mutually
+  un-runnable; and — found by brute force — the new replay guard is a TRAJECTORY not a TARGET
+  check: **315/400 cells (78.8%) admit trajectory-inert substitutions**, so 78.8% of BC targets
+  could be rewritten with net@21 bit-identical and every gate green (closed via a payload-vs-header
+  action-composition check). **Remainder → planner, BLOCKED on D28.**_
+- _**TASK_862** (`task862-imprint-scorecard`) — `experiments/835_stage4_eval/scorecard.py` + the
+  canonical 7-window manifest + smoke; NEW FILES ONLY, zero diffs to existing tracked files
+  (re-confirmed). 2-member panel, **2 fix rounds, 3 MAJOR + 1 latent-MAJOR closed** — any
+  non-`WindowFailure` exception destroyed the whole artifact (a non-numeric floor value killed a
+  completed battery, no json/no md, contradicting its own "never silently skipped" contract); the
+  operator block was asserted-not-observed (~25 knobs unpinned — a top-m battery would emit a
+  status-OK card headed "848 read of record"); the recovery path re-ran the call that had failed;
+  and the write sat outside every guard (truncated unparseable JSON). Also closed: ambient
+  `JAX_PLATFORMS` silently selecting the backend while the header said `null`. **Decision-changing
+  finding → D27. Remainder → planner: canonical manifest on `ckpt_imprint_full` (workstation).**_
+
+_(prior Ready rows, now shipped:)_
 | 1 | `tasks/TASK_861_SEARCH_TEACHER_IMPRINT.md` | M | **D26 RULED (operator, 2026-07-27): "prepare dark factory tasks" — opt (a).** Marry the two proven pieces: the +8.024 true-env-leaf search operator (PINNED verbatim per `runs/832_e5/results_e5inv854_db_pw0_*.json`) as an OFFLINE teacher × the exact 832 weight-native imprint recipe (+0.839/+0.898-validated). Two flag-gated extensions: `--collect-chosen-vectors` on the search walk (`eval_vector.py`, pure recording — walk numbers identical ON/OFF) + `--teacher-vectors` on `imprint.py` (hard chosen-vector targets, fail-loud provenance gate; NOT visit-distribution CE — the ExIt2 collapse mode). Falsification gate must be high-SNR (the 860 lesson — no small-n held-out quantities). OFF = bit-identical both modules. **Real bars = planner post-ship (pre-registered in the spec): teacher pass on the pinned `--end 2025-10-04` panel (1673 dec, flagged) → imprint → sanity replay > +0.839 → 858-extended OOS + WF quarters.** |
 | 2 | `tasks/TASK_862_IMPRINT_SCORECARD.md` | S | FILLER (parallel-safe). Codify the imprint's D17 battery into one command + one fail-loud scorecard artifact: DEC-2 regime windows (floors from `runs/831_ext/*.json`) + OOS window + WF quarters via the 848 policy-argmax read-of-record configuration. **NEW FILES ONLY — must not edit `eval_vector.py`/`imprint.py` (861's surface); merge-safe by construction.** No silent window skips; schema documented (the eventual gate-ladder submission cites it). Real leg = planner (workstation, DB source of record). |
 
