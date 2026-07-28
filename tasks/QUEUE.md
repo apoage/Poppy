@@ -3,6 +3,14 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-29 (post factory run 21) — TASK_863 SHIPPED (`task863-imprint-frame-pin`); Ready = TASK_864
+(sole row). D29 seeded OPEN and it GATES the 861 real-leg chain: the shipped frame pin is only
+available on a DAILY loader reaching 33/64 frame slots, while the +0.839 bar is minute-panel-native
+with a 64-asset book — so D28 opt (a) as written substitutes a 64→33 breadth confound (first-order,
+ST3 2.76×) plus a source confound (D20, cross-source rulings forbidden) for the 59/64 universe drift
+it removes. Recommended: teach the pin to the MINUTE path (858 gives 62/64). Do NOT launch the 861
+real legs on the current pre-registration.**
+Prior grooming (run 20):
 **2026-07-28 (post factory run 20; D27+D28 planner-RULED opt (a)) — Ready = TASK_863 → TASK_864 (SERIAL, same surface); factory GREEN.**
 Prior grooming (D26):
 **2026-07-27 (D26 RULED: "prepare dark factory tasks") — Ready = TASK_861 + TASK_862 (filler); factory GREEN.**
@@ -59,12 +67,33 @@ follow-up is seeded below; 862's shipped basis split is RATIFIED as-is (no code 
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_863_IMPRINT_FRAME_PIN.md` | S | **D28 RULED opt (a).** Port the shipped 853 `--panel-frame-from-checkpoint` to `imprint.py` (mirror `eval_vector.py`'s proven semantics: positional frame, inactive slots dual-disclosed, fail-loud on scrambling) + upgrade the 861 frame WARN to a fail-closed BOTH-DIRECTIONS gate (pinned↔unpinned mismatch refuses; reordered same-membership frame refuses — order is load-bearing). Default/legacy bit-identical to `task861-search-teacher-imprint`. **Unblocks the entire 861 real-leg chain** (legs re-registered in the task file's D28 addendum: frame pinned both legs, leg 2/3 = 3 imprint seeds, median > +0.839 with ≥2/3 seeds above). |
-| 2 | `tasks/TASK_864_PARITY_BASELINE_HYGIENE.md` | XS/S | FILLER — **SAME-FILE as #1 (`experiments/832_linear_imprint/`): take strictly AFTER 863 ships, never in parallel.** The tracked parity baseline `results_fixture_smoke.json` is rewritten in place by the module's own default invocation and is ~74 commits stale (drift from `c2f1ba5`/846; run 20 nearly clobbered it). Default writes → untracked path; tracked overwrite = explicit flag + per-field diff + dirty-refuse; then ONE deliberate reconcile: refresh with a per-field attribution table, or STOP with unexplained fields named. |
+| 1 | `tasks/TASK_864_PARITY_BASELINE_HYGIENE.md` | XS/S → **revise up: S/M** | FILLER — same surface as the just-shipped 863, so it was correctly held until now. **Two run-21 measurements change its shape.** (a) The tracked `results_fixture_smoke.json` does NOT reproduce from HEAD at the smoke's own CLI defaults: **479 differing leaves** (first loss `10.888` vs `10.925`; teacher net@21 floor `−4.687` vs `−3.111`; tier-0 floor matches to the last digit ⇒ **stale, not nondeterministic**), so it is **not a usable parity oracle** and scope-2's reconcile is a real attribution job, not a refresh. Per its own acceptance (iii), any unattributable field ⇒ **STOP + seed a DECISIONS row**, do not refresh. (b) The self-clobbering pattern is **not confined to that file**: THREE tracked baselines are rewritten in place by ordinary verification runs, and `smoke_e2e.py --quick` silently **DOWNGRADES** `861/results_fixture_smoke.json` (writes falsification seed 0 where the committed baseline holds seeds 0–3) while still reading complete and green — hit and restored during run 21. 864's spec says report other modules' baselines rather than fix them, but this argues scope-1 (default writes → untracked path) should be applied **module-wide**. |
 
-_Sequencing note: the two rows share a surface — this is a SERIAL queue this run, not parallel
-lanes. All GPU legs remain planner-scheduled (the amended 861 chain launches only after 863
-ships and is verified)._
+_Sequencing note: 863 and 864 shared a surface and were taken SERIALLY (863 first, as ranked).
+All GPU legs remain planner-scheduled — and the amended 861 chain is now **BLOCKED on D29**, not
+merely waiting on 863: 863 shipped and is verified, but pinning through the only available (daily)
+loader would grade a ~33-asset daily-panel net against a 64-asset minute-panel +0.839 reference._
+
+_Shipped 2026-07-29 factory run 21:_
+- _**TASK_863** (`task863-imprint-frame-pin`, `609d6d3`) — `--panel-frame-from-checkpoint` on
+  `imprint.py`, calling `eval_vector`'s proven 853 validator/framed loader rather than re-deriving
+  them (`eval_vector.py` byte-unmodified); 861 provenance gate now fail-closed BOTH directions,
+  same-membership reorder refused. **OFF bit-identical proven five independent ways** (2 orchestrator
+  re-proofs at matched `_REPO` with identical `--out`/`--ckpt-out` → stdout byte-identical, 170
+  leaves/0 differing; fixer's mirrored tree 0-of-759 + 0-of-545; regression judge's **30-leg** legacy
+  battery, zero rc/artifact divergence; fresh judge's mirrored-tree control). Smoke **8 → 11 → 13
+  legs**; selftest 12/12; 861 e2e 9/9. 3-member panel + a **FRESH fail-closed judge** over the fix
+  pass: **1 MAJOR + 6 MINOR + 3 NIT closed over 2 fix rounds**, every new guard demonstrated to FAIL
+  when disabled. MAJOR (pre-existing, fixed pin-gated): a degenerate pinned run exited **0** with a
+  green-looking artifact (null Sharpes beside `all_losses_finite: true`, no marker) whenever
+  `--smoke-assert` was off — the default for any non-repo-fixture db, **i.e. the real leg**. Also
+  closed: masked-cell dilution of every reported scalar (0.8929 vs 0.8571 active-only); a
+  false-AND-vacuous `panel_source` pin (2 judges independently); a FALSE "flat-zero features"
+  disclosure (896/6048 cells at a constant 0.2) now **asserted** by the smoke; three malformed-frame
+  paths; and `panel_frame: {}` as a real **fail-open**. The force-HOLD mask had **no regression guard
+  at all** (inert on the tv path + zero partial slots in the smoke) — now boundary-asserted.
+  **Spec correction (binding): D28 + TASK_861 line 179 wrongly state `imprint.py:620` "only WARNs" —
+  it is a hard `RuntimeError`.** **Remainder → planner, BLOCKED on D29.**_
 
 _Shipped 2026-07-28 factory run 20 (861 + 862 parallel lanes, disjoint surfaces as planned):_
 - _**TASK_861** (`task861-search-teacher-imprint`) — `--collect-chosen-vectors` (eval_vector) +
