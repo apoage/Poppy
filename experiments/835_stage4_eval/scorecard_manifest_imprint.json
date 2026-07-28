@@ -1,0 +1,59 @@
+{
+  "schema": "imprint_scorecard_manifest/v1",
+  "name": "imprint_full",
+  "checkpoint": "runs/832_e5/ckpt_imprint_full",
+  "frame_provenance": "runs/832_e5/frame_provenance_imprint.json",
+  "db": "trading_data.db",
+  "n_assets": 64,
+  "eval_seed": 0,
+  "model": {},
+  "notes": "TASK_862 canonical battery for the D17 sequence: the four DEC-2 regime windows (each against its own runs/831_ext per-window floor artifact), the full OOS window (LEDGER 832/E5-oos-real), and the two pre-registered walk-forward quarters (runs/858_oos/WALKFORWARD_PREREG.md). Operator is fixed by scorecard.py to the 848 read of record. SCHEDULED planner run against the read-only source of record - never inside the factory loop. Per D17 a consistency pass confers NO gate status.",
+  "windows": [
+    {
+      "name": "bear22w",
+      "kind": "regime",
+      "start": "2021-12-15",
+      "end": "2023-01-15",
+      "floor_artifact": "runs/831_ext/bear22w.json"
+    },
+    {
+      "name": "bull23w",
+      "kind": "regime",
+      "start": "2022-12-15",
+      "end": "2024-01-15",
+      "floor_artifact": "runs/831_ext/bull23w.json"
+    },
+    {
+      "name": "y2024",
+      "kind": "regime",
+      "start": "2024-01-01",
+      "end": "2025-01-01",
+      "floor_artifact": "runs/831_ext/y2024.json"
+    },
+    {
+      "name": "recent",
+      "kind": "regime",
+      "start": "2024-06-01",
+      "end": "2025-09-01",
+      "floor_artifact": "runs/831_ext/recent.json"
+    },
+    {
+      "name": "oos_full",
+      "kind": "oos",
+      "start": "2025-10-05",
+      "end": "2026-03-31"
+    },
+    {
+      "name": "wf_q4",
+      "kind": "walkforward",
+      "start": "2025-08-06",
+      "end": "2025-12-31"
+    },
+    {
+      "name": "wf_q1",
+      "kind": "walkforward",
+      "start": "2025-11-02",
+      "end": "2026-03-31"
+    }
+  ]
+}

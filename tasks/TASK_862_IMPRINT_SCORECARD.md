@@ -1,5 +1,23 @@
 # TASK_862 — Imprint benchmark scorecard harness (battery codification; FILLER)
 
+> **STATUS (2026-07-28): SHIPPED as `task862-imprint-scorecard`** (factory run 20).
+> New files only — acceptance (i) zero diffs to any existing tracked file, re-confirmed after
+> both fix rounds; selftest 12/12; smoke byte-identical on re-run (json + md) and under a
+> hostile ambient env. 2-member panel over 2 fix rounds, **3 MAJOR + 1 latent-MAJOR closed**:
+> any non-`WindowFailure` exception destroyed the whole artifact (contradicting this module's own
+> "never silently skipped" contract) · the operator block was ASSERTED not OBSERVED (~25 knobs
+> unpinned; a top-m battery would have emitted a status-OK card headed "848 read of record") ·
+> the cross-config `meets_form` · and the recovery path re-running the call that had failed,
+> plus an unguarded in-place write that could leave truncated unparseable JSON.
+> **DECISION-CHANGING FINDING → DECISIONS D27 (OPEN)**: the pinned `runs/831_ext` floors this
+> task's scope 1 mandates were measured on a materially different configuration (n_assets
+> 95/204/214/273, psp 0.0018–0.0053, warm 31, 10-seed search) than the battery (64 slots, 0.1,
+> warm 60, 1-seed policy-argmax). The factory shipped the DISCLOSURE and promoted the on-window
+> teacher floor to PRIMARY — a deviation from scope 1 and from the ratified DEC-2 row that needs
+> an operator ruling before the consistency read is cited.
+> **Remainder → planner**: canonical manifest on `ckpt_imprint_full` (workstation, DB source of
+> record). A GPU run still needs `safe_run` — `MEM_FRACTION` is not a cap.
+
 **Status**: READY 2026-07-27 (seeded with D26 grooming — filler row, rank below TASK_861).
 **Size: S. Risk: low** (one NEW file; zero edits to shipped modules; zero training).
 
