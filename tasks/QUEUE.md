@@ -3,7 +3,14 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-07-29 (post factory run 21) — TASK_863 SHIPPED (`task863-imprint-frame-pin`); Ready = TASK_864
+**2026-07-29 (post factory run 21, FINAL) — BOTH rows SHIPPED: TASK_863 (`task863-imprint-frame-pin`,
+`609d6d3`) + TASK_864 (`task864-parity-baseline-hygiene`, `6b71e0e` + refresh `086b1c4`). Ready =
+EMPTY; factory IDLE. One human wall: **D29 OPEN** — it gates the 861 real-leg chain. Four recommended
+next rows listed below for the planner to spec (A: minute-path frame pin, the D29 unblock; B: a
+weight-ON pin — the missing guard that let the 864 drift hide for ~80 commits; C: port the promote
+gate to 861's baselines; D: frame pin for the ExIt continuation).**
+Prior grooming (mid-run 21):
+**2026-07-29 — TASK_863 SHIPPED; Ready = TASK_864
 (sole row). D29 seeded OPEN and it GATES the 861 real-leg chain: the shipped frame pin is only
 available on a DAILY loader reaching 33/64 frame slots, while the +0.839 bar is minute-panel-native
 with a 64-asset book — so D28 opt (a) as written substitutes a 64→33 breadth confound (first-order,
@@ -65,9 +72,17 @@ critical path = E5 imprint→ExIt.
 _D27 + D28 planner-RULED 2026-07-28 (both opt (a); operator may override — see DECISIONS). D28's
 follow-up is seeded below; 862's shipped basis split is RATIFIED as-is (no code row needed)._
 
-| # | Task | Size | Note |
-|---|------|------|------|
-| 1 | `tasks/TASK_864_PARITY_BASELINE_HYGIENE.md` | XS/S → **revise up: S/M** | FILLER — same surface as the just-shipped 863, so it was correctly held until now. **Two run-21 measurements change its shape.** (a) The tracked `results_fixture_smoke.json` does NOT reproduce from HEAD at the smoke's own CLI defaults: **479 differing leaves** (first loss `10.888` vs `10.925`; teacher net@21 floor `−4.687` vs `−3.111`; tier-0 floor matches to the last digit ⇒ **stale, not nondeterministic**), so it is **not a usable parity oracle** and scope-2's reconcile is a real attribution job, not a refresh. Per its own acceptance (iii), any unattributable field ⇒ **STOP + seed a DECISIONS row**, do not refresh. (b) The self-clobbering pattern is **not confined to that file**: THREE tracked baselines are rewritten in place by ordinary verification runs, and `smoke_e2e.py --quick` silently **DOWNGRADES** `861/results_fixture_smoke.json` (writes falsification seed 0 where the committed baseline holds seeds 0–3) while still reading complete and green — hit and restored during run 21. 864's spec says report other modules' baselines rather than fix them, but this argues scope-1 (default writes → untracked path) should be applied **module-wide**. |
+_**Ready = EMPTY.** Factory run 21 shipped both rows (TASK_863 + TASK_864, serial as ranked). Everything
+remaining is a human-decision wall (**D29 OPEN**) or a planner-owned spec. Factory IDLE._
+
+**Recommended next rows (planner to spec — the factory did not self-author these):**
+
+| # | Recommended row | Size | Why |
+|---|-----------------|------|-----|
+| A | **Frame pin on the MINUTE path** (D29 opt (a)) | S/M | **The highest-value row, and it unblocks the whole 861 real-leg chain.** D29 measured that the shipped pin only exists on a DAILY loader reaching **33/64** frame slots, while 858 brought MINUTE to **62/64** and the `+0.839` bar is minute-panel-native with a 64-asset book. Mirror the proven 853/863 semantics onto the PIN-b `create_jax_env_historical` minute path. **Gated on D29 being ruled.** |
+| B | **A weight-ON pin for the 832 baseline** | XS/S | This is *why* the 864 drift went unnoticed for ~80 commits: `CANON_832_PINS` is a **weight-OFF** oracle guarding a **weight-ON** baseline. The 861 smoke pins the flagless default; the committed artifact is the weight-ON one, so **nothing in the repo pins the weight-ON numbers**. Either add a weight-ON pin or make the pins read the tracked baseline. Also: `861/smoke_e2e.py:428/459` is only a within-run byte-identity check and passes against arbitrary content. |
+| C | **Port `--write-parity-baseline` to the 861 baselines** | XS/S | The self-clobbering pattern is confirmed module-wide: `861/chosen_vectors_fixture.json` and `861/results_fixture_smoke.json` are both rewritten in place by ordinary verification runs, and `smoke_e2e.py --quick` silently **DOWNGRADES** the latter (writes falsification seed 0 where the committed baseline holds seeds 0–3) while still reading complete and green — hit and restored twice during run 21. 864's shipped pattern (recipe-pinned + validity-gated + atomic promote) is directly portable. |
+| D | **Frame pin for the ExIt continuation** | S | `train_jax_fast.py` has NO frame-pin flag, so continuing a PINNED imprint re-derives a coverage-ranked universe and reopens the exact slot misalignment 863 closes, one phase later. The 832 artifact's handoff block is silent on the frame. |
 
 _Sequencing note: 863 and 864 shared a surface and were taken SERIALLY (863 first, as ranked).
 All GPU legs remain planner-scheduled — and the amended 861 chain is now **BLOCKED on D29**, not
