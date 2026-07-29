@@ -96,6 +96,16 @@ ceiling on the actual target distribution first.
 
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
 
+> **⚠ SUPERSEDED IN PART BY D29 (2026-07-29): point 1 below is re-amended — the frame pin must go
+> through the MINUTE path (TASK_865), NOT the shipped daily-only pin.** TASK_863's flag is sound
+> but its only available loader is daily, which covers 33/64 frame slots on the leg-1 window
+> (31 forced HOLD) while the +0.839 bar is minute-panel-native with a 64-asset book — pinning
+> through daily would substitute a source confound (D20: cross-source forbidden) plus a 64→33
+> breadth confound (first-order, ST3 2.76×) for the universe drift. **The legs are now gated on
+> TASK_865 (minute-framed loader, 62/64 coverage; the 2 inactive slots = the FTM/MATIC ticker
+> migrations, disclosed).** Points 2 (3-imprint-seed battery, median > +0.839, ≥2/3 above) and
+> 3 (soft +8.02 check) stand unchanged.
+>
 > **D28 RESOLUTION ADDENDUM (2026-07-28, planner ruled opt (a); operator may override) — the
 > legs below are AMENDED, gated on TASK_863 shipping:**
 > 1. **Frame pin, both legs**: leg 1 adds `--panel-frame-from-checkpoint
@@ -178,7 +188,10 @@ operator + `runs/832_e5/ckpt_imprint_full`, and the imprint now REFUSES any off-
    **⚠ OPEN PRE-REGISTRATION HAZARD — POSITIONAL FRAME (resolve before spending the GPU).**
    Neither leg passes `--panel-frame-from-checkpoint` (default OFF), and `imprint.py` does not
    support it at all (it only WARNS if the collection used one — `imprint.py:620`, "imprint =
-   coverage-ranked"). So both legs derive their universe from
+   coverage-ranked"). **[CORRECTION 2026-07-29, verified against the tag: the "only WARNs" claim
+   is WRONG — shipped `imprint.py:627–631` is a hard `RuntimeError`. The universe-drift finding
+   and the rest of this block stand; only the WARN claim was false. See the TASK_863 banner.]**
+   So both legs derive their universe from
    `ORDER BY COUNT(*) DESC LIMIT n_assets` over the given window (`vectorbt_env.py:579-590`,
    minute `ohlcv` table). That makes the two legs agree with EACH OTHER — the provenance gate
    compares `loaded_symbols`, so it passes — but it does NOT make either agree with the frame

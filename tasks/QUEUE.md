@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-29 (D29 planner-RULED opt (a)) — Ready = TASK_865 → 866 → 867 (SERIAL, shared surface); row D PARKED (no ExIt continuation scheduled); factory GREEN.**
+Prior grooming (run 21 final):
 **2026-07-29 (post factory run 21, FINAL) — BOTH rows SHIPPED: TASK_863 (`task863-imprint-frame-pin`,
 `609d6d3`) + TASK_864 (`task864-parity-baseline-hygiene`, `6b71e0e` + refresh `086b1c4`). Ready =
 EMPTY; factory IDLE. One human wall: **D29 OPEN** — it gates the 861 real-leg chain. Four recommended
@@ -69,25 +71,22 @@ critical path = E5 imprint→ExIt.
 
 ## Ready — take from the top
 
-_D27 + D28 planner-RULED 2026-07-28 (both opt (a); operator may override — see DECISIONS). D28's
-follow-up is seeded below; 862's shipped basis split is RATIFIED as-is (no code row needed)._
+_D29 planner-RULED 2026-07-29 (opt (a); operator may override — see DECISIONS). Rows A/B/C from
+the run-21 wrap are seeded below as TASK_865/866/867; **row D (ExIt-continuation frame pin) is
+PARKED** — no ExIt continuation is scheduled or planned (ExIt failed twice, LEDGER 832/E5-exit +
+E5-exit2; the current program is imprint→OOS), so the row would guard a phase that doesn't
+exist. It un-parks automatically the day an ExIt continuation is pre-registered._
 
-_**Ready = EMPTY.** Factory run 21 shipped both rows (TASK_863 + TASK_864, serial as ranked). Everything
-remaining is a human-decision wall (**D29 OPEN**) or a planner-owned spec. Factory IDLE._
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_865_MINUTE_FRAME_PIN.md` | S/M | **D29 RULED opt (a) — unblocks the whole 861 real-leg chain.** Minute-framed loader on the PIN-b `create_jax_env_historical` path, mirroring the shipped 853/863 semantics (positional order, inactive dual-disclosure ASSERTED, reorder refused, `active_cells_only` companions); wired into both `eval_vector.py` and `imprint.py` pin paths; the 863-MAJOR degenerate-run detector carried to the minute path from day one (it sits on the real leg's exact configuration). Acceptance includes a read-only real-DB coverage leg: expected 62/64 with the two inactive slots NAMED (FTM→S / MATIC→POL). |
+| 2 | `tasks/TASK_866_WEIGHT_ON_PIN.md` | XS/S | FILLER, **SERIAL after #1 (same surface)**. Close the CLASS behind the 864 incident: `CANON_832_PINS` is a weight-OFF oracle guarding a weight-ON baseline — nothing pins the weight-ON numbers, which is how 846 moved them silently for ~80 commits. Every committed baseline gets an oracle of ITS OWN configuration; cross-config check = named REFUSE; mutation-tested. |
+| 3 | `tasks/TASK_867_861_BASELINE_PROMOTE_PORT.md` | XS/S | FILLER, **SERIAL after #2 (same surface)**. Port 864's promote gate (recipe-pinned, validity-gated, atomic, dirty-refuse) to `861/chosen_vectors_fixture.json` + `861/results_fixture_smoke.json`; kill the `--quick` silent seed-downgrade; make `smoke_e2e.py:428/459` check the COMMITTED baseline (tamper test mandatory — today it passes against arbitrary content). |
 
-**Recommended next rows (planner to spec — the factory did not self-author these):**
-
-| # | Recommended row | Size | Why |
-|---|-----------------|------|-----|
-| A | **Frame pin on the MINUTE path** (D29 opt (a)) | S/M | **The highest-value row, and it unblocks the whole 861 real-leg chain.** D29 measured that the shipped pin only exists on a DAILY loader reaching **33/64** frame slots, while 858 brought MINUTE to **62/64** and the `+0.839` bar is minute-panel-native with a 64-asset book. Mirror the proven 853/863 semantics onto the PIN-b `create_jax_env_historical` minute path. **Gated on D29 being ruled.** |
-| B | **A weight-ON pin for the 832 baseline** | XS/S | This is *why* the 864 drift went unnoticed for ~80 commits: `CANON_832_PINS` is a **weight-OFF** oracle guarding a **weight-ON** baseline. The 861 smoke pins the flagless default; the committed artifact is the weight-ON one, so **nothing in the repo pins the weight-ON numbers**. Either add a weight-ON pin or make the pins read the tracked baseline. Also: `861/smoke_e2e.py:428/459` is only a within-run byte-identity check and passes against arbitrary content. |
-| C | **Port `--write-parity-baseline` to the 861 baselines** | XS/S | The self-clobbering pattern is confirmed module-wide: `861/chosen_vectors_fixture.json` and `861/results_fixture_smoke.json` are both rewritten in place by ordinary verification runs, and `smoke_e2e.py --quick` silently **DOWNGRADES** the latter (writes falsification seed 0 where the committed baseline holds seeds 0–3) while still reading complete and green — hit and restored twice during run 21. 864's shipped pattern (recipe-pinned + validity-gated + atomic promote) is directly portable. |
-| D | **Frame pin for the ExIt continuation** | S | `train_jax_fast.py` has NO frame-pin flag, so continuing a PINNED imprint re-derives a coverage-ranked universe and reopens the exact slot misalignment 863 closes, one phase later. The 832 artifact's handoff block is silent on the frame. |
-
-_Sequencing note: 863 and 864 shared a surface and were taken SERIALLY (863 first, as ranked).
-All GPU legs remain planner-scheduled — and the amended 861 chain is now **BLOCKED on D29**, not
-merely waiting on 863: 863 shipped and is verified, but pinning through the only available (daily)
-loader would grade a ~33-asset daily-panel net against a 64-asset minute-panel +0.839 reference._
+_Sequencing note: all three rows touch `experiments/832_linear_imprint/` — SERIAL queue, take in
+rank order. All GPU legs remain planner-scheduled; the amended 861 chain (minute-pinned frame,
+3 imprint seeds, median > +0.839 with ≥2/3 above — see the D29 addendum in TASK_861) launches
+only after 865 ships and is verified._
 
 _Shipped 2026-07-29 factory run 21:_
 - _**TASK_863** (`task863-imprint-frame-pin`, `609d6d3`) — `--panel-frame-from-checkpoint` on
