@@ -10,3 +10,7 @@ ckpt_imprint*/
 results_fixture_smoke_teacher_vectors*.json
 # TASK_863 --panel-frame-from-checkpoint default outputs are suffixed the same way.
 results_fixture_smoke*_frame_pin.json
+# TASK_864: the CANON recipe's default output is now suffixed too — every ordinary verification
+# run lands here, and only an explicit --write-parity-baseline promotes onto the checked-in
+# results_fixture_smoke.json (which stays tracked, and is the weight-ON artifact per SPEC.md).
+results_fixture_smoke_local.json

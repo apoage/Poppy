@@ -118,8 +118,10 @@ Pre-registered smoke sizing (SAME code path, denser resample):
   (~114 panel bars -> start_row 60, N ~ 53 decisions), `--iters 80`, `--batch-size 32`,
   seed 0, CPU (`JAX_PLATFORMS=cpu` default in-module).
 - Command: `python experiments/832_linear_imprint/imprint.py`
-  (fixture defaults auto-apply; writes `results_fixture_smoke.json`, checkpoint to
-  gitignored `ckpt_smoke/`).
+  (fixture defaults auto-apply; writes the **gitignored** `results_fixture_smoke_local.json`,
+  checkpoint to gitignored `ckpt_smoke/`). **TASK_864**: the default invocation never writes the
+  TRACKED `results_fixture_smoke.json` — that requires an explicit `--write-parity-baseline`
+  (see "Committed fixture artifact" below), so no verification run can dirty the baseline.
 - PASS = end-to-end run with (1) all imprint losses finite, (2) imprint policy CE
   DECREASES on the teacher targets (head-5 mean -> tail-5 mean), (3) the sanity replay
   runs and emits the schema. **No performance threshold** — smoke numbers are signal
@@ -205,10 +207,69 @@ the WEIGHT-env teacher — two different teachers) is rejected fast with a clear
 ### Committed fixture artifact (regeneration — pinned)
 `results_fixture_smoke.json` committed in this dir is the **weight-ON, default order-code**
 deliverable. It is NOT reproduced by the bare flagless command (that writes the weight-OFF
-numbers and would leave a spurious working-tree diff). Regenerate it with EXACTLY:
-`python experiments/832_linear_imprint/imprint.py --vector-weight-rebalance`
-(fixture defaults + `--imprint-mapping order-code` default auto-apply). A weight-native run must
-use a scratch `--out` so it never overwrites the committed order-code artifact.
+numbers). Regenerate it with EXACTLY:
+`python experiments/832_linear_imprint/imprint.py --vector-weight-rebalance --write-parity-baseline`
+(fixture defaults + `--imprint-mapping order-code` default auto-apply). **Reproducibility
+precondition:** `/db` and `/checkpoint` are recorded as ABSOLUTE paths, so the artifact reproduces
+byte-identically only when the command is run from THIS tree root (`/home/lukas/Trader`) with the
+default `--ckpt-out` — a different clone path or an explicit `--ckpt-out` changes those two fields
+(and `--write-parity-baseline` refuses the latter outright, see below).
+
+A weight-native (or any other off-recipe) run is **not** a `--write-parity-baseline` run at all: it
+writes the gitignored `results_fixture_smoke_local.json` by default, or a scratch `--out` if you
+want to keep it — the two flags are mutually exclusive, so "use a scratch `--out` to protect the
+committed artifact" applies only to plain runs, never in combination with the promote flag.
+
+**TASK_864** made that recipe enforceable rather than advisory. Every other invocation — including
+the bare flagless one — writes the gitignored `results_fixture_smoke_local.json`, so the tracked
+baseline can only move through `--write-parity-baseline`, which prints a per-field diff first and
+REFUSES when:
+- the run is **not the CANON RECIPE** — every argparse dest except `--out` and the promote flag
+  itself is compared against the recipe above, with the expected values *re-derived from this
+  module's own argparse defaults* (`CANON_BASELINE_ARGV` + `_resolve_run_defaults`, so the gate
+  cannot drift from the defaults). Off-recipe `--imprint-mapping` / `--seed` / `--iters` /
+  `--bar-minutes` / `--n-assets` / `--start` / `--end` / `--position-size-pct` / `--batch-size` /
+  weight unit-max-deadband / `--tag` / `--ckpt-out` / lr / discount / entropy knobs all refuse,
+  naming the offending field and its canon value. **The flagless weight-OFF default is refused by
+  this check** (it previously promoted onto the weight-ON baseline, replacing 462/545 leaves at
+  exit 0 with no downstream detector);
+- `--no-smoke-assert` is given, or the finished run's own artifact fails re-validation
+  (`imprint.all_losses_finite`, `imprint.policy_ce_decreased`, a full-length loss trajectory, both
+  sanity-replay tier Sharpes, both expressibility-gate net@21 values) — checked INDEPENDENT of
+  `--smoke-assert`, because `run()` writes the artifact BEFORE its smoke asserts, so an unchecked
+  or truncated run could otherwise become the oracle;
+- the tracked file is git-dirty, `--out` is also given, the db is not the fixture, or the run is a
+  suffixed different experiment (861 `--teacher-vectors`, 863 `--panel-frame-from-checkpoint`).
+
+All of those refuse fail-fast (before the ~1 min run) except the artifact re-validation, which
+necessarily runs after it; the promoted bytes are re-serialised from the run's in-memory result
+(never re-read from the shared local path) and installed with `os.replace` via `<baseline>.tmp`, so
+the tracked oracle is never left truncated. Rationale for the whole apparatus: the flagless default
+used to land on this tracked path, so a stray run left a dirty baseline that read like a legitimate
+"refresh".
+
+**Promoting recipe of the CURRENT baseline (the record of what produced these bytes).**
+`python experiments/832_linear_imprint/imprint.py --vector-weight-rebalance --write-parity-baseline`
+run from `/home/lukas/Trader` → `results_fixture_smoke.json` md5
+`16736523175d25659405d568608a2a07` (555 → 545 leaves vs the TASK_845 bytes; 460 moved, 10 removed).
+Resolved recipe fields: `vector_weight_rebalance True`, `imprint_mapping order-code`, `db
+fixtures/trading_fixture.db`, window `2025-09-14 .. 2025-12-12`, `bar_minutes 240`, `n_assets 8`,
+`position_size_pct 0.0625`, `iters 80`, `batch_size 32`, `seed 0`, `fee_bps 16.0`, `slip_bps 5.0`,
+`vector_weight_unit -1.0`, `vector_weight_max 4.0`, `vector_rebalance_deadband -1.0`,
+`ckpt_out <exp>/ckpt_smoke`, `smoke_assert True`. Every promote prints this recipe and the md5 of
+the bytes it installs; **a refresh commit MUST update this block** — the absence of such a record
+is why the run-20 clobber went unnoticed for ~80 commits.
+
+**Baseline provenance / last refresh.** The artifact was regenerated at TASK_864 (2026-07-29). Its
+values moved from the originally-committed (TASK_845) ones for exactly one reason:
+`c2f1ba5`/**TASK_846** (weight-budget fee headroom) changed weight-env behavior at fee16, which is
+the tier this smoke runs (`fee_bps 16.0`, `reward_tier_bp 21`). Verified by reproduction from
+`c2f1ba5`'s parent (`e17dc2d`, reproduces the old bytes exactly) and from `c2f1ba5` itself
+(reproduces the new bytes exactly), with every intervening commit to HEAD a no-op on this
+artifact. Most visible consequence: `expressibility_gate.passed` flipped `false -> true`
+(`rel_diff` 0.364 -> 0.095), so the pre-registered `weight_native_regate` contingency block is no
+longer emitted — it is conditional on the primary gate MISSING (`imprint.py`, `if not
+gate["passed"]`), not a schema removal.
 
 ### ExIt launch flags (weight-ON continuation — no runner code; trainer flags exist)
 The ExIt half MUST run the SAME env semantics as the imprint. On `train_jax_fast.py`, in

@@ -69,8 +69,10 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from functools import partial
 
@@ -97,6 +99,23 @@ from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
 from mcts_trader.jax_agent.returns import compute_returns
 
 FIXTURE_DB = os.path.join(_REPO, "fixtures", "trading_fixture.db")
+# TASK_864: the CHECKED-IN parity baseline vs the untracked file every ordinary run writes.
+# The baseline is the weight-ON / order-code deliverable (SPEC.md "Committed fixture artifact"),
+# NOT the flagless default -- so the flagless default must never be able to land on it. Promoting
+# requires --write-parity-baseline; everything else writes PARITY_LOCAL_NAME (gitignored).
+PARITY_BASELINE_NAME = "results_fixture_smoke.json"
+PARITY_LOCAL_NAME = "results_fixture_smoke_local.json"
+# TASK_864 fix pass FIX 1: the gate above only stopped the WRONG DESTINATION; it did not pin the
+# RECIPE. The CANON promoting recipe is the flagless fixture default with weight-rebalance ON --
+# expressed as the argv delta below, so the EXPECTED values are re-derived from this module's own
+# argparse defaults (see _canon_recipe_args) instead of being a second hardcoded copy that can
+# drift. Anything else -- flagless, weight-native, off-default seed/iters/window/sizing -- REFUSES.
+CANON_BASELINE_ARGV = ("--vector-weight-rebalance",)
+CANON_BASELINE_RECIPE = ("python experiments/832_linear_imprint/imprint.py "
+                         "--vector-weight-rebalance --write-parity-baseline")
+# `out` is the destination (already refused when explicit) and the promote flag itself is the
+# delta; every OTHER argparse dest is compared, because every other one reaches the artifact.
+CANON_RECIPE_EXEMPT_FIELDS = ("write_parity_baseline", "out")
 FEE_BPS, SLIP_BPS = 16.0, 5.0          # net@21 = fee16 (Kraken taker) + slip5 bp/side
 GATE_COSTS = (0, 21)                    # cost tiers, mirroring 830/831
 N_ACTIONS_PER_ASSET = 5
@@ -2226,6 +2245,240 @@ def _print_report(r):
     print("=" * 84)
 
 
+# ---- TASK_864: tracked-parity-baseline hygiene ---------------------------------------------
+# The failure mode this closes: `results_fixture_smoke.json` is TRACKED, and every ordinary
+# verification run used to write it in place. A stray run therefore leaves a dirty tracked file
+# that reads like a legitimate "refresh" -- and a real behavior change gets laundered into the
+# parity baseline with nobody deciding the values were allowed to move. (Run 20 actually clobbered
+# it via an empty-string flag bug; run 21 mis-read the resulting weight-ON-vs-weight-OFF gap as
+# "74 commits of staleness".) Fix: the default output path is untracked, and promotion is an
+# explicit, diff-printing, fail-closed step.
+
+def _json_leaves(obj, prefix=""):
+    """Flatten a JSON document to (path, scalar) pairs -- the per-field unit of the 864 diff."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _json_leaves(v, f"{prefix}/{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _json_leaves(v, f"{prefix}[{i}]")
+    else:
+        yield prefix, obj
+
+
+def _assert_baseline_promotable(path):
+    """Fail-closed gate on --write-parity-baseline: the baseline is promotable only from a
+    verifiably CLEAN working copy of that one file.
+
+    A dirty baseline means we cannot tell what we would be destroying, which is exactly the
+    laundering path this guard exists to block. Anything we cannot VERIFY (git missing, not a
+    work tree, status unreadable) refuses too -- fail-closed, not fail-open."""
+    rel = os.path.relpath(os.path.abspath(path), _REPO)
+    try:
+        p = subprocess.run(["git", "-C", _REPO, "status", "--porcelain", "--", path],
+                           capture_output=True, text=True, timeout=120)
+        status = p.stdout if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        status = None
+    if status is None:
+        raise SystemExit(
+            f"[832] REFUSING --write-parity-baseline: could not read `git status` for {rel} "
+            f"(git missing, or {_REPO} is not a work tree). The tracked parity baseline is only "
+            f"promotable from a verifiably clean working copy.")
+    if status.strip():
+        raise SystemExit(
+            f"[832] REFUSING --write-parity-baseline: {rel} is git-DIRTY\n"
+            f"          {status.strip()}\n"
+            f"  Commit it, or `git checkout -- {rel}`, then re-run. Promoting on top of "
+            f"uncommitted edits would destroy them and is the exact path by which an unreviewed "
+            f"behavior change gets laundered into the parity baseline (TASK_864).")
+
+
+def _resolve_run_defaults(args):
+    """Apply the pre-registered fixture-vs-real defaults IN PLACE; return
+    (exp_dir, is_fixture, tv_suffix, tag).
+
+    Extracted from main() unchanged so there is exactly ONE copy: the FIX-1 canon-recipe gate
+    re-derives its expected values by running this same resolution over a defaults-only
+    Namespace, and so cannot drift from the defaults main() actually uses."""
+    exp_dir = os.path.dirname(os.path.abspath(__file__))
+    is_fixture = os.path.abspath(args.db) == os.path.abspath(FIXTURE_DB)
+    # Pre-registered defaults (SPEC.md): fixture smoke vs scheduled real run.
+    if args.start is None:
+        args.start = "2025-09-14" if is_fixture else "2021-01-01"
+    if args.end is None:
+        args.end = "2025-12-12" if is_fixture else "2025-09-01"
+    if args.bar_minutes is None:
+        args.bar_minutes = 240 if is_fixture else 1440
+    if args.n_assets is None:
+        args.n_assets = 8 if is_fixture else 64
+    if args.iters is None:
+        args.iters = 80 if is_fixture else 2000
+    if args.batch_size is None:
+        args.batch_size = 32 if is_fixture else 256
+    if args.position_size_pct is None:
+        args.position_size_pct = 0.5 / args.n_assets
+    # TASK_861: a --teacher-vectors run is a DIFFERENT experiment from the canon smoke, so its
+    # default outputs are suffixed — a verification run can never clobber the checked-in parity
+    # baseline (the 835 fix-pass precedent, eval_vector.py::main).
+    # TASK_863: a frame-PINNED run is likewise a different experiment from the canon smoke (a
+    # different panel source AND a different universe), so it suffixes its default outputs too —
+    # `results_fixture_smoke.json` / `ckpt_smoke` are the CHECKED-IN parity baseline and no
+    # verification run may overwrite them.
+    tv_suffix = ""
+    if args.teacher_vectors is not None:
+        tv_suffix = "_teacher_vectors" + ("_shuffled" if args.shuffle_teacher_vectors else "")
+    if args.panel_frame_from_checkpoint is not None:
+        tv_suffix += "_frame_pin"
+    if args.ckpt_out is None:
+        args.ckpt_out = os.path.join(
+            exp_dir, ("ckpt_smoke" if is_fixture else "ckpt_imprint") + tv_suffix)
+    if args.smoke_assert is None:
+        args.smoke_assert = is_fixture
+    tag = args.tag or (("fixture-smoke" if is_fixture else "real-panel")
+                       + tv_suffix.replace("_", "-"))
+    return exp_dir, is_fixture, tv_suffix, tag
+
+
+def _canon_recipe_args(ap):
+    """The CANON promoting recipe as a fully-resolved Namespace, DERIVED from this module's own
+    argparse defaults: parse CANON_BASELINE_ARGV (nothing but the weight-rebalance flag) through
+    the SAME parser, then run the SAME _resolve_run_defaults. No second copy of any default."""
+    canon = ap.parse_args(list(CANON_BASELINE_ARGV))
+    _resolve_run_defaults(canon)
+    return canon
+
+
+def _assert_canon_recipe(ap, args):
+    """FIX 1 (BLOCKER): --write-parity-baseline must pin the RECIPE, not just the destination.
+
+    Every argparse dest except the promote flag and `out` reaches the artifact (db -> /db,
+    ckpt_out -> /checkpoint, tag -> /tag, everything else -> /imprint/config or the panel/env
+    semantics), so ANY deviation from the canon recipe produces a DIFFERENT artifact that would
+    silently become the parity oracle. The observed hole: the FLAGLESS default promoted onto the
+    weight-ON baseline (462/545 leaves replaced, vector_weight_rebalance True -> False, exit 0),
+    and there is no downstream detector -- 861/smoke_e2e.py only checks within-run byte identity
+    and the 832 canon pins are hardcoded with an explicit --out. So this refuses, fail-fast,
+    BEFORE the run, naming every offending field and the value the canon recipe expects."""
+    canon = _canon_recipe_args(ap)
+    bad = [(f, getattr(args, f, "<missing>"), want)
+           for f, want in sorted(vars(canon).items())
+           if f not in CANON_RECIPE_EXEMPT_FIELDS and getattr(args, f, "<missing>") != want]
+    if bad:
+        ap.error(
+            "--write-parity-baseline REFUSED: this is not the CANON parity-baseline recipe, so "
+            "promoting it would install a DIFFERENT experiment as the tracked oracle (TASK_864 "
+            "FIX 1).\n"
+            + "".join(f"    --{f.replace('_', '-')}: got {g!r}, canon expects {w!r}\n"
+                      for f, g, w in bad)
+            + f"  The canon recipe is EXACTLY: {CANON_BASELINE_RECIPE}\n"
+              f"  (weight-ON, order-code mapping, every other knob at its fixture default; the "
+              f"expected values above are re-derived from this module's argparse defaults, not a "
+              f"second hardcoded copy). To run a different recipe, drop "
+              f"--write-parity-baseline and pass --out <scratch>.json.")
+
+
+def _assert_result_promotable(result, args):
+    """FIX 2 (MAJOR): the run must have PASSED its own validity gate to become the oracle.
+
+    run() writes the artifact BEFORE the --smoke-assert block, and main() used to promote on any
+    exit-0 run, so `--iters 1 --no-smoke-assert --write-parity-baseline` installed an artifact
+    carrying policy_ce_decreased:false with its loss trajectories truncated 80 -> 1. Asserted
+    HERE on the bytes actually being promoted and INDEPENDENT of --smoke-assert, matching the
+    TASK_863 FIX-0 degenerate-replay precedent."""
+    im = result.get("imprint") or {}
+    gate = result.get("expressibility_gate")
+    per_tier = (result.get("sanity") or {}).get("per_tier") or {}
+    bad = []
+    if im.get("all_losses_finite") is not True:
+        bad.append(f"imprint.all_losses_finite = {im.get('all_losses_finite')!r} (need true)")
+    if im.get("policy_ce_decreased") is not True:
+        bad.append(f"imprint.policy_ce_decreased = {im.get('policy_ce_decreased')!r} (need true)")
+    # A truncated loss trajectory is the tell of the demonstrated `--iters 1` promotion: the
+    # per-key summaries survive but their point series collapses (80 -> 1). `trajectory` is
+    # sub-sampled only above 200 points (_loss_summary), so below that it is one point per iter.
+    traj = ((im.get("losses") or {}).get("policy_loss") or {}).get("trajectory") or ()
+    if int(args.iters) <= 200 and len(traj) != int(args.iters):
+        bad.append(f"imprint.losses.policy_loss.trajectory has {len(traj)} point(s), expected "
+                   f"{int(args.iters)} (one per --iters) — a truncated run, not a full imprint")
+    elif not traj:
+        bad.append("imprint.losses.policy_loss.trajectory is empty (no imprint history)")
+    for c in GATE_COSTS:
+        if (per_tier.get(str(c)) or {}).get("policy_inenv") is None:
+            bad.append(f"sanity.per_tier.{c}.policy_inenv is missing (sanity replay Sharpe)")
+    if not isinstance(gate, dict):
+        bad.append("expressibility_gate is missing (the 845 deliverable)")
+    else:
+        for k in ("teacher_order_net21", "teacher_weight_net21"):
+            if gate.get(k) is None:
+                bad.append(f"expressibility_gate.{k} is missing")
+    if bad:
+        raise SystemExit(
+            "\n" + "=" * 84 + "\n"
+            "[832] REFUSING --write-parity-baseline: this run did NOT pass its own validity "
+            "gate, so its artifact is not a result and must not become the parity oracle "
+            "(TASK_864 FIX 2).\n"
+            + "".join(f"    - {b}\n" for b in bad)
+            + f"  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon recipe: "
+              f"{CANON_BASELINE_RECIPE}\n" + "=" * 84)
+
+
+def promote_parity_baseline(result, baseline_path, source_label, args, max_show=40):
+    """Print the per-field diff vs the checked-in baseline, then replace it ATOMICALLY.
+
+    Order is deliberate: the operator sees WHAT would move before it moves. The git-dirty gate is
+    re-checked HERE as well as pre-run, so an edit landing during the run is not silently lost.
+
+    FIX 3: the promoted bytes are re-serialised from THIS run's in-memory `result` (identical
+    json.dumps params to the write in run()), never re-read from the now-SHARED default output
+    path -- a concurrent default run can no longer have its bytes promoted. The write goes to
+    <baseline>.tmp + os.replace, so an interrupt or ENOSPC mid-write can never leave the tracked
+    oracle truncated (os.replace is atomic within a filesystem, and tmp is a sibling)."""
+    _assert_result_promotable(result, args)
+    _assert_baseline_promotable(baseline_path)
+    rel = os.path.relpath(os.path.abspath(baseline_path), _REPO)
+    # Byte-for-byte what run() wrote, produced from the in-memory result (not re-read from disk).
+    new_text = json.dumps(result, indent=2, default=float)
+    print("\n" + "=" * 84)
+    print(f"[832] --write-parity-baseline: per-field diff vs the checked-in {rel}")
+    print(f"  promoting recipe: {CANON_BASELINE_RECIPE}")
+    print(f"  bytes source: this run's in-memory result (mirrored to {source_label})")
+    if not os.path.exists(baseline_path):
+        print("  no existing baseline -- this run CREATES it (nothing to compare)")
+    else:
+        with open(baseline_path) as fh:
+            old = dict(_json_leaves(json.load(fh)))
+        new = dict(_json_leaves(json.loads(new_text)))
+        moved = sorted(k for k in set(old) & set(new) if old[k] != new[k])
+        removed, added = sorted(set(old) - set(new)), sorted(set(new) - set(old))
+        print(f"  leaves {len(old)} -> {len(new)}   moved {len(moved)}   "
+              f"removed {len(removed)}   added {len(added)}")
+        for label, keys, fmt in (
+                ("~", moved, lambda k: f"{old[k]!r}  ->  {new[k]!r}"),
+                ("-", removed, lambda k: f"was {old[k]!r}"),
+                ("+", added, lambda k: f"= {new[k]!r}")):
+            for k in keys[:max_show]:
+                print(f"    {label} {k}\n        {fmt(k)}")
+            if len(keys) > max_show:
+                print(f"    ... {len(keys) - max_show} more '{label}' field(s)")
+        if not (moved or removed or added):
+            print("  IDENTICAL -- the baseline already matches this run")
+    tmp = baseline_path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(new_text)
+        os.replace(tmp, baseline_path)                     # atomic; no truncated oracle window
+    finally:
+        if os.path.exists(tmp):                            # only reachable if the write failed
+            os.unlink(tmp)
+    print(f"[832] parity baseline PROMOTED -> {rel}  (md5 "
+          f"{hashlib.md5(new_text.encode()).hexdigest()})")
+    print("      A refresh commit MUST carry the per-field attribution table (every moved field "
+          "traced to the commit that moved it) -- TASK_864 acceptance (iii), and SPEC.md's "
+          "'Promoting recipe' record MUST be updated with the recipe + md5 above.")
+    print("=" * 84)
+
+
 def main():
     ap = argparse.ArgumentParser(description="E5 linear-book imprint runner (TASK_832)")
     ap.add_argument("--db", default=FIXTURE_DB,
@@ -2329,6 +2582,16 @@ def main():
                     help="imprint checkpoint dir (default: <exp>/ckpt_smoke on fixture)")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--write-parity-baseline", dest="write_parity_baseline",
+                    action="store_true", default=False,
+                    help=f"TASK_864: promote this run's artifact onto the CHECKED-IN parity "
+                         f"baseline {PARITY_BASELINE_NAME}. Default OFF => a fixture run writes "
+                         f"the gitignored {PARITY_LOCAL_NAME} instead, so NO ordinary "
+                         f"verification run can dirty the tracked baseline. Prints a per-field "
+                         f"diff before promoting and REFUSES if the tracked file is git-dirty. "
+                         f"The baseline recipe is the weight-ON / order-code deliverable "
+                         f"(SPEC.md 'Committed fixture artifact'), NOT the flagless default: "
+                         f"`imprint.py --vector-weight-rebalance --write-parity-baseline`")
     ap.add_argument("--smoke-assert", action="store_true", default=None,
                     help="assert finite + decreasing CE + schema (default ON for fixture db)")
     ap.add_argument("--no-smoke-assert", dest="smoke_assert", action="store_false")
@@ -2363,46 +2626,45 @@ def main():
     # selection reads it); the 845 --vector-weight-rebalance fail-closed assert is re-applied
     # on the teacher-vectors path so accepting the flag does not drop a guard.
 
-    exp_dir = os.path.dirname(os.path.abspath(__file__))
-    is_fixture = os.path.abspath(args.db) == os.path.abspath(FIXTURE_DB)
-    # Pre-registered defaults (SPEC.md): fixture smoke vs scheduled real run.
-    if args.start is None:
-        args.start = "2025-09-14" if is_fixture else "2021-01-01"
-    if args.end is None:
-        args.end = "2025-12-12" if is_fixture else "2025-09-01"
-    if args.bar_minutes is None:
-        args.bar_minutes = 240 if is_fixture else 1440
-    if args.n_assets is None:
-        args.n_assets = 8 if is_fixture else 64
-    if args.iters is None:
-        args.iters = 80 if is_fixture else 2000
-    if args.batch_size is None:
-        args.batch_size = 32 if is_fixture else 256
-    if args.position_size_pct is None:
-        args.position_size_pct = 0.5 / args.n_assets
-    # TASK_861: a --teacher-vectors run is a DIFFERENT experiment from the canon smoke, so its
-    # default outputs are suffixed — a verification run can never clobber the checked-in parity
-    # baseline (the 835 fix-pass precedent, eval_vector.py::main).
-    # TASK_863: a frame-PINNED run is likewise a different experiment from the canon smoke (a
-    # different panel source AND a different universe), so it suffixes its default outputs too —
-    # `results_fixture_smoke.json` / `ckpt_smoke` are the CHECKED-IN parity baseline and no
-    # verification run may overwrite them.
-    tv_suffix = ""
-    if args.teacher_vectors is not None:
-        tv_suffix = "_teacher_vectors" + ("_shuffled" if args.shuffle_teacher_vectors else "")
-    if args.panel_frame_from_checkpoint is not None:
-        tv_suffix += "_frame_pin"
-    if args.ckpt_out is None:
-        args.ckpt_out = os.path.join(
-            exp_dir, ("ckpt_smoke" if is_fixture else "ckpt_imprint") + tv_suffix)
-    if args.smoke_assert is None:
-        args.smoke_assert = is_fixture
-    tag = args.tag or (("fixture-smoke" if is_fixture else "real-panel")
-                       + tv_suffix.replace("_", "-"))
+    exp_dir, is_fixture, tv_suffix, tag = _resolve_run_defaults(args)
+    # TASK_864: coherence + fail-fast dirty check BEFORE the ~1min run, so a refused promotion
+    # costs nothing. The suffixed variants (861 teacher-vectors, 863 frame pin) are DIFFERENT
+    # experiments with their own artifacts -- they can never be promoted onto the canon baseline.
+    baseline_path = os.path.join(exp_dir, PARITY_BASELINE_NAME)
+    if args.write_parity_baseline:
+        if not is_fixture:
+            ap.error("--write-parity-baseline is fixture-only: the checked-in baseline IS the "
+                     f"fixture-smoke artifact. Got --db {args.db}.")
+        if args.out is not None:
+            ap.error("--write-parity-baseline conflicts with an explicit --out (it promotes onto "
+                     f"{PARITY_BASELINE_NAME}). Drop one.")
+        if tv_suffix:
+            ap.error(f"--write-parity-baseline refuses a '{tv_suffix.lstrip('_')}' run: that is a "
+                     f"DIFFERENT experiment with its own suffixed artifact, never the canon "
+                     f"{PARITY_BASELINE_NAME} baseline.")
+        # FIX 2 (MAJOR): promotion requires the run's OWN validity gate to be armed. Named
+        # explicitly (the FIX-1 recipe check below would also catch it, on the same field).
+        if not args.smoke_assert:
+            ap.error("--write-parity-baseline requires --smoke-assert (fixture default ON): "
+                     "--no-smoke-assert disarms the finite-loss / decreasing-CE / schema gate, "
+                     "and an artifact that was never checked must not become the parity oracle "
+                     "(TASK_864 FIX 2). The result is ALSO re-asserted post-run before promoting.")
+        # FIX 1 (BLOCKER): pin the RECIPE, not just the destination.
+        _assert_canon_recipe(ap, args)
+        _assert_baseline_promotable(baseline_path)
     out = args.out
     if out is None and is_fixture:
-        out = os.path.join(exp_dir, f"results_fixture_smoke{tv_suffix}.json")
-    run(args, out, tag)
+        # TASK_864: the canon (unsuffixed) recipe now writes an UNTRACKED local file by default.
+        # `out` is not recorded anywhere in the artifact, so this changes the DESTINATION only --
+        # the bytes written are identical to what the pre-864 default produced.
+        out = (os.path.join(exp_dir, f"results_fixture_smoke{tv_suffix}.json") if tv_suffix
+               else os.path.join(exp_dir, PARITY_LOCAL_NAME))
+    result = run(args, out, tag)
+    if args.write_parity_baseline:
+        # FIX 3: promote THIS run's in-memory result, not a re-read of `out` (which is now the
+        # single shared destination of every unsuffixed fixture run, so a concurrent default
+        # run's bytes could otherwise be promoted).
+        promote_parity_baseline(result, baseline_path, os.path.relpath(out, _REPO), args)
 
 
 if __name__ == "__main__":
