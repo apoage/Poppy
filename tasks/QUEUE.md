@@ -3,6 +3,12 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-07-30 (post factory run 22) — TASK_865 STOPPED, NOT SHIPPED: built + fully verified, then BLOCKED
+on the newly-seeded **D30** (stale-tail PV semantics — the minute pin's tail treatment fabricates up to
+~12.5% of PV into the exact scalar leg 3 grades against +0.839, and the panel's own unanimous fix was
+measured NOT to work). Code preserved in `git stash`, nothing committed. **Ready = TASK_866 → 867**
+(both untouched this run, see the sequencing note); the 861 real-leg chain is blocked a THIRD time.**
+Prior grooming:
 **2026-07-29 (D29 planner-RULED opt (a)) — Ready = TASK_865 → 866 → 867 (SERIAL, shared surface); row D PARKED (no ExIt continuation scheduled); factory GREEN.**
 Prior grooming (run 21 final):
 **2026-07-29 (post factory run 21, FINAL) — BOTH rows SHIPPED: TASK_863 (`task863-imprint-frame-pin`,
@@ -79,14 +85,21 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_865_MINUTE_FRAME_PIN.md` | S/M | **D29 RULED opt (a) — unblocks the whole 861 real-leg chain.** Minute-framed loader on the PIN-b `create_jax_env_historical` path, mirroring the shipped 853/863 semantics (positional order, inactive dual-disclosure ASSERTED, reorder refused, `active_cells_only` companions); wired into both `eval_vector.py` and `imprint.py` pin paths; the 863-MAJOR degenerate-run detector carried to the minute path from day one (it sits on the real leg's exact configuration). Acceptance includes a read-only real-DB coverage leg: expected 62/64 with the two inactive slots NAMED (FTM→S / MATIC→POL). |
-| 2 | `tasks/TASK_866_WEIGHT_ON_PIN.md` | XS/S | FILLER, **SERIAL after #1 (same surface)**. Close the CLASS behind the 864 incident: `CANON_832_PINS` is a weight-OFF oracle guarding a weight-ON baseline — nothing pins the weight-ON numbers, which is how 846 moved them silently for ~80 commits. Every committed baseline gets an oracle of ITS OWN configuration; cross-config check = named REFUSE; mutation-tested. |
-| 3 | `tasks/TASK_867_861_BASELINE_PROMOTE_PORT.md` | XS/S | FILLER, **SERIAL after #2 (same surface)**. Port 864's promote gate (recipe-pinned, validity-gated, atomic, dirty-refuse) to `861/chosen_vectors_fixture.json` + `861/results_fixture_smoke.json`; kill the `--quick` silent seed-downgrade; make `smoke_e2e.py:428/459` check the COMMITTED baseline (tamper test mandatory — today it passes against arbitrary content). |
+| 1 | `tasks/TASK_866_WEIGHT_ON_PIN.md` | XS/S | FILLER. Close the CLASS behind the 864 incident: `CANON_832_PINS` is a weight-OFF oracle guarding a weight-ON baseline — nothing pins the weight-ON numbers, which is how 846 moved them silently for ~80 commits. Every committed baseline gets an oracle of ITS OWN configuration; cross-config check = named REFUSE; mutation-tested. |
+| 2 | `tasks/TASK_867_861_BASELINE_PROMOTE_PORT.md` | XS/S | FILLER, **SERIAL after #1 (same surface)**. Port 864's promote gate (recipe-pinned, validity-gated, atomic, dirty-refuse) to `chosen_vectors_fixture.json` + `results_fixture_smoke.json`; kill the `--quick` silent seed-downgrade; make `smoke_e2e.py:428/459` check the COMMITTED baseline (tamper test mandatory — today it passes against arbitrary content). **Path drift: the task file says `experiments/832_linear_imprint/861/`; the real path is `experiments/861_search_teacher_imprint/`.** |
 
-_Sequencing note: all three rows touch `experiments/832_linear_imprint/` — SERIAL queue, take in
-rank order. All GPU legs remain planner-scheduled; the amended 861 chain (minute-pinned frame,
-3 imprint seeds, median > +0.839 with ≥2/3 above — see the D29 addendum in TASK_861) launches
-only after 865 ships and is verified._
+_**TASK_865 (was Ready #1) is STOPPED, NOT SHIPPED — see its banner and DECISIONS D30.** It leaves Ready
+because the remaining work is a human RULING on stale-tail PV semantics, not implementation. Its code is
+preserved in `git stash` ("TASK_865 minute frame pin — REVIEWED, BLOCKED on D30"), carrying the 4 tracked
+edits plus the untracked 978-line smoke. **Merge hazard, read before taking 866/867:** the stashed 865 diff
+touches `imprint.py` and `smoke_e2e.py`, which are also 866/867's surface. Either (a) rule D30 and land 865
+first, or (b) accept that the stash needs a manual merge afterwards. Factory run 22 deliberately did NOT
+start 866/867 for that reason — landing hygiene edits on top would likely have destroyed verified 865 work._
+
+_Sequencing note: these rows touch `experiments/832_linear_imprint/` and
+`experiments/861_search_teacher_imprint/` — SERIAL queue, take in rank order. All GPU legs remain
+planner-scheduled; the amended 861 chain (minute-pinned frame, 3 imprint seeds, median > +0.839 with
+≥2/3 above — see the D29 addendum in TASK_861) launches only after D30 is ruled AND 865 ships verified._
 
 _Shipped 2026-07-29 factory run 21:_
 - _**TASK_863** (`task863-imprint-frame-pin`, `609d6d3`) — `--panel-frame-from-checkpoint` on

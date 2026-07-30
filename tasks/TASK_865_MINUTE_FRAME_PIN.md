@@ -1,5 +1,48 @@
 # TASK_865 — Frame pin on the MINUTE path (D29 ruled opt (a): the only basis comparable to +0.839 on universe, source, and breadth at once)
 
+> **STATUS (2026-07-30): STOPPED — NOT SHIPPED. Built and verified, then BLOCKED on DECISIONS D30.**
+> This is a STOP, not a ship: no commit, no tag. The implementation lives in `git stash`
+> ("TASK_865 minute frame pin — REVIEWED, BLOCKED on D30"), carrying the 4 tracked edits plus the
+> untracked `experiments/865_minute_frame_pin/` (978-line smoke). Do NOT apply it until D30 is ruled —
+> the tail semantics it encodes is the thing under decision, and re-deriving the numerics is part of
+> the ruling's cost.
+>
+> **What PASSED** (independently re-verified by the orchestrator, not just self-reported):
+> acceptance (i) parity 9/9 artifacts identical vs `task864-parity-baseline-hygiene` once wall-clock
+> stamps are normalised (`created_utc`; plus a `ledger_row` date that rolled at midnight mid-run) —
+> re-proven on the final tree; selftest 12/12; 861 e2e 10/10 incl. the new `vi_minute_frame_pin` leg;
+> 863 suite 13/13; acceptance (ii) 19/19 smoke legs incl. both refusal directions; (iv) the 863
+> degenerate detector demonstrated firing on the minute path with `--smoke-assert` OFF, teacher- and
+> student-side. Regression judge: ZERO byte regression across 21 legs in two isolated worktrees.
+> Flow-verifier: positional fidelity proven cell-by-cell against independent per-symbol SQL
+> (0/888 mismatches, plus a permutation test) — slot i really is `frame_symbols[i]`.
+>
+> **What BLOCKED it** (D30, 3 of 4 panel members CONFIRMING independently): the stale-tail treatment
+> FABRICATES PnL. Force-HOLD gates opening, not valuation, so a position open at the boundary is
+> marked at price 0 (long wiped / short paid a 100% windfall) and then frozen there. Ground truth on
+> flat prices at fee 0, where any book must end at exactly 100,000.00: zeroed+guard gives
+> 75,002.50 / 124,997.50. **The panel's unanimous prescription — force HOLD on the last real row —
+> was implemented as a probe and is byte-identical to the broken behaviour**, because a HOLD leg's
+> target under `--vector-weight-rebalance` is `clip(w_cur)` (keep the weight), not zero. Only
+> forward-filling measures PV-exact. Consequently the smoke's own recorded bar
+> `walk_net21 = 11.32152396918238` IS the fabricated number, and every numeric this task reported is
+> VOID pending the ruling. Separately: `compute_teacher_floor` walks UNMASKED and goes bankrupt
+> (Sharpe −15.83, PV 0.00) while `--teacher-floor` is hardwired ON in the read-of-record operator.
+>
+> **Root cause of the near-miss, worth carrying:** all 19 smoke legs assert ACTIONS; none asserted
+> PORTFOLIO VALUE, and the `iia3` negative control compared held-decision sets in both arms, so it was
+> structurally incapable of catching this. The flat-price / fee-0 / long-vs-short invariant belongs in
+> the smoke as a first-class leg BEFORE any tail behaviour is chosen — it is the only assertion that
+> discriminates between the three D30 options.
+>
+> **Spec drift found while building** (fix where authored): `create_jax_env_historical` is in
+> `mcts_trader/training/env_factory.py:321`, not `vectorbt_env.py`; the `ORDER BY COUNT(*) DESC LIMIT`
+> block is `vectorbt_env.py:578-596` (task file says 579-590) and the `specific_symbols` drop-branch is
+> ~553-577; the `[::bar_minutes]` stride lives in `env_factory.py:~405`. Acceptance (iii)'s "62/64 …
+> two inactive slots" conflates two definitions — under the 853 rule the loader applies it is **64/64**
+> and the two named slots are PARTIAL, not inactive; and the Real-leg section's "≈3% of cells" is
+> ~9.6% once late-listing heads are counted (see D30).
+
 **Status**: READY 2026-07-29 (D29 RULED — planner, opt (a); operator may override).
 **Size: S/M. Risk: medium-low** (a new framed loader on a proven pattern; both existing pin
 paths — 853 daily in `eval_vector.py`, 863 in `imprint.py` — stay untouched in behavior when the
