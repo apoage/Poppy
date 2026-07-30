@@ -96,6 +96,30 @@ ceiling on the actual target distribution first.
 
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
 
+> **D30 ADDENDUM (2026-07-30, planner ruled opt (i); operator may override) — fourth and, per a
+> requested fresh read of this whole registration, hopefully final framing touch-up.** Stale-tail
+> semantics on the minute pin = FORWARD-FILL + disclosure (D30; the zeroed tail fabricated up to
+> ~12.5% of PV into leg 3's exact grading scalar — slots 14 `MATIC/USD` and 41 `FTM/USD` both die
+> 2025-03-31, 186/1734 rows). Consequences for the legs, all mechanical:
+> 1. **Leg 1 gains HARD checks** (the soft "≈+8.02" stands unchanged): zero bankruptcy; the
+>    artifact's stale-tail disclosure lists EXACTLY the 2 migration slots; the inert-cell report
+>    reads ≈9.6% of the decision grid (22 late-listing heads + the 2 tails — the earlier "≈3%"
+>    was slot-level, corrected in D30). Materially different on any of the three = STOP.
+> 2. **Every teacher-floor read is masked** (D30 rider (a)): unmasked, `compute_teacher_floor`
+>    goes bankrupt on a pinned panel (−15.83/PV 0.00 on the fixture) while `--teacher-floor` is
+>    hardwired ON in the read-of-record operator. Applies to leg 3(b)'s on-window book-floor
+>    option and leg 4's on-window teacher floor.
+> 3. **Leg 4 is additionally gated on D30 rider (c)**: `scorecard.py` must carry the frame
+>    SOURCE through the manifest + `OPERATOR_PIN` (or refuse) — as shipped it would reuse the
+>    frame but silently read `ohlcv_daily` (33/64), reintroducing between legs 3 and 4 both
+>    confounds D29 removed.
+> Fresh-read verdict on the rest: the bars, seeds (3-seed median > +0.839, ≥2/3 above), window
+> (`--end 2025-10-04`, 1673 decisions), co-runnability exemptions, and floor-referent correction
+> below all stand as written. The recurring failure class across all three blocks was "the
+> grading basis differs from the bar's basis in an unstated dimension" (universe → source/breadth
+> → valuation semantics); the PV-conservation smoke leg and the cell-level inert accounting now
+> assert the last unstated dimension this desk can name.
+>
 > **⚠ SUPERSEDED IN PART BY D29 (2026-07-29): point 1 below is re-amended — the frame pin must go
 > through the MINUTE path (TASK_865), NOT the shipped daily-only pin.** TASK_863's flag is sound
 > but its only available loader is daily, which covers 33/64 frame slots on the leg-1 window

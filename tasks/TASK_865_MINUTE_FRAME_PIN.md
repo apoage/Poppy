@@ -43,7 +43,45 @@
 > and the two named slots are PARTIAL, not inactive; and the Real-leg section's "≈3% of cells" is
 > ~9.6% once late-listing heads are counted (see D30).
 
-**Status**: READY 2026-07-29 (D29 RULED — planner, opt (a); operator may override).
+> **D30 RULING ADDENDUM (2026-07-30, planner ruled opt (i); operator may override) — RESUME FROM
+> THE STASH.** Stale-tail semantics = **FORWARD-FILL + disclosure, uniform on BOTH pin paths**
+> (the only treatment measured PV-exact; the constant-tail objection cannot fabricate PnL and is
+> a strict fee drag above fee 0 — biased against the bar, the safe direction). Scope amendments,
+> all mandatory:
+> 1. **Resume `git stash` ("TASK_865 … BLOCKED on D30") FIRST** — before any 866/867 work; the
+>    stash is the verified implementation and landing hygiene edits under it destroys it.
+> 2. **PV-conservation smoke leg ships FIRST-CLASS and BEFORE the tail fix lands** (flat prices,
+>    fee 0, long AND short books end at exactly 100,000.00) — the discriminating assertion 19
+>    action-level legs structurally missed. It must be shown RED on the stashed behavior and
+>    GREEN after.
+> 3. **D30 riders (a)/(b)/(c), none optional**: (a) thread the price-validity mask into
+>    `compute_teacher_floor` (fixture proof: no bankruptcy, −1.50/96,094 not −15.83/0.00);
+>    (b) `--require-active-slots N` run-time refusal on the result-producing path (default
+>    tuned so the leg-1 config passes and a 50/64 WF fold refuses without an explicit
+>    override); (c) `scorecard.py` plumbs `--panel-frame-source` through the manifest +
+>    `OPERATOR_PIN` or REFUSES a frame-pinned manifest — leg 4 must not silently read
+>    `ohlcv_daily`.
+> 4. **Daily-pin disclosure parity**: the shipped daily pin keeps its forward-fill numerics
+>    UNCHANGED but gains the same stale-tail disclosure (additive fields; fixture proof on frame
+>    slot 5 `FTM/USD`, 91/181 filled rows disclosed). Acceptance gate (i) is amended accordingly:
+>    numerics bit-identical to `task864-parity-baseline-hygiene` HEAD; artifacts may gain the
+>    NAMED additive disclosure fields on the daily path, per-field diff shown.
+> 5. **Coverage-honesty gate (iii) re-specified to CELL level**: the read-only real-DB leg
+>    reports inert DECISION CELLS on the leg-1 window — expected **≈9.6%** (22 late-listing
+>    heads ≈10,320 cells + 374 tail cells of 110,976; TIA/USD 59.5%, PEPE/USD + PEPE/EUR 49.8%,
+>    ARB/USD 46.7% named), with the 2 migration slots PARTIAL under the loader's own definition
+>    and the loader banner fixed to disclose partial/stale-tail slots (no more "64 ACTIVE /
+>    0 INACTIVE" over a 9.6%-inert grid). Materially different share = STOP.
+> 6. **Re-derive every VOID numeric** across the five suites and re-promote the fixture
+>    baselines (incl. the fabricated `walk_net21 = 11.32152396918238`) through the 864 promote
+>    gate, per-field diff shown. Tail expectations invert as recorded in D30 (107→100 force-HOLD
+>    cells, `partial_slots` [5,6,7]→[5,7], `iia3` + negative control swap polarity).
+> 7. Spec-drift corrections from the banner are accepted as authoritative (`env_factory.py:321`,
+>    `vectorbt_env.py:578-596`, stride at `env_factory.py:~405`).
+> TRUE LIQUIDATION (D30 opt (ii)) is PARKED as its own future row — do NOT build it here.
+
+**Status**: READY — RESUME FROM STASH — 2026-07-30 (D30 RULED — planner, opt (i); operator may
+override). Previous: READY 2026-07-29 (D29 RULED — planner, opt (a)).
 **Size: S/M. Risk: medium-low** (a new framed loader on a proven pattern; both existing pin
 paths — 853 daily in `eval_vector.py`, 863 in `imprint.py` — stay untouched in behavior when the
 new path is not selected).
