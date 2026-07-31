@@ -96,6 +96,43 @@ ceiling on the actual target distribution first.
 
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
 
+> **[PREMISE CORRECTED 2026-07-31 by the run-23 orchestrator: D31 is NOT ruled. This addendum was
+> written by an unattributed actor asserting a planner ruling that neither the operator nor the
+> orchestrator made; D31 has been returned to OPEN. Treat everything below as a CONTINGENT
+> re-registration that takes effect only if D31 is ruled opt (a)-as-amended — its measured evidence
+> (the identity split, independently confirmed on the real DB) is sound, its authority is not.
+> Do NOT launch any leg on it as written.]**
+>
+> **D31 ADDENDUM (2026-07-31, CONTINGENT on D31 being ruled opt (a)-as-amended; operator decides) — the
+> chain is re-registered on RE-BASED references; the historical bars are demoted.** Run 23
+> proved interior frozen spans fabricate PnL into the graded scalar AND that the canon unpinned
+> loader shares the fill rule — so **+0.839 / +0.898 / WF +3.561 & +0.611 are pre-D31-semantics
+> anchors now, not bars.** Planner follow-up measurement: 6 of the 11 gap slots are an ingest
+> IDENTITY SPLIT (twin `assets` rows, overlap agreement exact — data recoverable, TASK_868
+> alias union), leaving a genuine ≈1% sparse residue on 5 slots (masked, TASK_868 (a2)).
+> Consequences:
+> 1. **Legs gated on TASK_868 + TASK_869** (alias repair + interior mask + UTC windows + masked
+>    daily floor — the one re-base wave).
+> 2. **NEW LEG 0 — paired reference battery**: 3-seed 832-recipe imprint (the
+>    `jobs_imprint_full.manifest` teacher + recipe, unchanged) under the re-based semantics,
+>    same window/frame as legs 1–2. Its per-seed sanity-replay net@21 MEDIAN becomes the leg-3
+>    bar, replacing the demoted +0.839. Same discipline: ≥2/3 seeds and median used, per-seed
+>    recorded.
+> 3. **Leg 3 grading becomes median-vs-median, same semantics both sides**: search-teacher
+>    battery median > leg-0 reference median, with ≥2/3 of search-teacher seeds above the
+>    reference median. This finally makes the comparison answer the question (better teacher?)
+>    with zero cross-basis confounds: same universe, source, breadth, valuation semantics,
+>    window resolution.
+> 4. Leg 1's soft "≈+8.02" check: the teacher reference is ALSO pre-D31-semantics — treat it as
+>    behavior-class only (as already ruled) and expect the re-anchor slots' contribution to
+>    shift; a large positive walk with ~90%+ hold and a narrow book remains the pass shape.
+> 5. Leg 4 (OOS/WF): runs under the same re-based semantics; the +0.898/Δ+2.33 and WF quarters
+>    are demoted to anchors; the OOS read is reported vs its own on-window floors (862's
+>    `meets_form_teacher_floor` basis, D27) — not vs the old numbers.
+> GPU cost delta: +one 3-seed imprint battery (leg 0). Imprint runs are cheap relative to the
+> interpretability gain; the alternative (grading vs a bar measured on fabricated prices) is
+> exactly the class of uninterpretable read D28/D29/D30 were ruled to prevent.
+>
 > **D30 ADDENDUM (2026-07-30, planner ruled opt (i); operator may override) — fourth and, per a
 > requested fresh read of this whole registration, hopefully final framing touch-up.** Stale-tail
 > semantics on the minute pin = FORWARD-FILL + disclosure (D30; the zeroed tail fabricated up to

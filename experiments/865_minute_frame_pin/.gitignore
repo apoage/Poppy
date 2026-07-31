@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# Per-leg run artifacts, logs, generated frame provenance files and imprint checkpoints from
+# smoke_minute_frame_pin.py (the committed evidence is the script itself + the report it prints).
+smoke_runs/

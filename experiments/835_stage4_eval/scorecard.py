@@ -21,16 +21,58 @@ subprocess-invocation instead of an import.)
 OPERATOR: PINNED IN ARGV, THEN **OBSERVED** BACK OUT OF THE RESULT
 -------------------------------------------------------------------------------------------
 The operator is the 848 read of record (LEDGER 832/E5-oos-real, ``runs/858_oos/
-manifest_oos.txt``) and is FIXED in code — deliberately not a manifest knob::
+manifest_oos.txt``). Its DECISION MACHINERY is FIXED in code — deliberately not a manifest knob
+(``OPERATOR_ARGS`` / ``OPERATOR_PIN``: mode, search knobs, sizing, decision rule, cost tiers).
+Exactly THREE things about the PANEL are manifest-declared, and every one of them is bounded,
+emitted into argv, and observed back out of the result — they are not "not a knob" and this header
+no longer claims they are (fix pass: ``bar_minutes`` and ``require_active_slots`` became knobs
+while this paragraph still said nothing was one, and a manifest declaring
+``{"panel_frame_source": "minute", "bar_minutes": 1}`` loaded clean and would have graded the read
+of record on a ONE-MINUTE bar with ``status: OK``)::
+
+  panel_frame_source   which price TABLE (daily | minute) — REQUIRED, no default
+  bar_minutes          the bar stride — bounded per source (see MINUTE_BAR_MINUTES_RANGE);
+                       "daily" admits ONLY 1440
+  require_active_slots the D30 rider (b) breadth floor — bounded, defaults to eval_vector's own
+                       shared default, and recorded in the header + every row
+
+The invocation::
 
     eval_vector.py --db <db> --start <s> --end <e> --bar-minutes 1440
                    --n-assets <n> --eval-seed <seed> --checkpoint <ckpt>
                    --panel-frame-from-checkpoint <frame>
+                   [--panel-frame-source minute]        # ONLY when the manifest declares minute
+                   --require-active-slots <floor>       # D30 rider (b), always emitted
                    --operator policy-argmax --teacher-floor --vector-weight-rebalance
                    --decision-rule argmax
                    --position-size-pct 0.1 --max-positions 16 --min-cash-threshold 100.0
 
 which yields BOTH cost tiers (fee0 gross and fee21 = fee16+slip5 net) per window in one run.
+
+THE PANEL'S PRICE SOURCE IS PART OF THE OPERATOR (D30 rider (c)) — DECLARED, EMITTED, OBSERVED.
+A frame pin fixes WHICH SLOT is which asset; it does NOT fix which TABLE the slot's prices come
+from. ``eval_vector`` reads the frame from ``ohlcv_daily`` (the shipped TASK_853 path) or from the
+minute ``ohlcv`` table (TASK_865 ``--panel-frame-source minute``). Those are NOT interchangeable:
+on the 861 leg-1 window the daily table covers 33 of 64 frame slots and the minute table 62 — so a
+battery whose legs disagree about the table mixes a SOURCE confound (D20 RULED cross-source
+comparisons forbidden; daily is within-panel grading only) with a 64->33 BREADTH confound (ST3
+measures a 24-asset book at 2.76x the mean single-asset Sharpe) INSIDE one artifact. Therefore:
+
+  * the manifest MUST DECLARE ``panel_frame_source`` — there is no default. Defaulting to daily
+    by silence is exactly how this defect got in;
+  * the declared source is emitted into the eval argv (``minute`` adds the flag; ``daily`` adds
+    NOTHING, because ``daily`` IS eval_vector's own default — the 848 command line and therefore
+    eval_vector's artifact stay byte-identical on the shipped path);
+  * it is pinned in the header (``operator.panel_frame_source`` / ``operator.panel_frame_pin``)
+    and OBSERVED back out of every result: ``panel_frame.panel_frame_source``. eval_vector records
+    that key ONLY on the minute path, so its ABSENCE means DAILY (a daily-pinned artifact stays
+    byte-for-byte the 853 artifact) — absence is a VALUE here, never a missing field. A result
+    whose source disagrees with the declaration is a FAILED row, never an annotation.
+
+(The source cannot live in ``OPERATOR_PIN`` itself: that dict is asserted field-by-field against
+``result["operator"]``, and eval_vector records the source under ``result["panel_frame"]``. Pinning
+it there would fail every window on an ABSENT operator field. It is pinned and observed with the
+same mechanics, one block over — see ``_check_result_provenance``.)
 
 An operator field is only trustworthy if the artifact can tell it apart from an argparse
 default that moved under us. Two mechanisms, and NEITHER is an echo of our own argv:
@@ -52,6 +94,10 @@ default that moved under us. Two mechanisms, and NEITHER is an echo of our own a
 -------------------------------------------------------------------------------------------
 FAIL-LOUD CONTRACT (no partial-success masquerade, and no lost battery)
 -------------------------------------------------------------------------------------------
+  * Manifest load — an UNDECLARED or unrecognised ``panel_frame_source``, or a source/stride
+    combination that cannot be honoured (``daily`` off 1440, ``minute`` under a stride < 1),
+    REFUSES at startup with exit code 2. Nothing runs and no artifact is written: the battery
+    was never specified.
   * Global preflight — missing db / missing checkpoint dir / unreadable frame provenance /
     a frame that mismatches the run (length != n_assets, duplicate slots, a recorded
     ``checkpoint`` or ``n_assets`` that disagrees with the manifest) — REFUSES: no window is
@@ -59,8 +105,8 @@ FAIL-LOUD CONTRACT (no partial-success masquerade, and no lost battery)
   * Per window — a missing/unreadable/mis-windowed/non-numeric floor artifact, a regime
     window with no floor artifact declared, an ``eval_vector`` non-zero exit or TIMEOUT, a
     missing result JSON, or a result whose provenance disagrees with the manifest (db /
-    window / operator pin / checkpoint / frame / n_assets / panel pin / net-dependence /
-    cost tiers) — is a ``FAILED`` row in the artifact.
+    window / operator pin / checkpoint / frame / PANEL FRAME SOURCE / n_assets / panel pin /
+    net-dependence / cost tiers) — is a ``FAILED`` row in the artifact.
   * ANY other exception raised while grading a window (OSError, a schema drift in
     eval_vector's own JSON, anything) is ALSO caught and becomes a FAILED row carrying the
     exception type + a traceback tail. A window is NEVER silently skipped, and a late failure
@@ -106,8 +152,27 @@ Object keys (paths are repo-relative unless absolute)::
   checkpoint        str   REQUIRED, checkpoint directory to grade
   frame_provenance  str   REQUIRED, JSON recording the checkpoint's ORDERED training frame
                           ('frame_symbols' or 'symbols') — TASK_853 fixed-frame panel
+  panel_frame_source str  REQUIRED, "daily" | "minute" — which TABLE the pinned frame's prices
+                          are read from ("daily" = ohlcv_daily, the shipped 853 path, emits NO
+                          flag; "minute" = the minute ohlcv table, TASK_865). NO DEFAULT: an
+                          undeclared source REFUSES the run (D30 rider (c)). Every window of a
+                          battery reads the SAME source, and each result is checked against it.
   db                str   REQUIRED, sqlite panel source
   n_assets          int   REQUIRED, must equal the recorded frame length
+  bar_minutes       int   optional, default 1440. The bar stride passed to eval_vector, and part
+                          of the source coherence rule: "daily" reads already-daily rows so it
+                          REQUIRES exactly 1440; "minute" strides the 1-min table and is BOUNDED
+                          to MINUTE_BAR_MINUTES_RANGE (60..1440 — an hour to a day per bar; 1440 =
+                          the 861 real-leg configuration). Sub-hourly strides are refused: this
+                          harness is the read of record for a DAILY-bar result, its corridor and
+                          floors are daily-bar objects, and `bar_minutes` is also the Sharpe
+                          periodization — grading at bar_minutes 1 would silently re-scale every
+                          number. An incoherent pair REFUSES at manifest load.
+  require_active_slots num optional, default = eval_vector.REQUIRE_ACTIVE_SLOTS_DEFAULT. The D30
+                          rider (b) breadth floor, ALWAYS emitted into argv and echoed in the
+                          header + every row so a moved default cannot change the read invisibly.
+                          Domain: exactly 0 (disable) | a fraction in (0,1] | an integral slot
+                          count >= 1 — validated by eval_vector.parse_require_active_slots.
   eval_seed         int   optional, default 0
   model             obj   optional {model_size:str, h_cycles:int, l_cycles:int} — only passed
                           through when present (else eval_vector's defaults: small / 4 / 6).
@@ -135,13 +200,15 @@ Header::
   checkpoint    str
   frame_provenance {path, n_frame_symbols, meta}   meta = every non-frame key of the
                                                     provenance JSON (train_window, db, source…)
-  db, n_assets, bar_minutes, eval_seed, model, jax_platforms, notes
+  db, n_assets, bar_minutes, require_active_slots, eval_seed, model, jax_platforms, notes
   child_env     {VAR: val}           env pinned onto every eval_vector subprocess
   window_timeout_s  int
   capped_windows    list[str]        windows run under a max_decisions cap ([] on a real read)
   operator      {mode, teacher_floor, vector_weight_rebalance, panel_frame_from_checkpoint,
-                 decision_rule, cost_tiers_bp, argv_template, source, pin, panel_pin,
-                 verification}       pin/panel_pin = the asserted 848 field set (see above)
+                 panel_frame_source, panel_frame_pin, decision_rule, cost_tiers_bp,
+                 argv_template, source, pin, panel_pin, verification}
+                                     pin/panel_pin/panel_frame_pin = the asserted 848 field set
+                                     (see above); panel_frame_source = the DECLARED price table
   git_describe  str|null
   status        "OK" | "FAILED"      ("FAILED" iff any row failed / global error / self-check)
   n_windows, n_ok, n_failed          int
@@ -160,7 +227,15 @@ Window row (status "OK")::
 
   name, kind, status, window[start,end], n_decisions, steps_completed, partial, max_decisions
   panel   {n_rows, n_assets, n_active_slots, n_inactive_slots, n_partial_slots,
-           position_size_pct, warm}
+           n_stale_tail_slots, n_frozen_slots, panel_frame_source, require_active_slots,
+           not_real_decision_cell_pct, position_size_pct, warm}
+                            panel_frame_source = OBSERVED out of the result's panel_frame block
+                            ("daily" when the block does not carry the key — the 853 convention).
+                            require_active_slots / not_real_decision_cell_pct are OBSERVED too:
+                            the breadth floor actually in force and the share of the decision grid
+                            that is not real data (INERT + FROZEN), so a row can never read as a
+                            fully-live grid when it is not. Both may be null on an artifact
+                            produced before those keys existed.
   operator          dict   eval_vector's own result["operator"], VERBATIM (observed, not echoed)
   operator_unpinned list   operator fields present in the result but absent from OPERATOR_PIN
   tiers   {"0": tier, "21": tier}   tier = {
@@ -221,6 +296,25 @@ SCORECARD_SCHEMA = "imprint_scorecard/v1"
 TIERS = ("0", "21")                      # eval_vector.GATE_COSTS as JSON keys: gross, net@21
 NET_TIER = "21"
 BAR_MINUTES = 1440                       # the fixed-frame daily panel rule (TASK_853)
+# Bound on the ONE stride knob a manifest may move (fix pass): an hour to a day per bar. Wide
+# enough for the 865 fixture smoke (60) and the 861 real leg (1440); tight enough that a
+# sub-hourly stride — which silently re-scales the Sharpe periodization AND makes the daily-bar
+# corridor/floor artifacts incomparable — cannot be declared and graded as OK.
+MINUTE_BAR_MINUTES_RANGE = (60, 1440)
+# D30 rider (b) breadth floor, PINNED here at eval_vector.REQUIRE_ACTIVE_SLOTS_DEFAULT's value and
+# always emitted into argv (fix pass) — so if that default ever moves, this battery's read does not.
+# The real 64-slot frame is 64/64 live on the leg-1 window (passes); the 2021-2022 WF fold is 50/64
+# (refuses without an explicit override); the daily pin is 33/64 (refuses — which is the point:
+# switching this manifest's source to "daily" is a one-word change).
+REQUIRE_ACTIVE_SLOTS = 0.9
+PANEL_FRAME_SOURCES = ("daily", "minute")   # eval_vector --panel-frame-source (TASK_865)
+# The SHIPPED source and eval_vector's own argparse default. Two load-bearing consequences:
+#   * a manifest declaring "daily" emits NO --panel-frame-source flag, so the 848 command line and
+#     eval_vector's artifact are byte-identical to the read of record (flag-gated, default OFF);
+#   * eval_vector records panel_frame.panel_frame_source ONLY on the minute path, so its ABSENCE
+#     from a result's panel_frame block MEANS "daily". Absence is a VALUE, not a missing field.
+# It is still never inferred from SILENCE in a MANIFEST: see load_manifest.
+DEFAULT_PANEL_FRAME_SOURCE = "daily"
 WINDOW_KINDS = ("regime", "oos", "walkforward")
 DEC2_CONSISTENCY_MIN = 3                 # ">=3 of 4 regime windows at/above their window floor"
 DEC2_N_REGIME = 4                        # the DEC-2 form is defined over exactly 4 windows
@@ -235,8 +329,9 @@ XLA_MEM_FRACTION = "0.7"                 # project invariant 5 — no bare GPU c
 # eval_vector sets XLA_PYTHON_CLIENT_PREALLOCATE=false).
 DEFAULT_JAX_PLATFORMS = "cpu"
 
-MANIFEST_KEYS = ("schema", "name", "checkpoint", "frame_provenance", "db", "n_assets",
-                 "eval_seed", "model", "notes", "windows")
+MANIFEST_KEYS = ("schema", "name", "checkpoint", "frame_provenance", "panel_frame_source",
+                 "db", "n_assets", "bar_minutes", "require_active_slots", "eval_seed", "model",
+                 "notes", "windows")
 WINDOW_KEYS = ("name", "kind", "start", "end", "floor_artifact", "max_decisions")
 
 # The 848 read-of-record operator — FIXED here, deliberately NOT a manifest knob.
@@ -287,6 +382,14 @@ OPERATOR_FORBIDDEN = ("decision_rule", "decision_tau", "decision_m")
 OPERATOR_PROSE = ("selection",)
 # result["panel"] fields that pin the env geometry (position sizing + encoder warmup).
 PANEL_PIN = {"position_size_pct": 0.1, "warm": 60}
+# The price table the pinned frame is read from — declared per manifest (there is no default),
+# emitted into argv, and OBSERVED back out of result["panel_frame"]. Not part of OPERATOR_PIN
+# because eval_vector records it one block over; asserted with the same mechanics. D30 rider (c).
+PANEL_FRAME_SOURCE_DESCR = {
+    "daily": "ohlcv_daily via eval_vector.load_daily_prices_framed (the shipped TASK_853 path)",
+    "minute": ("the minute `ohlcv` table via eval_vector.load_minute_prices_framed, "
+               "[::bar_minutes] stride (TASK_865, D29 opt (a))"),
+}
 
 # Floor-artifact provenance carried into the scorecard so a cross-configuration comparison
 # can never hide (runs/831_ext convention).
@@ -422,6 +525,107 @@ def _pin_equal(got, want):
 # manifest
 # =============================================================================
 
+def panel_frame_source_error(source, bar_minutes):
+    """The NAMED refusal message for an unusable (frame source, bar stride) pair — or None when
+    the pair is coherent. Split out so the guard is testable on its own and so both the manifest
+    loader and the fixture smoke assert the SAME rule.
+
+    ``daily`` reads ``ohlcv_daily``, whose rows are already daily: any stride but 1440 is a second
+    resample of already-resampled rows (``eval_vector._build_panel_framed`` raises on it, and this
+    battery must refuse before spending hours discovering that). ``minute`` strides the 1-min
+    ``ohlcv`` table, so it needs a positive stride (1440 = one bar per day, the 861 real leg)."""
+    if source not in PANEL_FRAME_SOURCES:
+        return (f"'panel_frame_source' is {source!r}, expected one of "
+                f"{list(PANEL_FRAME_SOURCES)} — refusing to guess which price table the pinned "
+                f"frame should be read from.")
+    if source == "daily" and int(bar_minutes) != BAR_MINUTES:
+        return (f"INCOHERENT panel frame source/stride: 'daily' reads the ohlcv_daily table, whose "
+                f"rows are ALREADY daily, so it requires bar_minutes {BAR_MINUTES} — this manifest "
+                f"asks for {bar_minutes}, a second resample of already-resampled rows "
+                f"(eval_vector._build_panel_framed refuses it). Either set bar_minutes "
+                f"{BAR_MINUTES}, or declare panel_frame_source 'minute' if a sub-daily stride is "
+                f"what you meant.")
+    if source == "minute":
+        lo, hi = MINUTE_BAR_MINUTES_RANGE
+        if int(bar_minutes) < 1:
+            return (f"INCOHERENT panel frame source/stride: 'minute' strides the 1-minute ohlcv "
+                    f"table ([::bar_minutes]), so bar_minutes must be >= 1 — this manifest asks "
+                    f"for {bar_minutes}.")
+        # FIX PASS — BOUNDED. bar_minutes became a manifest knob and nothing constrained it, so
+        # {"panel_frame_source": "minute", "bar_minutes": 1} loaded clean and would have graded the
+        # read of record on a ONE-MINUTE bar with status OK. That is not a stride choice, it is a
+        # different measurement: bar_minutes is ALSO the Sharpe periodization here
+        # (eval_vector.evaluate_checkpoint: period_minutes = bar_minutes), and the corridor/floor
+        # artifacts this battery compares against are daily-bar objects.
+        if not (lo <= int(bar_minutes) <= hi):
+            return (f"OUT-OF-RANGE stride: 'minute' admits bar_minutes in [{lo}, {hi}] (one hour "
+                    f"to one day per bar) — this manifest asks for {bar_minutes}. This harness is "
+                    f"the read of record for a DAILY-bar result: bar_minutes is also the Sharpe "
+                    f"periodization, and every floor/corridor artifact it grades against is a "
+                    f"daily-bar object, so a sub-hourly stride would silently re-scale every "
+                    f"number while the artifact still read 'OK'. Use {BAR_MINUTES} for the 861 "
+                    f"real-leg configuration.")
+    return None
+
+
+def _frame_source(manifest):
+    """The manifest's DECLARED panel frame source. ``load_manifest`` REQUIRES the key, so a
+    KeyError here means an unvalidated manifest reached the harness — loud on purpose. It is never
+    defaulted: silence is precisely the D30 rider (c) defect."""
+    return manifest["panel_frame_source"]
+
+
+def _bar_minutes(manifest):
+    """The bar stride this battery emits (manifest override, else the 853 daily rule)."""
+    return int(manifest.get("bar_minutes", BAR_MINUTES))
+
+
+def require_active_slots_error(v):
+    """Domain check for the manifest's ``require_active_slots``, mirroring
+    ``eval_vector.parse_require_active_slots``: exactly 0 (disable) | a fraction in (0,1] | an
+    integral slot count >= 1. Returns an error string or None. (This module is a subprocess driver
+    and deliberately does not import eval_vector — importing it would pull JAX in at manifest-load
+    time. The domain is therefore restated here and the VALUE is pinned in argv, which is the same
+    "pinned, not inherited" mechanism this header already uses for --position-size-pct.)"""
+    if isinstance(v, bool):
+        return f"'require_active_slots' is the boolean {v!r}; it is a breadth FLOOR, not a toggle"
+    if not isinstance(v, (int, float)):
+        return (f"'require_active_slots' must be a number (got "
+                f"{type(v).__name__}) — 0 disables, a fraction in (0,1] is a share of the frame, "
+                f"an integer >= 1 an absolute slot count")
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")):
+        return f"'require_active_slots' is not finite ({v!r})"
+    if f == 0.0:
+        return None
+    if f < 0.0:
+        return (f"'require_active_slots' is negative ({v!r}). A negative floor is NOT 'disabled' — "
+                f"it collapses to 'at least 1 active slot' and would pass a 1-of-64 panel while "
+                f"the header recorded {v!r} as though a floor were in force. Use exactly 0.")
+    if f <= 1.0:
+        if f < 1e-6:
+            return (f"'require_active_slots' is {v!r}: a positive fraction too small to refuse "
+                    f"anything (it rounds up to a floor of 1 slot) while recording a floor as "
+                    f"though one were in force. Use exactly 0 to disable the check.")
+        return None
+    if f != float(int(f)):
+        return (f"'require_active_slots' is {v!r}: above 1 it is an ABSOLUTE slot count, and a "
+                f"fractional slot count is meaningless")
+    return None
+
+
+def _require_active_slots(manifest):
+    """The D30 rider (b) breadth floor this battery emits (manifest override, else the pinned
+    default below).
+
+    FIX PASS: the floor was not in the operator pin and was never observed back out of a result, so
+    if the shared default moved, the read of record could not tell — the same failure mode
+    ``panel_frame_source`` exists to close (rider (c)). It is now ALWAYS emitted into argv, pinned
+    in the header, and compared against the value eval_vector records in its artifact."""
+    v = manifest.get("require_active_slots")
+    return REQUIRE_ACTIVE_SLOTS if v is None else float(v)
+
+
 def load_manifest(path):
     """Read + validate the windows manifest (schema above). Raises ManifestError."""
     m = _read_json(path, "manifest", exc=ManifestError)
@@ -445,6 +649,40 @@ def load_manifest(path):
     if not isinstance(m.get("n_assets"), int) or isinstance(m.get("n_assets"), bool) \
             or m["n_assets"] < 1:
         raise ManifestError(f"manifest {_rel(path)}: 'n_assets' must be a positive int")
+    # --- D30 rider (c): the pinned frame's PRICE SOURCE is declared, never defaulted -----------
+    # This manifest ALWAYS pins a frame ('frame_provenance' is required above), and a frame pin
+    # fixes slot identity, NOT which table the slot's prices come from. Silence here is how leg 4
+    # came to reuse the frame while reading ohlcv_daily (33/64 slots) against a minute-sourced
+    # leg 3 (62/64) — a source confound (D20) plus a breadth confound INSIDE one battery.
+    if "panel_frame_source" not in m or m["panel_frame_source"] is None:
+        raise ManifestError(
+            f"manifest {_rel(path)}: 'panel_frame_source' is REQUIRED (one of "
+            f"{list(PANEL_FRAME_SOURCES)}) and has NO DEFAULT. This manifest pins a frame "
+            f"({m['frame_provenance']!r}); a frame pin fixes WHICH SLOT is which asset, not which "
+            f"TABLE the prices come from. Declaring nothing used to mean 'daily' BY SILENCE, so a "
+            f"frame-pinned window silently read ohlcv_daily (33 of 64 frame slots on the 861 "
+            f"leg-1 window) while the number it is graded against was produced on the minute "
+            f"table (62 of 64) — a D20 source confound plus a 64->33 breadth confound between "
+            f"legs of ONE battery. Declare 'daily' (the shipped TASK_853 path) or 'minute' "
+            f"(TASK_865). D30 rider (c).")
+    m.setdefault("bar_minutes", BAR_MINUTES)
+    if not isinstance(m["bar_minutes"], int) or isinstance(m["bar_minutes"], bool) \
+            or m["bar_minutes"] < 1:
+        raise ManifestError(f"manifest {_rel(path)}: 'bar_minutes' must be a positive int")
+    if not isinstance(m["panel_frame_source"], str):
+        raise ManifestError(
+            f"manifest {_rel(path)}: 'panel_frame_source' must be a string, one of "
+            f"{list(PANEL_FRAME_SOURCES)} (got {type(m['panel_frame_source']).__name__})")
+    bad_source = panel_frame_source_error(m["panel_frame_source"], m["bar_minutes"])
+    if bad_source:
+        raise ManifestError(f"manifest {_rel(path)}: {bad_source}")
+    # D30 rider (b): the breadth floor is an optional knob with a PINNED default, bounded here so a
+    # nonsense value cannot record a floor that is not in force (eval_vector used to FAIL OPEN on
+    # -1 / -0.0 / False / 1e-300 / "0", admitting a 50/64 panel while the artifact claimed a floor).
+    m.setdefault("require_active_slots", REQUIRE_ACTIVE_SLOTS)
+    bad_floor = require_active_slots_error(m["require_active_slots"])
+    if bad_floor:
+        raise ManifestError(f"manifest {_rel(path)}: {bad_floor}")
     m.setdefault("eval_seed", 0)
     if not isinstance(m["eval_seed"], int) or isinstance(m["eval_seed"], bool):
         raise ManifestError(f"manifest {_rel(path)}: 'eval_seed' must be an int")
@@ -692,14 +930,25 @@ def child_env_block(jax_platforms):
 
 
 def build_argv(manifest, window, out_dir, tag):
+    # The DECLARED frame source, emitted flag-gated: 'daily' is eval_vector's OWN argparse default
+    # and adds NOTHING to the command line, so the 848 read of record — and therefore the
+    # eval_vector artifact it produces — is byte-identical to what it has always been. 'minute' is
+    # the explicit opt-in, and it is asserted back out of the result (D30 rider (c)).
+    source_args = ([] if _frame_source(manifest) == DEFAULT_PANEL_FRAME_SOURCE
+                   else ["--panel-frame-source", _frame_source(manifest)])
     argv = [sys.executable, EVAL_VECTOR,
             "--db", _resolve(manifest["db"]),
             "--start", str(window["start"]), "--end", str(window["end"]),
-            "--bar-minutes", str(BAR_MINUTES),
+            "--bar-minutes", str(_bar_minutes(manifest)),
             "--n-assets", str(manifest["n_assets"]),
             "--eval-seed", str(manifest["eval_seed"]),
             "--checkpoint", _resolve(manifest["checkpoint"]),
             "--panel-frame-from-checkpoint", _resolve(manifest["frame_provenance"]),
+            *source_args,
+            # D30 rider (b) PINNED IN ARGV (fix pass), unconditionally — the same treatment
+            # --position-size-pct gets. Never inherited from eval_vector's default, and echoed back
+            # out of the result's panel_frame block so a moved default is visible, not silent.
+            "--require-active-slots", repr(_require_active_slots(manifest)),
             *OPERATOR_ARGS,
             "--tag", tag, "--out-dir", out_dir]
     model = manifest.get("model") or {}
@@ -758,6 +1007,57 @@ def _check_operator(res, manifest):
     return sorted(set(op) - set(pin) - set(OPERATOR_PROSE))
 
 
+def observed_frame_source(frame_block):
+    """The price table a result was ACTUALLY built from, read out of its own panel_frame block.
+
+    ABSENCE OF THE KEY IS A VALUE, NOT A GAP: eval_vector writes ``panel_frame_source`` only on
+    the TASK_865 minute path and left the shipped 853 DAILY block exactly as it was, so a
+    panel_frame block without the key was built from ``ohlcv_daily``. Treating that absence as a
+    missing field would fail every daily window; treating an absent MANIFEST declaration the same
+    way is the defect this rider fixes — the two are not the same thing."""
+    if not isinstance(frame_block, dict):
+        return None
+    return frame_block.get("panel_frame_source", DEFAULT_PANEL_FRAME_SOURCE)
+
+
+def _frame_source_mismatch(frame_block, manifest):
+    """Requested-vs-actual price table (D30 rider (c)), in the fail-loud style of the bar_minutes /
+    teacher_floor / panel_frame checks around it: a list of complaints, so a disagreement DESTROYS
+    the row (and the run's exit code) instead of being annotated somewhere in the artifact."""
+    want = _frame_source(manifest)
+    got = observed_frame_source(frame_block)
+    bad = []
+    if got not in PANEL_FRAME_SOURCES:
+        bad.append(f"panel_frame.panel_frame_source {got!r} is not one of "
+                   f"{list(PANEL_FRAME_SOURCES)} — the result does not say which price table it "
+                   f"read, so the read cannot be attributed to a source at all")
+    elif got != want:
+        bad.append(
+            f"panel_frame.panel_frame_source {got!r} != manifest {want!r} — the window was graded "
+            f"on a DIFFERENT price table than the manifest declared "
+            f"(requested {want}: {PANEL_FRAME_SOURCE_DESCR[want]}; actual {got}: "
+            f"{PANEL_FRAME_SOURCE_DESCR[got]}). The daily and minute tables cover different "
+            f"numbers of frame slots (33/64 vs 62/64 on the 861 leg-1 window), so mixing them "
+            f"across a battery's legs confounds source (D20) AND breadth with the effect under "
+            f"test. Refusing the row rather than publishing an uninterpretable number.")
+    # The minute block records its own stride; the daily block has no such key (nothing to check).
+    fb_bars = (frame_block or {}).get("bar_minutes") if isinstance(frame_block, dict) else None
+    if fb_bars is not None and int(fb_bars) != _bar_minutes(manifest):
+        bad.append(f"panel_frame.bar_minutes {fb_bars} != {_bar_minutes(manifest)} — the frame was "
+                   f"strided differently than this battery asked for")
+    # D30 rider (b) OBSERVED back out (fix pass): eval_vector records the floor it actually applied
+    # on BOTH pin paths now. ABSENT = an artifact produced before the key existed => not asserted
+    # (the daily block never carried it), which is why it is a soft check while the source is hard.
+    fb_floor = (frame_block or {}).get("require_active_slots") if isinstance(frame_block, dict) \
+        else None
+    if fb_floor is not None and not _pin_equal(float(fb_floor), _require_active_slots(manifest)):
+        bad.append(f"panel_frame.require_active_slots {fb_floor!r} != "
+                   f"{_require_active_slots(manifest)!r} — the window was graded under a DIFFERENT "
+                   f"breadth floor than this battery pinned, so 'the panel was wide enough' is not "
+                   f"a claim this artifact can make (D30 rider (b))")
+    return bad
+
+
 def _check_result_provenance(res, manifest, window):
     """Refuse a result that does not describe the run this manifest asked for. Catches a
     stale artifact, a silently-different operator, and a frame that never took effect."""
@@ -766,8 +1066,8 @@ def _check_result_provenance(res, manifest, window):
         bad.append(f"db {res.get('db')!r} != {manifest['db']!r}")
     if [str(x) for x in (res.get("window") or [])] != [str(window["start"]), str(window["end"])]:
         bad.append(f"window {res.get('window')} != {[window['start'], window['end']]}")
-    if res.get("bar_minutes") != BAR_MINUTES:
-        bad.append(f"bar_minutes {res.get('bar_minutes')} != {BAR_MINUTES}")
+    if res.get("bar_minutes") != _bar_minutes(manifest):
+        bad.append(f"bar_minutes {res.get('bar_minutes')} != {_bar_minutes(manifest)}")
     if res.get("eval_seed") != manifest["eval_seed"]:
         bad.append(f"eval_seed {res.get('eval_seed')} != {manifest['eval_seed']}")
     if [int(c) for c in (res.get("cost_tiers_bp") or [])] != [int(t) for t in TIERS]:
@@ -787,6 +1087,7 @@ def _check_result_provenance(res, manifest, window):
         if frame_block.get("n_slots") != manifest["n_assets"]:
             bad.append(f"panel_frame.n_slots {frame_block.get('n_slots')} != "
                        f"{manifest['n_assets']}")
+        bad += _frame_source_mismatch(frame_block, manifest)
     panel = res.get("panel") or {}
     if panel.get("n_assets") != manifest["n_assets"]:
         bad.append(f"panel.n_assets {panel.get('n_assets')} != {manifest['n_assets']}")
@@ -936,6 +1237,22 @@ def run_window(manifest, window, out_root, jax_platforms, verbose=True,
             "n_active_slots": frame_block.get("n_active_slots"),
             "n_inactive_slots": frame_block.get("n_inactive_slots"),
             "n_partial_slots": frame_block.get("n_partial_slots"),
+            # FIX PASS — a row used to report only WHOLLY-inert slot counts, so a window whose
+            # decision grid was ~11% not-real-data read as fully live. These are OBSERVED out of
+            # eval_vector's own panel_frame block (null on an artifact produced before they existed).
+            "n_stale_tail_slots": frame_block.get("n_stale_tail_slots"),
+            "n_frozen_slots": frame_block.get("n_frozen_slots"),
+            "inert_decision_cell_pct": frame_block.get("inert_decision_cell_pct"),
+            "frozen_decision_cell_pct": frame_block.get("frozen_decision_cell_pct"),
+            "frozen_interior_decision_cell_pct": frame_block.get(
+                "frozen_interior_decision_cell_pct"),
+            "not_real_decision_cell_pct": frame_block.get("not_real_decision_cell_pct"),
+            "live_decision_cell_pct": frame_block.get("live_decision_cell_pct"),
+            # OBSERVED, not echoed: which table this window's prices actually came from (absent
+            # key == 'daily', the shipped 853 convention). Already asserted against the manifest.
+            "panel_frame_source": observed_frame_source(frame_block),
+            # OBSERVED, not echoed: the breadth floor that was actually in force (D30 rider (b)).
+            "require_active_slots": frame_block.get("require_active_slots"),
             "position_size_pct": _num(panel.get("position_size_pct")),
             "warm": panel.get("warm"),
         },
@@ -1067,7 +1384,10 @@ def build_scorecard(manifest, manifest_path, rows, prov, global_errors, jax_plat
         },
         "db": _rel(_resolve(manifest["db"])),
         "n_assets": manifest["n_assets"],
-        "bar_minutes": BAR_MINUTES,
+        "bar_minutes": _bar_minutes(manifest),
+        # D30 rider (b) breadth floor — PINNED in argv, recorded here, observed back out of every
+        # row (fix pass: it used to be neither pinned nor observed, so a moved default was invisible).
+        "require_active_slots": _require_active_slots(manifest),
         "eval_seed": manifest["eval_seed"],
         "model": dict(manifest.get("model") or {}),
         "jax_platforms": jax_platforms,
@@ -1081,12 +1401,35 @@ def build_scorecard(manifest, manifest_path, rows, prov, global_errors, jax_plat
             "teacher_floor": True,
             "vector_weight_rebalance": True,
             "panel_frame_from_checkpoint": True,
+            # D30 rider (c): the pinned frame's PRICE TABLE — declared by the manifest (no
+            # default), emitted into argv, and observed back out of every result's panel_frame.
+            "panel_frame_source": manifest.get("panel_frame_source"),
+            "panel_frame_pin": {
+                "panel_frame_source": manifest.get("panel_frame_source"),
+                "bar_minutes": _bar_minutes(manifest),
+                "bar_minutes_bound": (list(MINUTE_BAR_MINUTES_RANGE)
+                                      if manifest.get("panel_frame_source") == "minute"
+                                      else [BAR_MINUTES, BAR_MINUTES]),
+                "require_active_slots": _require_active_slots(manifest),
+                "require_active_slots_observed_as": (
+                    "result['panel_frame']['require_active_slots'] — asserted per window; ABSENT "
+                    "only on an artifact produced before the key existed"),
+                "reads": PANEL_FRAME_SOURCE_DESCR.get(manifest.get("panel_frame_source")),
+                "observed_as": ("result['panel_frame']['panel_frame_source'] — ABSENT means "
+                                "'daily' (eval_vector records the key only on the TASK_865 minute "
+                                "path, leaving the shipped 853 daily block byte-identical)"),
+            },
             "decision_rule": "argmax",
             "cost_tiers_bp": [int(t) for t in TIERS],
-            "argv_template": " ".join(["eval_vector.py", "--db <db>", "--start <s>", "--end <e>",
-                                       f"--bar-minutes {BAR_MINUTES}", "--n-assets <n>",
-                                       "--eval-seed <seed>", "--checkpoint <ckpt>",
-                                       "--panel-frame-from-checkpoint <frame>", *OPERATOR_ARGS]),
+            "argv_template": " ".join(
+                ["eval_vector.py", "--db <db>", "--start <s>", "--end <e>",
+                 f"--bar-minutes {_bar_minutes(manifest)}", "--n-assets <n>",
+                 "--eval-seed <seed>", "--checkpoint <ckpt>",
+                 "--panel-frame-from-checkpoint <frame>"]
+                + ([] if manifest.get("panel_frame_source") == DEFAULT_PANEL_FRAME_SOURCE
+                   else [f"--panel-frame-source {manifest.get('panel_frame_source')}"])
+                + [f"--require-active-slots {_require_active_slots(manifest)!r}"]
+                + list(OPERATOR_ARGS)),
             "source": OPERATOR_SOURCE,
             "pin": _expected_operator_pin(manifest),
             "panel_pin": dict(PANEL_PIN),
@@ -1096,7 +1439,13 @@ def build_scorecard(manifest, manifest_path, rows, prov, global_errors, jax_plat
                 "(plus panel position_size_pct/warm against 'panel_pin' and the result's own "
                 "checkpoint against the manifest). Fields present in the result but absent "
                 "from 'pin' are listed per row under operator_unpinned. A disagreement FAILS "
-                "the window and ABORTS the battery."),
+                "the window and ABORTS the battery. The panel's PRICE TABLE is pinned the same "
+                "way one block over ('panel_frame_pin'): the manifest must DECLARE it, argv "
+                "carries it, and result['panel_frame']['panel_frame_source'] is asserted against "
+                "the declaration per window — a mismatch FAILS the row (D30 rider (c)). The BREADTH FLOOR "
+                "(D30 rider (b)) is pinned and observed the same way: always emitted into argv, "
+                "recorded in the header, and compared against "
+                "result['panel_frame']['require_active_slots']."),
         },
         # Resolved ONCE in load_manifest, not here: build_scorecard runs on the recovery path and
         # must not fork. (_self_check re-builds once per row, so this also stops a degraded
@@ -1130,7 +1479,8 @@ def validate_scorecard(sc):
         raise ValueError(f"scorecard schema {sc.get('schema')!r} != {SCORECARD_SCHEMA!r}")
     for key, types in (("generated_by", str), ("manifest", dict), ("checkpoint", str),
                        ("frame_provenance", dict), ("db", str), ("n_assets", int),
-                       ("bar_minutes", int), ("eval_seed", int), ("model", dict),
+                       ("bar_minutes", int), ("require_active_slots", (int, float)),
+                       ("eval_seed", int), ("model", dict),
                        ("child_env", dict), ("window_timeout_s", int),
                        ("capped_windows", list), ("operator", dict), ("status", str),
                        ("n_windows", int), ("n_ok", int), ("n_failed", int),
@@ -1139,10 +1489,14 @@ def validate_scorecard(sc):
         need(sc, key, types, "scorecard")
     for key in ("path", "name", "schema", "sha256"):
         need(sc["manifest"], key, str, "scorecard.manifest")
-    for key in ("pin", "panel_pin"):
+    for key in ("pin", "panel_pin", "panel_frame_pin"):
         need(sc["operator"], key, dict, "scorecard.operator")
-    for key in ("verification", "source", "argv_template"):
+    for key in ("verification", "source", "argv_template", "panel_frame_source"):
         need(sc["operator"], key, str, "scorecard.operator")
+    if sc["operator"]["panel_frame_source"] not in PANEL_FRAME_SOURCES:
+        raise ValueError(f"scorecard.operator.panel_frame_source "
+                         f"{sc['operator']['panel_frame_source']!r} not in "
+                         f"{list(PANEL_FRAME_SOURCES)}")
     need(sc["self_check"], "ok", bool, "scorecard.self_check")
     need(sc["self_check"], "errors", list, "scorecard.self_check")
     need(sc["self_check"], "degraded_rows", list, "scorecard.self_check")
@@ -1195,6 +1549,17 @@ def validate_scorecard(sc):
             raise ValueError(f"{where}: missing key 'max_decisions' (may be null)")
         if not isinstance(r["max_decisions"], (int, type(None))):
             raise ValueError(f"{where}: 'max_decisions' must be an int or null")
+        # Every graded row must SAY which price table it read, and it must be the one the header
+        # declares: a battery whose legs disagree about the source is the D30 rider (c) defect, and
+        # the schema is where that becomes unrepresentable rather than merely discouraged.
+        row_src = r["panel"].get("panel_frame_source")
+        if row_src not in PANEL_FRAME_SOURCES:
+            raise ValueError(f"{where}.panel: 'panel_frame_source' is {row_src!r}, expected one "
+                             f"of {list(PANEL_FRAME_SOURCES)}")
+        if row_src != sc["operator"]["panel_frame_source"]:
+            raise ValueError(f"{where}.panel: panel_frame_source {row_src!r} disagrees with the "
+                             f"battery's declared source "
+                             f"{sc['operator']['panel_frame_source']!r}")
         if set(r["tiers"]) != set(TIERS):
             raise ValueError(f"{where}: tiers keys {sorted(r['tiers'])} != {sorted(TIERS)}")
         for t in TIERS:
@@ -1264,6 +1629,18 @@ def render_md(sc):
              f"({sc['frame_provenance']['n_frame_symbols']} slots)")
     L.append(f"- **db**: `{sc['db']}` · n_assets {sc['n_assets']} · bar_minutes "
              f"{sc['bar_minutes']} · eval_seed {sc['eval_seed']}")
+    # The price table is stated OUT LOUD on both sources: leaving it implicit for 'daily' is what
+    # let a frame-pinned battery read ohlcv_daily against a minute-sourced bar (D30 rider (c)).
+    L.append(f"- **panel frame source**: **{sc['operator']['panel_frame_source']}** — "
+             f"{sc['operator']['panel_frame_pin'].get('reads')}. Declared by the manifest, "
+             f"emitted into every window's argv, and OBSERVED back out of each result's "
+             f"`panel_frame` block (a mismatch FAILS the row).")
+    L.append(f"- **breadth floor** (D30 rider (b)): `--require-active-slots "
+             f"{sc['require_active_slots']}` — pinned in argv on every window and OBSERVED back "
+             f"out of each result (a mismatch FAILS the row). "
+             + ("**DISABLED** — a partly-inert panel is explicitly intended."
+                if not sc["require_active_slots"] else
+                "A frame too inert to produce a comparable number is REFUSED before any grading."))
     L.append(f"- **operator**: policy-argmax replay (decision-rule argmax) + on-window teacher "
              f"floor + weight-rebalance + fixed-frame panel; tiers "
              f"{sc['operator']['cost_tiers_bp']} bp ({sc['operator']['source']}). "
@@ -1389,6 +1766,8 @@ def print_summary(sc):
           f"[{sc['n_ok']} OK / {sc['n_failed']} FAILED]")
     print(f"checkpoint {sc['checkpoint']} · frame {sc['frame_provenance']['path']} "
           f"· db {sc['db']}")
+    print(f"panel frame source {(sc.get('operator') or {}).get('panel_frame_source')} "
+          f"· bar_minutes {sc.get('bar_minutes')}")
     for e in sc["global_errors"]:
         print(f"  REFUSED: {e}")
     if not sc["self_check"]["ok"]:

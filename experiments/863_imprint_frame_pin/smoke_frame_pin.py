@@ -143,11 +143,19 @@ def write_frame(path, symbols, note):
     return path
 
 
+# D30 rider (b) reaches the DAILY pin as of the fix pass, and this suite's fixture frames are
+# intentionally 6/8 (two zero-coverage slots ARE the subject of the inactive-slot legs), which is
+# below the shared 0.9 floor. Every pinned leg here opts out EXPLICITLY — the default stays 0.9 for
+# the real legs. (Unpinned legs never reach the guard, but passing it is harmless and keeps one argv
+# shape.)
+REQUIRE_ACTIVE_OVERRIDE = ["--require-active-slots", "0"]
+
+
 def eval_cmd(out_dir, collect, frame=None):
     cmd = [sys.executable, EVAL_PY, "--db", FIXTURE_DB, *FRAME_PANEL,
            "--position-size-pct", str(COLLECT_POSITION_SIZE_PCT), *TEACHER_OPERATOR,
            "--checkpoint", CKPT_SRC, "--out-dir", out_dir, "--tag", "863fx",
-           "--collect-chosen-vectors", collect]
+           "--collect-chosen-vectors", collect, *REQUIRE_ACTIVE_OVERRIDE]
     if frame is not None:
         cmd += ["--panel-frame-from-checkpoint", frame]
     return cmd
@@ -157,7 +165,7 @@ def imprint_cmd(out_json, ckpt_out, collection, frame=None, panel=None, extra=()
     cmd = [sys.executable, IMPRINT_PY, "--db", FIXTURE_DB, *(panel or FRAME_PANEL),
            "--vector-weight-rebalance", "--teacher-vectors", collection,
            "--allow-off-pin-teacher", "--iters", "80", "--seed", "0",
-           "--ckpt-out", ckpt_out, "--out", out_json]
+           "--ckpt-out", ckpt_out, "--out", out_json, *REQUIRE_ACTIVE_OVERRIDE]
     if frame is not None:
         cmd += ["--panel-frame-from-checkpoint", frame]
     return cmd + list(extra)
@@ -180,7 +188,7 @@ def degenerate_leg(name, R, frame, extra, expect_clauses, absent_clauses,
     cmd = [sys.executable, IMPRINT_PY, "--db", FIXTURE_DB, *FRAME_PANEL,
            "--vector-weight-rebalance", "--imprint-mapping", "weight-native",
            "--batch-size", "32", "--panel-frame-from-checkpoint", frame,
-           "--out", out, "--ckpt-out", ck, *extra]
+           "--out", out, "--ckpt-out", ck, *REQUIRE_ACTIVE_OVERRIDE, *extra]
     rc, text = sh(cmd, R(f"log_{name}.txt"), expect_ok=False)
     res = json.load(open(out)) if os.path.exists(out) else {}
     sn = res.get("sanity") or {}
@@ -258,6 +266,12 @@ def _pin_args(imp, frame_path, n_assets=8, bar_minutes=1440):
         vector_rebalance_deadband=-1.0, seed=0, max_decisions=None,
         allow_off_pin_teacher=True, shuffle_teacher_vectors=False,
         panel_frame_from_checkpoint=frame_path,
+        # D30 rider (b) now applies to the DAILY pin too (fix pass). This suite's frames are
+        # INTENTIONALLY inert (2 of 8 slots have zero ohlcv_daily coverage — that is what the
+        # inactive-slot mechanics legs exist to exercise), i.e. 6/8 = 0.75 below the shared 0.9
+        # floor. The suite therefore opts out EXPLICITLY, exactly as the 865 minute fixture legs
+        # do; the DEFAULT is not weakened for the real legs.
+        require_active_slots=0,
     )
 
 

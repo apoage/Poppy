@@ -108,6 +108,13 @@ from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_simple
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DB = os.path.join(_REPO, "fixtures", "trading_fixture.db")
+PROTECTED_DB = os.path.join(_REPO, "trading_data.db")
+
+# Default busy timeout for every DB handle this harness opens. Python's sqlite3 default is 5s,
+# while the repo documents 60s (trader/data.py:29 SQLITE_TIMEOUT_S) precisely so a transient lock
+# from the fetcher (tools/fetch_daily_kraken.py:360 writes to the same file) cannot kill a
+# scheduled overnight battery mid-window.
+SQLITE_TIMEOUT_S = 60.0
 CORRIDOR_JSON = os.path.join(_REPO, "experiments", "830_corridor", "results_real_panel.json")
 EXT_WINDOW_NAMES = ("bear22w", "bull23w", "y2024", "recent")
 EXT_WINDOW_DIR = os.path.join(_REPO, "runs", "831_ext")
@@ -169,6 +176,53 @@ def load_imprint_module():
         spec.loader.exec_module(mod)
         _IMPRINT_MOD = mod
     return _IMPRINT_MOD
+
+
+# =============================================================================
+# fix pass — READ-ONLY DB HANDLES (project invariant 2, source of record)
+# =============================================================================
+# Every query this harness issues is a SELECT, but a plain ``sqlite3.connect(path)`` opens the
+# file READ-WRITE, and that is not a cosmetic difference on the 24GB irreplaceable
+# ``trading_data.db``:
+#   * HOT-JOURNAL RECOVERY REWRITES THE FILE ON THE FIRST *READ*. If a writer died mid-txn (the
+#     fetcher, tools/fetch_daily_kraken.py:360, writes this same file; the host has a documented
+#     hard-crash history — MEMORY workstation-syncflood), a rollback journal is left next to the
+#     db. The FIRST read through a READ-WRITE handle plays that journal back into the db and
+#     unlinks it — no write SQL involved. MEASURED on a copy carrying a hot journal: the file's
+#     sha256 AND size changed and the journal disappeared, while a ``mode=ro`` handle refused the
+#     recovery and left the file byte-identical.
+#   * A READ-WRITE handle CREATES an empty db at any path that does not exist, so a typo'd or
+#     symlinked ``--db`` silently produces a 0-byte file and then fails with a confusing
+#     "no such table" instead of "no such file".
+# ``mode=ro`` closes both, and cannot change any SELECT's result, so no numeric moves.
+# ``_ro_connect`` also carries the repo's documented 60s busy timeout (see SQLITE_TIMEOUT_S) and
+# refuses to be pointed at the protected source of record for anything but reading, resolving
+# symlinks first (the ``_guard_out`` rule, experiments/840_weight_rebalance/acceptance_probe.py
+# :373-391 — abspath does NOT resolve an innocuously named symlink to trading_data.db).
+#
+# SCOPE, EXACTLY (fix pass 2 — this note used to read as though the invariant were repo-wide, and
+# it is not): ``_ro_connect`` covers every DB handle THIS harness and the 832/863/865 framed
+# loaders open. It does NOT cover the CANON UNPINNED panel path. ``build_panel`` ->
+# ``create_jax_env_historical`` reaches ``mcts_trader/env/vectorbt_env.py:515`` and ``:731``, which
+# still call a plain read-write ``sqlite3.connect`` on the same 24GB file, so a DEFAULT (unpinned)
+# eval run remains exposed to hot-journal recovery. That is pre-existing, wider than TASK_865 (it
+# is the canon env loader, shared with training), and is recorded by the planner as its own row —
+# deliberately NOT changed here. Do not read "all 11 sites go through _ro_connect" as "no
+# read-write handle can be opened on trading_data.db by this process".
+
+def _ro_connect(db_path):
+    """Open ``db_path`` STRICTLY read-only (``file:...?mode=ro``, repo's 60s busy timeout).
+
+    Refuses a path that does not exist (rather than creating a 0-byte db, which a read-write
+    handle would do), naming the resolved target so a symlink cannot hide what was opened."""
+    p = os.path.abspath(db_path)
+    rp = os.path.realpath(p)
+    if not os.path.isfile(rp):
+        raise RuntimeError(
+            f"--db {db_path}: no such SQLite file (resolved: {rp}). Refusing to open it — a "
+            f"read-write handle would CREATE a 0-byte database here and then fail with a "
+            f"misleading 'no such table'. Point --db at an existing database.")
+    return sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=SQLITE_TIMEOUT_S)
 
 
 # =============================================================================
@@ -324,7 +378,7 @@ def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_asset
     loader runs (VectorBTTradingEnv._load_database_prices), then the SAME
     ``[::bar_minutes]`` stride as env_factory. Read-only; consistency is asserted by the
     caller (len must equal prices.shape[0]). Returns (row_ts int64 array, loaded_symbols)."""
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     cur = conn.cursor()
     s_ts = _to_epoch(start_date, 0)
     e_ts = _to_epoch(end_date, 9999999999)
@@ -359,7 +413,7 @@ def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_asset
         (*asset_ids, s_ts, e_ts)).fetchall()]
     conn.close()
     row_ts = np.asarray(ts, dtype=np.int64)
-    if bar_minutes > 1:                        # env_factory.py:369 stride, verbatim
+    if bar_minutes > 1:                        # env_factory.py:409 stride, verbatim
         row_ts = row_ts[::bar_minutes]
     return row_ts, symbols
 
@@ -377,7 +431,7 @@ def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_asset
 # path change (imprint.py stays minute-sourced — out of scope).
 
 def _daily_table_exists(db_path):
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     try:
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv_daily'"
@@ -396,7 +450,7 @@ def _minute_ranked_symbols(db_path, start_date, end_date, n_assets):
     ohlcv history even though it ends ~Oct-2025, so they still rank top-N). Fail-loud if the
     minute table is absent/empty — never silently rank over ohlcv_daily (a disjoint universe
     that corrupts the OOS benchmark)."""
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     try:
         has = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv'").fetchone()
@@ -427,10 +481,11 @@ def _daily_coverage_ids(db_path, asset_ids, s_ts, e_ts):
     """Subset of `asset_ids` with >=1 real ``ohlcv_daily`` row in epoch window [s_ts, e_ts].
     Shared coverage definition (TASK_852) for the daily loader's active-mask filter AND the
     equivalence gate's FLOOR-leg universe intersection — one query shape, not two divergent
-    ones. Read-only; opens its own connection (mirrors ``_daily_table_exists`` style)."""
+    ones. Opens its own connection, STRICTLY read-only (``_ro_connect``; mirrors
+    ``_daily_table_exists`` style)."""
     if not asset_ids:
         return set()
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     try:
         ph = ",".join("?" * len(asset_ids))
         # close IS NOT NULL AND != 0 (MINOR-2 hardening): row EXISTENCE alone isn't coverage —
@@ -469,7 +524,7 @@ def load_daily_prices(db_path, start_date, end_date, specific_symbols, n_assets)
     # can't resolve a universe (never silently fall back to ranking over ohlcv_daily).
     if not specific_symbols:
         specific_symbols = _minute_ranked_symbols(db_path, start_date, end_date, n_assets)
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     cur = conn.cursor()
     # Window bounds via _to_epoch (LOCAL-time date parsing) — intentionally identical to the
     # minute path (VectorBTTradingEnv parses dates in local time too), so the daily and minute
@@ -689,20 +744,280 @@ def _load_frame_provenance(path, n_assets, cli_symbols):
     return list(frame), prov
 
 
-def load_daily_prices_framed(db_path, start_date, end_date, frame_symbols):
+# Bounds on the provenance METADATA that gets copied into an artifact (fix pass). It used to be
+# copied VERBATIM, so a provenance file could put anything into the read of record: a float('nan')
+# or float('inf') is emitted by json.dump as the bare tokens NaN/Infinity, which makes the artifact
+# NOT strict JSON (json.loads in another language, or with parse_constant refusing, fails on it); a
+# 555 KB blob was accepted unbounded into every window row; and a 2000-deep nesting raised an
+# UNCAUGHT RecursionError from inside json.dump, i.e. a crash with no named cause after the whole
+# panel had been built. The real provenance meta is 245 bytes / depth 2, so these bounds are ~130x
+# and 4x headroom, not a constraint on anything real.
+PROV_META_MAX_BYTES = 32_768
+PROV_META_MAX_DEPTH = 8
+PROV_META_MAX_KEYS = 64
+
+
+def provenance_meta_block(prov, path):
+    """The provenance metadata that goes into the artifact: everything except the frame itself,
+    TYPE-CHECKED and BOUNDED. Refuses (named, before the panel build) a non-finite float, a
+    non-JSON-safe value, an over-deep or over-large blob, rather than letting it reach json.dump."""
+    meta = {k: v for k, v in prov.items() if k not in ("frame_symbols", "symbols")}
+    if len(meta) > PROV_META_MAX_KEYS:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} carries {len(meta)} metadata keys "
+            f"(max {PROV_META_MAX_KEYS}). This block is copied into the read of record; it is "
+            f"provenance, not a data dump.")
+
+    def check(v, depth, where):
+        if depth > PROV_META_MAX_DEPTH:
+            raise RuntimeError(
+                f"--panel-frame-from-checkpoint: provenance {path} nests deeper than "
+                f"{PROV_META_MAX_DEPTH} at {where}. Copied verbatim into the artifact, a deeply "
+                f"nested blob raises an UNCAUGHT RecursionError inside json.dump after the whole "
+                f"panel has been built — refused here instead, by name.")
+        if v is None or isinstance(v, (bool, int, str)):
+            return
+        if isinstance(v, float):
+            if v != v or v in (float("inf"), float("-inf")):
+                raise RuntimeError(
+                    f"--panel-frame-from-checkpoint: provenance {path} has a NON-FINITE number "
+                    f"({v!r}) at {where}. json.dump would emit the bare token NaN/Infinity and the "
+                    f"artifact would no longer be strict JSON (a conforming reader rejects it).")
+            return
+        if isinstance(v, list):
+            for i, x in enumerate(v):
+                check(x, depth + 1, f"{where}[{i}]")
+            return
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if not isinstance(k, str):
+                    raise RuntimeError(
+                        f"--panel-frame-from-checkpoint: provenance {path} has a non-string key "
+                        f"{k!r} at {where}.")
+                check(x, depth + 1, f"{where}.{k}")
+            return
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} has a value of unsupported type "
+            f"{type(v).__name__} at {where}; only JSON scalars/lists/objects are carried into the "
+            f"artifact.")
+
+    try:
+        check(meta, 1, "provenance_meta")
+    except RecursionError:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} is nested too deeply to validate "
+            f"(RecursionError). Refusing to copy it into the artifact.")
+    n_bytes = len(json.dumps(meta, allow_nan=False, separators=(",", ":")))
+    if n_bytes > PROV_META_MAX_BYTES:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: provenance {path} metadata serialises to {n_bytes} "
+            f"bytes (max {PROV_META_MAX_BYTES}). It is copied into EVERY artifact that reads this "
+            f"frame; keep it to provenance.")
+    return meta
+
+
+# ---------------------------------------------------------------------------------------------
+# D30 (ruled 2026-07-30) — the stale-tail contract, UNIFORM across BOTH pin paths, and the
+# breadth refusal that keeps a half-dead panel from producing a publishable number.
+# ---------------------------------------------------------------------------------------------
+STALE_TAIL_RULE = (
+    "a STALE-TAIL slot's LAST REAL close precedes the window end (delisting / ticker migration). "
+    "Its trailing panel rows are FORWARD-FILLED at that last real close and stay TRADEABLE on a "
+    "constant series — the fill rule the shipped daily pin has always applied, made uniform across "
+    "both pin paths by D30 (ruled 2026-07-30, opt (i)). These rows are NOT masked and NOT "
+    "force-HELD: force-HOLD gates OPENING, not VALUATION, so zeroing the tail instead marks a "
+    "position open at the boundary against price 0 (a long wiped, a short handed a 100% windfall) "
+    "and freezes it there — MEASURED at 75,002.50 / 124,997.50 for a long/short book on flat "
+    "prices at fee 0 where any book must end at exactly 100,000.00, while the forward fill is "
+    "PV-exact to the cent. WHAT A FORWARD FILL CAN AND CANNOT DO, stated exactly (fix pass — the "
+    "earlier blanket claim was FALSE for one of the two cases): (1) on a TRAILING span the series "
+    "is constant to the window end, so a round trip nets exactly 0 at fee 0 and is a strict fee "
+    "drag above it — it cannot fabricate PnL and is biased AGAINST the bar being graded; (2) on an "
+    "INTERIOR span (a hole that RESUMES before the window end) the same fill is NOT harmless: the "
+    "book is marked and can be opened/rebalanced at a frozen price no market offered, and the "
+    "whole accumulated gap move is then delivered in ONE bar at the re-anchor. That is real, "
+    "sign-indeterminate PnL — MEASURED on the 861 leg-1 window at re-anchor jumps of +64.52% "
+    "(ETHBTC), +33.88% (BTCCAD), +32.69% (BTCGBP), +24.29% (BTCCHF), -7.76% (/USDTEUR). Choosing "
+    "what to DO about (2) — mask / refuse / accept-with-disclosure — is a D30-class semantics "
+    "ruling that also implicates the canon UNPINNED minute loader (mcts_trader/env/"
+    "vectorbt_env.py:645-655 fills the same way), and it is DELIBERATELY NOT decided here: this "
+    "loader's job is to MEASURE and DISCLOSE it (see frozen_spans / n_frozen_decision_cells) so "
+    "the ruling can be made on numbers. So: every frozen row — interior or trailing — is disclosed, "
+    "and a slot with a frozen span is still counted inside n_active_slots, is weight-eligible, and "
+    "is NOT listed in inactive_slots or (for a tail-only slot) partial_slots. Consumers COULD "
+    "previously mistake a frozen price for a live market — an interior span left no trace at all "
+    "(no stale_tail, no partial, covered_rows == n_rows), which is the defect the frozen_spans "
+    "keys close. TRUE LIQUIDATION (close at the last real close, then mask) is PARKED as its own "
+    "task (D30 opt (ii)) — it needs a state-aware forced close in walk_env AND in eval's search "
+    "rollout. Asserted by the PV-conservation leg of "
+    "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py.")
+
+# D30 rider (b): the minute framed loader used to refuse ONLY when EVERY slot was uncovered, so a
+# 4-of-8-inert fixture run exited 0 with a publishable net@21, and the real 2021-01-01..2022-01-01
+# walk-forward fold (50 of 64 slots live) would have run green — reintroducing the exact 64->33
+# breadth failure D29 exists to prevent. The default is a FRACTION of the frame's slots so that one
+# number can serve a 64-slot real panel and be explicitly overridden by a small fixture frame:
+#   * the 861 leg-1 pin carries rows on 64/64 slots  = 1.000 -> PASSES with margin
+#   * the 2021-2022 WF fold carries rows on 50/64    = 0.781 -> REFUSES (needs an explicit override)
+#   * the 8-slot fixture frame is 6/8 by design      = 0.750 -> REFUSES, so the fixture smoke opts
+#     out explicitly (--require-active-slots 0) instead of the default being weakened for everyone
+# 0.9 is the loosest round value that still refuses the 50/64 fold; anything >= 0.79 works, and a
+# value > 1 is read as an ABSOLUTE slot count for an operator who wants to pin the number.
+#
+# READ THIS BEFORE QUOTING "daily-pinned paths are bit-identical" (fix pass 2, planner-accepted
+# remainder MINOR-2). A FRACTION rounds UP, so on any frame with <= 10 slots this default demands
+# ALL of them: ceil(0.9 * 8) = 8 of 8, ceil(0.9 * 10) = 9 of 10. Consequence, stated plainly rather
+# than left to be rediscovered: the SHIPPED 863 canonical daily-pinned fixture invocation — the
+# task864-parity-baseline-hygiene one — now REFUSES at the default, because that frame is 6/8
+# covered by design. It passes only under `--require-active-slots 0`, an argv that does not exist
+# at that baseline tag. So acceptance gate (i)'s "daily-pinned paths bit-identical" holds ONLY
+# under that added flag; it is NOT unconditional parity. The direction is fail-closed (a partly
+# inert panel must be asked for explicitly) and the planner ACCEPTED it, so the default is
+# deliberately NOT weakened here — but no reader should take the parity claim as unqualified.
+REQUIRE_ACTIVE_SLOTS_DEFAULT = 0.9
+
+
+class RequireActiveSlotsError(ValueError, argparse.ArgumentTypeError):
+    """Refusal for an out-of-domain ``--require-active-slots``.
+
+    Subclasses BOTH so the message survives every route: argparse checks
+    ``ArgumentTypeError`` FIRST and prints ``str(exc)`` verbatim (a plain ValueError would be
+    replaced by argparse's generic "invalid ... value: '-1'", i.e. refused but NOT by name), while
+    in-process callers can still catch it as a ValueError."""
+
+
+def parse_require_active_slots(v):
+    """Validate/normalise ``--require-active-slots``. THE one place the domain is defined, used
+    both as the argparse ``type=`` (so the CLI refuses before anything runs) and by
+    ``_guard_active_slots`` (so an in-process caller cannot bypass it).
+
+    DOMAIN: ``0`` (disable) | a FRACTION in (0, 1] | an INTEGRAL slot count >= 1.
+    Everything else is refused BY NAME. Before this validator the guard FAILED OPEN on nonsense:
+    ``-1``, ``-0.0``, ``False``, ``1e-300`` and ``"0"`` all admitted a 50/64 panel while the
+    artifact recorded a floor as though one were in force (``floor = max(1, ...)`` collapses every
+    non-positive or infinitesimal request to "at least 1 active slot"), and ``nan`` / ``inf`` blew
+    up inside ``np.ceil`` as a bare ValueError/OverflowError instead of a named refusal. Returns a
+    float (0.0 == disabled)."""
+    if isinstance(v, bool):
+        raise RequireActiveSlotsError(
+            f"--require-active-slots: got the boolean {v!r}. This is a breadth FLOOR, not a "
+            f"toggle — pass 0 to disable it, a fraction in (0,1], or an integral slot count >= 1.")
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise RequireActiveSlotsError(
+            f"--require-active-slots: {v!r} is not a number. Pass 0 (disable), a fraction in "
+            f"(0,1], or an integral slot count >= 1.")
+    if f != f or f in (float("inf"), float("-inf")):
+        raise RequireActiveSlotsError(
+            f"--require-active-slots: {v!r} is not finite. Pass 0 (disable), a fraction in (0,1], "
+            f"or an integral slot count >= 1.")
+    if f == 0.0:                    # normalises -0.0 too, which is otherwise recorded as "-0.0"
+        return 0.0
+    if f < 0.0:
+        raise RequireActiveSlotsError(
+            f"--require-active-slots: {v!r} is negative. A negative floor is NOT 'disabled' — it "
+            f"used to collapse to 'at least 1 active slot' and pass a 1-of-64 panel while the "
+            f"artifact recorded {v!r} as though a floor were in force. Pass exactly 0 to disable.")
+    if f <= 1.0:
+        if f < 1e-6:
+            raise RequireActiveSlotsError(
+                f"--require-active-slots: {v!r} is a positive fraction so small it cannot refuse "
+                f"anything (it rounds up to a floor of 1 slot on any frame) while recording a "
+                f"floor as though one were in force. Pass exactly 0 to disable the check.")
+        return f
+    if f != float(int(f)):
+        raise RequireActiveSlotsError(
+            f"--require-active-slots: {v!r} is > 1, so it is read as an ABSOLUTE slot count, and a "
+            f"fractional slot count is meaningless. Pass an integer (e.g. 58), or a fraction <= 1.")
+    return f
+
+
+def _resolve_require_active(args):
+    """``--require-active-slots`` off the args namespace, VALIDATED. UNSET (attribute absent, or
+    None) means the shared default, NOT 'disabled' — only an explicit 0 disables the refusal.
+    (``_guard_active_slots`` refuses None outright for exactly this reason: the two functions must
+    not give the same value opposite meanings.)"""
+    v = getattr(args, "require_active_slots", None)
+    return REQUIRE_ACTIVE_SLOTS_DEFAULT if v is None else parse_require_active_slots(v)
+
+
+def _guard_active_slots(coverage, frame_symbols, require_active_slots, start_date, end_date):
+    """D30 rider (b) — fail LOUD on the result-producing path when too many frame slots are wholly
+    inert. ``require_active_slots``: exactly 0 disables; a fraction in (0,1] is a FRACTION of the
+    frame's slots; an integral value > 1 is an absolute slot count; anything else is REFUSED by
+    name (``parse_require_active_slots``). ``None`` is NOT accepted here — it means "unset, use the
+    shared default" at the args level (``_resolve_require_active``), and letting it also mean
+    "disabled" one function over is how a floor silently stops existing. 'Active' is the loader's
+    own definition (a slot with at least one real close in the window, i.e. status != 'inactive');
+    a stale-tail or mid-window-listing slot counts as active because it really traded."""
+    if require_active_slots is None:
+        raise RuntimeError(
+            "_guard_active_slots: require_active_slots is None. None means 'unset => use "
+            "REQUIRE_ACTIVE_SLOTS_DEFAULT' (resolve it with _resolve_require_active), never "
+            "'disabled' — pass an explicit 0 to disable the breadth refusal.")
+    req = parse_require_active_slots(require_active_slots)
+    if req == 0.0:
+        return
+    n_slots = len(frame_symbols)
+    inactive = [c for c in coverage if c["status"] == "inactive"]
+    n_active = n_slots - len(inactive)
+    floor = int(np.ceil(req * n_slots)) if req <= 1.0 else int(np.ceil(req))
+    # FIX PASS 2 — an ABSOLUTE floor above the frame's own slot count used to be CLAMPED
+    # (``min(floor, n_slots)``), so ``--require-active-slots 65`` on a 64-slot frame silently became
+    # 64 and a run that asked for something impossible was graded against a floor it never
+    # requested, with the impossible value recorded verbatim in the artifact. Refuse by name: the
+    # operator asked for a breadth this frame cannot supply at any coverage, which is a
+    # configuration error, not a run to soften. (Fractions are unaffected — ceil(f*n) <= n for
+    # f <= 1 — and are the form every shipped invocation uses.)
+    if req > 1.0 and floor > n_slots:
+        raise RequireActiveSlotsError(
+            f"--require-active-slots {require_active_slots}: that is an ABSOLUTE floor of {floor} "
+            f"active slots, but this frame has only {n_slots} slots, so it can NEVER be satisfied. "
+            f"It used to be clamped to {n_slots} silently — the run then passed a floor it was "
+            f"never asked to enforce while the artifact recorded {require_active_slots}. Pass a "
+            f"value <= {n_slots}, or a fraction in (0,1] of the frame.")
+    floor = max(1, floor)
+    if n_active >= floor:
+        return
+    dead = ", ".join(f"slot {c['slot']} {c['symbol']}" for c in inactive[:12])
+    raise RuntimeError(
+        f"--require-active-slots {require_active_slots}: only {n_active} of {n_slots} frame slots "
+        f"have ANY real price in [{start_date}..{end_date}] ({100.0 * n_active / max(n_slots, 1):.1f}"
+        f"%), below the required floor of {floor} slots. The remaining {len(inactive)} slot(s) are "
+        f"wholly INACTIVE (flat-zero columns, force-HOLD for the entire window), so this run would "
+        f"measure a {n_active}-asset book while its frame, its artifact and every per-cell scalar "
+        f"claim {n_slots} — the 64->33 breadth confound D29 exists to prevent, and it exits 0 with "
+        f"a publishable number unless refused HERE (the all-slots-inactive refusal is not enough). "
+        f"Inactive: {dead}{' ...' if len(inactive) > 12 else ''}. Widen --start/--end, use a frame "
+        f"whose universe is live on this window, or pass --require-active-slots explicitly (0 "
+        f"disables the check; a value <=1 is a fraction of the frame, >1 an absolute slot count) "
+        f"to record that a partly-inert panel is intended.")
+
+
+def load_daily_prices_framed(db_path, start_date, end_date, frame_symbols,
+                             require_active_slots=REQUIRE_ACTIVE_SLOTS_DEFAULT):
     """Fixed-frame daily close matrix: ONE column per recorded frame symbol IN ORDER (no drop,
     no pad-by-cycling — the identity-preserving contrast to ``load_daily_prices``). Zero-coverage
     frame symbols are KEPT as flat-zero columns (the env's price>0 mask renders them inactive).
     Returns (prices_np (T, n_frame), frame_symbols, row_ts int64 (T,), coverage) where
     ``coverage`` lists per-slot status/spans. Fail-loud: missing daily table, an unknown symbol
-    (not in ``assets``), or an empty window / all-slots-inactive (task scope 4)."""
+    (not in ``assets``), or an empty window / all-slots-inactive (task scope 4), PLUS the D30
+    rider (b) breadth refusal (``require_active_slots``).
+
+    FIX PASS — rider (b) applies HERE TOO. It shipped minute-only, so the DAILY pin had no breadth
+    floor at all: a daily-pinned fixture run at 5/8 active slots exited 0 with a full scorecard and
+    without even a ``require_active_slots`` key, while the identical frame on the minute source was
+    refused. The real daily pin is 33/64 = 0.52, and the manifest's own note says flipping the
+    source to daily is a one-word change — so the floor has to hold on both paths or it does not
+    hold. D30's ruling is explicit that the semantics are UNIFORM across both pin paths."""
     if not _daily_table_exists(db_path):
         raise RuntimeError(
             f"--panel-frame-from-checkpoint: no `ohlcv_daily` table in {db_path}. The fixed-frame "
             f"panel reads that table directly; it is absent here.")
     s_ts = _to_epoch(start_date, 0)
     e_ts = _to_epoch(end_date, 9999999999)
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     cur = conn.cursor()
     ph = ",".join("?" * len(frame_symbols))
     rows = cur.execute(
@@ -765,13 +1080,42 @@ def load_daily_prices_framed(db_path, start_date, end_date, frame_symbols):
                              "reason": "zero ohlcv_daily coverage in window",
                              "span": [start_date, end_date]})
         else:
-            first = int(np.argmax(raw_nonzero[:, col]))
+            real_rows = raw_nonzero[:, col]
+            first = int(np.argmax(real_rows))
             entry = {"slot": col, "symbol": sym, "status": "active",
                      "covered_rows": n_nz, "n_rows": n_steps}
             if first > 0:                       # listed mid-window: leading rows had no data
                 entry["status"] = "partial"
                 entry["first_covered_ts"] = int(timestamps[first])
                 entry["leading_inactive_rows"] = first
+            # D30 amendment 4 — DISCLOSURE PARITY, additive only. This loader has always
+            # forward-filled a mid-window delisting to the window end at a frozen price (the loop
+            # below), and under D30 opt (i) that fill is the SANCTIONED semantics on both pin paths,
+            # so the NUMERICS do not move. What was missing is that such a slot appeared in NEITHER
+            # inactive_slots NOR partial_slots while sitting inside n_active_slots and staying
+            # weight-eligible (measured: fixture frame slot 5 FTM/USD, 91 of 181 rows fabricated).
+            # It now discloses on its own axis. Keys are APPENDED, so every pre-existing field of a
+            # daily-pinned artifact keeps its value and its position.
+            last_real = int(np.max(np.nonzero(real_rows)[0]))
+            if last_real < n_steps - 1:
+                entry["stale_tail"] = True
+                entry["last_real_ts"] = int(timestamps[last_real])
+                entry["last_covered_row"] = last_real
+                entry["trailing_stale_rows"] = n_steps - 1 - last_real
+            # Fix pass — INTERIOR frozen spans, uniform on both pin paths. The fill loop below runs
+            # from ``first`` to the END, so post-fill every row >= first carries a price: an
+            # INTERIOR hole is filled by exactly the same rule as a tail but produced NO disclosure
+            # at all (no stale_tail, no partial, and covered_rows silently included it on the minute
+            # twin). Measured and disclosed here; the fill itself is UNCHANGED (no numeric moves).
+            filled_rows = np.arange(n_steps) >= first        # == (prices[:, col] != 0) post-fill
+            spans, n_frozen, n_spans = _frozen_spans(real_rows, filled_rows)
+            entry["real_panel_rows"] = n_nz
+            entry["filled_rows"] = int(filled_rows.sum())
+            entry["n_frozen_rows"] = n_frozen
+            if n_frozen:
+                entry["frozen_spans"] = spans
+                entry["n_frozen_spans"] = n_spans
+                entry["frozen_interior_rows"] = n_frozen - int(entry.get("trailing_stale_rows", 0))
             coverage.append(entry)
     # Fill: forward-fill INTERIOR gaps only (from each slot's first real close onward). Leading
     # pre-coverage rows are LEFT flat-zero — a DELIBERATE divergence from the coverage-ranked
@@ -789,6 +1133,8 @@ def load_daily_prices_framed(db_path, start_date, end_date, frame_symbols):
         for i in range(first_nz + 1, n_steps):          # forward-fill interior gaps post-listing
             if prices[i, col] == 0:
                 prices[i, col] = prices[i - 1, col]
+    # D30 rider (b), fix pass: SAME refusal, SAME default, on the daily pin path too.
+    _guard_active_slots(coverage, frame_symbols, require_active_slots, start_date, end_date)
     return prices, list(frame_symbols), np.asarray(timestamps, dtype=np.int64), coverage
 
 
@@ -798,7 +1144,8 @@ def create_daily_panel_framed(args, frame_symbols):
     Returns (states0, prices_j, env_cfg, row_ts, frame_symbols, coverage). No pad/truncate — the
     frame is exactly n_assets columns by construction (asserted by _load_frame_provenance)."""
     prices_np, symbols, row_ts, coverage = load_daily_prices_framed(
-        args.db, args.start, args.end, frame_symbols)
+        args.db, args.start, args.end, frame_symbols,
+        require_active_slots=_resolve_require_active(args))
     n_assets = args.n_assets
     if prices_np.shape[1] != n_assets:          # defensive: frame length already checked upstream
         raise RuntimeError(
@@ -831,7 +1178,12 @@ def _build_panel_framed(args):
     symbol frame (exact order, one column per slot) and mark zero-coverage slots INACTIVE. Valid
     ONLY with --bar-minutes 1440 (the daily-table rule; fail-loud otherwise). Reports every
     inactive span to stdout AND (via panel_info) into the JSON artifact so a 36/64-live-slot
-    benchmark is impossible to mistake for a 64-live one (task scope 2)."""
+    benchmark is impossible to mistake for a 64-live one (task scope 2).
+
+    TASK_865: --panel-frame-source minute dispatches to the MINUTE sibling below BEFORE any of
+    this runs; the daily branch (the default) is untouched and byte-identical."""
+    if getattr(args, "panel_frame_source", "daily") == "minute":
+        return _build_panel_framed_minute(args)
     if args.bar_minutes != 1440:
         raise RuntimeError(
             f"--panel-frame-from-checkpoint requires --bar-minutes 1440 (got {args.bar_minutes}); "
@@ -845,6 +1197,7 @@ def _build_panel_framed(args):
     prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info = result
     inactive = [c for c in coverage if c["status"] == "inactive"]
     partial = [c for c in coverage if c["status"] == "partial"]
+    stale = [c for c in coverage if c.get("stale_tail")]          # D30 amendment 4 (disclosure)
     inactive_slots = [c["slot"] for c in inactive]
     n_active = args.n_assets - len(inactive_slots)
     # --- stdout report (task scope 2: impossible to mistake 36/64-live for 64-live) ---
@@ -853,6 +1206,10 @@ def _build_panel_framed(args):
           f"({_display_path(args.panel_frame_from_checkpoint)}): {args.n_assets} slots, "
           f"{n_active} ACTIVE / {len(inactive_slots)} INACTIVE (zero coverage) in "
           f"[{args.start}..{args.end}]")
+    print(f"[853] ... of the {n_active} ACTIVE: {len(partial)} PARTIAL (listed mid-window, "
+          f"pre-listing rows flat-zero => force-HOLD) and {len(stale)} STALE-TAIL (delisted "
+          f"mid-window, trailing rows FORWARD-FILLED at a frozen price and still tradeable) — "
+          f"neither is in inactive_slots, and a stale tail is not in partial_slots either")
     if inactive:
         print(f"[853] INACTIVE slots ({len(inactive)}) — no fills/fees, HOLD-only (env price>0 "
               f"active-mask); every span reported:")
@@ -866,14 +1223,52 @@ def _build_panel_framed(args):
         for c in partial:
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} first covered ts "
                   f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows)")
-    if not inactive and not partial:
-        print("[853] all slots fully covered on this window (no inactive/partial spans).")
+    if stale:
+        print(f"[853] STALE-TAIL slots ({len(stale)}) — delisted / migrated mid-window: this "
+              f"loader FORWARD-FILLS the trailing rows at the last real close (the D30-sanctioned "
+              f"semantics: PV-exact, cannot fabricate PnL, a strict fee drag above fee 0), so they "
+              f"remain TRADEABLE at a FROZEN price and stay weight-eligible. Disclosed here "
+              f"because they are in neither inactive_slots nor partial_slots:")
+        for c in stale:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} last real close ts "
+                  f"{c['last_real_ts']} = panel row {c['last_covered_row']} of {c['n_rows'] - 1}; "
+                  f"{c['trailing_stale_rows']} trailing rows forward-filled "
+                  f"({100.0 * c['trailing_stale_rows'] / max(c['n_rows'], 1):.1f}% of the window)")
+    # FIX PASS — the same CELL-level honesty the minute path emits, on the daily pin. An INTERIOR
+    # frozen span was invisible here too (this loader forward-fills interior holes and derived
+    # staleness from the last real row only).
+    warm_d = int(env_cfg_f.window_size)
+    n_dec_d = int(panel_info["n_decisions"])
+    dec_px_d = np.asarray(prices_f[warm_d:warm_d + n_dec_d])
+    n_cells_d = int(n_dec_d * args.n_assets)
+    n_inert_d = int((dec_px_d <= 0).sum())
+    fz_d = frozen_decision_cells(coverage, warm_d, n_dec_d)
+    n_not_real_d = n_inert_d + fz_d["total"]
+    pct_d = lambda n: (100.0 * n / n_cells_d) if n_cells_d else 0.0            # noqa: E731
+    print(f"[853] DECISION GRID ({n_dec_d} x {args.n_assets} = {n_cells_d} cells): "
+          f"{n_inert_d} INERT ({pct_d(n_inert_d):.2f}%, no price => force-HOLD) + "
+          f"{fz_d['total']} FROZEN ({pct_d(fz_d['total']):.2f}%, forward-filled: "
+          f"{fz_d['interior']} INTERIOR + {fz_d['tail']} trailing) => "
+          f"{n_cells_d - n_not_real_d} LIVE ({pct_d(n_cells_d - n_not_real_d):.2f}%); "
+          f"NOT REAL DATA {n_not_real_d} ({pct_d(n_not_real_d):.2f}%)")
+    for r in fz_d["slots"][:12]:
+        print(f"        slot {r['slot']:>3}  {r['symbol']:<16} {r['frozen_decision_cells']:>6} "
+              f"frozen decision cells ({r['interior']} interior + {r['tail']} trailing) across "
+              f"{r['n_frozen_spans']} span(s)")
+    if not inactive and not partial and not stale and not fz_d["slots"]:
+        print("[853] all slots fully covered on this window (no inactive/partial/frozen spans).")
     print("=" * 84)
+    # EMITTED coverage: the same records with an over-long frozen_spans list elided for
+    # readability. Computed AFTER fz_d, which reads the complete in-memory coverage — the split
+    # that fix pass 2 introduced so a display bound can never drive a count.
+    cov_art = coverage_for_artifact(coverage)
+    inactive = [c for c in cov_art if c["status"] == "inactive"]
+    partial = [c for c in cov_art if c["status"] == "partial"]
+    stale = [c for c in cov_art if c.get("stale_tail")]
     panel_info["panel_frame"] = {
         "source": "checkpoint-provenance-fixed-frame (TASK_853)",
         "provenance_path": _display_path(args.panel_frame_from_checkpoint),
-        "provenance_meta": {k: v for k, v in prov.items()
-                            if k not in ("frame_symbols", "symbols")},
+        "provenance_meta": provenance_meta_block(prov, args.panel_frame_from_checkpoint),
         "n_slots": int(args.n_assets),
         "n_active_slots": int(n_active),
         "n_inactive_slots": int(len(inactive_slots)),
@@ -881,10 +1276,789 @@ def _build_panel_framed(args):
         "inactive_slots": list(inactive_slots),
         "inactive_spans": inactive,
         "partial_spans": partial,
-        "coverage": coverage,
+        "coverage": cov_art,
+        # D30 amendment 4 — the NAMED additive stale-tail disclosure fields. Appended LAST so every
+        # key above keeps its value AND its position in a daily-pinned artifact; the daily path's
+        # numerics are unchanged (this loader always forward-filled).
+        "n_stale_tail_slots": int(len(stale)),
+        "stale_tail_slots": [c["slot"] for c in stale],
+        "stale_tail_spans": stale,
+        "stale_tail_rule": STALE_TAIL_RULE,
+        # FIX PASS additive keys, same names/meanings as the minute path (so a consumer reads ONE
+        # schema): the honest frozen accounting incl. INTERIOR spans, and the breadth floor that is
+        # now in force here too — recorded so "no floor applied" is never silence.
+        "n_frozen_slots": fz_d["n_slots"],
+        "frozen_slots": [r["slot"] for r in fz_d["slots"]],
+        "frozen_span_slots": fz_d["slots"],
+        "n_decision_cells": n_cells_d,
+        "n_inert_decision_cells": n_inert_d,
+        "inert_decision_cell_pct": round(pct_d(n_inert_d), 4),
+        "n_frozen_decision_cells": fz_d["total"],
+        "frozen_decision_cell_pct": round(pct_d(fz_d["total"]), 4),
+        "n_frozen_stale_tail_decision_cells": fz_d["tail"],
+        "frozen_stale_tail_decision_cell_pct": round(pct_d(fz_d["tail"]), 4),
+        "n_frozen_interior_decision_cells": fz_d["interior"],
+        "frozen_interior_decision_cell_pct": round(pct_d(fz_d["interior"]), 4),
+        "n_not_real_decision_cells": n_not_real_d,
+        "not_real_decision_cell_pct": round(pct_d(n_not_real_d), 4),
+        "n_live_decision_cells": n_cells_d - n_not_real_d,
+        "live_decision_cell_pct": round(pct_d(n_cells_d - n_not_real_d), 4),
+        # Elision of a slot's span LIST is disclosed; the counts above are never elided.
+        "frozen_spans_display_max": FROZEN_SPANS_ARTIFACT_MAX,
+        "n_slots_with_elided_frozen_span_list": sum(
+            1 for c in cov_art if c.get("frozen_spans_truncated")),
+        "require_active_slots": _resolve_require_active(args),
     }
     # Carried to the rollout: force these slots to HOLD on the 848 policy-argmax replay (which
     # bypasses the env mask); the search operator already masks them. See evaluate_checkpoint.
+    panel_info["inactive_slots"] = list(inactive_slots)
+    return prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info
+
+
+# =============================================================================
+# TASK_865 — the SAME fixed-frame mechanic on the MINUTE source (D29 ruled opt (a))
+# =============================================================================
+# 853/863 pin the frame through ``ohlcv_daily`` ONLY. On the 861 real leg that substitutes two
+# confounds for the one D28 removed: a SOURCE confound (D20: daily is within-panel grading only)
+# and a 64->33 BREADTH confound (the daily table covers 33/64 frame slots on the leg-1 window,
+# the minute table 62/64). This section adds the minute sibling of the 853 loader — the SAME
+# semantics, the SAME fail-louds, one column per recorded slot in the recorded order — reading
+# the minute ``ohlcv`` table with the canon ``[::bar_minutes]`` stride (env_factory.py:409; the
+# minute env itself is built by ``create_jax_env_historical``, env_factory.py:321, whose universe
+# derivation is the ``ORDER BY COUNT(*) DESC LIMIT`` block at vectorbt_env.py:578-596).
+#
+# FLAG-GATED: --panel-frame-source minute (default 'daily' = the shipped 853 path, whose NUMERICS
+# are untouched). Selection is recorded in the artifact's panel_frame block; the DAILY block keeps
+# every field 853 shipped, at its shipped value (its ABSENCE of ``panel_frame_source`` still means
+# daily) and gains only D30 amendment 4's additive stale-tail disclosure keys.
+#
+# THE STALE TAIL (D30, ruled 2026-07-30, opt (i)). A slot whose last REAL close falls before the end
+# of the window (delisting / ticker migration) is NOT zero-coverage, so the 853 INACTIVE rule does
+# not see it. Its trailing rows are FORWARD-FILLED at that last real close — identical to what the
+# shipped daily loader has always done, now uniform across both pin paths — and stay TRADEABLE on a
+# constant series. The rejected alternative (zero the tail and let ``price_valid`` force-HOLD it) was
+# MEASURED to FABRICATE PnL: force-HOLD gates OPENING, not VALUATION, so a position open at the
+# boundary is marked against price 0 and frozen there — 75,002.50 / 124,997.50 for a long/short book
+# where any book must end at exactly 100,000.00, i.e. -/+25% on 1 of 4 slots. On the 861 leg-1 window
+# two slots are stale-tailed (the FTM->S / MATIC->POL migrations, both dead in the WHOLE table after
+# 2025-03-31, 186 of 1734 rows each), which under vector_weight_max 4.0 / w_unit 1/64 put up to
+# ~12.5% of PV of fabricated, sign-indeterminate PnL into the exact scalar graded against > +0.839.
+# A forward-filled constant tail cannot do that (a round trip nets exactly 0 at fee 0 and costs fees
+# above it), so it is the safe direction; it is nevertheless a FROZEN price, so it is DISCLOSED —
+# dual-disclosed (stdout + artifact) on both pin paths and ASSERTED in the fixture smoke, alongside
+# the ground-truth PV-conservation leg that discriminates the options. TRUE LIQUIDATION is PARKED
+# (D30 opt (ii)). See ``STALE_TAIL_RULE`` / ``_ffill_interior_only``.
+# NOTE, deliberately NOT done: ``POL/USD`` exists in the DB (id 763, 2023-12-21..2025-09-30) and
+# ``S/USD`` does not. Splicing a successor ticker into a predecessor's slot is a UNIVERSE change
+# needing a planner ruling on cross-ticker splice provenance — out of scope here; reported only.
+
+def _minute_table_exists(db_path):
+    """True iff ``db_path`` carries a minute ``ohlcv`` table. Opened through ``_ro_connect``, so a
+    missing/typo'd/symlinked ``--db`` is REFUSED rather than silently created as a 0-byte database
+    (which a plain read-write handle does, turning "no such file" into "no such table")."""
+    conn = _ro_connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv'").fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def _minute_coverage_ids(db_path, asset_ids, s_ts, e_ts):
+    """Subset of ``asset_ids`` with >=1 real minute ``ohlcv`` close in [s_ts, e_ts]. The minute
+    twin of ``_daily_coverage_ids`` (same shape, same ``close IS NOT NULL AND close != 0``
+    hardening — row existence alone is not coverage). Own connection, opened STRICTLY read-only
+    (``_ro_connect`` => ``file:...?mode=ro``): the statement is a SELECT, but a read-write handle
+    would still be free to replay a hot journal into the 24GB source of record on the first read."""
+    if not asset_ids:
+        return set()
+    conn = _ro_connect(db_path)
+    try:
+        ph = ",".join("?" * len(asset_ids))
+        rows = conn.execute(
+            f"""SELECT asset_id FROM ohlcv WHERE asset_id IN ({ph})
+                AND timestamp >= ? AND timestamp <= ?
+                AND close IS NOT NULL AND close != 0 GROUP BY asset_id""",
+            (*asset_ids, s_ts, e_ts)).fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
+
+
+def _ffill_interior_only(col):
+    """THE fill rule for BOTH framed loaders (D30 opt (i), ruled 2026-07-30): forward-fill a 1-D
+    price column from its FIRST real value ONWARD, all the way to the end of the window, leaving
+    ONLY the leading pre-listing region flat-zero. Vectorised because the minute axis is millions
+    of rows deep; semantically identical to ``load_daily_prices_framed``'s in-place loop, which is
+    the rule the SHIPPED daily pin has always applied. Returns a new array.
+
+    HEAD (flat-zero, unchanged — the 853 leak fix): a slot's pre-listing rows carry no real price
+    and must read INACTIVE, so ``price_valid = price > 0`` force-HOLDs them under every operator.
+    A back-filled head would be a tradeable fabricated pre-listing region, i.e. a leak.
+
+    TAIL (forward-filled, D30 opt (i)): a slot whose last real close precedes the window end
+    (delisting / ticker migration) keeps that close to the end. The alternative — zeroing the tail
+    — was MEASURED to fabricate PnL: force-HOLD gates OPENING, not VALUATION
+    (jax_trading_env.py:2106-2115 vs :246-258), so a position open at the boundary is marked
+    against price 0 (a long wiped, a short handed a 100% windfall) and then frozen there. On flat
+    prices at fee 0, where any book must end at exactly the initial cash, zeroing gives
+    75,002.50 / 124,997.50 on a long/short book (+/-25% on 1 of 4 slots) while forward-filling is
+    PV-exact to the cent. A TRAILING constant span cannot fabricate PnL — a round trip on it nets
+    exactly 0 at fee 0 and is a strict fee drag above it, i.e. biased AGAINST the bar being graded.
+
+    INTERIOR (forward-filled TOO — read this before quoting the paragraph above): this function
+    fills from the first real value to the END, so a hole in the MIDDLE of a slot's history is
+    filled by exactly the same rule as a tail, and the "cannot fabricate PnL" argument DOES NOT
+    carry over to it: the span is constant but it RE-ANCHORS, so the book can be opened at a price
+    no market offered and the whole gap move arrives in one bar (MEASURED re-anchor jumps on the
+    861 leg-1 window: ETHBTC +64.52%, BTCCAD +33.88%, BTCGBP +32.69%, BTCCHF +24.29%, /USDTEUR
+    -7.76%; 11 of 64 frame slots are near-empty 2025-03-31..2025-10-01 in many multi-day sub-gaps,
+    2,013 frozen interior decision cells = 1.88% of the grid). Fix pass: those spans used to be
+    INVISIBLE — staleness was derived from the last real row only, so a slot that resumed before
+    the window end got no stale_tail, no partial, no inactive, and read covered_rows == n_rows.
+    They are now MEASURED and DISCLOSED per slot as ``frozen_spans`` and counted into the
+    cell-honesty totals. What to DO about them (mask / refuse / accept) is a D30-class semantics
+    ruling, is out of this task's scope, and is deliberately NOT decided here — the fill rule
+    below is UNCHANGED, so no numeric moves; only the disclosure is new.
+
+    TRUE LIQUIDATION (close at the last real close, then mask) is the economically honest third
+    option; it needs a state-aware forced close in ``walk_env`` AND in eval's search rollout and is
+    PARKED as its own task (D30 opt (ii)). Asserted by the PV-conservation leg in
+    experiments/865_minute_frame_pin/smoke_minute_frame_pin.py."""
+    nz = col != 0
+    if not nz.any():
+        return col.copy()                                  # fully-inactive slot: stays flat-zero
+    idx = np.where(nz, np.arange(col.shape[0], dtype=np.int64), 0)
+    np.maximum.accumulate(idx, out=idx)
+    out = col[idx]
+    out[:int(np.argmax(nz))] = 0.0                         # leading pre-listing rows stay ZERO
+    return out
+
+
+# How many frozen spans a single slot may show in an EMITTED ARTIFACT before the list is elided.
+# A DISPLAY bound only (see ``coverage_for_artifact``): a slot can carry hundreds of multi-day
+# sub-gaps and the JSON must stay readable. It is deliberately NOT applied to the in-memory
+# coverage the cell accounting reads — see the fix-pass note on ``frozen_decision_cells``.
+FROZEN_SPANS_ARTIFACT_MAX = 64
+
+
+def _frozen_spans(real_rows, filled_rows):
+    """Contiguous PANEL-ROW ranges ``[first, last]`` where the panel carries a price that is NOT
+    real data for that slot — i.e. ``filled AND NOT real``. Fix pass: THE honest definition of
+    "not real data at this (row, slot)" is *the panel row does not sample a real close for that
+    slot*, NOT "the row is past the slot's last real close". The second definition is blind to
+    every INTERIOR hole, and interior holes are the majority of the frozen cells on both the real
+    leg-1 window (2,013 cells = 1.88%, invisible before this) and the fixture (101 cells = 25.25%
+    of the smoke grid, while the banner claimed 73.25% live).
+
+    Covers head/interior/tail uniformly: a leading pre-listing row is ``NOT filled`` (flat-zero,
+    price_valid force-HOLDs it) so it is INERT, not frozen — the two categories are disjoint and
+    together account for every non-real cell. Returns ``(spans, n_frozen_rows, n_spans)``.
+
+    FIX PASS 2 — the returned span list is COMPLETE. It used to be truncated to ``max_spans=64``
+    here, i.e. AT THE SOURCE, and ``frozen_decision_cells`` then summed that truncated list: on a
+    2-slot synthetic minute panel with one slot dark on every other bar the artifact recorded
+    ``n_frozen_rows 200`` (true) beside ``n_frozen_decision_cells 34`` of a true 170 and
+    ``live_decision_cell_pct 95.01%`` of a true 75.07%, exit 0, with the loader's own
+    ``coverage[slot].n_frozen_rows`` contradicting the total in the same file. Truncation is now a
+    pure DISPLAY transform applied once, at artifact-emission time (``coverage_for_artifact``), and
+    handing a truncated list to the cell accounting is a hard STOP."""
+    frozen = np.asarray(filled_rows, dtype=bool) & ~np.asarray(real_rows, dtype=bool)
+    n = int(frozen.sum())
+    if n == 0:
+        return [], 0, 0
+    # run-length decode: boundaries where the boolean flips
+    idx = np.flatnonzero(frozen)
+    breaks = np.flatnonzero(np.diff(idx) > 1)
+    starts = np.concatenate(([idx[0]], idx[breaks + 1]))
+    ends = np.concatenate((idx[breaks], [idx[-1]]))
+    spans = [[int(a), int(b)] for a, b in zip(starts, ends)]
+    return spans, n, len(spans)
+
+
+def coverage_for_artifact(coverage, max_spans=FROZEN_SPANS_ARTIFACT_MAX):
+    """DISPLAY copy of a loader ``coverage`` list for EMISSION into a JSON artifact: identical in
+    every field except that a slot's ``frozen_spans`` list is elided to the first ``max_spans``
+    entries, with the elision named (``frozen_spans_truncated`` / ``frozen_spans_shown``).
+
+    Why this exists as a separate step (fix pass 2): the truncation used to happen inside
+    ``_frozen_spans``, so the TRUNCATED list was the only one that ever existed and every consumer
+    — including the cell accounting — silently under-counted. Splitting it means exactly one list
+    is short, it is the one nobody computes from, and ``frozen_decision_cells`` REFUSES it by name
+    if it is ever fed back in. Entries are shallow copies; nothing else is rewritten, so a coverage
+    list with no over-long slot round-trips field-for-field (verified on the fixture: no slot on
+    either pin path reaches 64 spans, so no artifact byte moves)."""
+    out = []
+    for c in coverage:
+        spans = c.get("frozen_spans")
+        if not spans or len(spans) <= int(max_spans):
+            out.append(c)
+            continue
+        d = dict(c)
+        d["frozen_spans"] = [list(s) for s in spans[:int(max_spans)]]
+        d["frozen_spans_shown"] = int(max_spans)
+        d["frozen_spans_truncated"] = True
+        d["frozen_spans_truncation_note"] = (
+            f"DISPLAY ONLY: {len(spans)} frozen spans on this slot, first {int(max_spans)} shown. "
+            f"n_frozen_rows / n_frozen_spans and every cell count in this artifact are computed "
+            f"from the COMPLETE span list, never from this one. Recomputing cell counts from the "
+            f"list below is a hard STOP in eval_vector.frozen_decision_cells.")
+        out.append(d)
+    return out
+
+
+def _real_bar_mask(raw_nz, n_steps, step):
+    """(n_steps,) bool — did this slot print a REAL close anywhere inside panel row r's BAR?
+
+    THE definition of "real data at this (panel row, slot)", and the one load-bearing judgement in
+    the whole frozen-span fix. Panel row r is the ``[::step]`` sample at 1-min index ``r*step``, so
+    the bar it stands for is the ``step`` minutes ``((r-1)*step, r*step]`` (row 0 is the single
+    minute 0). If the slot printed anywhere in that window, the panel's value IS this bar's market
+    data. If it printed nothing in the WHOLE bar, the value is carried over from an earlier bar and
+    is FROZEN.
+
+    Deliberately NOT ``raw_nz[::step]`` ("did the slot print at the exact sampled minute"), which
+    is the obvious reading and is WRONG on real data: minute bars only exist where a trade
+    happened, so on ``trading_data.db`` the exact-minute rule marks 51.22% of the 861 leg-1
+    decision grid "frozen" (40.34% live) — it is measuring sparsity, not staleness. The bar rule
+    gives 2.22% frozen / 89.33% live on the same grid, and reproduces the panel's independently
+    measured 2,013 interior cells (1.88%) and its exact list of 11 near-empty slots. The
+    exact-minute count is still recorded, as a separate DIAGNOSTIC
+    (``n_no_print_at_sampled_minute``), because it measures something real about the canon
+    ``[::bar_minutes]`` operator — it samples ONE MINUTE rather than aggregating the bar — it just
+    is not fabrication."""
+    if step <= 1:
+        return np.asarray(raw_nz, dtype=bool)[:n_steps]
+    nz = np.asarray(raw_nz, dtype=bool)
+    n_full = nz.shape[0]
+    cs = np.concatenate(([0], np.cumsum(nz, dtype=np.int64)))         # cs[i] = prints in [0, i)
+    r = np.arange(n_steps, dtype=np.int64)
+    hi = np.minimum(r * step, n_full - 1)
+    lo = np.where(r == 0, 0, (r - 1) * step + 1)
+    return (cs[hi + 1] - cs[lo]) > 0
+
+
+def frozen_decision_cells(coverage, warm, n_decisions):
+    """Fix pass — CELL-LEVEL frozen accounting over the DECISION grid, from the per-slot
+    ``frozen_spans`` the framed loaders now record. Shared by both runners so the banner, the
+    artifact and the smoke gate cannot drift apart.
+
+    Returns ``{"total", "interior", "tail", "slots", "n_slots"}``, counting only panel rows inside
+    ``[warm, warm + n_decisions)`` (the rows an operator actually decides on). A cell is TAIL when
+    the slot is flagged ``stale_tail`` AND the cell's own panel row is past that slot's
+    ``last_covered_row``, INTERIOR otherwise — the distinction matters because only the trailing
+    case carries the "a constant span cannot fabricate PnL" argument (an interior span re-anchors;
+    see STALE_TAIL_RULE).
+
+    The old accounting derived the frozen count from ``last_covered_row`` alone, which is blind to
+    every interior hole by construction: MEASURED 2,013 cells (1.88% of the grid) missing on the
+    861 leg-1 window and 101 cells (25.25%) missing on the fixture smoke grid, where the banner
+    consequently claimed 73.25% live against a measured 48.00%.
+
+    FIX PASS 2, two defects, both measured:
+      * INTERIOR-vs-TRAILING was decided PER SPAN against ``last_dec_row``
+        (``stale_tail and b >= last_dec_row``), i.e. against the END OF THE GRADED WINDOW rather
+        than against the slot's own last real row. Shorten the grid with ``--max-decisions`` (a
+        first-class manifest window key, scorecard.py:959-960) so that it ends INSIDE an interior
+        span and that span is reclassified wholesale as trailing: on a synthetic slot with an
+        interior hole on rows 100..200 that RE-ANCHORS +50% and a delisting after row 280, the full
+        grid reads ``total 221 / INTERIOR 101 / TRAILING 120`` and the same panel at 91 decisions
+        reads ``total 51 / INTERIOR 0 / TRAILING 51`` — the banner prints "0 INTERIOR (a hole that
+        RE-ANCHORS: it CAN fabricate PnL)" over 51 of exactly those cells, silencing the one axis
+        DECISIONS D31 exists to expose. Classification is now PER CELL against the slot's own
+        ``last_covered_row``, so it cannot depend on where the graded window is cut.
+      * the count was summed over ``c["frozen_spans"]``, which used to arrive pre-truncated to 64
+        entries. The list is complete now; a SHORT list is refused by name rather than quietly
+        under-counted (an artifact's ``coverage`` block is display-elided, so this is reachable
+        from a consumer that recomputes cells from a written artifact)."""
+    lo, hi = int(warm), int(warm) + int(n_decisions)          # [lo, hi)
+    last_dec_row = hi - 1
+    out = {"total": 0, "interior": 0, "tail": 0, "slots": [], "n_slots": 0}
+    for c in coverage:
+        spans = c.get("frozen_spans") or []
+        if not spans:
+            continue
+        # HARD STOP: never count cells off a display-elided span list. ``n_frozen_spans`` is the
+        # loader's true span count; if the list is shorter, the caller is holding
+        # ``coverage_for_artifact`` output (or an artifact read back off disk) and every total
+        # derived from it would be silently low while the artifact's own n_frozen_rows contradicts
+        # it. Refuse instead of reporting a number that looks fine.
+        n_true_spans = int(c.get("n_frozen_spans", len(spans)))
+        if n_true_spans > len(spans) or c.get("frozen_spans_truncated"):
+            raise RuntimeError(
+                f"frozen_decision_cells: slot {c.get('slot')} {c.get('symbol')!r} carries "
+                f"{n_true_spans} frozen spans but only {len(spans)} are present — this is a "
+                f"DISPLAY-elided coverage entry (coverage_for_artifact / a coverage block read back "
+                f"out of an emitted artifact). Counting decision cells from it under-reports the "
+                f"frozen total and inflates live_decision_cell_pct while the SAME record's "
+                f"n_frozen_rows={c.get('n_frozen_rows')} contradicts it. Pass the loader's "
+                f"in-memory coverage (complete spans) instead.")
+        # A frozen span is by construction a run of NON-real rows and ``last_covered_row`` is the
+        # slot's last REAL row, so a span never straddles it — but count per CELL anyway, so the
+        # classification stays correct if the span representation ever changes.
+        lcr = None
+        if c.get("stale_tail"):
+            if "last_covered_row" not in c:
+                raise RuntimeError(
+                    f"frozen_decision_cells: slot {c.get('slot')} {c.get('symbol')!r} is flagged "
+                    f"stale_tail but carries no last_covered_row, so its frozen cells cannot be "
+                    f"split into INTERIOR (can fabricate PnL) and TRAILING (cannot). Refusing to "
+                    f"guess — both framed loaders record last_covered_row whenever stale_tail is "
+                    f"set.")
+            lcr = int(c["last_covered_row"])
+        tot = it = tl = 0
+        for a, b in spans:
+            a_c, b_c = max(int(a), lo), min(int(b), last_dec_row)
+            if b_c < a_c:
+                continue
+            n = b_c - a_c + 1
+            tot += n
+            n_tail = 0 if lcr is None else max(0, b_c - max(a_c - 1, lcr))
+            tl += n_tail
+            it += n - n_tail
+        if not tot:
+            continue
+        out["total"] += tot
+        out["interior"] += it
+        out["tail"] += tl
+        out["slots"].append({"slot": c["slot"], "symbol": c["symbol"], "frozen_decision_cells": tot,
+                             "interior": it, "tail": tl,
+                             "n_frozen_spans": n_true_spans,
+                             # DISPLAY elision of THIS slot's span list in the emitted artifact —
+                             # the counts above are always off the complete list.
+                             "frozen_spans_truncated": n_true_spans > FROZEN_SPANS_ARTIFACT_MAX,
+                             "no_real_panel_rows": bool(c.get("no_real_panel_rows"))})
+    out["slots"].sort(key=lambda r: -r["frozen_decision_cells"])
+    out["n_slots"] = len(out["slots"])
+    return out
+
+
+def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_minutes,
+                              require_active_slots=REQUIRE_ACTIVE_SLOTS_DEFAULT):
+    """Fixed-frame MINUTE close matrix: ONE column per recorded frame symbol IN ORDER, read from
+    the minute ``ohlcv`` table and strided ``[::bar_minutes]`` exactly as the canon minute path
+    does (env_factory.py:409 — fill FIRST at 1-min resolution, stride SECOND; the reverse order
+    would ffill from the previous STRIDED row and produce a different panel).
+
+    The minute twin of ``load_daily_prices_framed``: no drop, no pad-by-cycling, zero-coverage
+    frame symbols KEPT as flat-zero columns (the env's price>0 mask renders them inactive), the
+    same fill rule (``_ffill_interior_only``: flat-zero head, forward-filled tail — D30 opt (i))
+    and the same fail-louds (missing table, unknown symbol, empty window, all-slots-inactive),
+    PLUS the D30 rider (b) breadth refusal (``require_active_slots``).
+
+    Returns (prices_np (T, n_frame) float32, frame_symbols, row_ts int64 (T,), coverage)."""
+    if int(bar_minutes) < 1:
+        raise RuntimeError(
+            f"--panel-frame-source minute: --bar-minutes must be >= 1 (got {bar_minutes}); the "
+            f"stride is a row subsample of the 1-min ohlcv table.")
+    if not _minute_table_exists(db_path):
+        raise RuntimeError(
+            f"--panel-frame-source minute: no `ohlcv` (minute) table in {db_path}. The minute "
+            f"fixed-frame panel reads that table directly; it is absent here. Use the default "
+            f"--panel-frame-source daily, or point --db at a DB that carries the minute table.")
+    s_ts = _to_epoch(start_date, 0)
+    e_ts = _to_epoch(end_date, 9999999999)
+    conn = _ro_connect(db_path)
+    cur = conn.cursor()
+    ph = ",".join("?" * len(frame_symbols))
+    rows = cur.execute(
+        f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})",
+        frame_symbols).fetchall()
+    sym_to_id = {r[1]: r[0] for r in rows}
+    unknown = [s for s in frame_symbols if s not in sym_to_id]
+    if unknown:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-source minute: {len(unknown)} recorded frame symbol(s) are not in "
+            f"the `assets` table of {db_path} (unknown symbols — the frame cannot be dropped or "
+            f"reordered to skip them without scrambling slot identity): "
+            f"{unknown[:10]}{' ...' if len(unknown) > 10 else ''}")
+    # One asset_id per slot, in recorded frame order (slot k IS asset k). NOTE the contrast with
+    # VectorBTTradingEnv._load_database_prices' specific_symbols branch, which DROPS a symbol the
+    # DB does not know with a logging.warning — that silently shortens and re-indexes the panel,
+    # the exact failure a frame pin exists to refuse.
+    asset_ids = [sym_to_id[s] for s in frame_symbols]
+    covered_ids = _minute_coverage_ids(db_path, asset_ids, s_ts, e_ts)
+    covered_ids_ordered = [aid for aid in asset_ids if aid in covered_ids]
+    if not covered_ids_ordered:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-source minute: EVERY slot in the recorded frame has ZERO minute "
+            f"`ohlcv` coverage in [{start_date}..{end_date}] — the panel would be entirely "
+            f"inactive (all HOLD). Nothing to evaluate; widen --start/--end or check the frame.")
+    # D30 rider (b), EARLY: zero-coverage is already known here, before the ~60M-row stream on a
+    # real window, so a doomed run refuses in seconds instead of after a multi-minute panel build.
+    # The authoritative check runs again on the FINAL coverage report below (which can only find
+    # MORE inactive slots — the rare "no real close reaches a strided panel row" case).
+    try:
+        _guard_active_slots(
+            [{"slot": i, "symbol": s,
+              "status": "active" if asset_ids[i] in covered_ids else "inactive"}
+             for i, s in enumerate(frame_symbols)],
+            frame_symbols, require_active_slots, start_date, end_date)
+    except Exception:
+        # NOT just RuntimeError: the guard also raises RequireActiveSlotsError (a ValueError) for a
+        # malformed or unsatisfiable floor, and that used to leak this connection.
+        conn.close()
+        raise
+    # Row axis: DISTINCT minute timestamps over the COVERED slots (the canon minute loader's axis
+    # query with the frame's covered ids; uncovered slots contribute no rows anyway).
+    phc = ",".join("?" * len(covered_ids_ordered))
+    timestamps = [r[0] for r in cur.execute(
+        f"""SELECT DISTINCT timestamp FROM ohlcv
+            WHERE asset_id IN ({phc}) AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp""",
+        (*covered_ids_ordered, s_ts, e_ts)).fetchall()]
+    if not timestamps:
+        conn.close()
+        raise RuntimeError(
+            f"--panel-frame-source minute: the minute `ohlcv` table has no rows for the frame in "
+            f"[{start_date}..{end_date}] (empty window). Widen --start/--end.")
+    ts_to_idx = {ts: i for i, ts in enumerate(timestamps)}
+    id_to_col = {aid: i for i, aid in enumerate(asset_ids)}     # slot == frame position
+    n_full = len(timestamps)
+    raw = np.zeros((n_full, len(frame_symbols)), dtype=np.float32)
+    # Streamed (no fetchall): the real leg's window is ~60M minute rows and materialising them as
+    # a Python list would cost tens of GB. Same rows, same values, bounded memory.
+    for asset_id, ts, close in cur.execute(
+        f"""SELECT asset_id, timestamp, close FROM ohlcv
+            WHERE asset_id IN ({phc}) AND timestamp >= ? AND timestamp <= ?""",
+        (*covered_ids_ordered, s_ts, e_ts)):
+        i = ts_to_idx.get(ts)
+        c = id_to_col.get(asset_id)
+        if i is not None and c is not None and close:
+            raw[i, c] = close
+    conn.close()
+    step = int(bar_minutes) if int(bar_minutes) > 1 else 1
+    n_steps = len(range(0, n_full, step))
+    prices = np.zeros((n_steps, len(frame_symbols)), dtype=np.float32)
+    coverage = []
+    for col, sym in enumerate(frame_symbols):
+        raw_col = raw[:, col]
+        raw_nz = raw_col != 0
+        n_real = int(raw_nz.sum())
+        prices[:, col] = _ffill_interior_only(raw_col)[::step]    # fill THEN stride (canon order)
+        panel_nz = prices[:, col] != 0
+        aid = asset_ids[col]
+        if aid not in covered_ids or not panel_nz.any():
+            # Zero minute coverage in the window (or no real close early enough to reach a strided
+            # row): flat-zero column -> INACTIVE for the whole window, exactly like 853's daily.
+            coverage.append({"slot": col, "symbol": sym, "status": "inactive",
+                             "reason": ("zero minute ohlcv coverage in window"
+                                        if aid not in covered_ids else
+                                        "no real minute close reaches a strided panel row"),
+                             "span": [start_date, end_date],
+                             "real_minute_rows": n_real})
+            continue
+        first = int(np.argmax(panel_nz))
+        last_real_full = int(np.max(np.nonzero(raw_nz)[0]))
+        # Fix pass — REAL vs FILLED at PANEL resolution. ``_real_bar_mask`` is the honest "did this
+        # slot print anywhere inside this panel row's BAR" mask (see its docstring for why the
+        # exact-minute reading is wrong on real data), and it is the basis for every not-real
+        # accounting below. Two defects it closes:
+        #   * ``covered_rows`` used to be ``panel_nz.sum()`` = the FILLED count, which on this path
+        #     is DEGENERATE (== n_rows for every active slot) while the daily twin's identically
+        #     named field counts REAL rows. Same key, opposite meaning, one of them useless.
+        #   * a slot can have ZERO real PANEL rows and still be fully priced by the fill (every real
+        #     close lands outside every strided bar). It used to read covered_rows == n_rows and
+        #     count ACTIVE toward the breadth guard with 100% fabricated cells and no disclosure.
+        real_panel = _real_bar_mask(raw_nz, n_steps, step)
+        n_real_panel = int(real_panel.sum())
+        # DIAGNOSTIC, not a frozen count: rows whose exact sampled minute carries no print. Normal
+        # on sparse minute data (the canon [::bar_minutes] operator samples one minute, it does not
+        # aggregate the bar) — recorded so the distinction is visible instead of assumed.
+        n_no_print_at_sampled_minute = int(n_steps - raw_nz[::step].sum())
+        entry = {"slot": col, "symbol": sym, "status": "active",
+                 # REAL panel rows on BOTH pin paths now (was the filled count here)
+                 "covered_rows": n_real_panel, "n_rows": n_steps,
+                 "real_panel_rows": n_real_panel,
+                 "filled_rows": int(panel_nz.sum()),
+                 "no_print_at_sampled_minute_rows": n_no_print_at_sampled_minute,
+                 "real_minute_rows": n_real,
+                 "first_real_ts": int(timestamps[int(np.argmax(raw_nz))]),
+                 "last_real_ts": int(timestamps[last_real_full]),
+                 # kept under the 853 name too: the last row this slot has a real price on
+                 "last_covered_ts": int(timestamps[last_real_full])}
+        if first > 0:                       # listed mid-window: leading rows had no real price
+            entry["status"] = "partial"
+            entry["first_covered_ts"] = int(timestamps[first * step])
+            entry["leading_inactive_rows"] = first
+        # STALE TAIL (TASK_865 + D30 opt (i)): the slot's real data STOPS before the window end
+        # (delisting / ticker migration). Its trailing panel rows are FORWARD-FILLED at the last
+        # real close — the same rule the shipped daily pin has always applied, and the only one
+        # measured PV-exact (see _ffill_interior_only) — so they stay TRADEABLE on a constant
+        # series rather than being marked against price 0. They are therefore NOT force-HOLD and
+        # NOT 'partial' (every row carries a price); they are disclosed on their OWN axis
+        # (stale_tail / stale_tail_slots / stale_tail_spans) because the price is frozen, not live.
+        # Fix pass: ``last_covered_row`` is derived from the STRIDED panel's REAL rows, not from
+        # ``last_real_full // step``. That old expression names the panel row at-or-before the last
+        # 1-min close, which need NOT itself sample a real close — so it could name a row whose
+        # price is fabricated, and on a slot with zero real panel rows it named a row before the
+        # column's first priced row entirely.
+        if n_real_panel:
+            last_real_row = int(np.max(np.nonzero(real_panel)[0]))
+            entry["last_covered_row"] = last_real_row
+        else:
+            # ZERO real panel rows: every priced cell in this column is fabricated. Not silently
+            # accepted — named here, printed by the banner, and counted in full into the frozen
+            # cell totals (so it cannot pass the cell-honesty gate unnoticed). Deliberately NOT
+            # reclassified as inactive: that would change the breadth guard's arithmetic, which is
+            # a semantics change, not a disclosure fix.
+            # DEFENSIVE, not a live case: under the bar rule a slot whose first print is early
+            # enough to make the column filled necessarily lands that print inside some bar, so
+            # this branch is unreachable via the current mask (it WAS reachable under the
+            # exact-minute reading, where a slot could miss every sampled minute). Kept so the
+            # invariant "every priced cell is accounted for" holds by construction rather than by
+            # argument, and so a future mask change cannot reintroduce the silent version.
+            last_real_row = -1
+            entry["no_real_panel_rows"] = True
+            entry["real_panel_rows_note"] = (
+                f"every real minute close for this slot falls BETWEEN strided panel rows at "
+                f"[::{step}], so no panel row samples real data: all {int(panel_nz.sum())} priced "
+                f"rows are forward-filled. Counted ACTIVE by the loader's coverage definition "
+                f"(>=1 real minute close in the window) and 100% frozen at cell level.")
+        trailing = n_steps - 1 - last_real_row if last_real_row >= 0 else 0
+        if trailing > 0:
+            entry["stale_tail"] = True
+            entry["trailing_stale_rows"] = trailing
+        # FROZEN SPANS (fix pass, the BLOCKER): every panel row that carries a price this slot never
+        # actually printed — interior holes INCLUDED. Staleness used to be derived from the last real
+        # row alone, so a slot that RESUMED before the window end was invisible on every axis.
+        spans, n_frozen, n_spans = _frozen_spans(real_panel, panel_nz)
+        entry["n_frozen_rows"] = n_frozen
+        if n_frozen:
+            entry["frozen_spans"] = spans
+            entry["n_frozen_spans"] = n_spans
+            entry["frozen_interior_rows"] = n_frozen - trailing
+        coverage.append(entry)
+    _guard_active_slots(coverage, frame_symbols, require_active_slots, start_date, end_date)
+    return prices, list(frame_symbols), np.asarray(timestamps[::step], dtype=np.int64), coverage
+
+
+def create_minute_panel_framed(args, frame_symbols):
+    """Minute analogue of ``create_daily_panel_framed``: load the framed minute closes (one column
+    per recorded slot, zero-coverage columns flat-zero), build the SAME EnvConfig
+    ``create_jax_env_historical`` would have built for these args, reset. Returns
+    (states0, prices_j, env_cfg, row_ts, frame_symbols, coverage)."""
+    prices_np, symbols, row_ts, coverage = load_minute_prices_framed(
+        args.db, args.start, args.end, frame_symbols, args.bar_minutes,
+        require_active_slots=_resolve_require_active(args))
+    n_assets = args.n_assets
+    if prices_np.shape[1] != n_assets:          # defensive: frame length already checked upstream
+        raise RuntimeError(
+            f"--panel-frame-source minute: framed panel has {prices_np.shape[1]} columns but "
+            f"--n-assets is {n_assets} (should be equal by construction).")
+    prices_j = jnp.array(prices_np, dtype=jnp.float32)
+    config = EnvConfig(                          # identical to create_daily_panel_framed's block
+        n_assets=n_assets,
+        initial_cash=100_000.0,
+        fee_bps=0.0,
+        slippage_bps=0.0,
+        max_steps=400,
+        window_size=60,
+        position_size_pct=args.position_size_pct,
+        vector_action=True,
+        vector_budget_step=args.vector_budget_step,
+        vector_budget_pct=args.vector_budget_pct,
+        vector_weight_rebalance=args.vector_weight_rebalance,
+        vector_weight_unit=args.vector_weight_unit,
+        vector_weight_max=args.vector_weight_max,
+        vector_rebalance_deadband=args.vector_rebalance_deadband,
+    )
+    keys = jax.random.split(jax.random.PRNGKey(args.eval_seed), 1)
+    states = jit_batch_reset(keys, prices_j, config)
+    return states, prices_j, config, row_ts, symbols, coverage
+
+
+def _build_panel_framed_minute(args):
+    """TASK_865 fixed-frame MINUTE source (--panel-frame-from-checkpoint --panel-frame-source
+    minute): the checkpoint's recorded frame, exact order, one column per slot, over the minute
+    ``ohlcv`` table. Zero-coverage slots INACTIVE, pre-listing rows flat-zero, stale tails
+    disclosed — reported to stdout AND into the JSON artifact (the 853 dual-disclosure rule)."""
+    frame_symbols, prov = _load_frame_provenance(
+        args.panel_frame_from_checkpoint, args.n_assets, args.symbols)
+    states0, prices, env_cfg, row_ts, loaded_syms, coverage = create_minute_panel_framed(
+        args, frame_symbols)
+    result = _finalize_panel(states0, prices, env_cfg, row_ts, loaded_syms, args)
+    prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info = result
+    inactive = [c for c in coverage if c["status"] == "inactive"]
+    partial = [c for c in coverage if c["status"] == "partial"]
+    stale = [c for c in coverage if c.get("stale_tail")]
+    inactive_slots = [c["slot"] for c in inactive]
+    n_active = args.n_assets - len(inactive_slots)
+    # D30 amendment 5 — CELL-LEVEL COVERAGE HONESTY. ``n_active`` counts only WHOLLY-inert slots,
+    # so on the 861 leg-1 frame the old banner read "64 ACTIVE / 0 INACTIVE" over a decision grid
+    # that is ~10.7% not-real (22 late-listing HEADS + 2 stale tails + interior frozen spans on 11
+    # slots). The banner now states the partial/stale-tail/frozen slot counts AND the
+    # inert/frozen/live shares of the actual decision grid, so that reading is impossible.
+    #
+    # FIX PASS: the frozen count no longer comes from ``last_covered_row`` (blind to every INTERIOR
+    # hole — measured 1.88% of the real grid and 25.25% of the fixture grid missing, which is why
+    # the old banner claimed 73.25% live on a grid measured 48.00% live).
+    warm = int(env_cfg_f.window_size)
+    n_dec = int(panel_info["n_decisions"])
+    dec_px = np.asarray(prices_f[warm:warm + n_dec])
+    n_cells = int(n_dec * args.n_assets)
+    n_inert_cells = int((dec_px <= 0).sum())
+    fz = frozen_decision_cells(coverage, warm, n_dec)
+    n_frozen_cells = fz["total"]
+    n_frozen_tail_cells = fz["tail"]
+    n_frozen_interior_cells = fz["interior"]
+    n_not_real_cells = n_inert_cells + n_frozen_cells
+    n_live_cells = n_cells - n_not_real_cells
+    pct = lambda n: (100.0 * n / n_cells) if n_cells else 0.0                 # noqa: E731
+    print("=" * 84)
+    print(f"[865] FIXED-FRAME MINUTE panel from checkpoint provenance "
+          f"({_display_path(args.panel_frame_from_checkpoint)}): {args.n_assets} slots, "
+          f"{n_active} ACTIVE / {len(inactive_slots)} INACTIVE (zero minute coverage) in "
+          f"[{args.start}..{args.end}] — minute `ohlcv` [::{args.bar_minutes}], 853 semantics")
+    print(f"[865] ... of the {n_active} ACTIVE: {len(partial)} PARTIAL (listed mid-window: "
+          f"pre-listing rows flat-zero => force-HOLD), {len(stale)} STALE-TAIL (delisted "
+          f"mid-window: trailing rows FORWARD-FILLED at a frozen price, still tradeable) and "
+          f"{fz['n_slots']} carrying FROZEN spans on the decision grid (tails AND interior holes). "
+          f"'ACTIVE' means 'has at least one real close', NOT 'live all window'.")
+    print(f"[865] DECISION GRID ({n_dec} x {args.n_assets} = {n_cells} cells):")
+    print(f"[865]   INERT  (no price at all => force-HOLD under both operators) : "
+          f"{n_inert_cells} ({pct(n_inert_cells):.2f}%)")
+    print(f"[865]   FROZEN (a forward-filled price no market printed, TRADEABLE) : "
+          f"{n_frozen_cells} ({pct(n_frozen_cells):.2f}%) = {n_frozen_tail_cells} trailing "
+          f"(delisted; a constant tail cannot fabricate PnL) + {n_frozen_interior_cells} INTERIOR "
+          f"(a hole that RE-ANCHORS: it CAN fabricate PnL — see stale_tail_rule / DECISIONS D31)")
+    print(f"[865]   LIVE   (a real close at that (decision, slot))               : "
+          f"{n_live_cells} ({pct(n_live_cells):.2f}%)")
+    print(f"[865]   NOT REAL DATA, total                                         : "
+          f"{n_not_real_cells} ({pct(n_not_real_cells):.2f}%)")
+    if fz["slots"]:
+        print(f"[865] FROZEN-SPAN slots ({fz['n_slots']}) — heaviest first; INTERIOR spans are the "
+              f"ones a consumer could previously not see at all (no stale_tail, no partial, "
+              f"covered_rows == n_rows):")
+        for r in fz["slots"][:12]:
+            print(f"        slot {r['slot']:>3}  {r['symbol']:<16} {r['frozen_decision_cells']:>6} "
+                  f"frozen decision cells ({r['interior']} interior + {r['tail']} trailing) across "
+                  f"{r['n_frozen_spans']} span(s)"
+                  + ("  [NO REAL PANEL ROW AT ALL]" if r["no_real_panel_rows"] else ""))
+    if inactive:
+        print(f"[865] INACTIVE slots ({len(inactive)}) — no fills/fees, HOLD-only (env price>0 "
+              f"active-mask); every span reported:")
+        for c in inactive:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} INACTIVE "
+                  f"[{c['span'][0]}..{c['span'][1]}]  ({c['reason']})")
+    # A slot may be short at the HEAD (listed mid-window => PARTIAL, flat-zero force-HOLD rows) or
+    # at the TAIL (delisted mid-window => STALE TAIL, forward-filled tradeable rows at a frozen
+    # price), or both. Reported separately: different keys, different causes, different treatment.
+    partial_head = [c for c in coverage if c.get("leading_inactive_rows")]
+    if partial_head:
+        print(f"[865] PARTIAL-HEAD slots ({len(partial_head)}) — listed mid-window: pre-listing "
+              f"rows are flat-zero => INACTIVE (HOLD under BOTH operators via price>0 / "
+              f"price-validity), active from the listing bar onward:")
+        for c in partial_head:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} first covered ts "
+                  f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows)")
+    if stale:
+        print(f"[865] STALE-TAIL slots ({len(stale)}) — the slot's LAST real minute close falls "
+              f"BEFORE the window end (delisting / ticker migration). The trailing rows are "
+              f"FORWARD-FILLED at that last real close (D30 opt (i): the only treatment measured "
+              f"PV-exact; zeroing the tail marks an open position against price 0 and fabricates "
+              f"-/+25% of PV on a flat series). Those rows are still TRADEABLE and still "
+              f"weight-eligible, at a FROZEN price — disclosed here because they are in NEITHER "
+              f"inactive_slots NOR partial_slots:")
+        for c in stale:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} last real close ts "
+                  f"{c['last_real_ts']} = panel row {c['last_covered_row']} of {c['n_rows'] - 1}; "
+                  f"{c['trailing_stale_rows']} trailing rows forward-filled at a frozen price "
+                  f"({100.0 * c['trailing_stale_rows'] / max(c['n_rows'], 1):.1f}% of the "
+                  f"window)")
+    no_real = [c for c in coverage if c.get("no_real_panel_rows")]
+    if no_real:
+        print(f"[865] ZERO-REAL-PANEL-ROW slots ({len(no_real)}) — every real minute close for these "
+              f"slots falls BETWEEN strided panel rows, so 100% of their priced cells are "
+              f"forward-filled. They are counted ACTIVE by the loader's coverage definition (>=1 "
+              f"real minute close in the window) and are NOT reclassified here (that would change "
+              f"the breadth guard's arithmetic — a semantics change, not a disclosure fix):")
+        for c in no_real:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} {c['real_minute_rows']} real "
+                  f"minute rows, 0 real PANEL rows of {c['n_rows']}")
+    if not inactive and not partial and not stale and not fz["slots"]:
+        print("[865] all slots fully covered on this window (no inactive/partial/frozen spans).")
+    print("=" * 84)
+    # EMITTED coverage: display-elided frozen_spans (see coverage_for_artifact). Built AFTER every
+    # count above, all of which read the complete in-memory coverage.
+    cov_art = coverage_for_artifact(coverage)
+    inactive = [c for c in cov_art if c["status"] == "inactive"]
+    partial = [c for c in cov_art if c["status"] == "partial"]
+    stale = [c for c in cov_art if c.get("stale_tail")]
+    no_real = [c for c in cov_art if c.get("no_real_panel_rows")]
+    panel_info["panel_frame"] = {
+        "source": "checkpoint-provenance-fixed-frame (TASK_853 semantics, TASK_865 minute source)",
+        # The selection, recorded explicitly (scope 2: no silent source switching). Its ABSENCE on
+        # a panel_frame block means the shipped 853 DAILY source.
+        "panel_frame_source": "minute",
+        "panel_price_source": (f"minute `ohlcv` via eval_vector.load_minute_prices_framed, "
+                               f"[::{int(args.bar_minutes)}] stride"),
+        "bar_minutes": int(args.bar_minutes),
+        "provenance_path": _display_path(args.panel_frame_from_checkpoint),
+        "provenance_meta": provenance_meta_block(prov, args.panel_frame_from_checkpoint),
+        "n_slots": int(args.n_assets),
+        "n_active_slots": int(n_active),
+        "n_inactive_slots": int(len(inactive_slots)),
+        "n_partial_slots": int(len(partial)),
+        "n_stale_tail_slots": int(len(stale)),
+        "inactive_slots": list(inactive_slots),
+        "inactive_spans": inactive,
+        "partial_spans": partial,
+        "stale_tail_slots": [c["slot"] for c in stale],
+        "stale_tail_spans": stale,
+        "stale_tail_rule": STALE_TAIL_RULE + (
+            " On the 861 leg-1 window the two ticker migrations (FTM/USD -> S, MATIC/USD -> POL, "
+            "both dead in the WHOLE table after 2025-03-31) land here. POL/USD exists in the DB "
+            "and S/USD does not, but splicing a successor ticker into a predecessor's slot is a "
+            "UNIVERSE change needing a planner ruling on cross-ticker splice provenance — "
+            "deliberately NOT done."),
+        # FIX PASS — INTERIOR frozen spans, disclosed on their own axis. Same rule as the tails
+        # (they are filled identically), but the "a constant span cannot fabricate PnL" argument
+        # does NOT cover them: an interior hole RE-ANCHORS. Measured on the 861 leg-1 window: 11 of
+        # 64 slots are near-empty 2025-03-31..2025-10-01 in many multi-day sub-gaps (10-95 real rows
+        # across 183 days), 2,013 frozen interior decision cells = 1.88% of the grid, with re-anchor
+        # jumps of ETHBTC +64.52% / BTCCAD +33.88% / BTCGBP +32.69% / BTCCHF +24.29% /
+        # /USDTEUR -7.76%. What to DO about them is a semantics ruling (DECISIONS D31) and is NOT
+        # decided here — the fill is unchanged, only the measurement is new.
+        "n_frozen_slots": fz["n_slots"],
+        "frozen_slots": [r["slot"] for r in fz["slots"]],
+        "frozen_span_slots": fz["slots"],
+        "n_zero_real_panel_row_slots": len(no_real),
+        "zero_real_panel_row_slots": [c["slot"] for c in no_real],
+        # D30 amendment 5: the same honesty at CELL level, in the artifact, not only on stdout.
+        "n_decision_cells": n_cells,
+        "n_inert_decision_cells": n_inert_cells,
+        "inert_decision_cell_pct": round(pct(n_inert_cells), 4),
+        # THE honest frozen total: trailing AND interior. The stale-tail-only counters are kept
+        # beside it (their name is accurate) so a consumer can see the split, but the TOTAL is what
+        # the cell-honesty gate reads.
+        "n_frozen_decision_cells": n_frozen_cells,
+        "frozen_decision_cell_pct": round(pct(n_frozen_cells), 4),
+        "n_frozen_stale_tail_decision_cells": n_frozen_tail_cells,
+        "frozen_stale_tail_decision_cell_pct": round(pct(n_frozen_tail_cells), 4),
+        "n_frozen_interior_decision_cells": n_frozen_interior_cells,
+        "frozen_interior_decision_cell_pct": round(pct(n_frozen_interior_cells), 4),
+        "n_not_real_decision_cells": n_not_real_cells,
+        "not_real_decision_cell_pct": round(pct(n_not_real_cells), 4),
+        "n_live_decision_cells": n_live_cells,
+        "live_decision_cell_pct": round(pct(n_live_cells), 4),
+        # Named so a reader of THIS block knows whether any slot's span list below is elided (the
+        # counts never are — frozen_decision_cells refuses an elided list outright).
+        "frozen_spans_display_max": FROZEN_SPANS_ARTIFACT_MAX,
+        "n_slots_with_elided_frozen_span_list": sum(
+            1 for c in cov_art if c.get("frozen_spans_truncated")),
+        "decision_cell_rule": (
+            "INERT = no price at all at that (decision row, slot) (pre-listing head or a wholly "
+            "uncovered slot) => force-HOLD under both operators. FROZEN = the panel carries a "
+            "forward-filled price the market never printed at that row; still TRADEABLE and "
+            "weight-eligible. LIVE = the panel row samples a real close for that slot. The three "
+            "are disjoint and sum to n_decision_cells. 'not real data' = INERT + FROZEN."),
+        "require_active_slots": _resolve_require_active(args),
+        "coverage": cov_art,
+    }
     panel_info["inactive_slots"] = list(inactive_slots)
     return prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info
 
@@ -1470,12 +2644,44 @@ def guard_book_warm(book_warm, warm):
             f"imprinted. Start --start earlier so every decision row has a valid book target.")
 
 
-def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes):
+def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
+                          hold_mask=None):
     """TASK_848 scope 3 — the on-window teacher floor. Walks 832's weight-native ladder
     teacher (``_make_weight_native_teacher_fn``, same sentinels) on the SAME decision rows
     [warm, warm+N) the operator replays, through the SAME env config (its cost tier + weight
     flag). Returns ({cost: {sharpe, final_pv, ...}}, book_warm). Fail-loud if the book warmup
-    exceeds the env window (some decision rows would read strategy-warmup signs)."""
+    exceeds the env window (some decision rows would read strategy-warmup signs).
+
+    D30 rider (a) — ``hold_mask`` (N, A) bool, True where the panel has NO real price at that
+    (decision row, slot) (i.e. the polarity ``walk_env(hold_mask=...)`` wants: True => force HOLD).
+    On a FRAMED panel the pre-listing HEADS are flat-zero by design (the 853 leak fix), and this
+    walk hands its vector straight to ``step_vector``, bypassing the env's
+    ``price_valid = current_prices > 0`` action mask — exactly like the policy-argmax replay above,
+    which already applies the rule. Gated on the MINUTE pin only; ``None`` (the default) = the
+    unmasked walk, bit-identical to HEAD.
+
+    WHAT THIS RIDER ACTUALLY BUYS, restated honestly (fix pass — the previous docstring asserted a
+    mechanism that CANNOT OCCUR on any panel this loader emits, and quoted numbers from a build
+    that no longer exists):
+      * The rider was written against the ZEROED-tail build. Its cited proof (tier-0bp Sharpe
+        -15.83 / final_pv 0.00 / bankrupt_at 45 unmasked, vs -1.50 / 96,094 masked) was measured on
+        THAT panel. Under D30 opt (i) the tail is FORWARD-FILLED, so the real->0 transition that
+        produced the blow-up no longer exists.
+      * The blow-up needs a real->0 transition: ``log(max(0, 1e-12)) = -27.6`` only becomes a ~-26
+        log-RETURN if the preceding row had a real price. ``_ffill_interior_only`` makes that
+        impossible — only LEADING zeros survive the fill, and a leading run of zeros gives
+        ``log(1e-12) - log(1e-12) = 0``.
+      * On a leading flat-zero run ``imprint.book_target_signs`` returns sign 0, so the ladder emits
+        HOLD on every decision of such a slot anyway (instrumented action histogram [0, 50, 0] for
+        the fixture's two zero-coverage slots).
+      * Consequently masked and unmasked are BIT-IDENTICAL on both fixture pins (asserted by the
+        865 smoke's teacher-floor leg, which now checks exactly that instead of claiming a rescue).
+    So this is DEFENCE IN DEPTH, not a live bug fix: it keeps the ladder teacher reading the SAME
+    price-validity rule the search operator and the policy-argmax replay already apply, so a future
+    loader (or a hand-built panel) that CAN emit a non-leading zero cannot short at price 0 through
+    this door. It stays gated on the minute pin because turning it on for the DAILY pin would be a
+    numerics change on a shipped path even though it is provably inert today — that needs its own
+    ruling, not a fix pass."""
     imp = load_imprint_module()
     n_assets = int(env_cfg0.n_assets)
     # FAIL-CLOSED (fix pass, imprint.py:479-482 precedent): the weight-native ladder emits
@@ -1493,7 +2699,8 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes):
     for c in GATE_COSTS:
         fee, slip = (0.0, 0.0) if c == 0 else (FEE_BPS, SLIP_BPS)
         cfg_c = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
-        wrep = imp.walk_env(prices, cfg_c, warm, n_decisions, wn_fn)
+        wrep = imp.walk_env(prices, cfg_c, warm, n_decisions, wn_fn,
+                            hold_mask=hold_mask)
         s = _sharpe(wrep["rets"], period_minutes)
         floor[c] = {"sharpe": _f(s), "final_pv": wrep["final_pv"],
                     "avg_long": wrep["avg_long"], "avg_short": wrep["avg_short"],
@@ -1545,8 +2752,28 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
     teacher_floor = book_warm = None
     if args.teacher_floor:
+        # D30 rider (a): on a MINUTE-framed panel the ladder teacher reads the SAME price-validity
+        # rule the search operator and the policy-argmax replay already apply, so it cannot act on
+        # a cell with no market. DEFENCE IN DEPTH, not a live rescue — on every panel this loader
+        # can emit the mask is PROVABLY INERT (a flat-zero head gives the ladder sign 0 => HOLD, and
+        # the forward fill makes a real->0 transition impossible), and masked vs unmasked is
+        # bit-identical on both fixture pins. See compute_teacher_floor's docstring for the full
+        # measurement; the "-15.83 / 0.00 / bankrupt_at 45" the rider was written against was the
+        # ZEROED-tail build, which D30 opt (i) replaced.
+        # Gated on the minute pin: the default, unpinned and DAILY-pinned floors stay bit-identical
+        # to task864-parity-baseline-hygiene HEAD (the 865 canon-parity invariant). Applying it to
+        # the daily pin as well would be a numerics change on a shipped path — inert in fact, but
+        # unproven for every window — so it needs its own ruling, not a fix pass.
+        _pf = panel_info.get("panel_frame") or {}
+        _floor_mask = None
+        if _pf.get("panel_frame_source") == "minute":
+            _dec_px = np.asarray(prices[warm:warm + n_decisions])
+            _floor_mask = _dec_px <= 0
+            if not _floor_mask.any():
+                _floor_mask = None
         teacher_floor, book_warm = compute_teacher_floor(
-            prices, env_cfg0, warm, n_decisions, period_minutes)
+            prices, env_cfg0, warm, n_decisions, period_minutes,
+            hold_mask=_floor_mask)
 
     # TASK_861: pure recorder on the PINNED collection tier (net@21). None everywhere else, and
     # None entirely when the flag is absent => the walks are bit-identical to HEAD.
@@ -1929,7 +3156,7 @@ def _close_by_date(db_path, table, symbols, s_ts, e_ts):
     UTC epoch window [s_ts, e_ts]. Last-write-wins per (symbol, UTC day) with rows ordered by
     timestamp = the calendar-daily close (the aggregation ohlcv_daily is built from — its
     midnight-UTC rows collapse to one per day, so the daily table reads as-is)."""
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     ph = ",".join("?" * len(symbols))
     rows = conn.execute(
         f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})", symbols).fetchall()
@@ -2033,7 +3260,7 @@ def run_equivalence_gate(args):
         # panels are built on the identical, coverage-safe symbol set (verified in isolation:
         # this collapses the bulk of the divergence — see run log).
         s_ts0, e_ts0 = _to_epoch(args.start, 0), _to_epoch(args.end, 9999999999)
-        conn0 = sqlite3.connect(args.db)
+        conn0 = _ro_connect(args.db)
         try:
             ph0 = ",".join("?" * len(universe))
             id_rows0 = conn0.execute(
@@ -2281,7 +3508,12 @@ def main():
                          "pre-850) resamples the dying `ohlcv` 1-min table via [::bar_minutes]; "
                          "'daily' reads the current `ohlcv_daily` table directly (same symbol "
                          "selection + warm/decision semantics, valid ONLY with --bar-minutes "
-                         "1440) — unlocks the OOS window the minute table no longer covers")
+                         "1440). NOTE (measured 2026-07-30): the 858 backfill carried the minute "
+                         "`ohlcv` table to 2026-03-31T23:59 UTC, so 'the minute table no longer "
+                         "covers the OOS window' is NO LONGER true as a blanket claim; PER-SYMBOL "
+                         "minute coverage still varies (see --panel-frame-source minute's "
+                         "stale-tail / late-listing disclosure), so choose the source per window on "
+                         "measured coverage, not on that retired assumption")
     ap.add_argument("--panel-frame-from-checkpoint", default=None,
                     dest="panel_frame_from_checkpoint",
                     help="TASK_853: path to a JSON recording the checkpoint's ORDERED training "
@@ -2291,6 +3523,27 @@ def main():
                          "INACTIVE via the env's existing price>0 active-mask (no fills/fees, "
                          "HOLD-only) — the OOS-read mechanic. Requires --bar-minutes 1440. "
                          "Default OFF = the minute/daily paths are byte-identical to HEAD")
+    ap.add_argument("--panel-frame-source", choices=["daily", "minute"], default="daily",
+                    dest="panel_frame_source",
+                    help="TASK_865 (D29): which table the FIXED FRAME is read from. 'daily' "
+                         "(default = the shipped 853 path, byte-identical) reads ohlcv_daily and "
+                         "requires --bar-minutes 1440; 'minute' reads the minute `ohlcv` table "
+                         "with the canon [::bar_minutes] stride — the only pin that is "
+                         "apples-to-apples with the minute-panel-native +0.839 bar on universe, "
+                         "source AND breadth at once (62/64 vs 33/64 frame slots on the leg-1 "
+                         "window). Only meaningful with --panel-frame-from-checkpoint")
+    ap.add_argument("--require-active-slots", type=parse_require_active_slots,
+                    default=REQUIRE_ACTIVE_SLOTS_DEFAULT, dest="require_active_slots",
+                    help=f"D30 rider (b): REFUSE a pinned run (minute OR daily) whose frame is too "
+                         f"inert to produce a comparable number. A fraction in (0,1] is a FRACTION "
+                         f"of the frame's slots, an integral value >1 an absolute slot count, "
+                         f"exactly 0 disables; anything else (negative, fractional-above-1, "
+                         f"nan/inf, non-numeric) is REFUSED by name. Default "
+                         f"{REQUIRE_ACTIVE_SLOTS_DEFAULT} — the 861 leg-1 pin is 64/64 (passes), "
+                         f"the 2021-2022 WF fold is 50/64 (refuses without an explicit override), "
+                         f"the 8-slot fixture frame is 6/8 by design (refuses; the fixture smoke "
+                         f"passes 0). Without this, a half-dead panel exits 0 with a publishable "
+                         f"net@21 — the 64->33 breadth confound D29 exists to prevent")
     ap.add_argument("--n-assets", type=int, default=64)
     ap.add_argument("--checkpoint", action="append", default=[],
                     help="checkpoint dir (repeatable; jax_ckpt_fast/<name>/snapshot_ep<N>/ or final)")
@@ -2485,6 +3738,16 @@ def main():
             "teacher walks WEIGHT semantics; without it the ladder's 0/1/2 target-weight codes "
             "are misread as SELL/HOLD/BUY orders (an incoherent floor). (imprint.py:479-482 "
             "precedent; the D17 OOS read always passes --vector-weight-rebalance.)")
+    # TASK_865 fail-closed coherence: --panel-frame-source only selects the FRAME's table, so
+    # passing it without a frame pin would silently do nothing while the invocation claims a
+    # source. Refuse before any panel build (the 861/863 empty-path precedent).
+    if (getattr(args, "panel_frame_source", "daily") != "daily"
+            and not args.panel_frame_from_checkpoint):
+        ap.error(
+            f"--panel-frame-source {args.panel_frame_source} requires "
+            f"--panel-frame-from-checkpoint: it chooses which table the FIXED FRAME is read from "
+            f"and is inert without a pin. Pass the provenance JSON, or drop the flag (the "
+            f"unpinned panel source is --panel-source).")
 
     if args.equivalence_gate:
         run_equivalence_gate(args)

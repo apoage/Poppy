@@ -19,6 +19,13 @@ Chains the two flag-gated extensions on the fixture and proves the four acceptan
         collection recorded at the teacher of record's ``position_size_pct`` 0.1 imprints under
         the pinned ``jobs_imprint_full.manifest`` recipe (``--imprint-mapping weight-native``,
         this runner's own 0.5/n sizing) and exits 0.
+  (vi)  MINUTE FRAME PIN (TASK_865) — the SAME chain on the SAME minute panel with the universe
+        PINNED instead of coverage-ranked (``--panel-frame-source minute``): collect -> imprint ->
+        sanity replay exits 0 with the frame/inactive-slot disclosure in the artifact, and a
+        same-membership REORDER of that frame is REFUSED. The exhaustive minute-pin matrix
+        (identity scrambling, source gate, degeneracy detector, real-DB coverage) lives in
+        ``experiments/865_minute_frame_pin/smoke_minute_frame_pin.py``; this leg is the 861
+        chain's own coverage of the path its real legs will run on.
 
 FIX-PASS legs (the adversarial panel's MAJOR findings, each with a fail-closed demonstration):
   * OFF-PIN TEACHER — a collection recorded with ``sims`` 8 instead of the pinned 32 is REFUSED
@@ -120,6 +127,38 @@ CANON_832_PINS = {
 # Keys of the 835 scorecard that legitimately move with the invocation (out-dir pointer) or the
 # calendar (the LEDGER row stamps date.today()) — excluded from the canon-pin comparison.
 CANON_835_VOLATILE = ("out_name", "out_pointer", "ledger_row")
+
+# TASK_865 leg (vi): the SAME ``PANEL`` (minute source, 240-min stride, 8 slots) with the universe
+# PINNED. Six of the fixture's minute symbols have coverage in the window and two (`/EURGBP`,
+# `/USDCAD`) have none — interleaved at slots 1 and 4, so a slot shift cannot coincidentally line
+# up and the inactive-slot disclosure has something to disclose.
+MINUTE_FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
+                        "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
+MINUTE_FRAME_INACTIVE_SLOTS = [1, 4]
+# Slots 5 and 7 list one bar late => PARTIAL (pre-listing rows flat-zero, force-HOLD). `ZEC/USD` at
+# slot 6 is a STALE TAIL (minute data ends 2025-09-30; the last panel BAR carrying a real print is
+# row 103 of 110): under D30 (ruled 2026-07-30, opt (i)) its 7 trailing rows are FORWARD-FILLED at
+# that close and stay TRADEABLE at a frozen price, so it contributes ZERO force-HOLD cells and is
+# NOT partial — it is disclosed on its own axis (`stale_tail_slots` / `frozen_slots`), the only
+# place it appears. Force-HOLD cells are therefore 2*50 = 100 (it was 107 while the tail was zeroed,
+# a treatment MEASURED to fabricate -/+25% of PV; see the (0) PV-conservation leg of the 865 smoke).
+# Exhaustive assertions live in the 865 smoke.
+MINUTE_FRAME_PARTIAL_SLOTS = [5, 7]
+MINUTE_FRAME_STALE_TAIL_SLOTS = [6]
+MINUTE_FRAME_FROZEN_SLOTS = [6]
+MINUTE_FRAME_FORCE_HOLD_CELLS = 100
+# FIX PASS — the honest CELL-level partition of this leg's 50x8 decision grid, OBSERVED out of the
+# artifact: 100 INERT (no price at all => force-HOLD) + 6 FROZEN (forward-filled, TRADEABLE: the
+# stale tail's 6 in-decision rows) + 294 LIVE. Asserted here so the 861 chain's own coverage of the
+# path its real legs run on cannot report a grid as fully live when it is not.
+MINUTE_FRAME_CELL_HONESTY = {"n_decision_cells": 400, "n_inert_decision_cells": 100,
+                             "n_frozen_decision_cells": 6,
+                             "n_frozen_interior_decision_cells": 0,
+                             "n_frozen_stale_tail_decision_cells": 6,
+                             "n_live_decision_cells": 294}
+# D30 rider (b): 6 of 8 slots are covered by design here, below the shared default breadth floor —
+# opt out EXPLICITLY rather than weakening the default that guards the real legs.
+MINUTE_FRAME_REQUIRE_ACTIVE = ["--require-active-slots", "0"]
 
 
 def sh(cmd, log, expect_ok=True, quiet_ok=True):
@@ -539,6 +578,99 @@ def main():
                 "(jobs_imprint_full.manifest recipe: weight-native, 0.5/n sizing) run together; "
                 "the 845 --vector-weight-rebalance fail-closed assert is still enforced on this "
                 "path"}
+
+    # ------------------------------- (vi) TASK_865: the same chain on the MINUTE FRAME PIN
+    print("\n=== (vi) MINUTE FRAME PIN — collect + imprint with the universe PINNED ===")
+
+    def _write_frame(path, symbols):
+        with open(path, "w") as fh:
+            json.dump({"frame_symbols": list(symbols), "n_assets": len(symbols),
+                       "train_window": ["2025-09-14", "2025-12-12"],
+                       "db": "fixtures/trading_fixture.db",
+                       "source": "861 smoke leg (vi) — TASK_865 minute frame pin"}, fh, indent=1)
+        return path
+
+    mf = _write_frame(os.path.join(RUN_DIR, "minute_frame.json"), MINUTE_FRAME_SYMBOLS)
+    mf_reordered = list(MINUTE_FRAME_SYMBOLS)
+    mf_reordered[0], mf_reordered[2] = mf_reordered[2], mf_reordered[0]
+    mf_bad = _write_frame(os.path.join(RUN_DIR, "minute_frame_reordered.json"), mf_reordered)
+    m_dir = os.path.join(RUN_DIR, "walk_minute_pin")
+    os.makedirs(m_dir, exist_ok=True)
+    m_coll = os.path.join(RUN_DIR, "chosen_vectors_minute_pin.json")
+    m_pin = ["--panel-frame-from-checkpoint", mf, "--panel-frame-source", "minute",
+             *MINUTE_FRAME_REQUIRE_ACTIVE]
+    sh(eval_cmd(m_dir, collect=m_coll) + m_pin, os.path.join(RUN_DIR, "walk_minute_pin.log"))
+    m_out = os.path.join(RUN_DIR, "imprint_minute_pin.json")
+    rc_m, _ = sh(imprint_cmd(m_out, os.path.join(RUN_DIR, "ck_minute_pin"), seed=0,
+                             collection=m_coll, extra=tuple(m_pin)),
+                 os.path.join(RUN_DIR, "imprint_minute_pin.log"), expect_ok=False)
+    rm = json.load(open(m_out)) if os.path.exists(m_out) else {}
+    mpf = rm.get("panel_frame") or {}
+    # ... and the positional-honesty direction: same membership, different ORDER -> REFUSED.
+    bad_out = os.path.join(RUN_DIR, "imprint_minute_pin_reordered.json")
+    if os.path.exists(bad_out):
+        os.remove(bad_out)
+    rc_bad, txt_bad = sh(imprint_cmd(bad_out, os.path.join(RUN_DIR, "ck_minute_pin_bad"), seed=0,
+                                     collection=m_coll,
+                                     extra=("--panel-frame-from-checkpoint", mf_bad,
+                                            "--panel-frame-source", "minute",
+                                            *MINUTE_FRAME_REQUIRE_ACTIVE, "--iters", "5")),
+                         os.path.join(RUN_DIR, "imprint_minute_pin_reordered.log"),
+                         expect_ok=False)
+    m_checks = {
+        "imprint_exit_zero": rc_m == 0,
+        "panel_frame_source_minute": (rm.get("panel_frame_source") == "minute"
+                                      and mpf.get("panel_frame_source") == "minute"),
+        "frame_symbols_in_recorded_order": rm.get("frame_symbols") == MINUTE_FRAME_SYMBOLS,
+        "inactive_slots_disclosed": rm.get("inactive_slots") == MINUTE_FRAME_INACTIVE_SLOTS,
+        "partial_slots_head_only": rm.get("partial_slots") == MINUTE_FRAME_PARTIAL_SLOTS,
+        "stale_tail_disclosed_on_its_own_axis": (
+            rm.get("stale_tail_slots") == MINUTE_FRAME_STALE_TAIL_SLOTS
+            and mpf.get("stale_tail_slots") == MINUTE_FRAME_STALE_TAIL_SLOTS),
+        "stale_tail_slot_is_in_NEITHER_other_list": all(
+            sl not in (rm.get("inactive_slots") or [])
+            and sl not in (rm.get("partial_slots") or [])
+            for sl in MINUTE_FRAME_STALE_TAIL_SLOTS),
+        "force_hold_cells_exact_stale_tail_TRADEABLE": (
+            mpf.get("n_force_hold_cells") == MINUTE_FRAME_FORCE_HOLD_CELLS),
+        # FIX PASS: frozen spans (interior INCLUDED) are disclosed, and the decision grid's honest
+        # INERT / FROZEN / LIVE partition is OBSERVED out of the artifact, not assumed.
+        "frozen_slots_disclosed": (rm.get("frozen_slots") == MINUTE_FRAME_FROZEN_SLOTS
+                                   and mpf.get("frozen_slots") == MINUTE_FRAME_FROZEN_SLOTS),
+        "decision_cell_honesty_exact": all(
+            (rm.get("decision_cell_honesty") or {}).get(k) == v
+            for k, v in MINUTE_FRAME_CELL_HONESTY.items()),
+        "breadth_floor_recorded": mpf.get("require_active_slots") == 0.0,
+        "sanity_replay_both_tiers": bool(rm) and all(
+            rm["sanity"]["per_tier"][t]["policy_inenv"] is not None for t in ("0", "21")),
+        "replay_integrity_passed": bool(
+            (rm.get("teacher_vectors") or {}).get("replay_integrity", {}).get("passed")),
+        "reordered_frame_REFUSED": (rc_bad != 0
+                                    and "panel_frame identity MISMATCH" in txt_bad
+                                    and not os.path.exists(bad_out)),
+    }
+    for k, v in m_checks.items():
+        print(f"  {'OK  ' if v else 'FAIL'} {k}")
+    report["legs"]["vi_minute_frame_pin"] = {
+        "passed": all(m_checks.values()), "checks": m_checks,
+        "frame": MINUTE_FRAME_SYMBOLS, "inactive_slots": rm.get("inactive_slots"),
+        "partial_slots": rm.get("partial_slots"), "stale_tail_slots": rm.get("stale_tail_slots"),
+        "frozen_slots": rm.get("frozen_slots"),
+        "decision_cell_honesty": rm.get("decision_cell_honesty"),
+        "sanity_net21": (rm.get("sanity") or {}).get("per_tier", {}).get("21", {}).get(
+            "policy_inenv"),
+        "note": "same window/stride/size as the legacy 861 panel — only the universe is PINNED "
+                "instead of coverage-ranked (TASK_865). Exhaustive matrix: "
+                "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py",
+        "sanity_net21_attribution": (
+            "FIX PASS — do NOT attribute a swing in this number to the stale tail's tradeability. "
+            "The stale-tail treatment changes exactly the tail cells of ONE slot; replaying the "
+            "SAME recorded teacher stream on the filled and zeroed panels isolates that channel "
+            "and it is SMALL (measured and reported by the (i-b) walk_net21 reconciliation leg of "
+            "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py, which also carries the "
+            "sign). A before/after difference in sanity_net21 is dominated by the operator "
+            "RE-DECIDING on a different panel and by the student being retrained on that different "
+            "stream — not by the tail becoming tradeable.")}
 
     # ------------------------------------------------------- round-trip cross-check
     floor21 = r0["teacher"]["floor_inenv"]["21"]

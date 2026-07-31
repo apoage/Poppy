@@ -1,6 +1,68 @@
 # TASK_865 — Frame pin on the MINUTE path (D29 ruled opt (a): the only basis comparable to +0.839 on universe, source, and breadth at once)
 
-> **STATUS (2026-07-30): STOPPED — NOT SHIPPED. Built and verified, then BLOCKED on DECISIONS D30.**
+> **STATUS (2026-07-31): SHIPPED — D30 opt (i) landed, with the real leg newly GATED on DECISIONS D31.**
+> Factory run 23. Resumed from the `git stash` verified in run 22, landed every D30 amendment, then a
+> 3-lens panel (security / fail-closed / correctness) found **2 BLOCKER + 2 MAJOR + ~12 MINOR**; a
+> FRESH fail-closed judge over that fix pass found **4 MAJOR + 4 MINOR** more. **All closed over TWO
+> fix rounds**, every new guard mutation-tested (7 mutations, each shown to make a leg FAIL, then
+> reverted and md5-verified). Suites on the final tree: **selftest 12/12 · 863 13/13 (run twice) ·
+> 865 25/25 · 861 e2e 10/10 · scorecard 8/8.** Parity measured against `git archive HEAD`: canon
+> unpinned **195/195** shared fields identical, daily-pinned **331/331** — only absolute-path stamps
+> differ.
+>
+> **Round 2's headline catch:** an INTERIOR frozen span was reported as TRAILING whenever the decision
+> grid ended inside it — the banner printed "0 INTERIOR" over a window holding 51 such cells, silencing
+> the exact axis D31 exists to expose. Also: frozen cells were counted off a span list TRUNCATED at 64
+> (200 true → 64 counted, 92% "live" against a true 75%); the DAILY half of the new disclosure had ZERO
+> coverage; and the partition assertion was vacuous (`live` was the complement, so it was identically
+> true).
+>
+> **What shipped.** The minute-framed loader (62/64 live on the leg-1 window vs the daily path's
+> 33/64), with the stale tail FORWARD-FILLED per D30 opt (i) and disclosed. PV conservation is now a
+> first-class smoke leg and it is exact: flat prices at fee 0, a LONG and a SHORT book each end at
+> **100,000.00 to the cent**, while the pre-fix zeroed-tail control reproduces D30's **75,002.50 /
+> 124,997.50** — reproduced independently by the orchestrator. Riders (a) masked teacher floor,
+> (b) `--require-active-slots` breadth refusal (now on BOTH pin paths), (c) `scorecard.py` plumbs
+> `--panel-frame-source` or refuses. Daily-pin disclosure parity with numerics untouched:
+> **207/207 shared numeric fields identical + 78 named additive keys**; canon unpinned **0/208**.
+>
+> **The two BLOCKERs the panel caught, both demonstrated, both fixed.** (1) The loaders opened the
+> 24 GB `trading_data.db` READ-WRITE; SQLite hot-journal recovery rewrote a copy's sha256 and size on
+> a pure SELECT, no write SQL involved. All 11 sites now go through `_ro_connect`
+> (`file:...?mode=ro`, timeout 60, realpath, refuses a nonexistent path instead of creating a 0-byte
+> db). Orchestrator-verified: hot-journal db byte-identical, probe raises `attempt to write a
+> readonly database`. (2) **INTERIOR frozen spans were tradeable and disclosed NOWHERE** — staleness
+> was keyed off `last_real_full`, so a slot RESUMING before the window end appeared in no list and
+> read `covered_rows == n_rows`. On the real leg-1 window the minute table is near-empty
+> **2025-03-31 → 2025-10-01 on 11 of 64 slots** = **2,013 frozen interior cells (1.88%)**, with
+> re-anchor jumps ETHBTC **+64.52%**, BTCCAD **+33.88%**, BTCGBP **+32.69%**. Now disclosed
+> (`frozen_spans`), counted, and gated on their own axis. **The honest inert share is 10.67%, not the
+> 8.79% recorded in D29/D30** (which counted head+tail only).
+>
+> **Definition correction, load-bearing.** "Frozen" means *the slot did not print anywhere inside the
+> bar*, NOT *at the exact sampled minute*. The exact-minute reading is a stride artifact reporting a
+> meaningless 51.22% frozen. **Retracted with it:** the panel's "the fixture is 25%
+> undisclosed-frozen / 192 of 400 live" was the exact-minute reading — under the shipped definition
+> the fixture has **6 frozen cells (all trailing) and 294 live**. The REAL-LEG finding stands in full.
+>
+> **Two recorded numbers corrected where authored.** D30's `walk_net21 ≈ +17.1242` is SUPERSEDED by
+> **+14.9497** (+17.1242 is what replaying the PRE-FIX action stream against filled prices yields; a
+> real re-run lets the search operator re-decide) — and it never lived in a tracked file. And
+> `sanity_net21`'s −4.2446 → +12.0134 swing is NOT "the stale-tail slot's last 7 decisions are now
+> tradeable": the pure valuation channel is **−1.00 Sharpe, opposite in sign and ~1/16 the
+> magnitude**; the swing is dominated by the operator re-deciding and the student retraining.
+>
+> **Rider (a) is inert, and says so now.** `book_target_signs` returns sign 0 on a constant column, so
+> the ladder HOLDs a flat-zero slot, and `_ffill_interior_only` makes the `real→0` transition its
+> docstring blamed impossible. Masked == unmasked bit-identical. It ships as defence-in-depth with an
+> honest docstring, not as a fix that fires.
+>
+> **REAL LEG IS BLOCKED ON D31**, which this task's own disclosure work made visible: interior spans
+> can fabricate PnL (a re-anchoring constant series is not the fee-drag-only case opt (i) reasoned
+> about), and the canon UNPINNED loader (`vectorbt_env.py:645-655`) fills identically — so the
+> **+0.839 bar itself is likely contaminated the same way.** Do not launch the 861 chain until ruled.
+>
+> **Prior status (2026-07-30): STOPPED — NOT SHIPPED, BLOCKED on DECISIONS D30.**
 > This is a STOP, not a ship: no commit, no tag. The implementation lives in `git stash`
 > ("TASK_865 minute frame pin — REVIEWED, BLOCKED on D30"), carrying the 4 tracked edits plus the
 > untracked `experiments/865_minute_frame_pin/` (978-line smoke). Do NOT apply it until D30 is ruled —

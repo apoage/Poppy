@@ -116,13 +116,13 @@
       "eval_empty_collect_path": {
         "passed": true,
         "exit_code": 2,
-        "seconds": 1.05,
+        "seconds": 0.94,
         "walk_started": false
       },
       "eval_unwritable_collect_path": {
         "passed": true,
         "exit_code": 2,
-        "seconds": 1.03,
+        "seconds": 0.94,
         "walk_started": false
       },
       "imprint_empty_teacher_vectors": {
@@ -245,6 +245,78 @@
       "imprint_mapping": "search-teacher-vectors",
       "note": "leg 1 argv (teacher of record, position_size_pct 0.1) and leg 2 argv (jobs_imprint_full.manifest recipe: weight-native, 0.5/n sizing) run together; the 845 --vector-weight-rebalance fail-closed assert is still enforced on this path"
     },
+    "vi_minute_frame_pin": {
+      "passed": true,
+      "checks": {
+        "imprint_exit_zero": true,
+        "panel_frame_source_minute": true,
+        "frame_symbols_in_recorded_order": true,
+        "inactive_slots_disclosed": true,
+        "partial_slots_head_only": true,
+        "stale_tail_disclosed_on_its_own_axis": true,
+        "stale_tail_slot_is_in_NEITHER_other_list": true,
+        "force_hold_cells_exact_stale_tail_TRADEABLE": true,
+        "frozen_slots_disclosed": true,
+        "decision_cell_honesty_exact": true,
+        "breadth_floor_recorded": true,
+        "sanity_replay_both_tiers": true,
+        "replay_integrity_passed": true,
+        "reordered_frame_REFUSED": true
+      },
+      "frame": [
+        "XBT/USD",
+        "/EURGBP",
+        "ETH/USD",
+        "LTC/USD",
+        "/USDCAD",
+        "XMR/USD",
+        "ZEC/USD",
+        "ETC/USD"
+      ],
+      "inactive_slots": [
+        1,
+        4
+      ],
+      "partial_slots": [
+        5,
+        7
+      ],
+      "stale_tail_slots": [
+        6
+      ],
+      "frozen_slots": [
+        6
+      ],
+      "decision_cell_honesty": {
+        "n_decision_cells": 400,
+        "n_inert_decision_cells": 100,
+        "n_frozen_decision_cells": 6,
+        "n_frozen_interior_decision_cells": 0,
+        "n_frozen_stale_tail_decision_cells": 6,
+        "n_not_real_decision_cells": 106,
+        "n_live_decision_cells": 294,
+        "inert_decision_cell_pct": 25.0,
+        "frozen_decision_cell_pct": 1.5,
+        "not_real_decision_cell_pct": 26.5,
+        "live_decision_cell_pct": 73.5,
+        "frozen_span_slots": [
+          {
+            "slot": 6,
+            "symbol": "ZEC/USD",
+            "frozen_decision_cells": 6,
+            "interior": 0,
+            "tail": 6,
+            "n_frozen_spans": 1,
+            "frozen_spans_truncated": false,
+            "no_real_panel_rows": false
+          }
+        ],
+        "rule": "INERT = no price at all (force-HOLD via hold_mask); FROZEN = a forward-filled price no market printed, still TRADEABLE and weight-eligible (trailing spans cannot fabricate PnL, INTERIOR spans can \u2014 they re-anchor); LIVE = the panel row samples a real close. Disjoint, and they sum to n_decision_cells."
+      },
+      "sanity_net21": 12.013395865385741,
+      "note": "same window/stride/size as the legacy 861 panel \u2014 only the universe is PINNED instead of coverage-ranked (TASK_865). Exhaustive matrix: experiments/865_minute_frame_pin/smoke_minute_frame_pin.py",
+      "sanity_net21_attribution": "FIX PASS \u2014 do NOT attribute a swing in this number to the stale tail's tradeability. The stale-tail treatment changes exactly the tail cells of ONE slot; replaying the SAME recorded teacher stream on the filled and zeroed panels isolates that channel and it is SMALL (measured and reported by the (i-b) walk_net21 reconciliation leg of experiments/865_minute_frame_pin/smoke_minute_frame_pin.py, which also carries the sign). A before/after difference in sanity_net21 is dominated by the operator RE-DECIDING on a different panel and by the student being retrained on that different stream \u2014 not by the tail becoming tradeable."
+    },
     "roundtrip_teacher_floor": {
       "passed": true,
       "imprint_floor_net21": 13.892973302731274,
@@ -277,10 +349,11 @@
     "iv_falsification": true,
     "ivb_escape_hatch_honesty": true,
     "v_pinned_recipe_corunnable": true,
+    "vi_minute_frame_pin": true,
     "roundtrip_teacher_floor": true
   },
   "all_passed": true,
-  "elapsed_seconds": 703.4,
+  "elapsed_seconds": 730.9,
   "panel": {
     "db": "fixtures/trading_fixture.db",
     "window": [
