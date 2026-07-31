@@ -57,6 +57,17 @@
     "halt_after_failures": 3
   },
 
+  "models": {
+    "_comment": "Operator instruction 2026-07-31: run all subagents as sonnet, escalate to opus if implementation fails. The orchestrator reads this at startup (skill step 1) and passes it as the Agent tool's `model` parameter. NOT harness-enforced: the four ~/.claude/plugins/cache/apothecary/dark-factory/0.2.0/agents/dark-factory-*.md declare no `model:` frontmatter, so absent this they silently inherit the session model. Kept here rather than in the plugin because the plugin is shared across projects and is clobbered on marketplace update.",
+    "default": "sonnet",
+    "escalate_to": "opus",
+    "escalate_after_failures": 1,
+    "escalation_policy": "Spawn every subagent on `default`. Re-spawn the SAME unit of work on `escalate_to` when a sonnet attempt fails: the implementer reports it could not complete the task, it errors out or dies, it returns work that does not compile or whose suites are red, or a verification round finds a BLOCKER the sonnet implementer then fails to close. Escalation is per unit of work and does not persist — the next task starts on `default` again. `halt_after_failures` still counts total fix->verify cycles across BOTH tiers, so escalation buys a better attempt, not extra attempts.",
+    "always": {
+      "_comment": "Roles pinned to a tier regardless of `default`. Empty = every role follows `default`. Add e.g. \"judge:fail-closed\": \"opus\" if a lens proves too weak on sonnet — run 23's fresh fail-closed judge found 4 MAJOR that three prior lenses missed, so that lens is the first candidate if sonnet under-performs."
+    }
+  },
+
   "verification": {
     "risk_tiers": {
       "low": ["judge:correctness"],
