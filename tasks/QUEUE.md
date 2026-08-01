@@ -3,6 +3,17 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-01 (D31 RULED by the OPERATOR: opt (a) as amended — repair the identity split, mask the
+~1% genuine residue, ONE re-base wave, then re-measure references) — Ready = TASK_866 → 867 →
+868 (alias union + interior mask) → 869 (UTC windows + masked daily floor), STRICTLY SERIAL
+(shared surface). TASK_868/869 un-flagged: attribution resolved — the run-23 "unauthorised
+drafts" were the planner session writing while the factory was ARMED; the orchestrator's
+quarantine was correct and is preserved in the D31 row. Standing rule adopted: the planner does
+NOT write tasks/, DECISIONS.md, or QUEUE.md while the factory is armed. +0.839 / +0.898 / WF are
+DEMOTED to pre-D31-semantics anchors; the 861 chain (leg 0 reference battery + median-vs-median
+leg 3, per the D31 addendum in TASK_861) launches only after 868+869 ship verified. Factory
+GREEN.**
+Prior grooming:
 **2026-07-31 (post factory run 23) — TASK_865 SHIPPED (D30 opt (i): stale tails forward-filled +
 disclosed; 2 BLOCKER + 2 MAJOR + ~12 MINOR closed in one fix round; selftest 12/12 · 863 13/13 ×2 ·
 865 25/25 · 861 e2e 10/10 · scorecard 8/8). **Ready = TASK_866 → 867** (SERIAL, the 865 stash no
@@ -105,6 +116,8 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 |---|------|------|------|
 | 1 | `tasks/TASK_866_WEIGHT_ON_PIN.md` | XS/S | Ready — 865 has SHIPPED, so its stash no longer owns this surface. Close the CLASS behind the 864 incident: `CANON_832_PINS` is a weight-OFF oracle guarding a weight-ON baseline, which is how 846 moved those numbers silently for ~80 commits. Every committed baseline gets an oracle of ITS OWN configuration; cross-config check = named REFUSE; mutation-tested. |
 | 2 | `tasks/TASK_867_861_BASELINE_PROMOTE_PORT.md` | XS/S | **SERIAL after #1** (same surface). Port 864's promote gate (recipe-pinned, validity-gated, atomic, dirty-refuse) to `chosen_vectors_fixture.json` + `results_fixture_smoke.json`; kill the `--quick` silent seed-downgrade; make `smoke_e2e.py:428/459` check the COMMITTED baseline (tamper test mandatory). **Fresh evidence from run 23: a bare suite run clobbered `chosen_vectors_fixture.json` THREE times in one session with a stamp-only `created_utc` diff — reverted each time by the orchestrator, mechanism deliberately untouched.** Path drift: the task file says `experiments/832_linear_imprint/861/`; the real path is `experiments/861_search_teacher_imprint/`. |
+| 3 | `tasks/TASK_868_ASSET_IDENTITY_REPAIR.md` | M | **SERIAL after #2** (surface: `835_stage4_eval/` + `vectorbt_env.py` + `env_factory.py` + smokes). D31 (a1)+(a2): loader-level alias union across twin `asset_id`s (NO DB writes; fail-loud on any overlap disagreement; disclosed) — recovers the 6 identity-split slots' real data — plus the causal interior frozen-cell mask on the ~1% genuine residue (5 illiquid crosses), uniform on pinned AND canon minute loaders. Fixture gains a twin pair + a multi-bar hole. Re-bases every minute-panel numeric BY DESIGN (disclosed, per-field diffs). |
+| 4 | `tasks/TASK_869_REBASE_WAVE_SEMANTICS.md` | S | **SERIAL after #3** (same wave — ships before any reference is re-measured). D31 (a3) riders: `_to_epoch` → UTC (kills the measured 308-row CEST window offset; TZ-invariance proven byte-for-byte) + the daily teacher floor masked (same class as D30 rider (a); inertness measured, not assumed). Every moved numeric attributed to its cause through the 864 promote gate. |
 
 _Recommended new planner rows from run 23 (not yet specced, listed so they are not lost):_
 _**(D) The canon panel path still opens `trading_data.db` READ-WRITE** — `mcts_trader/env/vectorbt_env.py:515` and `:731` use a plain `sqlite3.connect`, reached via `build_panel` → `create_jax_env_historical` on the DEFAULT unpinned path (and by the equivalence gate's FLOOR leg at `eval_vector.py:3152`). TASK_865 routed all 11 of its OWN sites through `_ro_connect`, and the orchestrator verified the fix (a hot-journal db is left byte-identical; the probe raises `attempt to write a readonly database`; a nonexistent path is refused with nothing created) — but the canon env loader is a wider surface than 865 and was deliberately left alone. The exposure is real and demonstrated in principle: SQLite performs hot-journal recovery on the first READ through a read-write handle, no write SQL involved, on a 24 GB asset whose only backup predates the 858 backfill. **XS/S, fail-closed, no numerics risk** (a `mode=ro` handle cannot change a SELECT's result). Recommend: route both loaders through the same helper, or refuse a protected `--db` on any RW path._

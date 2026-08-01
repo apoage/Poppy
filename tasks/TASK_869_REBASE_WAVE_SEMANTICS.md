@@ -1,13 +1,11 @@
-> **[UNAUTHORISED DRAFT — flagged 2026-07-31 by the run-23 orchestrator.] This task file was
-> created by an unattributed actor during factory run 23 on the premise that DECISIONS D31 was
-> ruled. **D31 is OPEN.** The measured evidence it cites (the ingest identity split; twin `assets`
-> rows agreeing to max relative close diff 0.0 over 125,737 overlapping rows) was independently
-> confirmed by the orchestrator and is sound. The AUTHORITY is not: this is a DRAFT SPEC, not a
-> queued task, and it must not be started until the operator rules D31.]**
+> **[AUTHORIZED 2026-08-01 — D31 RULED by the OPERATOR: opt (a) as amended. Attribution
+> resolved: the "unattributed actor" was the planner session writing while the factory was
+> armed; the orchestrator's quarantine was correct and is preserved in the D31 row. This is now
+> a QUEUED task, SERIAL after TASK_868.]**
 
 # TASK_869 — Re-base-wave semantics: UTC window boundaries + masked daily teacher floor (D31 (a3))
 
-**Status**: READY 2026-07-31 (D31 RULED — planner; operator may override). SERIAL after TASK_868
+**Status**: READY 2026-08-01 (D31 RULED by the OPERATOR). SERIAL after TASK_868
 (same surface, same re-base wave — these two ship together before any reference is re-measured).
 **Size: S. Risk: low-medium** (both changes move recorded numbers by design; neither may land
 outside the wave).

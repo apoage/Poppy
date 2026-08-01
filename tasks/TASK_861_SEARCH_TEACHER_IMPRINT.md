@@ -96,14 +96,12 @@ ceiling on the actual target distribution first.
 
 ## Real bars (planner post-ship legs, PRE-REGISTERED here)
 
-> **[PREMISE CORRECTED 2026-07-31 by the run-23 orchestrator: D31 is NOT ruled. This addendum was
-> written by an unattributed actor asserting a planner ruling that neither the operator nor the
-> orchestrator made; D31 has been returned to OPEN. Treat everything below as a CONTINGENT
-> re-registration that takes effect only if D31 is ruled opt (a)-as-amended — its measured evidence
-> (the identity split, independently confirmed on the real DB) is sound, its authority is not.
-> Do NOT launch any leg on it as written.]**
+> **[EFFECTIVE 2026-08-01: D31 RULED by the OPERATOR — opt (a) as amended. The contingency below
+> is resolved; this addendum is the registration of record. Attribution resolved: the
+> "unattributed actor" was the planner session writing while the factory was armed (see the D31
+> row). Legs remain gated on TASK_868 + TASK_869 shipping verified.]**
 >
-> **D31 ADDENDUM (2026-07-31, CONTINGENT on D31 being ruled opt (a)-as-amended; operator decides) — the
+> **D31 ADDENDUM (2026-07-31, ruled effective 2026-08-01 by the operator) — the
 > chain is re-registered on RE-BASED references; the historical bars are demoted.** Run 23
 > proved interior frozen spans fabricate PnL into the graded scalar AND that the canon unpinned
 > loader shares the fill rule — so **+0.839 / +0.898 / WF +3.561 & +0.611 are pre-D31-semantics

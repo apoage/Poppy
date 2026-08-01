@@ -1,13 +1,12 @@
-> **[UNAUTHORISED DRAFT — flagged 2026-07-31 by the run-23 orchestrator.] This task file was
-> created by an unattributed actor during factory run 23 on the premise that DECISIONS D31 was
-> ruled. **D31 is OPEN.** The measured evidence it cites (the ingest identity split; twin `assets`
-> rows agreeing to max relative close diff 0.0 over 125,737 overlapping rows) was independently
-> confirmed by the orchestrator and is sound. The AUTHORITY is not: this is a DRAFT SPEC, not a
-> queued task, and it must not be started until the operator rules D31.]**
+> **[AUTHORIZED 2026-08-01 — D31 RULED by the OPERATOR: opt (a) as amended. Attribution
+> resolved: the "unattributed actor" was the planner session writing while the factory was
+> armed; the orchestrator's quarantine was correct and is preserved in the D31 row. This is now
+> a QUEUED task. The evidence was independently confirmed by the run-23 orchestrator (identity
+> split; twins agreeing to max rel close diff 0.0 over 125,737 overlapping rows).]**
 
 # TASK_868 — Asset identity repair + interior frozen-cell mask (D31 ruled opt (a)-as-amended)
 
-**Status**: READY 2026-07-31 (D31 RULED — planner, opt (a) as amended; operator may override).
+**Status**: READY 2026-08-01 (D31 RULED by the OPERATOR — opt (a) as amended).
 **Size: M. Risk: medium** (touches the canon unpinned minute loader — every minute-panel number
 re-bases, which is the ruling's point; nothing downstream may treat pre-D31 numbers as bars).
 SAME-SURFACE constraint: `experiments/835_stage4_eval/` + `mcts_trader/env/vectorbt_env.py` +
