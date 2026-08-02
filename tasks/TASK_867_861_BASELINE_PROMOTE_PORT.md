@@ -1,6 +1,19 @@
 # TASK_867 — Port the 864 promote gate to the 861 baselines (module-wide self-clobbering, confirmed) — FILLER
 
-**Status**: READY 2026-07-29 (seeded from the factory run-21 wrap, row C).
+> **STATUS (2026-08-02): SHIPPED as `task867-861-baseline-promote-port` (`d670d57`).** Factory
+> run 24. Default + `--quick` invocations write gitignored `*_local.json` outputs; the two
+> tracked 861 baselines move ONLY via `--promote-baselines` (recipe-pinned from argparse canon,
+> validity-gated, atomic, dirty-refusing, per-field diff). The `--quick` seeds-subset downgrade
+> is a named REFUSAL. `smoke_e2e.py:428/459`'s vacuous within-run check is replaced by leg
+> `vii_baseline_pins`, which pins the COMMITTED baselines; a pre-run fail-closed gate refuses
+> missing/git-dirty baselines on every invocation (tamper → FAIL before any leg runs).
+> Correctness judge GREEN first-hand, 0 BLOCKER/MAJOR, 1 NIT (non-blocking, `smoke_e2e.py:1273`
+> demo isolation). Selftest 12/12; 861 smoke 12/12 legs (11 → 12, nothing shrank). Baseline
+> attribution: collection volatile-only; results +21 vii leaves, 3 wall-clock moves; zero
+> unattributable. Release order: promote → commit → re-verify (dirty gate refuses in between
+> by design).
+
+**Was**: READY 2026-07-29 (seeded from the factory run-21 wrap, row C).
 **Size: XS/S. Risk: low.** SAME-SURFACE constraint: `experiments/832_linear_imprint/861/` +
 `smoke_e2e.py` — serial with TASK_865/866, never parallel.
 
