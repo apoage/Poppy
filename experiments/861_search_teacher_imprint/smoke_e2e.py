@@ -9,6 +9,14 @@ Chains the two flag-gated extensions on the fixture and proves the four acceptan
           the run-pointer/ledger fields, which carry the out-dir and today's date).
         * 832: the default fixture smoke reproduces the PRE-CHANGE scored values pinned in
           ``CANON_832_PINS`` below (captured from the tree before this task's diff, float-exact).
+  (i-b) WEIGHT-ON PARITY PIN (TASK_866) — the 861 pins above are a weight-OFF oracle while the
+        committed 832 baseline is the weight-ON deliverable, so nothing pinned the weight-ON
+        numbers (the 864 incident class). This leg runs the CANON weight-ON recipe and pins it
+        against the tracked ``experiments/832_linear_imprint/results_fixture_smoke.json`` READ
+        AS THE ORACLE: fail-CLOSED when that file is missing / git-dirty / not itself the
+        weight-ON order-code configuration, and a cross-configuration comparison (weight-OFF
+        artifact vs weight-ON oracle or vice versa) is a REFUSAL with the mismatch NAMED,
+        never a numeric diff. Both mutation directions are demonstrated in-leg.
   (ii)  COLLECTION IS A PURE RECORDER — the identical eval command run with and without
         ``--collect-chosen-vectors`` writes a BYTE-IDENTICAL scorecard JSON.
   (iii) PROVENANCE FAIL-LOUD — a mismatched window, a mismatched panel frame (universe) and a
@@ -127,6 +135,138 @@ CANON_832_PINS = {
 # Keys of the 835 scorecard that legitimately move with the invocation (out-dir pointer) or the
 # calendar (the LEDGER row stamps date.today()) — excluded from the canon-pin comparison.
 CANON_835_VOLATILE = ("out_name", "out_pointer", "ledger_row")
+
+# ---- TASK_866: weight-ON parity pin (the 864 incident class, closed) -------------------------
+# ONE scored-field mapping shared by the weight-OFF pins (leg i) and the weight-ON parity pin
+# (leg i-b): the two configurations are pinned by the SAME fields, each against an oracle of
+# its OWN configuration.
+PIN_FIELDS_832 = {
+    "policy_net21": ("sanity", "per_tier", "21", "policy_inenv"),
+    "floor_net21": ("teacher", "floor_inenv", "21"),
+    "floor_gross": ("teacher", "floor_inenv", "0"),
+    "teacher_action_agreement": ("sanity", "teacher_action_agreement"),
+    "policy_ce_first": ("imprint", "losses", "policy_loss", "first"),
+    "policy_ce_last": ("imprint", "losses", "policy_loss", "last"),
+    "gate_rel_diff": ("expressibility_gate", "rel_diff"),
+    "final_pv_net21": ("sanity", "per_tier", "21", "final_pv"),
+}
+# Top-level keys of the 832 artifact that legitimately move with the invocation: both record
+# ABSOLUTE paths (SPEC.md "Reproducibility precondition"), so they are clone-path dependent and
+# --ckpt-out dependent. Every other key is a scored/deterministic product of the recipe and is
+# compared float-exact.
+WEIGHT_ON_ORACLE_VOLATILE = ("db", "checkpoint")
+# The configuration the tracked baseline MUST be (SPEC.md "Committed fixture artifact" /
+# "Promoting recipe"): weight-ON, default order-code mapping. Recorded by the run itself under
+# /imprint — the 864 promote gate refuses any other recipe onto that path.
+WEIGHT_ON_RECIPE_IDENTITY = {"vector_weight_rebalance": True, "imprint_mapping": "order-code"}
+WEIGHT_OFF_RECIPE_IDENTITY = {"vector_weight_rebalance": False, "imprint_mapping": "order-code"}
+
+
+def _pin_fields_832(doc):
+    """Extract the PIN_FIELDS_832 scored values from an 832 artifact (KeyError = loud schema
+    break, which is itself a pin failure)."""
+    out = {}
+    for name, path in PIN_FIELDS_832.items():
+        node = doc
+        for key in path:
+            node = node[key]
+        out[name] = node
+    return out
+
+
+def _recipe_identity_832(doc):
+    """The configuration that PRODUCED an 832 artifact, as the artifact itself records it."""
+    im = doc.get("imprint") or {}
+    cfg = im.get("config") or {}
+    return {"vector_weight_rebalance": cfg.get("vector_weight_rebalance"),
+            "imprint_mapping": im.get("imprint_mapping")}
+
+
+def _load_832_weight_on_oracle():
+    """Read the tracked 832 baseline AS the weight-ON oracle — FAIL-CLOSED.
+
+    A missing/deleted oracle, an oracle whose git-cleanliness cannot be verified, a git-DIRTY
+    oracle (the pinned bytes must be the COMMITTED ones, mirroring
+    imprint.py::_assert_baseline_promotable), a corrupt oracle, or an oracle that is not itself
+    the weight-ON order-code configuration all REFUSE loud — none of them may degrade into a
+    skipped or vacuously-passing pin."""
+    rel = os.path.relpath(CANON_832_SMOKE, _REPO)
+    if not os.path.exists(CANON_832_SMOKE):
+        raise SystemExit(
+            f"[866] REFUSING the weight-ON parity pin: the oracle {rel} is MISSING. The pin "
+            f"reads the tracked baseline as its oracle, so a deleted oracle must refuse loud, "
+            f"never fail open. Restore it (git checkout -- {rel}) and re-run.")
+    try:
+        p = subprocess.run(["git", "-C", _REPO, "status", "--porcelain", "--", CANON_832_SMOKE],
+                           capture_output=True, text=True, timeout=120)
+        status = p.stdout if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        status = None
+    if status is None:
+        raise SystemExit(
+            f"[866] REFUSING the weight-ON parity pin: could not read `git status` for {rel} "
+            f"(git missing, or {_REPO} is not a work tree) — the oracle is only pinnable from "
+            f"a verifiably clean working copy (the imprint.py TASK_864 promote-gate rule).")
+    if status.strip():
+        raise SystemExit(
+            f"[866] REFUSING the weight-ON parity pin: the oracle {rel} is git-DIRTY\n"
+            f"          {status.strip()}\n"
+            f"  The pin guards the COMMITTED bytes. Commit the refresh (with the SPEC.md "
+            f"'Promoting recipe' record updated, per TASK_864) or `git checkout -- {rel}`, "
+            f"then re-run — pinning against uncommitted edits would bless an unreviewed "
+            f"baseline, the exact 864 laundering path.")
+    try:
+        with open(CANON_832_SMOKE) as fh:
+            oracle = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(
+            f"[866] REFUSING the weight-ON parity pin: the oracle {rel} is unreadable/corrupt "
+            f"({e}). A truncated or hand-edited oracle must refuse loud, never fail open.")
+    identity = _recipe_identity_832(oracle)
+    if identity != WEIGHT_ON_RECIPE_IDENTITY:
+        raise SystemExit(
+            f"[866] REFUSING the weight-ON parity pin: the oracle {rel} is NOT the weight-ON "
+            f"order-code configuration it is pinned as — "
+            + "; ".join(f"{f}: oracle records {identity.get(f)!r}, expected "
+                        f"{WEIGHT_ON_RECIPE_IDENTITY[f]!r}" for f in WEIGHT_ON_RECIPE_IDENTITY)
+            + ". A wrong-configuration oracle is the 864 incident itself; refuse, never "
+              "compare. Regenerate with the canon recipe (imprint.py --vector-weight-rebalance "
+              "--write-parity-baseline).")
+    return oracle
+
+
+def check_832_parity_against_oracle(run_doc, oracle_doc, run_label, oracle_label):
+    """Pin a fresh 832 run against an oracle artifact. RECIPE IDENTITY FIRST: a
+    different-configuration artifact vs oracle is a REFUSAL with the mismatch NAMED (never a
+    numeric diff — the 864 misdiagnosis happened precisely because the only available oracle
+    was a different configuration). Same configuration => float-exact comparison of every key
+    except WEIGHT_ON_ORACLE_VOLATILE. Returns (ok, differing_top_level_keys)."""
+    r_id, o_id = _recipe_identity_832(run_doc), _recipe_identity_832(oracle_doc)
+    mism = [f for f in sorted(o_id) if r_id.get(f) != o_id[f]]
+    if mism:
+        detail = "; ".join(f"{f}: {run_label} is {r_id.get(f)!r} but the oracle "
+                           f"({oracle_label}) is {o_id[f]!r}" for f in mism)
+        raise SystemExit(
+            f"[866] CROSS-CONFIGURATION REFUSAL: {run_label} and the oracle ({oracle_label}) "
+            f"are DIFFERENT configurations — {detail}. Comparing them would be the "
+            f"wrong-oracle bug this pin exists to close; check the artifact against an oracle "
+            f"of its OWN configuration.")
+    strip = lambda d: {k: v for k, v in d.items() if k not in WEIGHT_ON_ORACLE_VOLATILE}
+    o, r = strip(oracle_doc), strip(run_doc)
+    diff = sorted(k for k in set(o) | set(r) if canon_json(o.get(k)) != canon_json(r.get(k)))
+    return not diff, diff
+
+
+def _expect_config_refusal(run_doc, oracle_doc, run_label, oracle_label, field):
+    """Demonstration harness: the cross-configuration refusal MUST fire and MUST name the
+    mismatching field. Returns (ok, message)."""
+    try:
+        check_832_parity_against_oracle(run_doc, oracle_doc, run_label, oracle_label)
+    except SystemExit as e:
+        msg = str(e)
+        return ("CROSS-CONFIGURATION REFUSAL" in msg and field in msg), msg
+    return False, "no refusal raised — the pin compared two DIFFERENT configurations"
+
 
 # TASK_865 leg (vi): the SAME ``PANEL`` (minute source, 240-min stride, 8 slots) with the universe
 # PINNED. Six of the fixture's minute symbols have coverage in the window and two (`/EURGBP`,
@@ -301,23 +441,98 @@ def main():
         "--ckpt-out", os.path.join(RUN_DIR, "canon832_ckpt")],
        os.path.join(RUN_DIR, "canon_832_smoke.log"))
     c = json.load(open(canon832))
-    got832 = {
-        "policy_net21": c["sanity"]["per_tier"]["21"]["policy_inenv"],
-        "floor_net21": c["teacher"]["floor_inenv"]["21"],
-        "floor_gross": c["teacher"]["floor_inenv"]["0"],
-        "teacher_action_agreement": c["sanity"]["teacher_action_agreement"],
-        "policy_ce_first": c["imprint"]["losses"]["policy_loss"]["first"],
-        "policy_ce_last": c["imprint"]["losses"]["policy_loss"]["last"],
-        "gate_rel_diff": c["expressibility_gate"]["rel_diff"],
-        "final_pv_net21": c["sanity"]["per_tier"]["21"]["final_pv"],
-    }
+    got832 = _pin_fields_832(c)
+    # TASK_866: the weight-OFF pins are only a meaningful oracle for a weight-OFF artifact —
+    # verify the configuration the run RECORDED before comparing numbers (a weight-ON artifact
+    # against these pins must be a named config mismatch, not a numeric diff).
+    id832 = _recipe_identity_832(c)
+    id832_ok = id832 == WEIGHT_OFF_RECIPE_IDENTITY
     bad = {k: (v, got832[k]) for k, v in CANON_832_PINS.items() if got832[k] != v}
-    ok_832 = not bad and "teacher_vectors" not in c
+    ok_832 = not bad and id832_ok and "teacher_vectors" not in c
     print(f"  832 default smoke vs the pre-change pins: "
           f"{'IDENTICAL' if ok_832 else 'DIFFERS ' + str(bad)}")
+    print(f"  832 default recipe identity {id832} -> "
+          f"{'weight-OFF order-code as pinned' if id832_ok else 'CONFIG MISMATCH — REFUSED'}")
     report["legs"]["i_canon_832"] = {"passed": bool(ok_832), "pins": CANON_832_PINS,
                                      "observed": got832,
+                                     "recipe_identity": id832,
+                                     "recipe_identity_is_weight_off_order_code": bool(id832_ok),
                                      "additive_block_absent": "teacher_vectors" not in c}
+
+    # ---------------- (i-b) TASK_866: the WEIGHT-ON configuration is pinned against the tracked
+    # baseline READ AS ITS OWN-CONFIGURATION ORACLE (the 861 pins above are weight-OFF and could
+    # never see a weight-ON move — the 864 incident class).
+    print("\n=== (i-b) WEIGHT-ON PARITY PIN (TASK_866) — oracle of the SAME configuration ===")
+    won_out = os.path.join(RUN_DIR, "canon_832_weight_on.json")
+    sh([sys.executable, IMPRINT_PY, "--vector-weight-rebalance", "--out", won_out,
+        "--ckpt-out", os.path.join(RUN_DIR, "canon832_won_ckpt")],
+       os.path.join(RUN_DIR, "canon_832_weight_on.log"))
+    w = json.load(open(won_out))
+    oracle = _load_832_weight_on_oracle()        # fail-CLOSED: missing/dirty/wrong-config refuses
+    ok_won, diff_won = check_832_parity_against_oracle(
+        w, oracle, "fresh --vector-weight-rebalance run", "tracked baseline (weight-ON)")
+    print(f"  832 weight-ON canon run vs the tracked baseline "
+          f"(minus {WEIGHT_ON_ORACLE_VOLATILE}): "
+          f"{'IDENTICAL' if ok_won else 'DIFFERS ' + str(diff_won)}")
+
+    # Acceptance (i), weight-ON direction: perturb ONE weight-ON field in a COPY of the oracle
+    # (the tracked file is never touched) -> the pin MUST fail, naming the owning key.
+    mut = copy.deepcopy(oracle)
+    mut["teacher"]["floor_inenv"]["21"] += 1e-3
+    ok_mut, diff_mut = check_832_parity_against_oracle(
+        w, mut, "fresh --vector-weight-rebalance run", "PERTURBED baseline copy")
+    ok_mut_demo = (not ok_mut) and "teacher" in diff_mut
+    print(f"  mutation (weight-ON): teacher.floor_inenv.21 +1e-3 in the oracle copy -> pin "
+          f"{'FAILS as required' if ok_mut_demo else 'STILL PASSES — PIN DEAD'} "
+          f"(differing keys {diff_mut}); unmutated check above is the restore->green half")
+
+    # Acceptance (i), weight-OFF direction stays live: perturb ONE scored field of the flagless
+    # artifact -> the CANON_832_PINS comparison MUST fail.
+    c_mut = copy.deepcopy(c)
+    c_mut["sanity"]["per_tier"]["21"]["policy_inenv"] += 1e-3
+    got_mut = _pin_fields_832(c_mut)
+    bad_mut_off = {k: (v, got_mut[k]) for k, v in CANON_832_PINS.items() if got_mut[k] != v}
+    ok_off_demo = list(bad_mut_off) == ["policy_net21"]
+    print(f"  mutation (weight-OFF): sanity.per_tier.21.policy_inenv +1e-3 -> weight-OFF pins "
+          f"{'FAIL as required' if ok_off_demo else 'DID NOT FAIL CLEANLY — PIN DEAD'} "
+          f"(fields {sorted(bad_mut_off)}); the live leg-(i) check above is the restore->green half")
+
+    # Acceptance (ii): cross-configuration refusal, BOTH directions, mismatch NAMED.
+    ok_ref_off, msg_off = _expect_config_refusal(
+        c, oracle, "flagless weight-OFF run", "tracked weight-ON baseline",
+        "vector_weight_rebalance")
+    print(f"  weight-OFF artifact vs weight-ON oracle -> "
+          f"{'REFUSED, mismatch named' if ok_ref_off else 'NOT REFUSED'}")
+    print(f"    {msg_off.splitlines()[0] if msg_off else ''}")
+    ok_ref_on, msg_on = _expect_config_refusal(
+        w, c, "fresh weight-ON run", "weight-OFF default run used as oracle",
+        "vector_weight_rebalance")
+    print(f"  weight-ON artifact vs weight-OFF oracle -> "
+          f"{'REFUSED, mismatch named' if ok_ref_on else 'NOT REFUSED'}")
+    print(f"    {msg_on.splitlines()[0] if msg_on else ''}")
+
+    ib_checks = {
+        "weight_on_run_matches_tracked_baseline": bool(ok_won),
+        "mutation_weight_on_field_fails_pin": bool(ok_mut_demo),
+        "mutation_weight_off_field_fails_pins": bool(ok_off_demo),
+        "weight_off_artifact_vs_weight_on_oracle_REFUSED": bool(ok_ref_off),
+        "weight_on_artifact_vs_weight_off_oracle_REFUSED": bool(ok_ref_on),
+    }
+    for k, v in ib_checks.items():
+        print(f"  {'OK  ' if v else 'FAIL'} {k}")
+    report["legs"]["ib_weight_on_pin"] = {
+        "passed": all(ib_checks.values()), "checks": ib_checks,
+        "oracle": "experiments/832_linear_imprint/results_fixture_smoke.json (tracked, "
+                  "weight-ON order-code; fail-closed on missing/dirty/wrong-config)",
+        "oracle_recipe_identity": WEIGHT_ON_RECIPE_IDENTITY,
+        "excluded_keys": list(WEIGHT_ON_ORACLE_VOLATILE),
+        "excluded_reason": "absolute invocation paths (clone-path / --ckpt-out dependent, "
+                           "SPEC.md 'Reproducibility precondition'); every scored key is "
+                           "compared float-exact",
+        "observed": _pin_fields_832(w),
+        "differing_keys": diff_won,
+        "weight_off_refusal_message": msg_off,
+        "weight_on_refusal_message": msg_on}
 
     # ------------------------------------------------- (ii) collection is a pure recorder
     print("\n=== (ii) COLLECTION IS A PURE RECORDER — flag ON vs OFF, byte-identical ===")
