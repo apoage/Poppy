@@ -1,0 +1,2980 @@
+{
+ "db": "trading_data.db",
+ "normalization": "upper().replace('/', '') \u2014 slash-only, NOT XBT-folding (BTCCHF/XBTCHF are different feeds)",
+ "n_assets_rows": 1202,
+ "n_duplicate_groups": 55,
+ "groups": [
+  {
+   "normalized_key": "AAVEUSD",
+   "members": [
+    {
+     "asset_id": 48,
+     "symbol": "AAVE/USD",
+     "ohlcv": {
+      "rows": 918567,
+      "first_ts": 1608041760,
+      "last_ts": 1775001300
+     },
+     "ohlcv_daily": {
+      "rows": 2030,
+      "first_ts": 1607990400,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1193,
+     "symbol": "AAVEUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      48,
+      1193
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      48,
+      1193
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "ADAEUR",
+   "members": [
+    {
+     "asset_id": 711,
+     "symbol": "ADA/EUR",
+     "ohlcv": {
+      "rows": 2088434,
+      "first_ts": 1538140560,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1167,
+     "symbol": "ADAEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      711,
+      1167
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      711,
+      1167
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "ADAUSD",
+   "members": [
+    {
+     "asset_id": 61,
+     "symbol": "ADA/USD",
+     "ohlcv": {
+      "rows": 2214314,
+      "first_ts": 1538141100,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 2839,
+      "first_ts": 1538092800,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1158,
+     "symbol": "ADAUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      61,
+      1158
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      61,
+      1158
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "APENFTEUR",
+   "members": [
+    {
+     "asset_id": 18,
+     "symbol": "APENFTEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 111,
+     "symbol": "APENFT/EUR",
+     "ohlcv": {
+      "rows": 3735,
+      "first_ts": 1742484660,
+      "last_ts": 1759272540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      18,
+      111
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      18,
+      111
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "APENFTUSD",
+   "members": [
+    {
+     "asset_id": 13,
+     "symbol": "APENFTUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 112,
+     "symbol": "APENFT/USD",
+     "ohlcv": {
+      "rows": 13475,
+      "first_ts": 1742483880,
+      "last_ts": 1759274700
+     },
+     "ohlcv_daily": {
+      "rows": 474,
+      "first_ts": 1742428800,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      13,
+      112
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      13,
+      112
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "AUDUSD",
+   "members": [
+    {
+     "asset_id": 171,
+     "symbol": "AUD/USD",
+     "ohlcv": {
+      "rows": 685020,
+      "first_ts": 1592344140,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 722,
+      "first_ts": 1721001600,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1188,
+     "symbol": "AUDUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      171,
+      1188
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      171,
+      1188
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "AVAXUSD",
+   "members": [
+    {
+     "asset_id": 174,
+     "symbol": "AVAX/USD",
+     "ohlcv": {
+      "rows": 932942,
+      "first_ts": 1640100840,
+      "last_ts": 1759276620
+     },
+     "ohlcv_daily": {
+      "rows": 1659,
+      "first_ts": 1640044800,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1191,
+     "symbol": "AVAXUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      174,
+      1191
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      174,
+      1191
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BCHUSD",
+   "members": [
+    {
+     "asset_id": 200,
+     "symbol": "BCH/USD",
+     "ohlcv": {
+      "rows": 1839381,
+      "first_ts": 1501603260,
+      "last_ts": 1775001180
+     },
+     "ohlcv_daily": {
+      "rows": 3260,
+      "first_ts": 1501545600,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1192,
+     "symbol": "BCHUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      200,
+      1192
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      200,
+      1192
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BNBUSD",
+   "members": [
+    {
+     "asset_id": 224,
+     "symbol": "BNB/USD",
+     "ohlcv": {
+      "rows": 79643,
+      "first_ts": 1745330460,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 441,
+      "first_ts": 1745280000,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1196,
+     "symbol": "BNBUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      224,
+      1196
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      224,
+      1196
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BONKUSD",
+   "members": [
+    {
+     "asset_id": 14,
+     "symbol": "BONKUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 239,
+     "symbol": "BONK/USD",
+     "ohlcv": {
+      "rows": 344040,
+      "first_ts": 1703264280,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 928,
+      "first_ts": 1703203200,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      14,
+      239
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      14,
+      239
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BSXUSD",
+   "members": [
+    {
+     "asset_id": 10,
+     "symbol": "BSXUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 243,
+     "symbol": "BSX/USD",
+     "ohlcv": {
+      "rows": 253131,
+      "first_ts": 1660243140,
+      "last_ts": 1759274460
+     },
+     "ohlcv_daily": {
+      "rows": 1419,
+      "first_ts": 1660176000,
+      "last_ts": 1783123200
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      10,
+      243
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      10,
+      243
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BTTUSD",
+   "members": [
+    {
+     "asset_id": 19,
+     "symbol": "BTTUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 244,
+     "symbol": "BTT/USD",
+     "ohlcv": {
+      "rows": 177077,
+      "first_ts": 1656694680,
+      "last_ts": 1759275900
+     },
+     "ohlcv_daily": {
+      "rows": 1462,
+      "first_ts": 1656633600,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      19,
+      244
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      19,
+      244
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "CRVUSD",
+   "members": [
+    {
+     "asset_id": 722,
+     "symbol": "CRV/USD",
+     "ohlcv": {
+      "rows": 627518,
+      "first_ts": 1600351920,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 2119,
+      "first_ts": 1600300800,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1199,
+     "symbol": "CRVUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      722,
+      1199
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      722,
+      1199
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "DOTUSD",
+   "members": [
+    {
+     "asset_id": 309,
+     "symbol": "DOT/USD",
+     "ohlcv": {
+      "rows": 1957269,
+      "first_ts": 1597770120,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 2149,
+      "first_ts": 1597708800,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1197,
+     "symbol": "DOTUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      309,
+      1197
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      309,
+      1197
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "ETHUSDC",
+   "members": [
+    {
+     "asset_id": 360,
+     "symbol": "ETH/USDC",
+     "ohlcv": {
+      "rows": 711990,
+      "first_ts": 1578496260,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1155,
+     "symbol": "ETHUSDC",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      360,
+      1155
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      360,
+      1155
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "ETHUSDT",
+   "members": [
+    {
+     "asset_id": 361,
+     "symbol": "ETH/USDT",
+     "ohlcv": {
+      "rows": 1190776,
+      "first_ts": 1576774140,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1162,
+     "symbol": "ETHUSDT",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      361,
+      1162
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      361,
+      1162
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "EURGBP",
+   "members": [
+    {
+     "asset_id": 370,
+     "symbol": "/EURGBP",
+     "ohlcv": {
+      "rows": 857929,
+      "first_ts": 1584025980,
+      "last_ts": 1743465540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1198,
+     "symbol": "EURGBP",
+     "ohlcv": {
+      "rows": 164760,
+      "first_ts": 1735689600,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      370,
+      1198
+     ],
+     "shared_ts": 63855,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      370,
+      1198
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "FARTCOINUSD",
+   "members": [
+    {
+     "asset_id": 391,
+     "symbol": "FARTCOIN/USD",
+     "ohlcv": {
+      "rows": 222894,
+      "first_ts": 1737644580,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 530,
+      "first_ts": 1737590400,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1161,
+     "symbol": "FARTCOINUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      391,
+      1161
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      391,
+      1161
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "KEYEUR",
+   "members": [
+    {
+     "asset_id": 16,
+     "symbol": "KEYEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 524,
+     "symbol": "KEY/EUR",
+     "ohlcv": {
+      "rows": 59601,
+      "first_ts": 1656686820,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      16,
+      524
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      16,
+      524
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "KEYUSD",
+   "members": [
+    {
+     "asset_id": 8,
+     "symbol": "KEYUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 525,
+     "symbol": "KEY/USD",
+     "ohlcv": {
+      "rows": 144159,
+      "first_ts": 1656686340,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 1467,
+      "first_ts": 1656633600,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      8,
+      525
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      8,
+      525
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "KINEUR",
+   "members": [
+    {
+     "asset_id": 12,
+     "symbol": "KINEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 528,
+     "symbol": "KIN/EUR",
+     "ohlcv": {
+      "rows": 108737,
+      "first_ts": 1643297940,
+      "last_ts": 1759276320
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      12,
+      528
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      12,
+      528
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "KINUSD",
+   "members": [
+    {
+     "asset_id": 11,
+     "symbol": "KINUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 531,
+     "symbol": "KIN/USD",
+     "ohlcv": {
+      "rows": 156480,
+      "first_ts": 1643297700,
+      "last_ts": 1759276320
+     },
+     "ohlcv_daily": {
+      "rows": 1622,
+      "first_ts": 1643241600,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      11,
+      531
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      11,
+      531
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "LINKEUR",
+   "members": [
+    {
+     "asset_id": 558,
+     "symbol": "LINK/EUR",
+     "ohlcv": {
+      "rows": 1153648,
+      "first_ts": 1569419400,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1186,
+     "symbol": "LINKEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      558,
+      1186
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      558,
+      1186
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "LINKUSD",
+   "members": [
+    {
+     "asset_id": 561,
+     "symbol": "LINK/USD",
+     "ohlcv": {
+      "rows": 1821665,
+      "first_ts": 1569420000,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 2477,
+      "first_ts": 1569369600,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1166,
+     "symbol": "LINKUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      561,
+      1166
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      561,
+      1166
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "MOGEUR",
+   "members": [
+    {
+     "asset_id": 2,
+     "symbol": "MOGEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 643,
+     "symbol": "MOG/EUR",
+     "ohlcv": {
+      "rows": 47066,
+      "first_ts": 1724949360,
+      "last_ts": 1759273200
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      2,
+      643
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      2,
+      643
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "MOGUSD",
+   "members": [
+    {
+     "asset_id": 1,
+     "symbol": "MOGUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 644,
+     "symbol": "MOG/USD",
+     "ohlcv": {
+      "rows": 213789,
+      "first_ts": 1724947620,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 667,
+      "first_ts": 1724889600,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1,
+      644
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1,
+      644
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "PAXGUSD",
+   "members": [
+    {
+     "asset_id": 736,
+     "symbol": "PAXG/USD",
+     "ohlcv": {
+      "rows": 397836,
+      "first_ts": 1572389520,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 2443,
+      "first_ts": 1572307200,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1169,
+     "symbol": "PAXGUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      736,
+      1169
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      736,
+      1169
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "PENGUUSD",
+   "members": [
+    {
+     "asset_id": 743,
+     "symbol": "PENGU/USD",
+     "ohlcv": {
+      "rows": 201833,
+      "first_ts": 1738076460,
+      "last_ts": 1759276440
+     },
+     "ohlcv_daily": {
+      "rows": 525,
+      "first_ts": 1738022400,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1189,
+     "symbol": "PENGUUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      743,
+      1189
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      743,
+      1189
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "PEPEEUR",
+   "members": [
+    {
+     "asset_id": 7,
+     "symbol": "PEPEEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 747,
+     "symbol": "PEPE/EUR",
+     "ohlcv": {
+      "rows": 506638,
+      "first_ts": 1684253040,
+      "last_ts": 1775001420
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      7,
+      747
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      7,
+      747
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "PEPEUSD",
+   "members": [
+    {
+     "asset_id": 4,
+     "symbol": "PEPEUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 749,
+     "symbol": "PEPE/USD",
+     "ohlcv": {
+      "rows": 830217,
+      "first_ts": 1684251600,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 1148,
+      "first_ts": 1684195200,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      4,
+      749
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      4,
+      749
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SHIBUSD",
+   "members": [
+    {
+     "asset_id": 15,
+     "symbol": "SHIBUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 862,
+     "symbol": "SHIB/USD",
+     "ohlcv": {
+      "rows": 1073106,
+      "first_ts": 1638286260,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 1680,
+      "first_ts": 1638230400,
+      "last_ts": 1783296000
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      15,
+      862
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      15,
+      862
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SOLEUR",
+   "members": [
+    {
+     "asset_id": 877,
+     "symbol": "SOL/EUR",
+     "ohlcv": {
+      "rows": 1594557,
+      "first_ts": 1623943860,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1151,
+     "symbol": "SOLEUR",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      877,
+      1151
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      877,
+      1151
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SOLUSD",
+   "members": [
+    {
+     "asset_id": 879,
+     "symbol": "SOL/USD",
+     "ohlcv": {
+      "rows": 1839012,
+      "first_ts": 1623943920,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 1846,
+      "first_ts": 1623888000,
+      "last_ts": 1783296000
+     }
+    },
+    {
+     "asset_id": 1143,
+     "symbol": "SOLUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      879,
+      1143
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      879,
+      1143
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SOLUSDC",
+   "members": [
+    {
+     "asset_id": 880,
+     "symbol": "SOL/USDC",
+     "ohlcv": {
+      "rows": 143476,
+      "first_ts": 1734353220,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1159,
+     "symbol": "SOLUSDC",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      880,
+      1159
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      880,
+      1159
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SOLUSDT",
+   "members": [
+    {
+     "asset_id": 881,
+     "symbol": "SOL/USDT",
+     "ohlcv": {
+      "rows": 559974,
+      "first_ts": 1665499980,
+      "last_ts": 1759276440
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1157,
+     "symbol": "SOLUSDT",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      881,
+      1157
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      881,
+      1157
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SPXUSD",
+   "members": [
+    {
+     "asset_id": 889,
+     "symbol": "SPX/USD",
+     "ohlcv": {
+      "rows": 233713,
+      "first_ts": 1733931060,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 572,
+      "first_ts": 1733875200,
+      "last_ts": 1783209600
+     }
+    },
+    {
+     "asset_id": 1194,
+     "symbol": "SPXUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      889,
+      1194
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      889,
+      1194
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "SUIUSD",
+   "members": [
+    {
+     "asset_id": 911,
+     "symbol": "SUI/USD",
+     "ohlcv": {
+      "rows": 524388,
+      "first_ts": 1683115560,
+      "last_ts": 1759276500
+     },
+     "ohlcv_daily": {
+      "rows": 1160,
+      "first_ts": 1683072000,
+      "last_ts": 1783209600
+     }
+    },
+    {
+     "asset_id": 1156,
+     "symbol": "SUIUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      911,
+      1156
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      911,
+      1156
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "TAOUSD",
+   "members": [
+    {
+     "asset_id": 930,
+     "symbol": "TAO/USD",
+     "ohlcv": {
+      "rows": 326344,
+      "first_ts": 1719342540,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 741,
+      "first_ts": 1719273600,
+      "last_ts": 1783209600
+     }
+    },
+    {
+     "asset_id": 1177,
+     "symbol": "TAOUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      930,
+      1177
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      930,
+      1177
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "USDCCAD",
+   "members": [
+    {
+     "asset_id": 992,
+     "symbol": "/USDCCAD",
+     "ohlcv": {
+      "rows": 228240,
+      "first_ts": 1668613140,
+      "last_ts": 1743465540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1183,
+     "symbol": "USDCCAD",
+     "ohlcv": {
+      "rows": 147660,
+      "first_ts": 1735689720,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      992,
+      1183
+     ],
+     "shared_ts": 39150,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      992,
+      1183
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDCEUR",
+   "members": [
+    {
+     "asset_id": 994,
+     "symbol": "/USDCEUR",
+     "ohlcv": {
+      "rows": 1725361,
+      "first_ts": 1578496620,
+      "last_ts": 1743465540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1142,
+     "symbol": "USDCEUR",
+     "ohlcv": {
+      "rows": 368648,
+      "first_ts": 1735689600,
+      "last_ts": 1758308160
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      994,
+      1142
+     ],
+     "shared_ts": 121552,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      994,
+      1142
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDCGBP",
+   "members": [
+    {
+     "asset_id": 128,
+     "symbol": "/USDCGBP",
+     "ohlcv": {
+      "rows": 994668,
+      "first_ts": 1611242100,
+      "last_ts": 1775001480
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1160,
+     "symbol": "USDCGBP",
+     "ohlcv": {
+      "rows": 210681,
+      "first_ts": 1735689720,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      128,
+      1160
+     ],
+     "shared_ts": 71096,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      128,
+      1160
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDCHF",
+   "members": [
+    {
+     "asset_id": 995,
+     "symbol": "/USDCHF",
+     "ohlcv": {
+      "rows": 1314194,
+      "first_ts": 1584025740,
+      "last_ts": 1743465240
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1170,
+     "symbol": "USDCHF",
+     "ohlcv": {
+      "rows": 292959,
+      "first_ts": 1735689600,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      995,
+      1170
+     ],
+     "shared_ts": 81980,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      995,
+      1170
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDCUSD",
+   "members": [
+    {
+     "asset_id": 996,
+     "symbol": "/USDC/USD",
+     "ohlcv": {
+      "rows": 1999124,
+      "first_ts": 1578496620,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1145,
+     "symbol": "USDCUSD",
+     "ohlcv": {
+      "rows": 245399,
+      "first_ts": 1735689600,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 721,
+      "first_ts": 1721001600,
+      "last_ts": 1783209600
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      996,
+      1145
+     ],
+     "shared_ts": 116685,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      996,
+      1145
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDCUSDT",
+   "members": [
+    {
+     "asset_id": 997,
+     "symbol": "/USDC/USDT",
+     "ohlcv": {
+      "rows": 1418075,
+      "first_ts": 1578502140,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1153,
+     "symbol": "USDCUSDT",
+     "ohlcv": {
+      "rows": 204685,
+      "first_ts": 1735689660,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      997,
+      1153
+     ],
+     "shared_ts": 70429,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      997,
+      1153
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDGUSD",
+   "members": [
+    {
+     "asset_id": 1001,
+     "symbol": "/USDG/USD",
+     "ohlcv": {
+      "rows": 11315,
+      "first_ts": 1730757960,
+      "last_ts": 1743464880
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1182,
+     "symbol": "USDGUSD",
+     "ohlcv": {
+      "rows": 177132,
+      "first_ts": 1735690980,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 609,
+      "first_ts": 1730678400,
+      "last_ts": 1783209600
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1001,
+      1182
+     ],
+     "shared_ts": 10657,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1001,
+      1182
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDTAUD",
+   "members": [
+    {
+     "asset_id": 1013,
+     "symbol": "/USDTAUD",
+     "ohlcv": {
+      "rows": 801005,
+      "first_ts": 1592345280,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1176,
+     "symbol": "USDTAUD",
+     "ohlcv": {
+      "rows": 204169,
+      "first_ts": 1735689720,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1013,
+      1176
+     ],
+     "shared_ts": 76574,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1013,
+      1176
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDTCAD",
+   "members": [
+    {
+     "asset_id": 1014,
+     "symbol": "/USDTCAD",
+     "ohlcv": {
+      "rows": 634125,
+      "first_ts": 1576777620,
+      "last_ts": 1743464880
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1179,
+     "symbol": "USDTCAD",
+     "ohlcv": {
+      "rows": 52344,
+      "first_ts": 1735690260,
+      "last_ts": 1759276380
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1014,
+      1179
+     ],
+     "shared_ts": 26333,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1014,
+      1179
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDTCHF",
+   "members": [
+    {
+     "asset_id": 1015,
+     "symbol": "/USDTCHF",
+     "ohlcv": {
+      "rows": 1375885,
+      "first_ts": 1588325520,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1172,
+     "symbol": "USDTCHF",
+     "ohlcv": {
+      "rows": 205320,
+      "first_ts": 1735689600,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1015,
+      1172
+     ],
+     "shared_ts": 76660,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1015,
+      1172
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDTEUR",
+   "members": [
+    {
+     "asset_id": 1016,
+     "symbol": "/USDTEUR",
+     "ohlcv": {
+      "rows": 2749831,
+      "first_ts": 1576770240,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1144,
+     "symbol": "USDTEUR",
+     "ohlcv": {
+      "rows": 328525,
+      "first_ts": 1735689600,
+      "last_ts": 1759276680
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1016,
+      1144
+     ],
+     "shared_ts": 125737,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1016,
+      1144
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "USDTGBP",
+   "members": [
+    {
+     "asset_id": 1017,
+     "symbol": "/USDTGBP",
+     "ohlcv": {
+      "rows": 1754018,
+      "first_ts": 1576791660,
+      "last_ts": 1743465480
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1168,
+     "symbol": "USDTGBP",
+     "ohlcv": {
+      "rows": 259865,
+      "first_ts": 1735689600,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1017,
+      1168
+     ],
+     "shared_ts": 98439,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1017,
+      1168
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "XBTUSDC",
+   "members": [
+    {
+     "asset_id": 1092,
+     "symbol": "XBT/USDC",
+     "ohlcv": {
+      "rows": 1335580,
+      "first_ts": 1578497340,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1146,
+     "symbol": "XBTUSDC",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1092,
+      1146
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1092,
+      1146
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "XBTUSDT",
+   "members": [
+    {
+     "asset_id": 1095,
+     "symbol": "XBT/USDT",
+     "ohlcv": {
+      "rows": 1923305,
+      "first_ts": 1576778760,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1154,
+     "symbol": "XBTUSDT",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1095,
+      1154
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1095,
+      1154
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "XDGUSD",
+   "members": [
+    {
+     "asset_id": 1102,
+     "symbol": "XDG/USD",
+     "ohlcv": {
+      "rows": 1964227,
+      "first_ts": 1576779600,
+      "last_ts": 1775001480
+     },
+     "ohlcv_daily": {
+      "rows": 2391,
+      "first_ts": 1576713600,
+      "last_ts": 1783209600
+     }
+    },
+    {
+     "asset_id": 1165,
+     "symbol": "XDGUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1102,
+      1165
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1102,
+      1165
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "XMRUSDT",
+   "members": [
+    {
+     "asset_id": 1113,
+     "symbol": "XMR/USDT",
+     "ohlcv": {
+      "rows": 316873,
+      "first_ts": 1665498060,
+      "last_ts": 1759276740
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1201,
+     "symbol": "XMRUSDT",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1113,
+      1201
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1113,
+      1201
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "XRPUSDC",
+   "members": [
+    {
+     "asset_id": 1122,
+     "symbol": "XRP/USDC",
+     "ohlcv": {
+      "rows": 101734,
+      "first_ts": 1734352740,
+      "last_ts": 1759276320
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1185,
+     "symbol": "XRPUSDC",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1122,
+      1185
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1122,
+      1185
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  }
+ ],
+ "task": "TASK_868 (D31 scope 3) \u2014 table-wide normalized-duplicate sweep, read-only, report-only",
+ "elapsed_s": 25.6
+}

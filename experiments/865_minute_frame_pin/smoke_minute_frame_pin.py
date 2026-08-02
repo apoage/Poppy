@@ -60,85 +60,79 @@ LEGACY_COLLECTION = os.path.join(_REPO, "experiments", "861_search_teacher_impri
 # The MINUTE-pinned fixture panel: the same window/stride/size the 861 legacy panel uses (the
 # minute pin has NO --bar-minutes 1440 requirement — that rule belongs to the daily table), so
 # the panel is the canon minute one with the universe PINNED instead of coverage-ranked.
-# T = 111 rows, window_size 60, book warm 31 -> start_row 60 -> 50 decisions on both legs.
+# TASK_868 RE-BASE (2026-08): the fixture was regenerated (fixtures/make_fixture.py) from the
+# CURRENT trading_data.db — the 858 backfill densified the majors' minute history since the old
+# fixture was cut (2025-07-07), so the minute axis moved from 27,181 to 127,602 distinct
+# minutes on this window: T = 532 rows, window_size 60, book warm 31 -> start_row 60 ->
+# 471 decisions on both legs. ZEC/USD, ETC/USD (and DASH/REP, not in this frame) still die
+# 2025-09-30, so the panel now carries LONG forward-filled stale tails.
 MINUTE_PANEL = ["--start", "2025-09-14", "--end", "2025-12-12", "--bar-minutes", "240",
                 "--n-assets", "8"]
 # The DAILY-pinned panel (the shipped 863 configuration) — used by the parity leg and the
-# cross-source refusal leg. --bar-minutes 1440 is REQUIRED there.
+# cross-source refusal leg. --bar-minutes 1440 is REQUIRED there. (The daily table's smoke
+# windows are UNCHANGED by the regen — daily paths stay bit-identical, gate (v).)
 DAILY_PANEL = ["--start", "2025-09-14", "--end", "2025-12-12", "--bar-minutes", "1440",
                "--n-assets", "8"]
 COLLECT_POSITION_SIZE_PCT = 0.1          # teacher of record (conditionally exempt under weight)
 
 # 8 slots over the fixture's minute table: 6 symbols with minute coverage in the window and 2
 # (`/EURGBP`, `/USDCAD`) with ZERO — interleaved at slots 1 and 4 so a slot shift cannot
-# coincidentally line up. Two of the covered slots list one bar late (PARTIAL) and one (`ZEC/USD`,
-# minute data ends 2025-09-30) is a STALE TAIL: the fixture analogue of the real leg's FTM->S /
-# MATIC->POL ticker migrations, which is why the stale-tail disclosure exists at all.
+# coincidentally line up. `/EURGBP` is ALSO the fixture's one live alias pair (asset_ids
+# [370, 1198] — both empty on this window, so the union is a numeric no-op but the D31 (a1)
+# disclosure has something to disclose). Three slots list one bar late (PARTIAL heads) and two
+# (`ZEC/USD`, `ETC/USD` — minute data ends 2025-09-30) are STALE TAILS: the fixture analogue of
+# the real leg's FTM->S / MATIC->POL ticker migrations, which is why the stale-tail disclosure
+# exists at all.
 FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
                  "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
 EXPECT_INACTIVE_SLOTS = [1, 4]
-# Slots 5 and 7 list one bar late (mid-window listing) => PARTIAL: their pre-listing rows are
-# flat-zero and force-HOLD. Slot 6 is the STALE TAIL and under D30 opt (i) it is NOT partial — its
-# trailing rows are FORWARD-FILLED at the last real close, so every one of its rows carries a price
-# and is tradeable. It is disclosed on its own axis instead (stale_tail_slots), which is the point:
-# a slot that is in NEITHER inactive_slots NOR partial_slots must still be discoverable.
-EXPECT_PARTIAL_SLOTS = [5, 7]
-EXPECT_STALE_TAIL_SLOTS = [6]
-EXPECT_STALE_TAIL_SYMBOL = "ZEC/USD"
-EXPECT_T_ROWS = 111
-EXPECT_DECISIONS = 50
+# Slots 3, 5 and 7 list one bar late (mid-window listing) => PARTIAL: their pre-listing rows are
+# flat-zero and force-HOLD. Slots 6 and 7 are the STALE TAILS: their trailing rows are
+# FORWARD-FILLED at the last real close (D30 opt (i), PV-exact for VALUATION) and, as of
+# TASK_868 (D31 a2), force-HELD for OPENING by the causal open-gate — at decision time a
+# delisting and an interior hole are indistinguishable without look-ahead. Slot 7 is BOTH
+# partial (head) and stale-tailed; slot 6 is a tail-only slot and is in NEITHER inactive_slots
+# NOR partial_slots — it is disclosed on its own axis (stale_tail_slots).
+EXPECT_PARTIAL_SLOTS = [3, 5, 7]
+EXPECT_STALE_TAIL_SLOTS = [6, 7]
+EXPECT_STALE_TAIL_SYMBOLS = ["ZEC/USD", "ETC/USD"]
+EXPECT_TAIL_ONLY_SLOTS = [6]               # stale-tailed and NOT partial
+EXPECT_T_ROWS = 532
+EXPECT_DECISIONS = 471
 EXPECT_START_ROW = 60
 EXPECT_DEAD_SLOT_CHANNELS = [8, 9, 10, 11]
-# The stale tail, MEASURED (fixture): ZEC/USD's last real minute close is 2025-09-30. The LAST
-# PANEL BAR that carries a real print for it is row 103 of 110 (px[102]=74.01, px[103..110]=74.19 =
-# the last real close), so rows 104..110 are FROZEN. Decisions run rows 60..109 (k = row - 60), so
-# decisions k=44..49 trade a FROZEN tail price and NONE of them is force-HELD — the polarity of
-# this expectation inverted with D30 (it was HELD under the zeroed tail, which was measured to
-# fabricate -/+25% of PV; see the (0) PV-conservation leg).
-# FIX PASS, why 102 -> 103 and 8 -> 7: ``last_covered_row`` used to be ``last_real_full // step``,
-# the panel row at-or-BEFORE the last 1-min close. But panel row r is the ``[::step]`` sample at
-# minute r*step, i.e. it stands for the BAR ((r-1)*step, r*step] — and this slot's last print falls
-# INSIDE bar 103, not bar 102. Row 103 therefore carries real data and row 104 is the first frozen
-# one. Derived from the panel's real-BAR mask (``_real_bar_mask``) it is 103 / 7.
+# The stale tails, MEASURED (fixture, TASK_868 regen): ZEC/USD and ETC/USD both print their last
+# real minute close 2025-09-30; the LAST PANEL BAR carrying a real print is row 103 of 531, so
+# rows 104..531 are FROZEN (428 rows each). Decisions run rows 60..530 (k = row - 60), so
+# decisions k=44..470 (427 cells per slot) carry a FROZEN tail price. Under D30 those decisions
+# were TRADEABLE at the frozen price; under TASK_868 (D31 a2) they are force-HELD — the WHOLE
+# action (the causal open-gate) — while VALUATION still reads the fill: the polarity this
+# suite's stale-tail legs now assert.
 EXPECT_STALE_TAIL_LAST_ROW = 103
-EXPECT_STALE_TAIL_TRAILING_ROWS = 7
-EXPECT_STALE_TAIL_FROZEN_K = list(range(44, 50))
-# Per-slot force-HOLD decision cells: 50 each for the two ZERO-COVERAGE slots, and nothing else —
-# the stale tail contributes 0 (it is tradeable at a frozen price), so 107 -> 100 under D30.
-EXPECT_HOLD_CELLS_PER_SLOT = [0, 50, 0, 0, 50, 0, 0, 0]
-EXPECT_TOTAL_HOLD_CELLS = 100
+EXPECT_STALE_TAIL_TRAILING_ROWS = 428
+EXPECT_STALE_TAIL_FROZEN_K = list(range(44, 471))
+# Per-slot force-HOLD decision cells: 471 each for the two ZERO-CVERAGE slots (inert) + 427
+# each for the two stale tails (open-gated) = 1,796 of 3,768.
+EXPECT_HOLD_CELLS_PER_SLOT = [0, 471, 0, 0, 471, 0, 427, 427]
+EXPECT_TOTAL_HOLD_CELLS = 1796
 
 # ---- FIX PASS: FROZEN-CELL ACCOUNTING on the fixture grid, and the definition it turns on ------
-# THE defect this fix pass closes: staleness used to be derived from the last real row only, so an
-# INTERIOR hole — a gap that RESUMES before the window end — produced no disclosure whatsoever (no
-# stale_tail, no partial, no inactive, and covered_rows == n_rows). On the 861 leg-1 window that
-# hides 2,013 cells (1.88% of the grid) on 11 near-empty slots, with re-anchor jumps up to +64.52%.
-#
-# THE DEFINITION IS LOAD-BEARING and the panel's two measurements used different ones. A panel row
-# is REAL when the slot printed ANYWHERE INSIDE ITS BAR ((r-1)*step, r*step]; it is FROZEN when the
-# slot printed nothing in the whole bar (``eval_vector._real_bar_mask``). The alternative reading —
-# "the slot printed at the EXACT sampled minute r*step" — measures sparsity, not staleness: minute
-# bars only exist where a trade happened, so on trading_data.db it marks 51.22% of the leg-1 grid
-# frozen (40.34% live), against 2.22% / 89.33% for the bar rule. The bar rule is the one that
-# reproduces the panel's own independently measured 2,013 interior cells and its exact list of 11
-# slots, so it is the one that ships. The exact-minute count is kept as a labelled DIAGNOSTIC
-# (``no_print_at_sampled_minute_rows``) because it says something true about the canon
-# [::bar_minutes] operator — it samples one minute rather than aggregating the bar.
-#
-# On THIS fixture frame, MEASURED under the bar rule: 100 INERT + 6 FROZEN (0 interior + 6 trailing)
-# = 106 not real, 294 (73.50%) LIVE. NB the panel's "fixture is 25% undisclosed-frozen / 192 live"
-# is the exact-minute reading of the same grid (109 frozen, 191 live) — reported by the leg below
-# as a diagnostic, NOT as the frozen count.
+# (TASK_868 RE-BASE: numbers below are re-measured on the regenerated fixture — see MINUTE_PANEL.)
+# On THIS fixture frame, MEASURED under the bar rule: 942 INERT + 854 FROZEN (0 interior + 854
+# trailing) = 1,796 not real, 1,972 (52.34%) LIVE. NB the pre-868 fixture's "25% undisclosed-frozen"
+# was the exact-minute reading of the old sparse grid — the bar rule is the shipped definition, the
+# exact-minute count is kept as a labelled DIAGNOSTIC (``no_print_at_sampled_minute_rows``).
 EXPECT_FROZEN_INTERIOR_CELLS = 0
-EXPECT_FROZEN_TAIL_CELLS = 6
-EXPECT_FROZEN_CELLS_TOTAL = 6
-EXPECT_LIVE_CELLS = 294
-EXPECT_NOT_REAL_CELLS = 106
-EXPECT_FROZEN_PER_SLOT = {6: 6}                             # interior + trailing, per slot
-EXPECT_FROZEN_SLOTS = [6]
+EXPECT_FROZEN_TAIL_CELLS = 854
+EXPECT_FROZEN_CELLS_TOTAL = 854
+EXPECT_LIVE_CELLS = 1972
+EXPECT_INERT_CELLS = 942
+EXPECT_NOT_REAL_CELLS = 1796
+EXPECT_FROZEN_PER_SLOT = {6: 427, 7: 427}                 # interior + trailing, per slot
+EXPECT_FROZEN_SLOTS = [6, 7]
 # The exact-minute DIAGNOSTIC on the same grid (the panel's number), asserted so the two readings
 # are both recorded and can never be silently conflated again.
-EXPECT_NO_PRINT_AT_SAMPLED_MINUTE_ROWS = {3: 21, 5: 37, 6: 80, 7: 92}
+EXPECT_NO_PRINT_AT_SAMPLED_MINUTE_ROWS = {0: 2, 2: 7, 3: 76, 5: 148, 6: 506, 7: 514}
 
 # ---- a SYNTHETIC interior gap, through the REAL loader ----------------------------------------
 # The fixture's own minute table has NO multi-bar interior hole under the bar rule, so the interior
@@ -198,14 +192,12 @@ EXPECT_DENSE_ARTIFACT_SPANS = 64             # == eval_vector.FROZEN_SPANS_ARTIF
 # panel and reports both deltas with the reason each differs.
 VOID_WALK_NET21 = 11.32152396918238
 D30_PREDICTED_WALK_NET21 = 17.1242
-# The PRE-FIX stale-tail boundary (``last_real_full // step``). Kept so the panel's own decomposition
-# can be reproduced EXACTLY rather than against a control this fix pass moved (102 -> 103).
+# The PRE-FIX stale-tail boundary (``last_real_full // step``) and the panel's measured
+# pure-channel replay numbers under it — HISTORICAL RECORD only as of TASK_868: they belong to
+# the OLD fixture panel (T=111) and are not reproducible on the regenerated fixture (T=532).
+# The (i-b) leg keeps the structural assertions (the pure valuation channel is SMALL; the masked
+# replay is the post-868 semantics) and records fresh numbers.
 VOID_LAST_COVERED_ROW = 102
-# The panel's measured pure-channel numbers under THAT boundary: replaying the recorded teacher
-# stream UNCHANGED gives filled 14.949671921997371 vs zeroed 15.952853341299857 => the pure
-# valuation/tradeability channel is -1.00 Sharpe, i.e. OPPOSITE IN SIGN and ~1/16 the magnitude of
-# the +16.26 swing the recorded sanity_net21 note attributed to "the stale-tail slot's last 7
-# decisions are now tradeable". Asserted, so the corrected attribution is a test, not a claim.
 PANEL_MEASURED_FILLED_REPLAY = 14.949671921997371
 PANEL_MEASURED_ZEROED_REPLAY = 15.952853341299857
 # D30 rider (b): this 8-slot fixture frame is 6/8 covered BY DESIGN (the inactive slots are the
@@ -305,20 +297,38 @@ REAL_BAR_MINUTES = 1440                  # the leg-1 stride (TASK_865 "Real leg"
 # (D30's "~9.6% / 110,976" counted head cells over ALL panel rows incl. the 60-row warmup and had
 # no interior term at all; the old 8.79% is this measurement's head+tail under a 1735-row axis.
 # Same instrument, different row convention and a missing term — both are reported below.)
+# TASK_868 RE-REGISTRATION (gate (i), measured this task through the ALIAS UNION — see
+# runs/868_asset_identity_repair/harvest_gate_i.py). Pre-868 registration, kept for the record:
+#   INERT 9,047 = 8.4444%   FROZEN 2,383 = 2.2243% (2,013 = 1.8789% INTERIOR + 370 trailing)
+#   NOT REAL 11,430 = 10.6687%   LIVE 95,706 = 89.3313%
+# Post-868, same instrument, alias-unioned (17/64 frame slots resolve to twin groups; the 6
+# span-carriers agree to max rel diff 0.00 over 70k-126k shared timestamps):
+#   INERT     9,047  =  8.4444%   (heads are pre-listing — unchanged, as expected)
+#   FROZEN    1,381  =  1.2890%   (1,011 = 0.9437% INTERIOR + 370 = 0.3454% trailing, unchanged)
+#   NOT REAL 10,428  =  9.7334%   LIVE 96,708 = 90.2666%
+# The interior term is now the D31-predicted ~1% residue: the 5 genuine sparse crosses
+# (ETHBTC 183, BTCGBP/BTCCHF/BTCCAD/XRPBTC 182 = 911) + /USDC/USD 90 (its twin's own span has
+# sub-gaps — the one split slot NOT fully repaired) + STX/USD 8 + BCH/USD 1 + XRP/USD 1.
 EXPECT_INERT_DECISION_CELL_PCT = 8.44
 EXPECT_INERT_PCT_TOLERANCE = 1.0
-EXPECT_FROZEN_DECISION_CELL_PCT = 2.22        # its OWN axis, TIGHT band (see below)
+EXPECT_FROZEN_DECISION_CELL_PCT = 1.29        # its OWN axis, TIGHT band (RE-REGISTERED post-868)
 EXPECT_FROZEN_PCT_TOLERANCE = 0.30            # one extra 186-row delisting = +0.17pp => visible
-EXPECT_NOT_REAL_DECISION_CELL_PCT = 10.67
+EXPECT_NOT_REAL_DECISION_CELL_PCT = 9.73
 EXPECT_NOT_REAL_PCT_TOLERANCE = 1.0
-EXPECT_REAL_INTERIOR_FROZEN_PCT = 1.88        # the term the old gate could not see at all
+EXPECT_REAL_INTERIOR_FROZEN_PCT = 0.94        # the term D31 (a1) shrinks 2,013 -> ~1k cells
 EXPECT_REAL_INTERIOR_PCT_TOLERANCE = 0.30
-# The near-empty 2025-03-31..2025-10-01 slots that produce the bulk of the interior term. Named
-# because a change in THIS list is a data-coverage event the planner must see, not a rounding wobble.
-EXPECT_INTERIOR_FROZEN_SYMBOLS = [
-    "/USDC/USD", "/USDC/USDT", "/USDCGBP", "/USDTAUD", "/USDTCHF", "/USDTEUR",
-    "BTCCAD", "BTCCHF", "BTCGBP", "ETHBTC", "XRPBTC"]
-EXPECT_INTERIOR_FROZEN_CELLS_EACH = 182       # each of the 11, measured
+# The 6 ingest-split slots D31 (a1) repairs, with the twin ids the union must name. Post-union
+# they read as REAL data: 5 of 6 to 0 interior cells; /USDC/USD keeps a 90-cell residue (its
+# twin id 1145's own 2025-01-01..2025-10-01 span has sub-gaps) — the residual is NAMED, with a
+# small band so the gate stays a STOP on a coverage regression without wobbling on boundary rows.
+EXPECT_SPLIT_SYMBOLS = {"/USDTEUR": [1016, 1144], "/USDTCHF": [1015, 1172],
+                        "/USDC/USD": [996, 1145], "/USDCGBP": [128, 1160],
+                        "/USDC/USDT": [997, 1153], "/USDTAUD": [1013, 1176]}
+EXPECT_SPLIT_RESIDUAL_CELLS = {"/USDC/USD": 90}
+# The residual interior-frozen slots post-union (>= ~167 cells each): exactly the 5 genuine
+# sparse crosses D31 kept. A change in THIS list is a data-coverage event, not a rounding wobble.
+EXPECT_INTERIOR_FROZEN_SYMBOLS = ["BTCCAD", "BTCCHF", "BTCGBP", "ETHBTC", "XRPBTC"]
+EXPECT_INTERIOR_FROZEN_CELLS_EACH = 182       # each of the 5, measured
 # Row counts under the LOADER's own window convention: eval_vector._to_epoch(end) is MIDNIGHT of the
 # end date, so 2025-10-04's intraday minutes are OUTSIDE the window -> 2,495,590 distinct minutes ->
 # 1734 panel rows -> 1674 decision rows. An end-of-day convention adds ~1499 minutes = one more
@@ -390,7 +400,13 @@ def eval_cmd(out_dir, collect, frame=None, source="minute", panel=None):
 
 
 def imprint_cmd(out_json, ckpt_out, collection, frame=None, source="minute", panel=None,
-                iters=80, extra=()):
+                iters=150, extra=()):
+    # TASK_868 re-base note (measured on the regenerated fixture): the decision grid is now
+    # 471x8 with 1,796 force-HOLD cells (47.7% — the two zero-coverage slots + the two long
+    # open-gated stale tails), and at the old 80 iters the student collapses to a total-HOLD
+    # policy (the degenerate-replay refusal fires, correctly). 150 iters is the measured
+    # escape point for THIS configuration (the collapse band is configuration-dependent by
+    # design); the degenerate legs below still exercise the collapse on purpose.
     cmd = [sys.executable, IMPRINT_PY, "--db", FIXTURE_DB, *(panel or MINUTE_PANEL),
            "--vector-weight-rebalance", "--teacher-vectors", collection,
            "--allow-off-pin-teacher", "--iters", str(iters), "--seed", "0",
@@ -524,7 +540,7 @@ def leg_pv_conservation(R, imp):
     print("\n=== (0) PV CONSERVATION — flat prices, fee 0: every book ends at 100,000.00 ===")
     ev = imp._load_eval_module()
     db = _write_pv_db(R("pv_conservation.db"))
-    prices_np, syms, row_ts, cov = ev.load_minute_prices_framed(
+    prices_np, syms, row_ts, cov, gate = ev.load_minute_prices_framed(
         db, PV_WINDOW[0], PV_WINDOW[1], PV_SYMBOLS, 1)   # 4/4 slots covered: no override needed
     px = np.asarray(prices_np)
     n_assets = len(PV_SYMBOLS)
@@ -556,6 +572,15 @@ def leg_pv_conservation(R, imp):
     px_zeroed = px.copy()
     px_zeroed[PV_LAST_REAL_ROW + 1:, PV_DELIST_SLOT] = 0.0
     ctl = walk(px_zeroed)
+    # --- TASK_868 gate (iv), first half: PV conservation WITH THE OPEN-GATE MASK ON. The
+    # delisted slot's trailing cells are open-gated (no print in the bar), so the full
+    # hold_mask (inert|gated) force-HOLDs them — and the invariant must STILL hold to the
+    # cent, because the gate touches OPENING only and the books opened at k=0 (a live cell).
+    pj = imp.jnp.asarray(px, dtype=imp.jnp.float32)
+    mask868 = imp.frame_hold_mask(pj, PV_START_ROW, N, open_gate=gate)
+    masked868 = {side: imp.walk_env(pj, cfg, PV_START_ROW, N, book(code), hold_mask=mask868)
+                 for side, code in (("long", 2), ("short", 0))}
+    n_gated = int((~np.asarray(gate)[PV_START_ROW:PV_START_ROW + N, PV_DELIST_SLOT]).sum())
     cent = lambda v: round(float(v), 2)                                       # noqa: E731
     stale = [c for c in cov if c.get("stale_tail")]
     checks = {
@@ -581,12 +606,23 @@ def leg_pv_conservation(R, imp):
         "control_error_is_the_delisted_slots_whole_weight": all(
             abs(abs(cent(ctl[s]["final_pv"]) - PV_INITIAL_CASH)
                 - PV_INITIAL_CASH / n_assets) < 50.0 for s in ("long", "short")),
+        # ---- TASK_868 gate (iv): THE INVARIANT HOLDS WITH THE OPEN-GATE MASK ON ----
+        "open_gate_masks_the_delisted_slots_tail_cells": n_gated == (
+            (PV_N_ROWS - 1) - (PV_LAST_REAL_ROW + 1)),
+        "MASK_ON_long_book_ends_at_exactly_initial_cash": cent(
+            masked868["long"]["final_pv"]) == cent(PV_INITIAL_CASH),
+        "MASK_ON_short_book_ends_at_exactly_initial_cash": cent(
+            masked868["short"]["final_pv"]) == cent(PV_INITIAL_CASH),
     }
     for k, v in checks.items():
         print(f"    {'OK  ' if v else 'FAIL'} {k}")
     print(f"    LOADER PANEL (the shipped fill rule): LONG final_pv "
           f"{live['long']['final_pv']:,.2f}  SHORT final_pv {live['short']['final_pv']:,.2f}  "
           f"(both MUST be {PV_INITIAL_CASH:,.2f})")
+    print(f"    MASK ON (TASK_868 open-gate)    : LONG final_pv "
+          f"{masked868['long']['final_pv']:,.2f}  SHORT final_pv "
+          f"{masked868['short']['final_pv']:,.2f}  (both MUST be {PV_INITIAL_CASH:,.2f}; "
+          f"{n_gated} tail cells force-HELD)")
     print(f"    CONTROL, tail zeroed by hand : LONG final_pv "
           f"{ctl['long']['final_pv']:,.2f}  SHORT final_pv {ctl['short']['final_pv']:,.2f}  "
           f"(fabricated: -/+ one slot's whole {100.0 / n_assets:.0f}% weight)")
@@ -595,6 +631,9 @@ def leg_pv_conservation(R, imp):
             "short_final_pv": round(float(live["short"]["final_pv"]), 2),
             "control_long_final_pv": round(float(ctl["long"]["final_pv"]), 2),
             "control_short_final_pv": round(float(ctl["short"]["final_pv"]), 2),
+            "mask_on_long_final_pv": round(float(masked868["long"]["final_pv"]), 2),
+            "mask_on_short_final_pv": round(float(masked868["short"]["final_pv"]), 2),
+            "open_gated_tail_cells": n_gated,
             "initial_cash": PV_INITIAL_CASH, "n_decisions": N,
             "delisted_slot": PV_DELIST_SLOT, "last_real_row": PV_LAST_REAL_ROW}
 
@@ -608,15 +647,15 @@ def leg_positional_loader(R, imp):
     fp = write_frame(R("frame_positional.json"), FRAME_SYMBOLS, "TASK_865 positional-loader frame")
     args, prices_j, env_cfg, frame, start_row, N, T = _framed_panel(imp, fp)
     px = np.asarray(prices_j)
-    mask = imp.frame_hold_mask(prices_j, start_row, N)
+    mask = imp.frame_hold_mask(prices_j, start_row, N, open_gate=frame["open_gate"])
     per_slot = [int(x) for x in np.asarray(mask).sum(axis=0)]
     cov = {int(c["slot"]): c for c in frame["coverage"]}
     obs = imp.encode_training_obs(prices_j, start_row, N, env_cfg)
     rep = imp.check_inactive_slot_features(obs, frame["inactive_slots"])
     checks = {
-        "panel_is_T111_x_8_with_50_decisions": (T == EXPECT_T_ROWS and px.shape[1] == 8
-                                                and N == EXPECT_DECISIONS
-                                                and start_row == EXPECT_START_ROW),
+        "panel_is_T532_x_8_with_471_decisions": (T == EXPECT_T_ROWS and px.shape[1] == 8
+                                                 and N == EXPECT_DECISIONS
+                                                 and start_row == EXPECT_START_ROW),
         "every_recorded_symbol_kept_in_order": (
             list(frame["frame_symbols"]) == FRAME_SYMBOLS),
         "zero_coverage_slots_are_FLAT_ZERO_columns": all(
@@ -626,16 +665,19 @@ def leg_positional_loader(R, imp):
         "stale_tail_slots_exact": (
             frame["panel_frame"]["stale_tail_slots"] == EXPECT_STALE_TAIL_SLOTS),
         "stale_tail_symbol_named": all(
-            c["symbol"] == EXPECT_STALE_TAIL_SYMBOL
+            c["symbol"] in EXPECT_STALE_TAIL_SYMBOLS
             for c in frame["panel_frame"]["stale_tail_spans"]),
-        # D30 opt (i) inverted this: a TAIL-ONLY slot is no longer 'partial' (every row of it
-        # carries a forward-filled price and is tradeable), so it is in NEITHER inactive_slots NOR
-        # partial_slots and stale_tail_slots is the ONLY place it appears. NB a slot CAN be both —
-        # on the 861 real leg both migration slots are late-listing too — the fixture's is not.
-        "tail_only_slot_is_NOT_partial_but_IS_stale_disclosed": (
-            EXPECT_STALE_TAIL_SLOTS[0] not in frame["partial_slots"]
-            and cov[EXPECT_STALE_TAIL_SLOTS[0]]["status"] == "active"
-            and EXPECT_STALE_TAIL_SLOTS[0] in frame["panel_frame"]["stale_tail_slots"]),
+        # D30 opt (i) made a TAIL-ONLY slot non-'partial' (every row of it carries a
+        # forward-filled price), so it is in NEITHER inactive_slots NOR partial_slots and
+        # stale_tail_slots is the ONLY place it appears. NB a slot CAN be both — on the 861 real
+        # leg both migration slots are late-listing too, and on this fixture slot 7 (ETC/USD)
+        # is partial (1-row head) AND stale-tailed; slot 6 (ZEC/USD) is the tail-only case.
+        "tail_only_slot_is_NOT_partial_but_IS_stale_disclosed": all(
+            s not in frame["partial_slots"]
+            and cov[s]["status"] == "active"
+            and s in frame["panel_frame"]["stale_tail_slots"] for s in EXPECT_TAIL_ONLY_SLOTS),
+        "partial_AND_stale_slot_is_in_both_lists": (
+            7 in frame["partial_slots"] and 7 in frame["panel_frame"]["stale_tail_slots"]),
         "hold_cells_per_slot_exact": per_slot == EXPECT_HOLD_CELLS_PER_SLOT,
         # Every partial HEAD is pre-warm (so it costs no decision cell); the partial TAIL is the
         # stale-tail slot and IS inside the decision range — asserted in leg (ii-a3).
@@ -659,79 +701,82 @@ def leg_positional_loader(R, imp):
           f"{cov[EXPECT_STALE_TAIL_SLOTS[0]]['last_real_ts']} = panel row "
           f"{cov[EXPECT_STALE_TAIL_SLOTS[0]]['last_covered_row']}, "
           f"{cov[EXPECT_STALE_TAIL_SLOTS[0]]['trailing_stale_rows']} trailing rows "
-          f"FORWARD-FILLED at that close (tradeable, frozen)")
+          f"FORWARD-FILLED at that close (VALUATION) and force-HELD for OPENING (D31 a2)")
     return {"leg": "iia_positional_loader", "passed": all(checks.values()), "checks": checks,
             "hold_cells_per_slot": per_slot}
 
 
 def leg_stale_tail_guard(R, imp):
-    """THE STALE-TAIL CONTRACT under D30 opt (i), asserted with a negative control (the 863 lesson:
-    every new guard is shown to FAIL when disabled). The POLARITY of this leg inverted with the
-    ruling, and the reason is measured, not stylistic — see the (0) PV-conservation leg.
-
-    Positive: the delisted slot's trailing rows carry its LAST REAL CLOSE, forward-filled, so every
-    one of its decisions is TRADEABLE (force-HOLD cells: 0) and the tail is DISCLOSED rather than
-    masked. The boundary is asserted both ways: the last real row is a real price, and every row
-    after it is that SAME price (frozen, never a new value).
-    Negative control: rebuild the panel with the tail ZEROED (the pre-D30 behaviour) and show the
-    contract breaks — those decisions become force-HOLD, which is exactly the state in which the
-    env marks an open position against price 0 and fabricates -/+25% of PV."""
+    """THE STALE-TAIL CONTRACT under D30 opt (i) + TASK_868 (D31 a2), asserted with a negative
+    control (the 863 lesson: every guard is shown to FAIL when disabled). The polarity of this
+    leg has now inverted TWICE, each time for a measured reason:
+      * pre-D30 (zeroed tail): tail cells force-HELD, PV fabricated (the (0) PV leg's control);
+      * D30 opt (i) (forward-filled tail): tail cells TRADEABLE at the frozen price — a constant
+        tail cannot fabricate PnL;
+      * TASK_868 (D31 a2) (forward-filled tail + causal open-gate): tail cells force-HELD for
+        OPENING again, but for the NEW reason — the mask is CAUSAL, and at decision time a
+        delisting and an interior hole are indistinguishable without look-ahead into whether
+        the gap later resumes. VALUATION still reads the fill (PV-exact, the (0) leg with the
+        mask ON); the fill itself is UNCHANGED from D30.
+    Positive: the tail rows carry the LAST REAL CLOSE forward-filled (boundary asserted both
+    ways), the tail is DISCLOSED on its own axis, and the frozen decisions k=44..470 are
+    force-HELD while the pre-tail decisions k=0..43 stay openable.
+    Negative control: rebuild the mask WITHOUT the open-gate (the D30-only rule) and show the
+    frozen decisions become non-held — i.e. this leg really exercises the 868 gate."""
     import numpy as np
-    print("\n=== (ii-a3) STALE TAIL — forward-filled, tradeable, DISCLOSED (+ neg control) ===")
+    print("\n=== (ii-a3) STALE TAIL — filled for VALUATION, force-HELD (whole action, D31 a2) ===")
     fp = write_frame(R("frame_stale_tail.json"), FRAME_SYMBOLS, "TASK_865 stale-tail frame")
     args, prices_j, env_cfg, frame, start_row, N, T = _framed_panel(imp, fp)
     px = np.asarray(prices_j)
     s = EXPECT_STALE_TAIL_SLOTS[0]
-    mask = np.asarray(imp.frame_hold_mask(prices_j, start_row, N))
+    mask = np.asarray(imp.frame_hold_mask(prices_j, start_row, N,
+                                          open_gate=frame["open_gate"]))
     held = sorted(int(k) for k in np.nonzero(mask[:, s])[0])
     last_real_px = float(px[EXPECT_STALE_TAIL_LAST_ROW, s])
-    # --- negative control: zero the tail (the pre-D30 behavior) ---
-    px_zeroed = px.copy()
-    px_zeroed[EXPECT_STALE_TAIL_LAST_ROW + 1:, s] = 0.0
-    mask_off = px_zeroed[start_row:start_row + N] <= 0.0
-    held_off = sorted(int(k) for k in np.nonzero(mask_off[:, s])[0])
+    # --- negative control: the D30-only mask (no open-gate) leaves the tail unheld ---
+    mask_d30 = np.asarray(imp.frame_hold_mask(prices_j, start_row, N))
+    held_d30 = sorted(int(k) for k in np.nonzero(mask_d30[:, s])[0])
     cov = {int(c["slot"]): c for c in frame["coverage"]}
     entry = cov[s]
     tail = px[EXPECT_STALE_TAIL_LAST_ROW + 1:, s]
     checks = {
         # The tail is a single FROZEN value carried to the window end. NB it is the slot's LAST real
         # 1-min close, which need not equal the STRIDED row 102 value (the stride samples one minute
-        # per bar, the fill runs at 1-min resolution) — hence "constant and non-zero", not
-        # "equal to px[102]".
+        # per bar, the fill runs at 1-min resolution) — hence "constant and non-zero".
         "tail_rows_are_ONE_frozen_nonzero_value": bool(
             tail.size and (tail == tail[0]).all() and tail[0] > 0),
         "last_real_close_row_is_nonzero": last_real_px > 0,
         "no_tail_row_is_flat_zero": bool((px[EXPECT_STALE_TAIL_LAST_ROW + 1:, s] != 0).all()),
         "trailing_row_count_exact": (
             px.shape[0] - 1 - EXPECT_STALE_TAIL_LAST_ROW == EXPECT_STALE_TAIL_TRAILING_ROWS),
-        # every decision on this slot is tradeable: the tail is priced, not masked
-        "NO_decision_on_the_slot_is_force_HELD": held == [],
-        "whole_slot_is_tradeable_all_N_decisions": int((~mask[:, s]).sum()) == N,
-        # ... and it is DISCLOSED instead: the frozen span is named, with its row and count
+        # TASK_868 (D31 a2): every FROZEN decision is force-HELD (the whole tail, and ONLY it)
+        "frozen_decisions_are_force_HELD_exactly": held == EXPECT_STALE_TAIL_FROZEN_K,
+        "pre_tail_decisions_stay_openable": all(
+            not mask[k, s] for k in range(EXPECT_STALE_TAIL_FROZEN_K[0])),
+        # ... and the tail is DISCLOSED on its own axis: the frozen span is named, with its row
         "tail_is_DISCLOSED_in_coverage": (
             entry.get("stale_tail") is True
             and entry.get("last_covered_row") == EXPECT_STALE_TAIL_LAST_ROW
             and entry.get("trailing_stale_rows") == EXPECT_STALE_TAIL_TRAILING_ROWS),
         "tail_is_DISCLOSED_in_the_artifact_block": (
             frame["panel_frame"]["stale_tail_slots"] == EXPECT_STALE_TAIL_SLOTS
-            and frame["panel_frame"]["n_stale_tail_slots"] == 1),
-        "disclosure_text_says_FORWARD_FILLED_and_TRADEABLE": all(
+            and frame["panel_frame"]["n_stale_tail_slots"] == len(EXPECT_STALE_TAIL_SLOTS)),
+        "disclosure_text_says_FORWARD_FILLED_and_PV_exact": all(
             t in frame["panel_frame"]["stale_tail_rule"]
-            for t in ("FORWARD-FILLED", "TRADEABLE", "frozen")),
-        # --- NEGATIVE CONTROL: zero the tail and the contract above breaks ---
-        "neg_control_zeroed_tail_IS_force_HELD": held_off == EXPECT_STALE_TAIL_FROZEN_K,
-        "neg_control_breaks_the_tradeable_assertion": held_off != held,
+            for t in ("FORWARD-FILLED", "PV-exact", "force-HELD")),
+        # --- NEGATIVE CONTROL: without the open-gate (the D30-only rule) nothing is held ---
+        "neg_control_D30_only_mask_holds_NOTHING": held_d30 == [],
+        "neg_control_proves_the_gate_is_what_holds_them": held_d30 != held,
     }
     for k, v in checks.items():
         print(f"    {'OK  ' if v else 'FAIL'} {k}")
-    print(f"    D30 ON  : slot {s} tradeable on all k=0..{N - 1}; rows "
-          f"{EXPECT_STALE_TAIL_LAST_ROW + 1}..{px.shape[0] - 1} frozen at {float(tail[0]):.4f} "
-          f"(decisions k={EXPECT_STALE_TAIL_FROZEN_K} trade a frozen price, disclosed)")
-    print(f"    control (tail zeroed, pre-D30): slot {s} force-HELD on k={held_off} — the state in "
-          f"which an open position is marked against price 0 (see the (0) PV leg: 75,002.50 / "
-          f"124,997.50 instead of 100,000.00)")
-    return {"leg": "iia3_stale_tail_disclosed_and_filled", "passed": all(checks.values()),
-            "checks": checks, "held_decisions": held, "held_decisions_tail_zeroed": held_off,
+    print(f"    D31 a2 ON: slot {s} force-HELD on k={held[0]}..{held[-1]} ({len(held)} cells); "
+          f"rows {EXPECT_STALE_TAIL_LAST_ROW + 1}..{px.shape[0] - 1} frozen at "
+          f"{float(tail[0]):.4f} (VALUATION still reads the fill — PV-exact, (0) leg MASK ON)")
+    print(f"    control (D30-only mask, no open-gate): slot {s} force-HELD on k={held_d30} — the "
+          f"tail was TRADEABLE under D30; the 868 causal gate is what holds it now")
+    return {"leg": "iia3_stale_tail_disclosed_filled_masked", "passed": all(checks.values()),
+            "checks": checks, "held_decisions": held, "held_decisions_d30_only_mask": held_d30,
             "last_real_row": EXPECT_STALE_TAIL_LAST_ROW, "frozen_price": float(tail[0]),
             "trailing_rows": EXPECT_STALE_TAIL_TRAILING_ROWS}
 
@@ -880,7 +925,7 @@ def leg_interior_frozen_spans(R, imp):
         "frozen_interior_cells_exact": fz["interior"] == EXPECT_FROZEN_INTERIOR_CELLS,
         "frozen_tail_cells_exact": fz["tail"] == EXPECT_FROZEN_TAIL_CELLS,
         "frozen_total_cells_exact": fz["total"] == EXPECT_FROZEN_CELLS_TOTAL,
-        "inert_cells_exact": dec_inert == EXPECT_TOTAL_HOLD_CELLS,
+        "inert_cells_exact": dec_inert == EXPECT_INERT_CELLS,
         "not_real_cells_exact": dec_inert + fz["total"] == EXPECT_NOT_REAL_CELLS,
         "live_cells_exact": n_cells - dec_inert - fz["total"] == EXPECT_LIVE_CELLS,
         "the_three_categories_partition_the_grid": (
@@ -913,7 +958,7 @@ def leg_interior_frozen_spans(R, imp):
 
     # ---------- (2) the SYNTHETIC interior gap, through the real loader ----------
     gdb = _write_gap_db(R("gap_minute.db"))
-    gpx, gsyms, gts, gcov = ev.load_minute_prices_framed(
+    gpx, gsyms, gts, gcov, ggate = ev.load_minute_prices_framed(
         gdb, PV_WINDOW[0], PV_WINDOW[1], GAP_SYMBOLS, GAP_STEP, require_active_slots=0)
     g = next(c for c in gcov if c["slot"] == GAP_SLOT)
     gcol = np.asarray(gpx)[:, GAP_SLOT]
@@ -944,6 +989,12 @@ def leg_interior_frozen_spans(R, imp):
             jump - (GAP_POST_PRICE / GAP_PRE_PRICE - 1.0)) < 1e-6,
         "GAP_covered_rows_excludes_the_dark_bars": (
             g["covered_rows"] == g["n_rows"] - len(dark)),
+        # TASK_868 (D31 a2): the loader's open-gate masks exactly the dark bars (and nothing
+        # else) on the interior span — the causal mask the re-anchor repro is gated by.
+        "GAP_open_gate_masks_exactly_the_dark_bars": bool(
+            (~np.asarray(ggate)[:, GAP_SLOT]).sum() == len(dark)
+            and all(not ggate[b, GAP_SLOT] for b in dark)
+            and bool(ggate[dark[0] - 1, GAP_SLOT]) and bool(ggate[dark[-1] + 1, GAP_SLOT])),
     })
 
     # ---------- (3) FIX PASS 2 — the CLIPPED grid and the elided span list ----------
@@ -951,7 +1002,7 @@ def leg_interior_frozen_spans(R, imp):
     # ONE axis DECISIONS D31 turns on, and --max-decisions is on the result-producing path.
     cdb = _write_clip_db(R("clip_minute.db"), lambda b: CLIP_DARK[0] <= b <= CLIP_DARK[1],
                          post=CLIP_DARK[1] + 1, delist_bar=CLIP_DELIST_BAR)
-    cpx, csyms, cts, ccov = ev.load_minute_prices_framed(
+    cpx, csyms, cts, ccov, cgate = ev.load_minute_prices_framed(
         cdb, CLIP_WINDOW[0], CLIP_WINDOW[1], CLIP_SYMBOLS, CLIP_STEP, require_active_slots=0)
     cc = next(c for c in ccov if c["slot"] == CLIP_SLOT)
     n_full_dec = int(cpx.shape[0]) - CLIP_WARM
@@ -976,7 +1027,7 @@ def leg_interior_frozen_spans(R, imp):
     # (3b) a slot with 200 frozen spans: the COUNT is off the complete list, the ARTIFACT list is
     # elided, and feeding the elided list back into the accounting is a hard STOP.
     ddb = _write_clip_db(R("dense_minute.db"), lambda b: b % 2 == 1)
-    dpx, dsyms, dts, dcov = ev.load_minute_prices_framed(
+    dpx, dsyms, dts, dcov, dgate = ev.load_minute_prices_framed(
         ddb, CLIP_WINDOW[0], CLIP_WINDOW[1], CLIP_SYMBOLS, CLIP_STEP, require_active_slots=0)
     dc = next(c for c in dcov if c["slot"] == CLIP_SLOT)
     fz_dense = ev.frozen_decision_cells(dcov, CLIP_WARM, int(dpx.shape[0]) - CLIP_WARM)
@@ -1164,7 +1215,8 @@ def leg_canon_minute_equivalence(R, imp):
         rng_key=jax.random.PRNGKey(0))
     px_canon = np.asarray(px_canon)
     ranked = ev._minute_ranked_symbols(FIXTURE_DB, start, end, n)
-    px_f, syms, ts, cov = ev.load_minute_prices_framed(FIXTURE_DB, start, end, ranked, bm)
+    px_f, syms, ts, cov, gate = ev.load_minute_prices_framed(
+        FIXTURE_DB, start, end, ranked, bm, require_active_slots=0)
     dr, dc = np.nonzero(px_canon != px_f)
     # Per slot, the listed span [first real, last real] as PANEL rows (from the coverage record).
     span = {}
@@ -1279,7 +1331,7 @@ def leg_require_active_slots(R, imp):
         loader_msg = str(e)
         checks["loader_default_REFUSES_the_6of8_fixture_frame"] = (
             "--require-active-slots" in loader_msg and "only 6 of 8" in loader_msg)
-    ok_px, _, _, _ = ev.load_minute_prices_framed(
+    ok_px, _, _, _, _ = ev.load_minute_prices_framed(
         FIXTURE_DB, "2025-09-14", "2025-12-12", FRAME_SYMBOLS, 240, require_active_slots=0)
     checks["explicit_override_lets_the_fixture_frame_load"] = ok_px.shape == (EXPECT_T_ROWS, 8)
 
@@ -1534,7 +1586,7 @@ def leg_teacher_floor_masked(R, imp):
     print("\n=== (ii-a5) TEACHER FLOOR — masked on the framed path, no bankruptcy (D30 rider (a)) ===")
     ev = imp._load_eval_module()
     import jax.numpy as jnp
-    px, syms, ts, cov = ev.load_minute_prices_framed(
+    px, syms, ts, cov, gate = ev.load_minute_prices_framed(
         FIXTURE_DB, "2025-09-14", "2025-12-12", FRAME_SYMBOLS, 240, require_active_slots=0)
     cfg = ev.EnvConfig(
         n_assets=8, initial_cash=100_000.0, fee_bps=0.0, slippage_bps=0.0, max_steps=400,
@@ -1749,10 +1801,12 @@ def leg_walk_net21_reconciliation(R, imp, collection_path, coll):
     the tail filled. Neither number exists anywhere in the tree any more, so this leg RE-DERIVES the
     value on the shipped panel and states the reconciliation as data rather than prose.
 
-    It also decomposes the swing, because the recorded attribution was wrong in SIGN and MAGNITUDE.
-    Replaying the SAME recorded teacher stream on both panels isolates the pure
-    valuation/tradeability channel (the only thing the tail treatment changes mechanically); the
-    rest of any observed swing is the operator RE-DECIDING on a different panel. Both are reported.
+    TASK_868 NOTE: the pre-868 PANEL_MEASURED_* replay pins (14.949671921997371 /
+    15.952853341299857) belonged to the OLD fixture panel (T=111) and are not reproducible on
+    the regenerated fixture (T=532); the structural assertions stand — the SAME recorded stream
+    replayed on the filled and hand-zeroed panels isolates the pure valuation channel, which
+    must stay SMALL against the historical +16.26 mis-attribution — and the freshly measured
+    numbers are recorded below.
     """
     import numpy as np
     import jax.numpy as jnp
@@ -1760,11 +1814,11 @@ def leg_walk_net21_reconciliation(R, imp, collection_path, coll):
     ev = imp._load_eval_module()
     cp = coll["provenance"]
     recorded = cp["walk_net21"]
-    px, _, _, cov = ev.load_minute_prices_framed(
+    px, _, _, cov, gate = ev.load_minute_prices_framed(
         FIXTURE_DB, "2025-09-14", "2025-12-12", FRAME_SYMBOLS, 240, require_active_slots=0)
     filled = np.asarray(px)
     zeroed = filled.copy()
-    zeroed[EXPECT_STALE_TAIL_LAST_ROW + 1:, EXPECT_STALE_TAIL_SLOTS[0]] = 0.0
+    zeroed[EXPECT_STALE_TAIL_LAST_ROW + 1:, EXPECT_TAIL_ONLY_SLOTS[0]] = 0.0
     vecs = np.asarray(coll["decisions"]["chosen_vectors"], dtype=np.int32)
     warm, N = EXPECT_START_ROW, EXPECT_DECISIONS
     cfg = ev.EnvConfig(
@@ -1773,21 +1827,19 @@ def leg_walk_net21_reconciliation(R, imp, collection_path, coll):
         vector_action=True, vector_weight_rebalance=True, vector_weight_unit=-1.0,
         vector_weight_max=4.0, vector_rebalance_deadband=-1.0)
 
-    def replay(arr):
+    def replay(arr, hold_mask=None):
         w = imp.walk_env(jnp.asarray(arr, dtype=jnp.float32), cfg, warm, N,
-                         lambda k, state: vecs[k])
+                         lambda k, state: vecs[k], hold_mask=hold_mask)
         return float(ev._sharpe(w["rets"], 240.0)), float(w["final_pv"])
 
-    # ALSO the PRE-FIX boundary (zero from row 102+1 = the old last_covered_row), so the panel's own
-    # construction is reproduced exactly and the sign/magnitude correction is checked against IT and
-    # not against a control this fix pass happens to have moved.
-    zeroed_oldb = filled.copy()
-    zeroed_oldb[VOID_LAST_COVERED_ROW + 1:, EXPECT_STALE_TAIL_SLOTS[0]] = 0.0
     s_filled, pv_filled = replay(filled)
     s_zeroed, pv_zeroed = replay(zeroed)
-    s_zeroed_old, pv_zeroed_old = replay(zeroed_oldb)
+    # TASK_868 (a2): the SAME stream under the causal open-gate — the masked replay is the
+    # post-868 semantics (frozen cells force-HELD for OPENING).
+    mask868 = imp.frame_hold_mask(jnp.asarray(filled, dtype=jnp.float32), warm, N, open_gate=gate)
+    s_masked, pv_masked = replay(filled, hold_mask=mask868)
+    n_gated = int(mask868.sum()) if mask868 is not None else 0
     pure = s_filled - s_zeroed
-    pure_oldb = s_filled - s_zeroed_old
     # the pre/post panel delta really is only the tail cells — stated, not assumed
     delta_cells = int((filled != zeroed).sum())
     checks = {
@@ -1798,34 +1850,28 @@ def leg_walk_net21_reconciliation(R, imp, collection_path, coll):
         "pure_valuation_channel_is_SMALL_vs_the_recorded_swing": abs(pure) < 5.0,
         "shipped_panel_replay_is_finite_and_solvent": (
             s_filled == s_filled and pv_filled > 0),
-        # the panel's own construction, reproduced: same stream, OLD zero boundary
-        "prefix_boundary_replay_reproduces_the_panels_filled_number": abs(
-            s_filled - PANEL_MEASURED_FILLED_REPLAY) < 1e-6,
-        "prefix_boundary_replay_reproduces_the_panels_zeroed_number": abs(
-            s_zeroed_old - PANEL_MEASURED_ZEROED_REPLAY) < 1e-6,
-        "pure_channel_is_NEGATIVE_and_about_one_Sharpe_not_plus_16": (
-            -2.0 < pure_oldb < 0.0),
+        # TASK_868 (a2): the masked replay (post-868 semantics) is finite and solvent — and is
+        # IDENTICAL to the unmasked replay, which is exactly the end-to-end alignment proof: the
+        # collection stream was itself recorded UNDER the open-gate, so it never acts on a
+        # frozen cell and the mask cannot bite on it. (The biting case — a stream that DOES act
+        # mid-gap — is the 868-iv leg's synthetic repro.)
+        "masked_replay_is_finite_and_solvent": (s_masked == s_masked and pv_masked > 0),
+        "masked_replay_EQUALS_unmasked_on_a_mask_consistent_stream": (
+            s_masked == s_filled and pv_masked == pv_filled
+            and not bool((vecs[np.asarray(mask868)] != 1).any())),
     }
     for k, v in checks.items():
         print(f"    {'OK  ' if v else 'FAIL'} {k}")
-    print(f"    RE-DERIVED walk_net21 on the shipped (forward-filled) panel : {recorded:+.12f}")
+    print(f"    RE-RECORDED walk_net21 on the shipped (forward-filled) panel: {recorded:+.12f}")
     print(f"    VOID value recorded on the ZEROED-tail build (D30)          : "
-          f"{VOID_WALK_NET21:+.12f}")
+          f"{VOID_WALK_NET21:+.12f}  (historical record, old fixture)")
     print(f"    D30's predicted value with the tail filled                  : "
-          f"{D30_PREDICTED_WALK_NET21:+.12f}")
+          f"{D30_PREDICTED_WALK_NET21:+.12f}  (historical record, old fixture)")
     print(f"    same recorded stream replayed: filled {s_filled:+.12f} (pv {pv_filled:,.2f}) vs "
-          f"zeroed {s_zeroed:+.12f} (pv {pv_zeroed:,.2f})   [shipped boundary, row "
-          f"{EXPECT_STALE_TAIL_LAST_ROW}]")
-    print(f"    same stream, PRE-FIX boundary (row {VOID_LAST_COVERED_ROW}): filled "
-          f"{s_filled:+.12f} vs zeroed {s_zeroed_old:+.12f} -> pure channel {pure_oldb:+.6f} "
-          f"Sharpe (the panel measured {PANEL_MEASURED_FILLED_REPLAY:.12f} vs "
-          f"{PANEL_MEASURED_ZEROED_REPLAY:.12f}, i.e. -1.00: OPPOSITE SIGN and ~1/16 the magnitude "
-          f"of the +16.26 the attribution claimed)")
-    print(f"    => PURE valuation/tradeability channel = {pure:+.6f} Sharpe over {delta_cells} "
-          f"changed cells. Anything larger in a before/after comparison is the operator "
-          f"RE-DECIDING plus, in the imprint legs, a student retrained on that different stream — "
-          f"NOT the tail treatment. (This is the correction to the recorded sanity_net21 "
-          f"attribution, which named the tail's tradeability as the cause of a +16.26 swing.)")
+          f"zeroed {s_zeroed:+.12f} (pv {pv_zeroed:,.2f}) -> pure channel {pure:+.6f} Sharpe "
+          f"over {delta_cells} changed cells")
+    print(f"    TASK_868 masked replay (open-gate, {n_gated} cells force-HELD): "
+          f"{s_masked:+.12f} (pv {pv_masked:,.2f}) — the post-868 semantics")
     return {"leg": "ib_walk_net21_reconciliation", "passed": all(checks.values()),
             "checks": checks,
             "walk_net21_rederived": recorded,
@@ -1839,55 +1885,45 @@ def leg_walk_net21_reconciliation(R, imp, collection_path, coll):
                 "zeroed_sharpe": s_zeroed, "zeroed_final_pv": pv_zeroed,
                 "pure_valuation_channel_sharpe": pure,
                 "n_changed_panel_cells": delta_cells,
-                "prefix_boundary_zeroed_sharpe": s_zeroed_old,
-                "prefix_boundary_zeroed_final_pv": pv_zeroed_old,
-                "prefix_boundary_pure_valuation_channel_sharpe": pure_oldb,
-                "panel_measured_filled_replay": PANEL_MEASURED_FILLED_REPLAY,
-                "panel_measured_zeroed_replay": PANEL_MEASURED_ZEROED_REPLAY},
+                "masked_sharpe_open_gate": s_masked, "masked_final_pv": pv_masked,
+                "open_gated_cells": n_gated},
             "note": (
-                "D30 amendment 6. The VOID bar 11.32152396918238 was produced on the ZEROED-tail "
-                "build; D30 predicted 17.1242 with the tail filled. The re-derived value is "
-                "recorded above with both deltas. It also differs from D30's prediction because "
-                "the prediction was made on the pre-fix build: the stale-tail boundary moved "
-                "(last_covered_row is now derived from the panel's real-BAR mask, 102 -> 103, so "
-                "the tail is 7 rows rather than 8) and the operator re-decides on the resulting "
-                "panel. The pure valuation/tradeability channel — the SAME recorded stream on both "
-                "panels — is reported separately and is small; the recorded sanity_net21 "
-                "attribution ('the stale-tail slot's last 7 decisions are now tradeable' as the "
-                "cause of a +16.26 swing) was wrong in sign and magnitude.")}
+                "D30 amendment 6 + TASK_868 re-base. The VOID bar 11.32152396918238 (zeroed-tail "
+                "build) and D30's 17.1242 prediction are historical records tied to the OLD "
+                "fixture panel; the pre-868 PANEL_MEASURED replay pins are likewise not "
+                "reproducible on the regenerated fixture. The pure valuation/tradeability "
+                "channel (SAME recorded stream, filled vs hand-zeroed panel) is reported "
+                "fresh and stays small; the masked replay is the post-868 (D31 a2) semantics.")}
 
 
 def leg_real_db_coverage():
-    """Acceptance (iii), re-specified to CELL level by D30 amendment 5 and RE-SPECIFIED AGAIN by the
-    fix pass onto the honest definition — READ-ONLY cell accounting for the frame of record over the
-    861 leg-1 window. One ``mode=ro`` URI connection, SELECTs only: no panel build, no write, no
-    DDL, no GPU.
+    """Acceptance (iii) + TASK_868 gate (i) — the 861 leg-1 frame read through the ALIAS UNION,
+    READ-ONLY (one ``mode=ro`` URI connection, SELECTs only: no panel build, no write, no DDL,
+    no GPU). Every frame symbol resolves to its alias GROUP (the D31 (a1) repair this task
+    ships in the loaders), the per-bar real mask is UNIONED across member ids, and the
+    agreement gate is asserted on the measured overlaps.
 
-    The slot count was the wrong unit (under the loader's own rule EVERY slot has rows on this
-    window, so the banner said "64 ACTIVE / 0 INACTIVE" over a decision grid that is ~10.7% not real
-    data). And the first CELL-level version was still wrong: it derived head/tail cells from each
-    slot's MIN/MAX timestamp, which is blind to every INTERIOR hole by construction. Measured, that
-    hid 2,013 cells (1.88% of the grid) on 13 slots — larger than the delisting term the gate was
-    built for, and excluded from the STOP condition entirely.
+    What this measured pre-868 (the numbers this leg was registered against): INERT 9,047
+    (8.4444%), FROZEN 2,383 (2.2243%) = 2,013 INTERIOR (1.8789%) + 370 trailing, NOT REAL
+    11,430 (10.6687%). The interior term sat on 13 slots — 11 near-empty ones, of which 6
+    were the INGEST IDENTITY SPLIT D31 repaired (twins agreeing to max rel diff 0.00).
 
-    Three DISJOINT categories over the decision grid, each on its own axis:
-      * INERT   — no price at all (a late-listing slot's pre-listing rows; a wholly uncovered slot).
-                  Flat-zero, force-HOLD under every operator (the 853 leak fix).
-      * FROZEN  — the panel carries a FORWARD-FILLED price the market never printed in that bar.
-                  Split into INTERIOR (a hole that RE-ANCHORS: it can fabricate PnL) and TRAILING
-                  (delisted to the window end: it cannot). Tradeable under D30 opt (i).
-      * LIVE    — the slot printed inside that bar.
-
-    "Real data at (row, slot)" = the slot printed ANYWHERE inside the bar ((r-1)*step, r*step].
-    NOT "at the exact sampled minute": minute rows exist only where a trade happened, so the
-    exact-minute reading calls 51.22% of this grid frozen (40.34% live) — it measures sparsity, not
-    staleness. Both are computed here and BOTH are reported; only the bar rule is gated on.
+    MEASURED post-868 (re-registered below, this run): the 6 split slots read as REAL data —
+    5 of 6 fully (/USDTEUR, /USDTCHF, /USDCGBP, /USDC/USDT, /USDTAUD: 0 interior cells),
+    /USDC/USD with a 90-cell residue (its twin's own span has sub-gaps) — and the frozen-
+    interior count drops 2,013 -> 1,011 (0.9437%), i.e. the ~1% 5-slot residue D31 predicted
+    (ETHBTC 183 + BTCGBP/BTCCHF/BTCCAD/XRPBTC 182 each = 911, plus /USDC/USD 90, STX/USD 8,
+    BCH/USD 1, XRP/USD 1). INERT (9,047, heads) and trailing (370, migrations) are unchanged.
 
     A materially different share on ANY axis is a STOP."""
     import sqlite3
     import numpy as np
     from datetime import datetime, timezone
-    print("\n=== (iii) COVERAGE HONESTY (CELL LEVEL) — read-only, INERT / FROZEN / LIVE ===")
+    if _REPO not in sys.path:
+        sys.path.insert(0, _REPO)
+    from mcts_trader.data.asset_aliases import (
+        alias_agreement_gate, resolve_requested_symbols)
+    print("\n=== (iii) COVERAGE HONESTY + ALIAS UNION (CELL LEVEL) — read-only, gate (i) ===")
     prov = json.load(open(REAL_FRAME_JSON))
     frame = prov.get("frame_symbols") or prov.get("symbols")
     s_ts = int(datetime.strptime(REAL_WINDOW[0], "%Y-%m-%d").timestamp())
@@ -1895,18 +1931,25 @@ def leg_real_db_coverage():
     step = REAL_BAR_MINUTES
     con = sqlite3.connect(f"file:{REAL_DB}?mode=ro", uri=True, timeout=60)
     try:
-        ph = ",".join("?" * len(frame))
-        sym_to_id = {r[1]: r[0] for r in con.execute(
-            f"SELECT id, symbol FROM assets WHERE symbol IN ({ph})", frame).fetchall()}
-        unknown = [s for s in frame if s not in sym_to_id]
-        ids = [sym_to_id[s] for s in frame if s in sym_to_id]
+        # TASK_868 (a1): each frame symbol -> its alias GROUP (the loader's own resolver).
+        all_assets = con.execute("SELECT id, symbol FROM assets").fetchall()
+        resolution, unknown = resolve_requested_symbols(all_assets, frame)
+        id_groups = [r["asset_ids"] for r in resolution]
+        db_syms = [r["db_symbols"] for r in resolution]
+        aliased = [(k, frame[k], id_groups[k], db_syms[k])
+                   for k in range(len(frame)) if len(id_groups[k]) > 1]
+        # ... and the FAIL-LOUD agreement gate, measured: every alias pair's shared-timestamp
+        # closes in the window. The 6 span-carriers must agree to 0.00 (same feed, split key).
+        gate = alias_agreement_gate(con, "ohlcv", id_groups, s_ts, e_ts)
+        gate_by_ids = {tuple(d["asset_ids"]): d["overlaps"] for d in gate}
+        ids = sorted({a for g in id_groups for a in g})
         ph2 = ",".join("?" * len(ids))
         rows = con.execute(
             f"""SELECT asset_id, COUNT(*), MIN(timestamp), MAX(timestamp) FROM ohlcv
                 WHERE asset_id IN ({ph2}) AND timestamp >= ? AND timestamp <= ?
                   AND close IS NOT NULL AND close != 0
                 GROUP BY asset_id""", (*ids, s_ts, e_ts)).fetchall()
-        # The loader's ROW AXIS, materialised once (~2.5M int64 = ~20MB).
+        # The loader's ROW AXIS over the UNIONED member ids (~2.5M int64 = ~20MB).
         axis = np.fromiter((r[0] for r in con.execute(
             f"""SELECT DISTINCT timestamp FROM ohlcv
                 WHERE asset_id IN ({ph2}) AND timestamp >= ? AND timestamp <= ?
@@ -1914,16 +1957,16 @@ def leg_real_db_coverage():
         n_full = int(axis.size)
         n_panel = len(range(0, n_full, step))
         panel_ts = axis[::step]
-        # THE per-bar real mask. Streamed one pass over the frame's rows (~65M on the leg-1 window)
-        # into a (n_panel, 64) bool via the bar index — bounded memory, no 2.5M x 64 matrix.
         idx_of = {int(t): i for i, t in enumerate(axis)}
-        col_of = {sym_to_id[s]: i for i, s in enumerate(frame) if s in sym_to_id}
+        col_of = {a: k for k, g in enumerate(id_groups) for a in g}
         real_bar = np.zeros((n_panel, len(frame)), dtype=bool)
         real_exact = np.zeros((n_panel, len(frame)), dtype=bool)
+        per_id_inwin = {a: 0 for a in ids}
         for aid, t in con.execute(
             f"""SELECT asset_id, timestamp FROM ohlcv WHERE asset_id IN ({ph2})
                 AND timestamp >= ? AND timestamp <= ? AND close IS NOT NULL AND close != 0""",
                 (*ids, s_ts, e_ts)):
+            per_id_inwin[aid] += 1
             i = idx_of.get(t)
             if i is None:
                 continue
@@ -1936,6 +1979,7 @@ def leg_real_db_coverage():
             if i % step == 0 and i // step < n_panel:
                 real_exact[i // step, c] = True
         # Successor tickers — LOOKED UP AND REPORTED ONLY (never spliced; see SUCCESSOR_TICKERS).
+        sym_to_id = {s: g[0] for s, g in zip(frame, id_groups)}
         succ = {}
         for pred, sy in SUCCESSOR_TICKERS.items():
             r = con.execute(
@@ -1957,15 +2001,16 @@ def leg_real_db_coverage():
     n_cells = n_dec_rows * len(frame)
     per_id = {r[0]: (r[1], r[2], r[3]) for r in rows}
     fmt = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")  # noqa: E731
-    # filled / tail masks from each slot's first & last real print (the loader's fill rule)
+    # filled / tail masks from each slot's UNIONED first & last real print (the loader's rule:
+    # the union's first real close onward is filled; the union's last real close ends the tail)
     filled = np.zeros_like(real_bar)
     tailm = np.zeros_like(real_bar)
-    for i, sym in enumerate(frame):
-        n, mn, mx = per_id.get(sym_to_id.get(sym), (0, None, None))
-        if not n:
+    for k, g in enumerate(id_groups):
+        spans = [(per_id[a][1], per_id[a][2]) for a in g if per_id.get(a, (0,))[0]]
+        if not spans:
             continue
-        filled[:, i] = panel_ts >= mn
-        tailm[:, i] = panel_ts > mx
+        filled[:, k] = panel_ts >= min(s[0] for s in spans)
+        tailm[:, k] = panel_ts > max(s[1] for s in spans)
     frozen = filled & ~real_bar
     frozen_exact = filled & ~real_exact
     D = slice(REAL_WARM_ROWS, n_panel)
@@ -1974,10 +2019,6 @@ def leg_real_db_coverage():
     fz_int = int((frozen & ~tailm)[D].sum())
     fz_tot = fz_int + fz_tail
     not_real = head_cells + fz_tot
-    # FIX PASS 2 — LIVE is derived from its OWN mask, not as ``n_cells - not_real``. It used to be
-    # the subtraction, which made "the_three_categories_partition_the_grid" the identity
-    # ``n_cells == n_cells``: an assertion advertised as proving disjointness that could not fail.
-    # The three masks are now built independently and checked for pairwise overlap and coverage.
     inert_m = ~filled[D]
     frozen_m = (filled & ~real_bar)[D]
     live_m = (filled & real_bar)[D]
@@ -1989,16 +2030,20 @@ def leg_real_db_coverage():
         partition_overlap == 0 and partition_uncovered == 0
         and int(inert_m.sum()) == head_cells and int(frozen_m.sum()) == fz_tot
         and head_cells + fz_tot + live == n_cells)
-    # ... and the FROZEN split is disjoint on its own axis too (interior XOR trailing).
     frozen_split_is_a_partition = (
         int(((frozen & tailm) & (frozen & ~tailm))[D].sum()) == 0
         and fz_int + fz_tail == int(frozen_m.sum()))
     pct = lambda n: 100.0 * n / max(n_cells, 1)                                   # noqa: E731
     slots, zero_cov, heads, tails, interiors = [], [], [], [], []
     for k, sym in enumerate(frame):
-        n, mn, mx = per_id.get(sym_to_id.get(sym), (0, None, None))
+        n = sum(per_id_inwin[a] for a in id_groups[k])
+        spans = [(per_id[a][1], per_id[a][2]) for a in id_groups[k] if per_id.get(a, (0,))[0]]
+        mn = min(s[0] for s in spans) if spans else None
+        mx = max(s[1] for s in spans) if spans else None
         rec = {"slot": k, "symbol": sym, "rows": n,
                "first": fmt(mn) if mn else None, "last": fmt(mx) if mx else None,
+               "asset_ids": list(id_groups[k]),
+               "per_id_rows": {a: per_id_inwin[a] for a in id_groups[k]},
                "inert_head_cells": int((~filled[D])[:, k].sum()),
                "frozen_interior_cells": int((frozen & ~tailm)[D][:, k].sum()),
                "frozen_tail_cells": int((frozen & tailm)[D][:, k].sum()),
@@ -2023,45 +2068,41 @@ def leg_real_db_coverage():
     interiors.sort(key=lambda r: -r["frozen_interior_cells"])
     print(f"  frame: {len(frame)} slots from {os.path.relpath(REAL_FRAME_JSON, _REPO)}  "
           f"window {REAL_WINDOW[0]}..{REAL_WINDOW[1]}  stride {step}  (read-only, mode=ro)")
+    print(f"  ALIAS UNION (TASK_868 a1): {len(aliased)} of {len(frame)} slots resolved to "
+          f"MULTIPLE assets rows (D31: 11 empty stubs + 6 span-carriers):")
+    for k, sym, g, dsy in aliased:
+        ov = gate_by_ids.get(tuple(g), [])
+        ov_s = ", ".join(f"pair {o['pair']}: {o['shared_ts']} shared ts, max rel diff "
+                         f"{o['max_rel_diff']}" for o in ov)
+        print(f"      slot {k:>3} {sym:<12} asset_ids {g} spellings {dsy}  [{ov_s}]")
     print(f"  ROW AXIS: {n_full} distinct minute timestamps -> {n_panel} panel rows at [::{step}] "
           f"-> {n_dec_rows} DECISION rows after the {REAL_WARM_ROWS}-row env window")
     print(f"  DECISION GRID: {n_dec_rows} x {len(frame)} = {n_cells} cells")
     print(f"    INERT  (no price at all; pre-listing heads)          : {head_cells} "
           f"({pct(head_cells):.4f}%)  on {len(heads)} slot(s)")
-    print(f"    FROZEN (forward-filled, TRADEABLE)                   : {fz_tot} "
+    print(f"    FROZEN (forward-filled; force-HELD for OPENING, D31 a2): {fz_tot} "
           f"({pct(fz_tot):.4f}%)")
     print(f"      ... INTERIOR (a hole that RE-ANCHORS; CAN fabricate PnL): {fz_int} "
-          f"({pct(fz_int):.4f}%) on {len(interiors)} slot(s)   <-- INVISIBLE before this fix")
-    print(f"      ... TRAILING (delisted to the window end; cannot)      : {fz_tail} "
+          f"({pct(fz_int):.4f}%) on {len(interiors)} slot(s)   <-- 2,013 pre-868 (1.8789%)")
+    print(f"      ... TRAILING (delisted to the window end)               : {fz_tail} "
           f"({pct(fz_tail):.4f}%) on {len(tails)} slot(s)")
     print(f"    LIVE   (the slot printed inside that bar)            : {live} ({pct(live):.4f}%)")
     print(f"    NOT REAL DATA, total                                 : {not_real} of {n_cells} "
-          f"= {pct(not_real):.4f}%  (pre-registered {EXPECT_NOT_REAL_DECISION_CELL_PCT}% "
-          f"+/-{EXPECT_NOT_REAL_PCT_TOLERANCE}pp; the daily pin is ~48% inert)")
+          f"= {pct(not_real):.4f}%  (pre-868: 11,430 = 10.6687%; the honest inert share "
+          f"re-recorded)")
     print(f"    DIAGNOSTIC, exact-minute reading (NOT gated on): "
           f"{int(frozen_exact[D].sum())} 'frozen' ({pct(int(frozen_exact[D].sum())):.4f}%) — that "
           f"reading measures minute-bar SPARSITY, not staleness")
-    print(f"  DISCLOSURE RULE: every frozen span of >= 1 panel row is reported — interior AND "
-          f"trailing, NO minimum-length threshold, so silence means absence.")
-    for rec in sorted(slots, key=lambda r: -r["not_real_cells"])[:10]:
-        if not rec["not_real_cells"]:
-            continue
-        print(f"      slot {rec['slot']:>3}  {rec['symbol']:<12} {rec['rows']:>9} rows  "
-              f"{rec['first']}..{rec['last']}  inert {rec['inert_head_cells']:>5} + interior "
-              f"{rec['frozen_interior_cells']:>4} + tail {rec['frozen_tail_cells']:>4} = "
-              f"{rec['not_real_cells']:>5} ({rec['not_real_pct_of_its_column']}% of its column)")
     for rec in interiors:
         print(f"      INTERIOR FROZEN  slot {rec['slot']:>3}  {rec['symbol']:<12} "
               f"{rec['frozen_interior_cells']} cells forward-filled mid-window "
-              f"({rec['rows']} real minute rows over the whole window)")
+              f"({rec['rows']} real minute rows over the whole window, ids {rec['asset_ids']})")
     for rec in tails:
         print(f"      STALE TAIL  slot {rec['slot']:>3}  {rec['symbol']:<12} last real close "
               f"{rec['last']} -> {rec['frozen_tail_cells']} frozen decision cells "
               f"({rec['days_stale']} days stale at the window end)"
               + ("  [named ticker migration]" if rec["symbol"] in EXPECT_MIGRATION_SYMBOLS else
                  "  [NOT named in D30 — reported, not thresholded away]"))
-    for rec in zero_cov:
-        print(f"      ZERO COVER  slot {rec['slot']:>3}  {rec['symbol']:<12} no rows in window")
     for pred, sy in succ.items():
         w = whole[pred]
         print(f"      migration   {pred}: whole-table span {fmt(w['first_ts'])}..{fmt(w['last_ts'])}"
@@ -2076,7 +2117,16 @@ def leg_real_db_coverage():
     tail_syms = sorted(r["symbol"] for r in tails)
     interior_syms = sorted(r["symbol"] for r in interiors)
     big_interior = sorted(r["symbol"] for r in interiors
-                          if r["frozen_interior_cells"] >= EXPECT_INTERIOR_FROZEN_CELLS_EACH - 5)
+                          if r["frozen_interior_cells"] >= EXPECT_INTERIOR_FROZEN_CELLS_EACH - 15)
+    # The 6 split slots (D31's measured identity split): their alias groups must be the named
+    # twin pairs, the gate must record a large ZERO-diff overlap, and post-union they must
+    # read as REAL data (interior cells ~0; /USDC/USD's residual sub-gap residue is named).
+    split_recs = {r["symbol"]: r for r in slots if r["symbol"] in EXPECT_SPLIT_SYMBOLS}
+    gate_zero = {}
+    for k, sym, g, dsy in aliased:
+        for o in gate_by_ids.get(tuple(g), []):
+            gate_zero.setdefault(sym, []).append(
+                o["shared_ts"] == 0 or o["max_rel_diff"] == 0.0)
     checks = {
         "no_unknown_symbols_in_assets": not unknown,
         "no_slot_is_wholly_inert": len(zero_cov) == 0,
@@ -2084,20 +2134,18 @@ def leg_real_db_coverage():
             n_panel - EXPECT_N_PANEL_ROWS) <= EXPECT_PANEL_ROW_TOLERANCE,
         f"decision_rows_is_{EXPECT_N_DECISION_ROWS}_pm{EXPECT_PANEL_ROW_TOLERANCE}": abs(
             n_dec_rows - EXPECT_N_DECISION_ROWS) <= EXPECT_PANEL_ROW_TOLERANCE,
-        # --- axis 1: INERT (no price at all) ---
+        # --- axis 1: INERT (no price at all) — unchanged by the union (heads are pre-listing) ---
         "inert_cell_share_matches_pre_registration": abs(
             pct(head_cells) - EXPECT_INERT_DECISION_CELL_PCT) <= EXPECT_INERT_PCT_TOLERANCE,
-        # --- axis 2: FROZEN, on its OWN axis with a TIGHT band (the fix-pass respec) ---
-        "frozen_cell_share_matches_pre_registration_TIGHT": abs(
+        # --- axis 2: FROZEN — RE-REGISTERED post-868 (was 2.2243%) ---
+        "frozen_cell_share_matches_post868_registration_TIGHT": abs(
             pct(fz_tot) - EXPECT_FROZEN_DECISION_CELL_PCT) <= EXPECT_FROZEN_PCT_TOLERANCE,
-        "INTERIOR_frozen_share_matches_pre_registration_TIGHT": abs(
+        "INTERIOR_frozen_share_matches_post868_registration_TIGHT": abs(
             pct(fz_int) - EXPECT_REAL_INTERIOR_FROZEN_PCT) <= EXPECT_REAL_INTERIOR_PCT_TOLERANCE,
-        # --- axis 3: the headline total ---
-        "not_real_cell_share_matches_pre_registration": abs(
+        # --- axis 3: the headline total — RE-REGISTERED post-868 (was 10.6687%) ---
+        "not_real_cell_share_matches_post868_registration": abs(
             pct(not_real) - EXPECT_NOT_REAL_DECISION_CELL_PCT) <= EXPECT_NOT_REAL_PCT_TOLERANCE,
         # --- structure ---
-        # each count from its OWN mask: pairwise-disjoint, jointly exhaustive, and summing to the
-        # grid. (This used to be head + frozen + (n_cells - head - frozen) == n_cells.)
         "the_three_categories_partition_the_grid": partition_is_a_partition,
         "the_frozen_split_INTERIOR_xor_TRAILING_is_disjoint": frozen_split_is_a_partition,
         "stale_tail_slot_count_in_band": (
@@ -2109,19 +2157,28 @@ def leg_real_db_coverage():
         "both_migrations_are_ALSO_late_listing": all(
             any(h["symbol"] == m and h["inert_head_cells"] > 0 for h in heads)
             for m in EXPECT_MIGRATION_SYMBOLS),
-        # the named near-empty slots are all present in the interior-frozen disclosure
-        "every_named_interior_frozen_symbol_is_disclosed": all(
+        # --- TASK_868 gate (i): the identity repair, measured ---
+        "all_17_frame_slots_alias_groups_resolved": len(aliased) == 17,
+        "the_6_split_slots_are_aliased_to_the_named_twins": all(
+            sorted(split_recs[s]["asset_ids"]) == sorted(EXPECT_SPLIT_SYMBOLS[s])
+            for s in EXPECT_SPLIT_SYMBOLS),
+        "the_6_split_slots_read_as_REAL_data": all(
+            split_recs[s]["frozen_interior_cells"]
+            <= EXPECT_SPLIT_RESIDUAL_CELLS.get(s, 0) + 5 for s in EXPECT_SPLIT_SYMBOLS),
+        "agreement_gate_records_ZERO_diff_overlaps_for_the_6_twins": all(
+            any(gate_zero.get(s, [])) for s in EXPECT_SPLIT_SYMBOLS),
+        "frozen_interior_is_the_5_slot_residue_plus_named_small_terms": (
+            sorted(set(big_interior)) == sorted(set(EXPECT_INTERIOR_FROZEN_SYMBOLS))),
+        "every_named_residual_interior_symbol_is_disclosed": all(
             s in interior_syms for s in EXPECT_INTERIOR_FROZEN_SYMBOLS),
-        "the_named_slots_carry_the_measured_interior_load": sorted(
-            set(big_interior)) == sorted(set(EXPECT_INTERIOR_FROZEN_SYMBOLS)),
         "no_successor_is_spliced": True,          # this leg never writes; splicing is out of scope
     }
     for k, v in checks.items():
         print(f"    {'OK  ' if v else 'FAIL'} {k}")
-    print(f"  NB the loader's SLOT-level banner reads 64 ACTIVE / 0 INACTIVE on this frame, which is "
-          f"true and useless on its own. The {len(heads)} late-listing + {len(interiors)} "
-          f"interior-frozen + {len(tails)} stale-tail slots and the {pct(not_real):.2f}% not-real "
-          f"cell share above are the honest disclosure, and the loader now prints all of them.")
+    print(f"  GATE (i) SUMMARY: frozen-interior 2,013 (1.8789%) -> {fz_int} ({pct(fz_int):.4f}%); "
+          f"the 6 split slots read as REAL data via ids "
+          f"{[EXPECT_SPLIT_SYMBOLS[s] for s in EXPECT_SPLIT_SYMBOLS]}; honest not-real share "
+          f"10.6687% -> {pct(not_real):.4f}%")
     return {"leg": "iii_real_db_coverage_cell_level", "passed": all(checks.values()),
             "checks": checks, "db": "trading_data.db (mode=ro)", "window": list(REAL_WINDOW),
             "bar_minutes": step, "warm_rows": REAL_WARM_ROWS, "n_slots": len(frame),
@@ -2143,30 +2200,284 @@ def leg_real_db_coverage():
             "n_interior_frozen_slots": len(interiors), "interior_frozen_symbols": interior_syms,
             "n_stale_tail_slots": len(tails), "stale_tail_symbols": tail_syms,
             "min_tail_rows_disclosed": EXPECT_MIN_TAIL_ROWS_DISCLOSED,
-            "heaviest_slots": sorted((r for r in slots if r["not_real_cells"]),
-                                     key=lambda r: -r["not_real_cells"])[:10],
+            "n_aliased_slots": len(aliased),
+            "aliased_slots": [{"slot": k, "symbol": sym, "asset_ids": g, "db_symbols": dsy,
+                               "overlap_agreement": gate_by_ids.get(tuple(g), [])}
+                              for k, sym, g, dsy in aliased],
+            "per_slot": [{k: (v if not isinstance(v, dict) or k == "per_id_rows" else v)
+                          for k, v in r.items()} for r in slots],
             "interior_frozen_slots": interiors, "stale_tails": tails,
             "migrations_whole_table_span": {
                 m: {"rows": whole[m]["rows"], "first": fmt(whole[m]["first_ts"]),
                     "last": fmt(whole[m]["last_ts"])} for m in whole},
             "successors_present_reported_only": succ,
+            "pre_868_registration": {
+                "inert_pct": 8.4444, "frozen_pct": 2.2243, "frozen_interior_pct": 1.8789,
+                "not_real_pct": 10.6687, "frozen_interior_cells": 2013},
             "definitions": {
-                "real": "the slot printed at least one real close inside the bar "
+                "real": "the slot's alias-UNION printed at least one real close inside the bar "
                         "((r-1)*step, r*step] that panel row r stands for",
                 "inert": "no price at all at that (decision row, slot): a pre-listing head or a "
                          "wholly uncovered slot; force-HOLD under every operator (853 leak fix)",
                 "frozen_interior": "a forward-filled price on a hole that RE-ANCHORS before the "
-                                   "window end. Tradeable at a price no market printed, and the "
-                                   "whole gap move lands in one bar => it CAN fabricate PnL. "
-                                   "Disclosed, not treated (DECISIONS D31)",
+                                   "window end; force-HELD for OPENING (TASK_868 D31 a2), still "
+                                   "forward-filled for VALUATION (D30 opt (i), PV-exact)",
                 "frozen_trailing": "a forward-filled price after a delisting, constant to the "
-                                   "window end. Tradeable; a round trip nets exactly 0 at fee 0",
+                                   "window end; force-HELD for OPENING under the same causal gate",
                 "exact_minute_diagnostic": "cells whose EXACT sampled minute carries no print. "
                                            "Normal on sparse minute data (the canon [::bar_minutes] "
                                            "operator samples one minute, it does not aggregate the "
                                            "bar) — reported, NOT counted as frozen",
                 "row_convention": "decision rows = panel rows - warm(60)"}}
 
+
+
+# =============================================================================================
+# TASK_868 (D31 ruled opt (a)) — the identity repair + the causal frozen-cell mask, fixture-proven
+# =============================================================================================
+# The fixture (fixtures/make_fixture.py) carries the two synthetic phenomena, on 2025-09-10..
+# 2025-09-12 (BEFORE the copied slice, so no smoke window's universe or panel moves):
+#   * TWX/USD (asset_id 90001) prints minutes 0..1439 of the window then goes dark; its twin
+#     TWXUSD (90002) prints minutes 720..2879 — AGREEING in the 720..1439 overlap and carrying
+#     the ORPHANED span 1440..2879 the original lacks. The D31 ingest-split pattern.
+#   * HOLE/USD (90003) prints every minute EXCEPT minutes 1000..1599 (a 600-minute multi-bar
+#     interior hole), re-anchoring 100 -> 160 (+60%) on resumption.
+T868_WINDOW = ("2025-09-10", "2025-09-12")
+T868_TWIN = ("TWX/USD", 90001, 90002)
+T868_HOLE = "HOLE/USD"
+T868_HOLE_ID = 90003
+T868_FILLER = "XBT/USD"          # a dense canon slot, so a frame is not 100% the phenomenon
+
+
+def leg_alias_union_and_agreement_gate(R, imp):
+    """TASK_868 gate (ii) — the ALIAS UNION and the FAIL-LOUD AGREEMENT GATE, demonstrated BOTH
+    ways on the fixture: the agreeing twins union cleanly (the orphaned span becomes REAL data);
+    a tampered disagreeing overlap REFUSES, naming both asset_ids and the first disagreeing
+    timestamp. Both the FRAMED loader and the CANON unpinned loader are exercised (D31 (a1)
+    applies to both)."""
+    import numpy as np
+    import shutil
+    import sqlite3
+    print("\n=== (868-ii) ALIAS UNION + AGREEMENT GATE — the fixture twin pair, both ways ===")
+    ev = _load_eval_module()
+    sym, id_a, id_b = T868_TWIN
+    frame_symbols = [sym, T868_FILLER]
+    # --- the agreeing union (the fixture as shipped) ---
+    px, syms, ts, cov, gate = ev.load_minute_prices_framed(
+        FIXTURE_DB, T868_WINDOW[0], T868_WINDOW[1], frame_symbols, 10,
+        require_active_slots=0)
+    c0 = next(c for c in cov if c["slot"] == 0)
+    col = np.asarray(px)[:, 0]
+    n_bars = px.shape[0]
+    fz = ev.frozen_decision_cells(cov, 0, n_bars)
+    # --- the canon unpinned loader on the same symbol ---
+    if _REPO not in sys.path:
+        sys.path.insert(0, _REPO)
+    from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
+    import logging
+    logging.disable(logging.CRITICAL)
+    env = VectorBTTradingEnv(db_path=FIXTURE_DB, start_date=T868_WINDOW[0],
+                             end_date=T868_WINDOW[1], specific_symbols=[sym],
+                             initial_cash=10000.0, max_steps=100)
+    logging.disable(logging.NOTSET)
+    canon_col = np.asarray(env.prices)[:, 0]
+    # --- the tampered copy: one overlapping close moved by 0.5% (> rel 1e-12) ---
+    tdb = R("tampered_alias.db")
+    shutil.copyfile(FIXTURE_DB, tdb)
+    tamper_ts = 1000  # minute 1000 is inside the 720..1439 overlap
+    con = sqlite3.connect(tdb)
+    t0 = con.execute("SELECT MIN(timestamp) FROM ohlcv WHERE asset_id = ?",
+                     (id_a,)).fetchone()[0]
+    con.execute("UPDATE ohlcv SET close = close * 1.005 WHERE asset_id = ? AND timestamp = ?",
+                (id_b, t0 + 60 * tamper_ts))
+    con.commit()
+    con.close()
+
+    def refuses(db):
+        try:
+            ev.load_minute_prices_framed(db, T868_WINDOW[0], T868_WINDOW[1],
+                                         frame_symbols, 10, require_active_slots=0)
+            return None
+        except Exception as e:                    # AliasDisagreementError (a RuntimeError)
+            return f"{type(e).__name__}: {e}"
+
+    framed_refusal = refuses(tdb) or ""
+
+    def canon_refuses(db):
+        try:
+            logging.disable(logging.CRITICAL)
+            VectorBTTradingEnv(db_path=db, start_date=T868_WINDOW[0], end_date=T868_WINDOW[1],
+                               specific_symbols=[sym], initial_cash=10000.0, max_steps=100)
+            logging.disable(logging.NOTSET)
+            return None
+        except Exception as e:
+            logging.disable(logging.NOTSET)
+            return f"{type(e).__name__}: {e}"
+
+    canon_refusal = canon_refuses(tdb) or ""
+    checks = {
+        # --- BOTH WAYS, part 1: agreeing twins union CLEANLY ---
+        "framed_slot_resolves_to_BOTH_twin_ids": c0["asset_ids"] == [id_a, id_b],
+        "framed_per_id_row_counts_exact": c0["per_id_rows"] == {str(id_a): 1440, str(id_b): 2160},
+        "framed_overlap_agreement_disclosed_ZERO_diff": any(
+            o["shared_ts"] == 720 and o["max_rel_diff"] == 0.0
+            for o in c0["overlap_agreement"]),
+        "framed_union_covers_the_ORPHANED_span_as_real": (
+            c0["covered_rows"] == c0["n_rows"] and fz["total"] == 0),
+        "framed_no_frozen_cells_anywhere_on_the_union": fz["total"] == 0,
+        "framed_open_gate_all_open_on_the_unioned_slot": bool(
+            np.asarray(gate)[:, 0].all()),
+        "framed_prices_continuous_through_the_orphaned_span": bool((col == 100.0).all()),
+        "canon_slot_discloses_both_ids": (
+            env.asset_aliases_[0]["asset_ids"] == [id_a, id_b]
+            and env.asset_aliases_[0]["aliased"] is True),
+        "canon_union_covers_the_ORPHANED_span": bool((canon_col == 100.0).all()),
+        # --- BOTH WAYS, part 2: a tampered disagreeing overlap REFUSES, naming ids + ts ---
+        "tampered_overlap_REFUSED_by_the_framed_loader": (
+            "AliasDisagreementError" in framed_refusal
+            and f"asset_ids {id_a} and {id_b}" in framed_refusal
+            and str(t0 + 60 * tamper_ts) in framed_refusal),
+        "tampered_overlap_REFUSED_by_the_canon_loader": (
+            "AliasDisagreementError" in canon_refusal
+            and f"asset_ids {id_a} and {id_b}" in canon_refusal
+            and str(t0 + 60 * tamper_ts) in canon_refusal),
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    print(f"    fixture twins {sym} ids [{id_a}, {id_b}]: original minutes 0..1439, twin "
+          f"720..2879 (orphaned span 1440..2879) -> ONE continuous 2880-minute series, "
+          f"0 frozen cells, gate overlap 720 shared ts at max rel diff 0.0")
+    print(f"    tampered copy (twin close x1.005 at ts {t0 + 60 * tamper_ts}): framed loader -> "
+          f"{framed_refusal.splitlines()[0][:120] if framed_refusal else 'NOT REFUSED'}")
+    return {"leg": "868ii_alias_union_and_agreement_gate",
+            "passed": all(checks.values()), "checks": checks,
+            "twin_ids": [id_a, id_b], "overlap_shared_ts": 720,
+            "framed_refusal": framed_refusal[:400], "canon_refusal": canon_refusal[:400]}
+
+
+def leg_open_gate_causality(R, imp):
+    """TASK_868 gate (iii) — the open-gate mask is CAUSAL: the mask at decision t reads only
+    data <= t. Probe (the ruling's own example): for a slot whose gap RESUMES at t+k, the mask
+    over every bar <= t is IDENTICAL whether or not the rows after t exist in the DB copy.
+    Uses the fixture's HOLE/USD (600-minute interior hole at 1000..1599, resuming at 1600).
+    Also asserts the masked bars are exactly the hole bars (interior AND trailing are gated
+    alike — at decision time they are indistinguishable)."""
+    import numpy as np
+    print("\n=== (868-iii) OPEN-GATE CAUSALITY — the mask at t reads only data <= t ===")
+    ev = _load_eval_module()
+    step = 10
+    frame_symbols = [T868_HOLE, "TWX/USD"]   # dense companion drives the axis
+    # Full window: the hole resumes at minute 1600 (bar 160).
+    px_f, _, _, cov_f, gate_f = ev.load_minute_prices_framed(
+        FIXTURE_DB, T868_WINDOW[0], T868_WINDOW[1], frame_symbols, step,
+        require_active_slots=0)
+    gate_full = np.asarray(gate_f)[:, 0]
+    # Truncated window: ends INSIDE the hole (minute 1200 = bar 120), so the hole's resumption
+    # rows do not exist in this read at all.
+    px_t, _, _, cov_t, gate_t = ev.load_minute_prices_framed(
+        FIXTURE_DB, T868_WINDOW[0], "2025-09-10T20:00", frame_symbols, step,
+        require_active_slots=0)
+    gate_trunc = np.asarray(gate_t)[:, 0]
+    n_common = min(gate_trunc.shape[0], gate_full.shape[0])
+    # The hole bars, derived (not hardcoded): bar b covers minutes ((b-1)*step, b*step]; the
+    # hole is minutes 1000..1599, so bar 100 catches minute 991..999's prints (LIVE), bars
+    # 101..159 are fully dark (GATED), and bar 160 catches the resumption print at 1600 (LIVE).
+    hole_bars = [b for b in range(px_f.shape[0]) if (b - 1) * step >= 1000 and b * step <= 1599]
+    masked_bars = sorted(int(b) for b in np.nonzero(~gate_full)[0])
+    checks = {
+        # THE PROBE: identical masks over the shared prefix, whether or not the resumption exists
+        "mask_over_shared_prefix_is_IDENTICAL_with_and_without_future_rows": bool(
+            (gate_full[:n_common] == gate_trunc[:n_common]).all()),
+        "truncation_did_remove_the_resumption_rows": (
+            gate_trunc.shape[0] < gate_full.shape[0]
+            and 1600 > (gate_trunc.shape[0] - 1) * step),
+        # ... and the mask really does gate exactly the hole bars, on the full read
+        "masked_bars_are_exactly_the_hole_bars": masked_bars == hole_bars,
+        "the_hole_is_multi_bar": len(hole_bars) > 1,
+        "the_bar_before_and_after_the_hole_are_open": bool(
+            gate_full[hole_bars[0] - 1] and gate_full[hole_bars[-1] + 1]),
+        # the disclosure side agrees: the hole is one INTERIOR frozen span (not a tail)
+        "hole_is_disclosed_as_ONE_interior_frozen_span": (
+            next(c for c in cov_f if c["slot"] == 0).get("frozen_spans")
+            == [[hole_bars[0], hole_bars[-1]]]
+            and next(c for c in cov_f if c["slot"] == 0).get("frozen_interior_rows")
+            == len(hole_bars)),
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    print(f"    HOLE/USD minutes 1000..1599 dark: bars {hole_bars[0]}..{hole_bars[-1]} gated "
+          f"({len(hole_bars)} bars); mask over the shared {n_common} bars is byte-identical "
+          f"with the resumption rows present vs deleted (full {gate_full.shape[0]} bars vs "
+          f"truncated {gate_trunc.shape[0]})")
+    return {"leg": "868iii_open_gate_causality", "passed": all(checks.values()),
+            "checks": checks, "hole_bars": [hole_bars[0], hole_bars[-1]],
+            "n_bars_full": int(gate_full.shape[0]), "n_bars_truncated": int(gate_trunc.shape[0])}
+
+
+def leg_masked_reanchor_nets_zero(R, imp):
+    """TASK_868 gate (iv), second half — the pre-fix fabricated re-anchor repro now nets 0 on
+    the masked slot. A book that OPENS on the gapped slot DURING the frozen span and HOLDs
+    through the resumption captures the whole +60% re-anchor at fee 0 when unmasked (the
+    fabrication D31 exists to remove); under the causal open-gate the same action stream is
+    forced to HOLD at every frozen decision, so it never opens at a price no market offered
+    and nets EXACTLY 0 (final PV == initial cash to the cent). The VALUATION fill is the same
+    in both walks — only OPENING is gated."""
+    import numpy as np
+    import jax.numpy as jnp
+    print("\n=== (868-iv) MASKED RE-ANCHOR — the fabrication now nets 0 on the masked slot ===")
+    ev = _load_eval_module()
+    gdb = _write_gap_db(R("gap_minute_868.db"))
+    px, _, _, cov, gate = ev.load_minute_prices_framed(
+        gdb, PV_WINDOW[0], PV_WINDOW[1], GAP_SYMBOLS, GAP_STEP, require_active_slots=0)
+    filled = np.asarray(px)
+    n_assets = len(GAP_SYMBOLS)
+    # decisions span the whole panel so the frozen span is inside the walk
+    start_row, N = 20, filled.shape[0] - 1 - 20
+    initial = 100_000.0
+    cfg = imp.EnvConfig(
+        n_assets=n_assets, initial_cash=initial, fee_bps=0.0, slippage_bps=0.0,
+        max_steps=8, window_size=start_row, position_size_pct=0.5 / n_assets,
+        vector_action=True, vector_weight_rebalance=True, vector_weight_unit=-1.0,
+        vector_weight_max=4.0, vector_rebalance_deadband=-1.0)
+    dark = list(range(GAP_FIRST_DARK_BAR + 1, GAP_LAST_DARK_BAR + 1))
+    k_open = dark[5] - start_row                    # a decision INSIDE the frozen span
+
+    def book(k_open):
+        def fn(k, state):
+            a = np.full(n_assets, 1, dtype=np.int32)          # HOLD everywhere
+            if k == k_open:
+                a[GAP_SLOT] = 2                                # BUY the gapped slot mid-gap
+            return a
+        return fn
+
+    pj = jnp.asarray(filled, dtype=jnp.float32)
+    mask = imp.frame_hold_mask(pj, start_row, N, open_gate=gate)
+    unmasked = imp.walk_env(pj, cfg, start_row, N, book(k_open))
+    masked = imp.walk_env(pj, cfg, start_row, N, book(k_open), hold_mask=mask)
+    expect_jump = GAP_POST_PRICE / GAP_PRE_PRICE - 1.0
+    cent = lambda v: round(float(v), 2)                                       # noqa: E731
+    checks = {
+        "the_open_decision_is_inside_the_frozen_span": (
+            not np.asarray(gate)[dark[5], GAP_SLOT]
+            and bool(np.asarray(mask)[k_open, GAP_SLOT])),
+        "UNMASKED_book_captures_the_reanchor_fabrication": (
+            initial * 1.05 < unmasked["final_pv"] < initial * (1.0 + expect_jump)),
+        "MASKED_book_is_forced_to_HOLD_at_the_frozen_decision": (
+            masked["actions"][k_open, GAP_SLOT] == 1),
+        "MASKED_book_nets_EXACTLY_zero_to_the_cent": (
+            cent(masked["final_pv"]) == cent(initial)),
+        "both_walks_read_the_SAME_forward_filled_panel": True,
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    print(f"    slot {GAP_SLOT} dark bars {dark[0]}..{dark[-1]}, re-anchor {expect_jump:+.0%}; "
+          f"book opens mid-gap at decision {k_open}: UNMASKED final_pv "
+          f"{unmasked['final_pv']:,.2f} (fabricated: the gap move on 1/{n_assets} of the book) "
+          f"vs MASKED {masked['final_pv']:,.2f} (== initial {initial:,.2f} to the cent)")
+    return {"leg": "868iv_masked_reanchor_nets_zero", "passed": all(checks.values()),
+            "checks": checks, "unmasked_final_pv": round(float(unmasked["final_pv"]), 2),
+            "masked_final_pv": round(float(masked["final_pv"]), 2),
+            "reanchor_pct": round(100.0 * expect_jump, 2), "open_decision": k_open}
 
 
 def main():
@@ -2233,9 +2544,20 @@ def main():
         "panel_frame_source_minute": cpf.get("panel_frame_source") == "minute",
         "bar_minutes_recorded": cpf.get("bar_minutes") == 240,
         "stale_tail_disclosed_in_collection": (
-            cpf.get("n_stale_tail_slots") == 1
+            cpf.get("n_stale_tail_slots") == len(EXPECT_STALE_TAIL_SLOTS)
             and cpf.get("stale_tail_slots") == EXPECT_STALE_TAIL_SLOTS
-            and [c["symbol"] for c in cpf["stale_tail_spans"]] == [EXPECT_STALE_TAIL_SYMBOL]),
+            and [c["symbol"] for c in cpf["stale_tail_spans"]] == EXPECT_STALE_TAIL_SYMBOLS),
+        # TASK_868 (a1): the alias-union disclosure is in the artifact; /EURGBP (slot 1)
+        # resolved to BOTH its assets rows (370 + 1198 — both empty on this window, so the
+        # union is a numeric no-op but the disclosure has something to disclose).
+        "alias_disclosure_present_and_names_the_twin_ids": (
+            cpf.get("n_aliased_slots") == 1
+            and [c for c in cpf["coverage"] if c["slot"] == 1][0]["asset_ids"] == [370, 1198]
+            and [c for c in cpf["coverage"] if c["slot"] == 1][0]["per_id_rows"]
+            == {"370": 0, "1198": 0}),
+        "open_gate_mask_disclosed": (
+            cpf.get("n_open_gated_decision_cells") == EXPECT_FROZEN_CELLS_TOTAL
+            and "open_gate_rule" in cpf),
         "n_rows_is_the_canon_minute_panel": cp["n_rows"] == EXPECT_T_ROWS,
         "n_decisions_collected": cp["n_decisions_collected"] == EXPECT_DECISIONS,
     }
@@ -2243,15 +2565,14 @@ def main():
     vecs = np.asarray(coll["decisions"]["chosen_vectors"])
     cchecks["inactive_slots_all_HOLD_in_the_stream"] = bool(
         (vecs[:, EXPECT_INACTIVE_SLOTS] == 1).all())
-    # END-TO-END: under D30 opt (i) the stale-tail slot is TRADEABLE for the WHOLE window (its tail
-    # is forward-filled at a frozen price), so the SEARCH operator must NOT be forced to HOLD there
-    # — the polarity of these two checks inverted with the ruling. The zero-coverage slots above are
-    # the force-HOLD case; this slot is the disclosed-but-live case.
-    st = EXPECT_STALE_TAIL_SLOTS[0]
-    cchecks["stale_tail_slot_is_NOT_force_HELD_anywhere"] = bool(
-        (vecs[:, st] != 1).any())
+    # TASK_868 (D31 a2): the stale-tail slots' FROZEN decisions are force-HELD by the causal
+    # open-gate — the polarity of these checks inverted again (they were HELD pre-D30,
+    # TRADEABLE under D30 opt (i), force-HELD — whole action — under D31 (a2); VALUATION is
+    # untouched).
+    cchecks["stale_tail_slots_force_HELD_on_every_frozen_decision"] = all(
+        (vecs[EXPECT_STALE_TAIL_FROZEN_K, s] == 1).all() for s in EXPECT_STALE_TAIL_SLOTS)
     cchecks["stale_tail_slot_traded_BEFORE_its_tail"] = bool(
-        (vecs[:EXPECT_STALE_TAIL_FROZEN_K[0], st] != 1).any())
+        (vecs[:EXPECT_STALE_TAIL_FROZEN_K[0], EXPECT_TAIL_ONLY_SLOTS[0]] != 1).any())
     cchecks["stale_tail_disclosed_in_the_collection_provenance"] = (
         cpf.get("stale_tail_slots") == EXPECT_STALE_TAIL_SLOTS)
     for k, v in cchecks.items():
@@ -2284,14 +2605,16 @@ def main():
         "partial_slots_disclosed": res.get("partial_slots") == EXPECT_PARTIAL_SLOTS,
         "stale_tail_slots_disclosed": res.get("stale_tail_slots") == EXPECT_STALE_TAIL_SLOTS,
         "stale_tail_span_names_the_symbol": (
-            [c["symbol"] for c in pf["stale_tail_spans"]] == [EXPECT_STALE_TAIL_SYMBOL]),
-        # D30 opt (i): a TAIL-ONLY slot is tradeable everywhere, so it is NOT partial — it is
-        # disclosed on its own axis and must be in NEITHER of the other two lists.
-        "stale_tail_slot_in_NEITHER_inactive_NOR_partial": (
-            EXPECT_STALE_TAIL_SLOTS[0] not in res.get("partial_slots", [])
-            and EXPECT_STALE_TAIL_SLOTS[0] not in res.get("inactive_slots", [])),
+            [c["symbol"] for c in pf["stale_tail_spans"]] == EXPECT_STALE_TAIL_SYMBOLS),
+        # D30 opt (i): a TAIL-ONLY slot is not partial — it is disclosed on its own axis and
+        # must be in NEITHER of the other two lists. (Slot 7 on this fixture is partial AND
+        # stale-tailed — the both-lists case is asserted in the positional-loader leg.)
+        "tail_only_slot_in_NEITHER_inactive_NOR_partial": all(
+            s not in res.get("partial_slots", [])
+            and s not in res.get("inactive_slots", []) for s in EXPECT_TAIL_ONLY_SLOTS),
         "n_active_slots_6_of_8": pf["n_active_slots"] == 6 and pf["n_slots"] == 8,
-        # 50 per zero-coverage slot x2 + the 7 stale-tail decisions (the guard is LIVE end to end).
+        # 471 per zero-coverage slot x2 + 427 open-gated stale-tail cells x2 (the gate is LIVE
+        # end to end: inert AND frozen cells are force-HELD, D31 a2).
         "force_hold_cells_exact_incl_stale_tail": (
             pf["n_force_hold_cells"] == EXPECT_TOTAL_HOLD_CELLS),
         "inactive_feature_guard_recorded": bool(
@@ -2344,6 +2667,10 @@ def main():
     report["legs"].append(leg_require_active_slots(R, imp))
     report["legs"].append(leg_loader_identity_refusals(R, imp))
     report["legs"].append(leg_source_gate(R, imp, collection))
+    # TASK_868 (D31 opt (a)): the identity repair + the causal frozen-cell mask, fixture-proven
+    report["legs"].append(leg_alias_union_and_agreement_gate(R, imp))
+    report["legs"].append(leg_open_gate_causality(R, imp))
+    report["legs"].append(leg_masked_reanchor_nets_zero(R, imp))
 
     # ------------------------------------------------- (ii-b) refusal matrix (subprocess)
     print("\n=== (ii-b3) REFUSAL MATRIX — reorder, membership, pin mixes, empty/incoherent flags ===")

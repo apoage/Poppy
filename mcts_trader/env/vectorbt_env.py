@@ -167,6 +167,10 @@ class VectorBTTradingEnv(gym.Env):
         start_date: Optional[str] = None,  # Date filter (YYYY-MM-DD or timestamp)
         end_date: Optional[str] = None,  # Date filter (YYYY-MM-DD or timestamp)
         specific_symbols: Optional[List[str]] = None,  # Use specific assets (for rainbow table training)
+        # TASK_868 (D31 a2): capture the pre-fill 1-min real-print mask on the DB load path
+        # (default OFF — canon training loads pay no extra memory). env_factory requests it only
+        # when a caller asks for the causal frozen-cell open-gate mask.
+        capture_raw_nonzero: bool = False,
 
         # Portfolio settings
         n_assets: int = 64,
@@ -265,6 +269,12 @@ class VectorBTTradingEnv(gym.Env):
         # Initialize price data
         self.schedule_path = schedule_path
         self.schedule_data = None
+        # TASK_868 (D31): disclosures/capture on the DB load paths (any branch that
+        # reaches a DB loader). asset_aliases_ = per-slot alias usage; raw_nonzero_ =
+        # the pre-fill 1-min real-print mask (only when capture_raw_nonzero).
+        self.capture_raw_nonzero = bool(capture_raw_nonzero)
+        self.asset_aliases_ = []
+        self.raw_nonzero_ = None
 
         if synthetic_level is not None:
             from mcts_trader.data.synthetic_market import SyntheticMarket
@@ -288,12 +298,15 @@ class VectorBTTradingEnv(gym.Env):
             self.db_path = db_path
             self.specific_symbols = specific_symbols
             # Try loading from cache first (massive speedup: 7min -> 5sec)
-            # Note: cache bypass when using specific_symbols (different assets each time)
-            if cache_path and specific_symbols is None and self._try_load_cache(cache_path):
+            # Note: cache bypass when using specific_symbols (different assets each time),
+            # and when capture_raw_nonzero is requested (the cache carries no raw mask).
+            if (cache_path and specific_symbols is None and not self.capture_raw_nonzero
+                    and self._try_load_cache(cache_path)):
                 logging.info(f"Loaded from cache: {cache_path}")
             else:
                 self.prices, self.symbols = self._load_database_prices(
-                    db_path, n_assets, start_date, end_date, specific_symbols
+                    db_path, n_assets, start_date, end_date, specific_symbols,
+                    capture_raw_nonzero=self.capture_raw_nonzero,
                 )
                 # Save cache for next time (only if not using specific symbols)
                 if cache_path and specific_symbols is None:
@@ -492,7 +505,8 @@ class VectorBTTradingEnv(gym.Env):
         n_assets: int,
         start_date: Optional[str],
         end_date: Optional[str],
-        specific_symbols: Optional[List[str]] = None
+        specific_symbols: Optional[List[str]] = None,
+        capture_raw_nonzero: bool = False,
     ) -> Tuple[np.ndarray, List[str]]:
         """
         Load price data from SQLite database.
@@ -503,14 +517,33 @@ class VectorBTTradingEnv(gym.Env):
             start_date: Start date filter (YYYY-MM-DD or timestamp)
             end_date: End date filter (YYYY-MM-DD or timestamp)
             specific_symbols: List of specific asset symbols to load (for rainbow table training)
+            capture_raw_nonzero: TASK_868 (D31 a2) — also capture the pre-fill 1-min
+                real-print mask into ``self.raw_nonzero_`` (default False = canon,
+                no extra memory). Only env_factory's eval path requests it.
 
         Returns:
             prices: (n_steps, n_assets) array of close prices
             symbols: List of asset symbols
+
+        TASK_868 (D31 opt (a1)) — ALIAS UNION. Each requested/selected symbol resolves to
+        EVERY ``assets`` row whose normalized form matches (mcts_trader/data/
+        asset_aliases.py: ``/USDTEUR`` == ``USDTEUR`` etc.), and the twins' ``ohlcv``
+        rows are unioned into the slot's single series — the ingest identity split is
+        repaired at load time with NO DB writes. Overlapping timestamps must AGREE
+        (rel <= 1e-12) or the load REFUSES (AliasDisagreementError names both asset_ids
+        + the first disagreeing timestamp); agreeing duplicates dedupe. The coverage
+        RANKING (no-symbols branch) is likewise grouped by normalized key, so a split
+        series ranks on its whole history (D31: "the split slots' coverage ranking is
+        itself distorted today"). Per-slot alias usage is disclosed on
+        ``self.asset_aliases_``. On a DB whose duplicate spellings carry no rows in the
+        window (e.g. the verification fixture) this is numerically bit-identical to the
+        pre-868 loader.
         """
         import sqlite3
         from datetime import datetime
         import logging
+        from mcts_trader.data.asset_aliases import (
+            alias_agreement_gate, ranked_minute_universe, resolve_requested_symbols)
 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -553,49 +586,55 @@ class VectorBTTradingEnv(gym.Env):
         if specific_symbols:
             # Use specific symbols (rainbow table training mode)
             logging.info(f"Using specific symbols: {specific_symbols[:5]}... ({len(specific_symbols)} total)")
-            placeholders = ','.join('?' * len(specific_symbols))
-            query = f"""
-                SELECT a.id, a.symbol
-                FROM assets a
-                WHERE a.symbol IN ({placeholders})
-            """
-            cursor.execute(query, specific_symbols)
-            asset_rows = cursor.fetchall()
-
-            if not asset_rows:
+            # TASK_868 (a1): resolve each requested symbol to its whole ALIAS GROUP (every
+            # assets row whose normalized form matches). An unknown spelling keeps the canon
+            # warn-and-skip behaviour; a KNOWN twin group unions below.
+            all_asset_rows = cursor.execute("SELECT id, symbol FROM assets").fetchall()
+            resolution, unknown = resolve_requested_symbols(all_asset_rows, specific_symbols)
+            for sym in unknown:
+                logging.warning(f"Symbol {sym} not found in database, skipping")
+            if not resolution:
                 raise ValueError(f"No assets found matching symbols: {specific_symbols[:5]}...")
-
-            # Preserve order from specific_symbols
-            symbol_to_id = {row[1]: row[0] for row in asset_rows}
-            asset_ids = []
-            symbols = []
-            for sym in specific_symbols:
-                if sym in symbol_to_id:
-                    asset_ids.append(symbol_to_id[sym])
-                    symbols.append(sym)
-                else:
-                    logging.warning(f"Symbol {sym} not found in database, skipping")
+            # Preserve order from specific_symbols; one column per requested symbol.
+            id_groups = [r["asset_ids"] for r in resolution]
+            symbols = [r["symbol"] for r in resolution]
         else:
-            # Get top assets by data coverage (most rows in date range)
-            query = """
-                SELECT a.id, a.symbol, COUNT(*) as cnt
-                FROM ohlcv o
-                JOIN assets a ON o.asset_id = a.id
-                WHERE o.timestamp >= ? AND o.timestamp <= ?
-                GROUP BY a.id
-                ORDER BY cnt DESC
-                LIMIT ?
-            """
-            cursor.execute(query, (filter_start_ts, filter_end_ts, n_assets))
-            asset_rows = cursor.fetchall()
-
-            if not asset_rows:
+            # TASK_868 (a1): the coverage ranking is GROUPED by normalized symbol — per-id
+            # counts summed across twin rows (the canon query ranked each twin separately,
+            # which is the distortion D31 names). Representative symbol = the in-window
+            # max-count member's DB spelling (deterministic).
+            ranked = ranked_minute_universe(cursor, filter_start_ts, filter_end_ts, n_assets)
+            if not ranked:
                 raise ValueError(f"No data found in {db_path} for date range")
+            id_groups = [g["asset_ids"] for g in ranked]
+            symbols = [g["symbol"] for g in ranked]
 
-            asset_ids = [row[0] for row in asset_rows]
-            symbols = [row[1] for row in asset_rows]
+        # TASK_868 (a1): FAIL-LOUD agreement gate, once per load — every alias pair's
+        # shared-timestamp closes in the window must agree (rel <= 1e-12) or the load
+        # REFUSES (AliasDisagreementError names both asset_ids + the first disagreeing
+        # timestamp). Agreeing duplicate timestamps dedupe in the union below.
+        gate_disclosure = alias_agreement_gate(
+            conn, "ohlcv", id_groups, filter_start_ts, filter_end_ts)
+        # Per-id in-window row counts (the D31 disclosure rider: per-slot asset_ids +
+        # per-id row counts).
+        all_ids = sorted({aid for g in id_groups for aid in g})
+        ph_ids = ','.join('?' * len(all_ids))
+        per_id_counts = {int(r[0]): int(r[1]) for r in cursor.execute(
+            f"""SELECT asset_id, COUNT(*) FROM ohlcv
+                WHERE asset_id IN ({ph_ids}) AND timestamp >= ? AND timestamp <= ?
+                GROUP BY asset_id""",
+            (*all_ids, filter_start_ts, filter_end_ts)).fetchall()}
+        gate_by_ids = {tuple(d["asset_ids"]): d["overlaps"] for d in gate_disclosure}
+        self.asset_aliases_ = [
+            {"slot": col, "symbol": sym, "asset_ids": list(g),
+             "per_id_counts": {str(aid): per_id_counts.get(aid, 0) for aid in g},
+             "aliased": len(g) > 1,
+             "overlap_agreement": gate_by_ids.get(tuple(g), [])}
+            for col, (sym, g) in enumerate(zip(symbols, id_groups))]
 
-        id_to_col = {aid: i for i, aid in enumerate(asset_ids)}
+        # Union: every member id maps to its group's column.
+        asset_ids = all_ids
+        id_to_col = {aid: col for col, g in enumerate(id_groups) for aid in g}
 
         logging.info(f"Selected {len(symbols)} assets: {symbols[:5]}...")
 
@@ -634,13 +673,24 @@ class VectorBTTradingEnv(gym.Env):
 
         rows_loaded = 0
         for asset_id, timestamp, close in cursor.fetchall():
-            if timestamp in ts_to_idx and asset_id in id_to_col:
+            if timestamp in ts_to_idx and asset_id in id_to_col and close:
                 row_idx = ts_to_idx[timestamp]
                 col_idx = id_to_col[asset_id]
+                # Alias union: duplicate (timestamp, group) rows AGREED at the gate above,
+                # so a second write lands the same value — dedupe is numerically free.
+                # (A falsy close is ABSENT by every loader's convention; the zero-init
+                # array already carries that, so skipping it is numerically identical.)
                 prices[row_idx, col_idx] = close
                 rows_loaded += 1
 
         logging.info(f"Loaded {rows_loaded:,} price points into ({n_steps}, {len(symbols)}) array")
+
+        # TASK_868 (D31 a2): the pre-fill 1-min real-print mask, captured ONLY on request
+        # (env_factory's eval open-gate path). This is the causal evidence for the
+        # frozen-cell force-HOLD mask — a cell is gated iff the slot printed nothing
+        # inside its bar, which is knowable from data <= the decision bar alone.
+        if capture_raw_nonzero:
+            self.raw_nonzero_ = (prices != 0).copy()
 
         # Forward fill any missing prices
         for col in range(prices.shape[1]):
@@ -727,26 +777,30 @@ class VectorBTTradingEnv(gym.Env):
         """
         import sqlite3
         import logging
+        from mcts_trader.data.asset_aliases import (
+            alias_agreement_gate, resolve_requested_symbols)
 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Get asset IDs for these symbols
-        placeholders = ','.join('?' * len(symbols))
-        cursor.execute(f"SELECT id, symbol FROM assets WHERE symbol IN ({placeholders})", symbols)
-        id_rows = cursor.fetchall()
-
-        # Create mappings
-        sym_to_id = {row[1]: row[0] for row in id_rows}
-        valid_symbols = [s for s in symbols if s in sym_to_id]
-        asset_ids = [sym_to_id[s] for s in valid_symbols]
-        id_to_col = {aid: i for i, aid in enumerate(asset_ids)}
-
-        if len(valid_symbols) < len(symbols):
-            logging.warning(f"Only found {len(valid_symbols)}/{len(symbols)} assets in database")
-
-        if not valid_symbols:
+        # TASK_868 (a1): the SAME alias union as _load_database_prices — each schedule
+        # symbol resolves to every assets row whose normalized form matches, the gate
+        # refuses disagreeing overlaps, and the twins' rows union into one column.
+        id_rows = cursor.execute("SELECT id, symbol FROM assets").fetchall()
+        resolution, unknown = resolve_requested_symbols(id_rows, symbols)
+        if unknown:
+            logging.warning(f"Only found {len(resolution)}/{len(symbols)} assets in database")
+        if not resolution:
             raise ValueError("No valid assets found in database for schedule")
+
+        valid_symbols = [r["symbol"] for r in resolution]
+        id_groups = [r["asset_ids"] for r in resolution]
+        alias_agreement_gate(conn, "ohlcv", id_groups, start_ts, end_ts)
+        asset_ids = sorted({aid for g in id_groups for aid in g})
+        id_to_col = {aid: col for col, g in enumerate(id_groups) for aid in g}
+        self.asset_aliases_ = [
+            {"slot": col, "symbol": sym, "asset_ids": list(g), "aliased": len(g) > 1}
+            for col, (sym, g) in enumerate(zip(valid_symbols, id_groups))]
 
         # Get timestamps in range
         id_placeholders = ','.join('?' * len(asset_ids))
@@ -780,7 +834,7 @@ class VectorBTTradingEnv(gym.Env):
         """, (*asset_ids, start_ts, end_ts))
 
         for asset_id, timestamp, close in cursor.fetchall():
-            if timestamp in ts_to_idx and asset_id in id_to_col:
+            if timestamp in ts_to_idx and asset_id in id_to_col and close:
                 row_idx = ts_to_idx[timestamp]
                 col_idx = id_to_col[asset_id]
                 prices[row_idx, col_idx] = close

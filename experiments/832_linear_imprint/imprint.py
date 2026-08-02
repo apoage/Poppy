@@ -288,8 +288,14 @@ def _load_corridor():
 def load_training_panel(args):
     """Load the panel through the TRAINING path: ``create_jax_env_historical``
     (1-min ohlcv -> ``bar_minutes`` row-resample, coverage-ranked universe, ffill).
-    Returns (prices_j (T,A) float32 jnp, logc (T,A) float64 np, env_cfg)."""
-    _, prices_j, env_cfg = create_jax_env_historical(
+    Returns (prices_j (T,A) float32 jnp, logc (T,A) float64 np, env_cfg, open_gate,
+    asset_aliases).
+
+    TASK_868 (D31): the canon loader is repaired by (a1)'s alias union, and (a2)'s causal
+    OPEN-GATE is captured on this path too (uniform with the pinned minute loader):
+    ``open_gate`` (T, A) bool, True iff the slot printed a real close inside that panel
+    row's bar. The walks force-HOLD OPENING where it is False; VALUATION is untouched."""
+    _, prices_j, env_cfg, open_gate, asset_aliases = create_jax_env_historical(
         db_path=args.db,
         start_date=args.start,
         end_date=args.end,
@@ -308,10 +314,11 @@ def load_training_panel(args):
         vector_weight_unit=args.vector_weight_unit,
         vector_weight_max=args.vector_weight_max,
         vector_rebalance_deadband=args.vector_rebalance_deadband,
+        capture_open_gate=True,
     )
     prices_np = np.asarray(prices_j, dtype=np.float64)
     logc = np.log(np.maximum(prices_np, 1e-12))
-    return prices_j, logc, env_cfg
+    return prices_j, logc, env_cfg, open_gate, asset_aliases
 
 
 # =============================================================================
@@ -366,8 +373,9 @@ def load_framed_panel(args):
             f"to pin the frame on the minute `ohlcv` table at this stride instead.)")
     frame_symbols, prov = ev._load_frame_provenance(
         args.panel_frame_from_checkpoint, int(args.n_assets), None)
+    open_gate = None                      # TASK_868 (a2): minute-source only (daily is unmasked)
     if frame_source == "minute":
-        prices_np32, loaded_syms, row_ts, coverage = ev.load_minute_prices_framed(
+        prices_np32, loaded_syms, row_ts, coverage, open_gate = ev.load_minute_prices_framed(
             args.db, args.start, args.end, frame_symbols, int(args.bar_minutes),
             require_active_slots=req_active)
     else:
@@ -430,6 +438,8 @@ def load_framed_panel(args):
         "frame_symbols": list(frame_symbols),
         "row_ts": np.asarray(row_ts, dtype=np.int64),
         "coverage": coverage,
+        # TASK_868 (D31 a2): the causal open-gate (minute pin only; None on the daily pin).
+        "open_gate": open_gate,
         "inactive_slots": inactive_slots,
         "partial_slots": partial_slots,
         # 853-shaped disclosure block (mirrors eval_vector._build_panel_framed's panel_frame).
@@ -513,6 +523,18 @@ def load_framed_panel(args):
             "bar_minutes": int(args.bar_minutes),
         })
     tag = "865" if frame_source == "minute" else "863"
+    # TASK_868 wording split: the SAME fill is tradeable on the DAILY pin (unmasked, D30 as
+    # ruled) and force-HELD — the WHOLE action, no open/close/rebalance — on the MINUTE pin
+    # (the D31 (a2) causal open-gate; VALUATION still reads the fill, PV-exact).
+    tail_treatment = ("force-HELD by the TASK_868 causal open-gate (whole action; "
+                      "D30 fill still values)"
+                      if frame_source == "minute" else "still tradeable")
+    tail_treatment_long = (
+        "are force-HELD at that FROZEN price by the TASK_868 causal open-gate — the WHOLE "
+        "action (no open, no close, no rebalance); a held position is CARRIED at the filled "
+        "valuation (PV-exact) and realizes at the next real print"
+        if frame_source == "minute" else
+        "stay TRADEABLE and weight-eligible at a FROZEN price")
     print("=" * 84)
     print(f"[{tag}] PINNED-FRAME {'MINUTE ' if frame_source == 'minute' else ''}panel from "
           f"checkpoint provenance "
@@ -523,7 +545,7 @@ def load_framed_panel(args):
     # "fully live" over a grid that can be ~10% inert. State the partial/stale-tail counts here.
     print(f"[{tag}] ... of the {n_active} ACTIVE: {len(partial)} PARTIAL (listed mid-window: "
           f"pre-listing rows flat-zero => forced HOLD), {len(stale)} STALE-TAIL (delisted "
-          f"mid-window: trailing rows FORWARD-FILLED at a frozen price, still tradeable) and "
+          f"mid-window: trailing rows FORWARD-FILLED at a frozen price, {tail_treatment}) and "
           f"{len(frozen)} carrying FROZEN spans (trailing AND INTERIOR forward-filled rows). "
           f"'ACTIVE' means 'has at least one real close', NOT 'live all window'.")
     print(f"[{tag}] breadth floor in force: --require-active-slots {req_active} "
@@ -538,8 +560,9 @@ def load_framed_panel(args):
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} INACTIVE "
                   f"[{c['span'][0]}..{c['span'][1]}]  ({c['reason']})")
     # A slot may be short at the HEAD (listed mid-window => PARTIAL, flat-zero force-HOLD rows) or
-    # at the TAIL (delisted mid-window => STALE TAIL, forward-filled tradeable rows at a frozen
-    # price). Reported separately: different keys, different causes, different treatment. On the
+    # at the TAIL (delisted mid-window => STALE TAIL, forward-filled rows at a frozen price —
+    # tradeable on the DAILY pin, force-HELD on the MINUTE pin). Reported separately: different
+    # keys, different causes, different treatment. On the
     # daily path partial IS partial-head, printed exactly as 863 printed it.
     partial_head = [c for c in partial if c.get("leading_inactive_rows")]
     if partial_head:
@@ -553,7 +576,7 @@ def load_framed_panel(args):
               f"the window end (delisting / ticker migration). Trailing rows are FORWARD-FILLED at "
               f"that close (D30 opt (i): the only PV-exact treatment — zeroing them marks an open "
               f"position against price 0 and fabricates -/+25% of PV on a flat series), so they "
-              f"stay TRADEABLE and weight-eligible at a FROZEN price. In NEITHER inactive_slots "
+              f"{tail_treatment_long}. In NEITHER inactive_slots "
               f"NOR partial_slots — disclosed only here and in stale_tail_slots:")
         for c in stale:
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} last real close ts "
@@ -565,8 +588,11 @@ def load_framed_panel(args):
         print(f"[{tag}] FROZEN-SPAN slots ({len(frozen)}) — panel rows carrying a forward-filled "
               f"price the market never printed. A TRAILING span cannot fabricate PnL (constant to "
               f"the window end); an INTERIOR span CAN (it re-anchors, delivering the whole gap move "
-              f"in one bar) and used to be invisible on every axis. Disclosed, NOT treated — what "
-              f"to do about interior spans is a semantics ruling (DECISIONS D31):")
+              f"in one bar) and used to be invisible on every axis."
+              + (" Force-HELD here by the TASK_868 (D31 a2) causal open-gate — the WHOLE action; "
+                 "the D30 fill still values them:" if frame_source == "minute" else
+                 " Disclosed, NOT treated — what to do about interior spans is a semantics ruling "
+                 "(DECISIONS D31):"))
         for c in sorted(frozen, key=lambda r: -r["n_frozen_rows"])[:12]:
             n_int = c["n_frozen_rows"] - int(c.get("trailing_stale_rows", 0))
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} {c['n_frozen_rows']:>6} frozen "
@@ -580,13 +606,21 @@ def load_framed_panel(args):
     return prices_j, logc, env_cfg, frame
 
 
-def frame_hold_mask(prices_j, start_row, n_decisions):
+def frame_hold_mask(prices_j, start_row, n_decisions, open_gate=None):
     """(N, A) bool: True where the panel has NO real price at that (decision row, slot) — the
     853 ``price_valid = current_prices > 0`` rule, evaluated on the decision rows this run walks
     (``walk_env`` reads ``prices[start_row + k]`` at decision k). ``None`` when nothing is
-    inactive, so a fully-covered pinned window takes the unmasked code path."""
+    inactive, so a fully-covered pinned window takes the unmasked code path.
+
+    TASK_868 (D31 a2): ``open_gate`` (T, A) bool — the causal frozen-cell gate from the minute
+    loaders (pinned or canon unpinned). Where it is False at a decision row the panel price is
+    forward-filled (real enough for VALUATION, never printed for OPENING), so the cell is
+    force-HELD too — the same price_valid mechanic, extended to frozen cells. None (daily
+    pinned, or any caller that does not pass it) = the pre-868 mask, byte-identical."""
     dec = np.asarray(prices_j[start_row:start_row + n_decisions], dtype=np.float64)
     mask = dec <= 0.0
+    if open_gate is not None:
+        mask = mask | ~np.asarray(open_gate)[start_row:start_row + n_decisions]
     return mask if mask.any() else None
 
 
@@ -1627,10 +1661,13 @@ def run(args, out_path, tag):
     # the PIN-b minute panel, untouched). ``frame`` stays None on the unpinned path and every
     # frame-derived object below (hold_mask, the artifact block) is then None/absent.
     frame = None
+    open_gate = None
+    asset_aliases = None
     if args.panel_frame_from_checkpoint is not None:
         prices_j, logc, env_cfg, frame = load_framed_panel(args)
+        open_gate = frame.get("open_gate")            # minute pin only; None on the daily pin
     else:
-        prices_j, logc, env_cfg = load_training_panel(args)
+        prices_j, logc, env_cfg, open_gate, asset_aliases = load_training_panel(args)
     T, A = logc.shape
     tgt, pres, warm = corridor.book_target_signs(logc)
     start_row = max(int(warm), int(env_cfg.window_size))
@@ -1645,7 +1682,10 @@ def run(args, out_path, tag):
           f"bar_minutes={args.bar_minutes}")
     # TASK_863: the 853 price-validity rule on THIS run's decision rows. None (and every walk
     # below takes the unmasked path) when unpinned or when no slot is inactive.
-    hold_mask = None if frame is None else frame_hold_mask(prices_j, start_row, N)
+    # TASK_868 (D31 a2): the causal open-gate is folded in on BOTH minute paths (pinned AND
+    # canon unpinned) — frozen cells (filled price, no print in the bar) are force-HELD for
+    # OPENING exactly like inert ones. Daily pinned and any gate-free panel: unchanged.
+    hold_mask = frame_hold_mask(prices_j, start_row, N, open_gate=open_gate)
     if frame is not None:
         n_hold_cells = 0 if hold_mask is None else int(hold_mask.sum())
         print(f"[863] force-HOLD cells (no real price at that decision row / slot): "
@@ -2123,6 +2163,18 @@ def run(args, out_path, tag):
     # TASK_863: flag-gated ADDITIVE disclosure block — absent (and every key above byte-identical)
     # when --panel-frame-from-checkpoint is not passed. Present, a 6/8-live-slot imprint is
     # impossible to mistake for an 8/8-live one (the 853 dual-disclosure requirement).
+    if frame is None:
+        # TASK_868 (D31 a1 rider): the canon UNPINNED path resolves alias twins at load time —
+        # disclose the per-slot asset_ids + per-id row counts in the artifact here too (the
+        # framed paths disclose inside panel_frame.coverage; the unpinned path has no frame
+        # block, so it lands at top level). ``n_open_gated_decision_cells`` is the (a2) mask
+        # load on this run's decision grid.
+        _n_aliased = sum(1 for a in (asset_aliases or []) if a.get("aliased"))
+        result["asset_aliases"] = asset_aliases
+        result["n_aliased_slots"] = _n_aliased
+        result["n_open_gated_decision_cells"] = (
+            0 if open_gate is None else int(
+                (~np.asarray(open_gate)[start_row:start_row + N]).sum()))
     if frame is not None:
         result["panel_frame_from_checkpoint"] = _display_path(args.panel_frame_from_checkpoint)
         result["panel_frame"] = frame["panel_frame"]
@@ -2142,11 +2194,17 @@ def run(args, out_path, tag):
         # without this a consumer reading all three still sees it as fully live.
         result["frozen_slots"] = list(frame["panel_frame"].get("frozen_slots") or [])
         # ... and the CELL-level honesty on the rows this run actually decided on, computed here
-        # (load_framed_panel does not know start_row/N). Disjoint: INERT (no price => force-HOLD,
-        # == n_hold_cells) + FROZEN (a forward-filled price, TRADEABLE) + LIVE = the whole grid.
+        # (load_framed_panel does not know start_row/N). Disjoint: INERT (no price at all =>
+        # force-HOLD) + FROZEN (a forward-filled price; force-HELD under the
+        # TASK_868 causal open-gate on the minute paths, still forward-filled for VALUATION)
+        # + LIVE = the whole grid. ``n_force_hold_cells`` (in panel_frame) is INERT + FROZEN on
+        # the gated paths — the mask total, not a third category.
         _fz = _load_eval_module().frozen_decision_cells(frame["coverage"], start_row, N)
         _n_cells = int(N * int(args.n_assets))
-        _n_inert = 0 if hold_mask is None else int(hold_mask.sum())
+        # INERT must be derived from PRICES (no price at all), not from hold_mask: as of
+        # TASK_868 the mask also carries the open-gated FROZEN cells, so reading inert off the
+        # mask double-counts them (measured: 1,796 inert + 854 frozen on a 3,768-cell grid).
+        _n_inert = int((np.asarray(prices_j)[start_row:start_row + N] <= 0).sum())
         result["decision_cell_honesty"] = {
             "n_decision_cells": _n_cells,
             "n_inert_decision_cells": _n_inert,
@@ -2162,11 +2220,12 @@ def run(args, out_path, tag):
             "live_decision_cell_pct": round(
                 100.0 * (_n_cells - _n_inert - _fz["total"]) / max(_n_cells, 1), 4),
             "frozen_span_slots": _fz["slots"],
-            "rule": ("INERT = no price at all (force-HOLD via hold_mask); FROZEN = a "
-                     "forward-filled price no market printed, still TRADEABLE and weight-eligible "
-                     "(trailing spans cannot fabricate PnL, INTERIOR spans can — they re-anchor); "
-                     "LIVE = the panel row samples a real close. Disjoint, and they sum to "
-                     "n_decision_cells."),
+            "rule": ("INERT = no price at all (force-HOLD); FROZEN = a forward-filled price no "
+                     "market printed (force-HELD by the TASK_868 causal open-gate on "
+                     "the minute paths — interior spans re-anchor and can fabricate PnL; still "
+                     "forward-filled for VALUATION, D30 PV-exact); LIVE = the panel row samples "
+                     "a real close. Disjoint, and they sum to n_decision_cells; the force-HOLD "
+                     "mask total is INERT + FROZEN."),
         }
         if frame["panel_frame"].get("panel_frame_source") == "minute":
             result["panel_frame_source"] = "minute"
@@ -2349,12 +2408,14 @@ def _print_report(r):
             print(f"   PARTIAL  slot {c['slot']:>3} {c['symbol']:<16} first covered ts "
                   f"{c['first_covered_ts']} ({c['leading_inactive_rows']} leading inactive rows) "
                   f"— INSIDE n_active_slots, ABSENT from inactive_slots (see partial_slots)")
-        # D30 amendment 4: the stale tails, on BOTH pin paths. Forward-filled at a frozen price =>
-        # tradeable and weight-eligible, and in NEITHER of the two lists above.
+        # D30 amendment 4 + TASK_868: the stale tails, on BOTH pin paths. Forward-filled at a
+        # frozen price; tradeable on the DAILY pin, force-HELD (whole action) on the MINUTE pin.
+        _tail_word = ("force-HELD (TASK_868 causal open-gate)"
+                      if pf.get("panel_frame_source") == "minute" else "still tradeable")
         for c in pf.get("stale_tail_spans") or []:
             print(f"   STALE    slot {c['slot']:>3} {c['symbol']:<16} last real close ts "
                   f"{c['last_real_ts']} ({c['trailing_stale_rows']} trailing rows FORWARD-FILLED "
-                  f"at a frozen price, still tradeable) — INSIDE n_active_slots, ABSENT from BOTH "
+                  f"at a frozen price, {_tail_word}) — INSIDE n_active_slots, ABSENT from BOTH "
                   f"inactive_slots and partial_slots (see stale_tail_slots)")
         print(f"   forced-HOLD cells: {pf.get('n_force_hold_cells')} of "
               f"{pf.get('n_decision_cells')} (teacher targets == BC labels == replay)")
@@ -2509,7 +2570,13 @@ def _resolve_run_defaults(args):
     if args.n_assets is None:
         args.n_assets = 8 if is_fixture else 64
     if args.iters is None:
-        args.iters = 80 if is_fixture else 2000
+        # TASK_868 re-base: 150 on the fixture (was 80) — the regenerated fixture's decision
+        # grid is 471x8 with ~47.7% force-HOLD cells (two zero-coverage slots + four long
+        # open-gated stale tails on the unpinned universe), and at 80 the student collapses to
+        # a total-HOLD policy (the degenerate-replay refusal fires, correctly). 150 is the
+        # measured escape point for THIS configuration (the collapse band is
+        # configuration-dependent by design). The real-data default is unchanged.
+        args.iters = 150 if is_fixture else 2000
     if args.batch_size is None:
         args.batch_size = 32 if is_fixture else 256
     if args.position_size_pct is None:
@@ -2710,7 +2777,9 @@ def main():
                     help="re-trim only when |target-current| > deadband (sentinel <0 => 0.1*w_unit)")
     # imprint phase (PIN a knobs + canon-mirrored trainer knobs)
     ap.add_argument("--iters", type=int, default=None,
-                    help="trainer.train iterations (default: 80 smoke / 2000 real)")
+                    help="trainer.train iterations (default: 150 smoke / 2000 real; the fixture "
+                         "default moved 80 -> 150 in TASK_868 — the regenerated fixture's "
+                         "~47.7%-masked 471x8 grid collapses the student to total-HOLD at 80)")
     ap.add_argument("--batch-size", type=int, default=None, help="default: 32 smoke / 256 real")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--discount", type=float, default=0.997)

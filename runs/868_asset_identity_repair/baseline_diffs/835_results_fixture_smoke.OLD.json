@@ -1,0 +1,270 @@
+{
+  "tag": "fixture-smoke",
+  "checkpoint": "experiments/835_stage4_eval/smoke_ckpt",
+  "checkpoint_label": "untrained_fresh_init(save->load roundtrip)",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2025-09-13",
+    "2025-12-12"
+  ],
+  "bar_minutes": 60,
+  "eval_seed": 0,
+  "panel": {
+    "n_rows": 447,
+    "n_assets": 8,
+    "warm": 60,
+    "n_decisions": 40,
+    "n_loaded_symbols": 8,
+    "padded": false,
+    "position_size_pct": 0.1,
+    "row_spacing_minutes_median": 60.0
+  },
+  "operator": {
+    "mode": "search",
+    "vector_k": 16,
+    "sims": 32,
+    "hold_bias": 3.0,
+    "dither_scale": 1.0,
+    "proposal_scheme": "dithered-book",
+    "proposal_temp": 1.0,
+    "proposal_explore_slots": 2,
+    "prior_weight": 1.0,
+    "per_node_resampling": false,
+    "vector_budget_step": false,
+    "vector_budget_pct": 0.99,
+    "vector_weight_rebalance": false,
+    "vector_weight_unit": -1.0,
+    "vector_weight_max": 4.0,
+    "vector_rebalance_deadband": -1.0,
+    "leaf_eval": "model",
+    "leaf_rollout_r": 3,
+    "leaf_vhat_tail": true,
+    "gumbel_scale": 3.0,
+    "max_num_considered_actions": 16,
+    "deterministic": true,
+    "selection": "visit_probs argmax",
+    "model_size": "small",
+    "h_cycles": 4,
+    "l_cycles": 6,
+    "discount": 0.997
+  },
+  "cost_tiers_bp": [
+    0,
+    21
+  ],
+  "annualization_period_minutes": 60.0,
+  "tiers": {
+    "0": {
+      "sharpe_full": -17.69700466604034,
+      "steps_completed": 40,
+      "steps_expected": 40,
+      "partial": false,
+      "final_pv": 98803.109375,
+      "avg_long": 1.3,
+      "avg_short": 3.85,
+      "pct_hold_agg": 64.6875,
+      "pct_hold_per_asset": {
+        "XBT/USD": 65.0,
+        "ETH/USD": 50.0,
+        "LTC/USD": 72.5,
+        "XMR/USD": 60.0,
+        "ZEC/USD": 65.0,
+        "ETC/USD": 77.5,
+        "DASH/USD": 50.0,
+        "REP/USD": 77.5
+      },
+      "action_hist_pct": [
+        6.5625,
+        64.6875,
+        9.375,
+        7.8125,
+        11.5625
+      ],
+      "bankrupt_at": -1,
+      "terminated_early_at": -1,
+      "per_window": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.2741764402188885,
+          "ceiling": 26.15052126634109,
+          "above_floor": null
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 1.800250841038113,
+          "ceiling": 42.52792057814209,
+          "above_floor": null
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.6271829687047559,
+          "ceiling": 38.27570958881829,
+          "above_floor": null
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.16304719635591294,
+          "ceiling": 39.56304775006262,
+          "above_floor": null
+        }
+      },
+      "activity": {
+        "hold_pct": 0.646875,
+        "trades_per_step": 2.825,
+        "n_trades_total": 113,
+        "n_long": 67,
+        "n_short": 46,
+        "active_assets": 8,
+        "top5_traded": {
+          "ETH/USD": 20,
+          "DASH/USD": 20,
+          "XMR/USD": 16,
+          "XBT/USD": 14,
+          "ZEC/USD": 14
+        }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
+    },
+    "21": {
+      "sharpe_full": -43.972249581758106,
+      "steps_completed": 40,
+      "steps_expected": 40,
+      "partial": false,
+      "final_pv": 96934.875,
+      "avg_long": 1.3,
+      "avg_short": 3.85,
+      "pct_hold_agg": 64.6875,
+      "pct_hold_per_asset": {
+        "XBT/USD": 65.0,
+        "ETH/USD": 50.0,
+        "LTC/USD": 72.5,
+        "XMR/USD": 60.0,
+        "ZEC/USD": 65.0,
+        "ETC/USD": 77.5,
+        "DASH/USD": 50.0,
+        "REP/USD": 77.5
+      },
+      "action_hist_pct": [
+        6.5625,
+        64.6875,
+        9.375,
+        7.8125,
+        11.5625
+      ],
+      "bankrupt_at": -1,
+      "terminated_early_at": -1,
+      "per_window": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.06117675120086839,
+          "ceiling": 24.61791893424685,
+          "above_floor": null
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 1.4339222874485953,
+          "ceiling": 39.586262861039664,
+          "above_floor": null
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": 0.27372580818205516,
+          "ceiling": 36.05767330368743,
+          "above_floor": null
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "n": 0,
+          "sharpe": null,
+          "floor": -0.5344029368104033,
+          "ceiling": 37.44202529720721,
+          "above_floor": null
+        }
+      },
+      "activity": {
+        "hold_pct": 0.646875,
+        "trades_per_step": 2.825,
+        "n_trades_total": 113,
+        "n_long": 67,
+        "n_short": 46,
+        "active_assets": 8,
+        "top5_traded": {
+          "ETH/USD": 20,
+          "DASH/USD": 20,
+          "XMR/USD": 16,
+          "XBT/USD": 14,
+          "ZEC/USD": 14
+        }
+      },
+      "teacher_floor_inenv": null,
+      "corridor_position": null
+    }
+  },
+  "corridor": {
+    "floor_net21": 0.4237793380446761,
+    "reference_net21": 0.7509887330376795,
+    "ceiling_net21": 29.69798287600358,
+    "floor_gross": 0.7532467397811813,
+    "reference_gross": 0.9557594651716449,
+    "ceiling_gross": 31.36710570497202,
+    "source": "experiments/830_corridor/results_real_panel.json",
+    "agent_net21": -43.972249581758106,
+    "agent_gross": -17.69700466604034,
+    "partial_rollout": false,
+    "position_in_corridor_net21": -1.5165580461390145,
+    "beats_floor_net21": false,
+    "beats_reference_net21": false,
+    "hold_collapse": false,
+    "teacher_floor_net21": null,
+    "policy_minus_floor_net21": null
+  },
+  "teacher_floor": null,
+  "net_dependent": true,
+  "roundtrip": {
+    "ckpt_dir": "experiments/835_stage4_eval/smoke_ckpt",
+    "params_differ_before_load": true,
+    "params_match_after_load": true
+  },
+  "out_name": "results_fixture_smoke.json",
+  "out_pointer": "experiments/835_stage4_eval/results_fixture_smoke.json",
+  "ledger_row": "| 835/S4 | 2026-07-24 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -43.972 \u00b7 gross -17.697; final PV 96935; avgL 1.3 avgS 3.9; no HOLD collapse (pct_hold 64.7%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -43.972 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
+}

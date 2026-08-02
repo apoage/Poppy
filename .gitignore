@@ -33,9 +33,21 @@ debug_env.py
 .env-workstation
 
 # Training output (server-side, rsync'd back)
-runs/
+# (`runs/*` rather than `runs/` so the TASK_868 negation below can take effect — git cannot
+# re-include anything under a directory excluded by name.)
+runs/*
 checkpoints/
 logs/
+# TASK_868: the D31 scope-3 duplicate-sweep report is a COMMITTED runs/-side artifact
+# (the task file's own requirement) — un-ignore ONLY the named deliverable files, so no
+# bytecode or scratch under the directory can ever be staged.
+!runs/868_asset_identity_repair/
+runs/868_asset_identity_repair/*
+!runs/868_asset_identity_repair/duplicate_sweep.json
+!runs/868_asset_identity_repair/baseline_attribution.json
+!runs/868_asset_identity_repair/harvest_gate_i.py
+!runs/868_asset_identity_repair/baseline_diffs/
+!runs/868_asset_identity_repair/baseline_diffs/*.json
 wandb/
 output/
 
@@ -58,6 +70,10 @@ training_schedule_old.json
 bloom/output/**/*.mp4
 *.log
 data/
+# TASK_868: mcts_trader/data/ is tracked source (the `data/` rule above is for data dumps);
+# un-ignore the package dir so NEW modules there (asset_aliases.py) are committable.
+!mcts_trader/data/
+!mcts_trader/data/*.py
 research/
 jax_ckpt_easy
 jax_ckpt_fast

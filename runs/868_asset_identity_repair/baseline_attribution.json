@@ -1,0 +1,228 @@
+{
+ "task": "TASK_868 (D31 opt (a)) \u2014 baseline re-promote attribution",
+ "why": "two compounding re-bases: (1) the fixture was regenerated from the CURRENT trading_data.db (the 858 backfill densified the majors' minute history since the old fixture was cut 2025-07-07: minute axis 27,181 -> 127,602 distinct minutes on the smoke window, panel T=111/N=50 -> T=532/N=471); (2) this task's semantics (D31 (a1) alias union + (a2) causal open-gate mask on both minute loaders). Daily-table smoke windows are UNCHANGED (daily paths bit-identical, verified by the 863 smoke + 865 daily legs).",
+ "baselines": {
+  "832_results_fixture_smoke": {
+   "promote_path": "imprint.py --vector-weight-rebalance --write-parity-baseline (TASK_864 gate: recipe-pinned, validity-gated, atomic, per-field diff; md5 f281568d82a4debfd44c972465f3481e)",
+   "leaves": {
+    "old": 545,
+    "new": 899
+   },
+   "moved": 472,
+   "removed": 0,
+   "added": 354,
+   "key_field_moves": {
+    "/expressibility_gate/order_final_pv": {
+     "old": 97252.453125,
+     "new": 88565.328125
+    },
+    "/expressibility_gate/weight_final_pv": {
+     "old": 95277.0078125,
+     "new": 83592.3671875
+    },
+    "/ledger_row/imprint_corridor_position_net21": {
+     "old": -4.227809831633599,
+     "new": 3.2727816791187294
+    },
+    "/n_decisions": {
+     "old": 50,
+     "new": 471
+    },
+    "/n_panel_rows": {
+     "old": 111,
+     "new": 532
+    },
+    "/sanity/per_tier/0/corridor_position": {
+     "old": -5.443347239558932,
+     "new": 1.1466212451245188
+    },
+    "/sanity/per_tier/0/final_pv": {
+     "old": 81472.625,
+     "new": 97739.203125
+    },
+    "/sanity/per_tier/0/policy_inenv": {
+     "old": -7.02232882533469,
+     "new": -0.5363278040564792
+    },
+    "/sanity/per_tier/0/teacher_floor_inenv": {
+     "old": -1.5789815857757585,
+     "new": -1.682949049180998
+    },
+    "/sanity/per_tier/21/corridor_position": {
+     "old": -4.227809831633599,
+     "new": 3.2727816791187294
+    },
+    "/sanity/per_tier/21/final_pv": {
+     "old": 80785.515625,
+     "new": 97597.609375
+    },
+    "/sanity/per_tier/21/policy_inenv": {
+     "old": -7.338765372099343,
+     "new": -0.5755315326072664
+    },
+    "/sanity/per_tier/21/teacher_floor_inenv": {
+     "old": -3.110955540465744,
+     "new": -3.848313211725996
+    },
+    "/sanity/teacher_action_agreement": {
+     "old": 0.9025,
+     "new": 0.9477176220806794
+    },
+    "/teacher/final_pv/0": {
+     "old": 97400.4609375,
+     "new": 92451.671875
+    },
+    "/teacher/final_pv/21": {
+     "old": 95277.0078125,
+     "new": 83592.3671875
+    },
+    "/teacher/floor_inenv/0": {
+     "old": -1.5789815857757585,
+     "new": -1.682949049180998
+    },
+    "/teacher/floor_inenv/21": {
+     "old": -3.110955540465744,
+     "new": -3.848313211725996
+    }
+   }
+  },
+  "835_results_fixture_smoke": {
+   "promote_path": "eval_vector.py --smoke (the shipped direct-write path for the default-search config)",
+   "leaves": {
+    "old": 198,
+    "new": 242
+   },
+   "moved": 57,
+   "removed": 2,
+   "added": 46,
+   "key_field_moves": {
+    "/panel/n_rows": {
+     "old": 447,
+     "new": 2127
+    },
+    "/tiers/0/final_pv": {
+     "old": 98803.109375,
+     "new": 98970.859375
+    },
+    "/tiers/21/final_pv": {
+     "old": 96934.875,
+     "new": 96835.65625
+    }
+   }
+  },
+  "861_chosen_vectors_fixture": {
+   "promote_path": "smoke_e2e._assert_collection_valid + _promote_baseline (the TASK_867 gate functions, validity-gated, atomic, per-field diff; md5 67016ebc98157f08f2a212f05753d1dd)",
+   "leaves": {
+    "old": 1015,
+    "new": 8593
+   },
+   "moved": 332,
+   "removed": 0,
+   "added": 7578,
+   "key_field_moves": {
+    "/provenance/n_decisions_collected": {
+     "old": 50,
+     "new": 471
+    },
+    "/provenance/n_decisions_expected": {
+     "old": 50,
+     "new": 471
+    },
+    "/provenance/n_rows": {
+     "old": 111,
+     "new": 532
+    },
+    "/provenance/walk_final_pv": {
+     "old": 107485.84375,
+     "new": 232673.5
+    },
+    "/provenance/walk_net21": {
+     "old": 13.89300020243101,
+     "new": 18.82398476363263
+    }
+   }
+  }
+ },
+ "not_promoted": {
+  "861_results_fixture_smoke": "BLOCKED BY DESIGN: the 861 smoke's fail-closed pre-run hygiene gate (TASK_867) refuses every invocation while a tracked baseline is git-dirty, and the results-baseline promote requires an all-green-except-vii report. The release ritual is promote -> COMMIT (orchestrator) -> re-verify: after the commit, run `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines` (legs then read the committed-new baselines; expected green except the exempted vii results-pin, which the promote installs), commit, then a plain run for the fully-green state."
+ },
+ "fixture_consumers": {
+  "enumeration": "every tracked baseline/suite reading fixtures/trading_fixture.db, found by repo-wide grep for 'trading_fixture' (2026-08-02); verdict per suite from recorded panel facts recomputed against the regenerated fixture (cheap check, no full suite re-run)",
+  "regen_blast_radius": "the old fixture (cut 2025-07-07) predated the 858 minute backfill: its minute slice was sparse (27,181 distinct minutes on the smoke window). The source has since been densified (127,602 on the same window), so ANY baseline recorded on a fixture MINUTE panel is stale after regeneration. The ohlcv_daily table's historical content is provably UNCHANGED (863/865 daily legs pass with exact old expectations; the 2021-01-01..2025-09-01 corridor panel recomputes to the identical 1,704 days x 279 assets).",
+  "suites": {
+   "830_corridor": {
+    "baseline": "experiments/830_corridor/results_fixture_smoke.json",
+    "reads": "corridor.load_panel (ohlcv_daily) 2021-01-01..2025-09-01",
+    "verdict": "NOT STALE \u2014 recomputed panel facts match the baseline exactly (1,704 days x 279 assets); daily content unchanged; no canon-minute code on its path",
+    "action": "none"
+   },
+   "831_search_probe": {
+    "baseline": "experiments/831_search_probe/results_fixture_smoke.json",
+    "reads": "corridor.load_panel (ohlcv_daily) 2021-01-01..2025-09-01",
+    "verdict": "NOT STALE \u2014 same daily panel, facts match",
+    "action": "none"
+   },
+   "834_e3_probe": {
+    "baseline": "experiments/834_e3_probe/results_fixture_smoke.json",
+    "reads": "create_jax_env_historical (minute ohlcv), panel_rows 427 @ bar 60, 16 assets",
+    "verdict": "STALE \u2014 fixture minute axis densified (panel shape and prices moved). Cause is the SOURCE-DATA drift surfaced by the mandated regen, NOT the 868 semantics (the probe does not pass capture_open_gate; the alias union is a fixture no-op for it)",
+    "action": "DECLARED known-stale, deliberately not re-based in this task: 834 is a sibling suite outside TASK_868's SAME-SURFACE scope; re-promoting it means re-running and re-verifying its own acceptance battery, owned by the planner/orchestrator as a separate re-base wave (same class as the 861 reference re-measurement scheduled in D31 (a3))"
+   },
+   "836_value_ranking": {
+    "baseline": "experiments/836_value_ranking/results_fixture_smoke.json",
+    "reads": "create_jax_env_historical (minute ohlcv), panel_rows 427 @ bar 60, 16 assets",
+    "verdict": "STALE \u2014 same cause (regression judge independently demonstrated)",
+    "action": "DECLARED known-stale \u2014 same reasoning as 834"
+   },
+   "837_walkforward": {
+    "baseline": "experiments/837_walkforward/results_fixture_smoke.json",
+    "reads": "pre-registered smoke folds on the fixture MINUTE slice 2025-09-13..2025-12-12 (+ PIT universe counts on ohlcv_daily)",
+    "verdict": "STALE on its minute-slice smoke folds (slice content moved); its real-fold universe derivation reads ohlcv_daily (unchanged)",
+    "action": "DECLARED known-stale \u2014 same reasoning as 834"
+   },
+   "838_pernode": {
+    "baseline": "experiments/838_pernode/results_fixture_smoke.json",
+    "reads": "corridor.load_panel (ohlcv_daily) 2021-01-01..2025-09-01",
+    "verdict": "NOT STALE \u2014 same daily panel, facts match",
+    "action": "none"
+   },
+   "839_budget_step": {
+    "baseline": "experiments/839_budget_step/results_fixture_smoke.json",
+    "reads": "corridor-style daily panel 2021-01-01..2025-09-01 (n_assets 279) + config-only factory-threading leg on the 1-min slice",
+    "verdict": "NOT STALE \u2014 baseline numerics derive from the daily panel (unchanged); the minute leg records config propagation only, no panel numbers",
+    "action": "none"
+   },
+   "840_weight_rebalance": {
+    "baseline": "experiments/840_weight_rebalance/results_fixture_smoke.json",
+    "reads": "corridor-style daily panel 2021-01-01..2025-09-01 (n_rows 1704, n_assets 279) + config-only factory-threading leg",
+    "verdict": "NOT STALE \u2014 same as 839",
+    "action": "none"
+   },
+   "844_short_bias": {
+    "baseline": "experiments/844_short_bias/results_fixture_smoke.json",
+    "reads": "create_jax_env_historical (minute ohlcv), panel_rows 427 @ bar 60, 16 assets",
+    "verdict": "STALE \u2014 same cause as 834/836",
+    "action": "DECLARED known-stale \u2014 same reasoning as 834"
+   },
+   "857_vhat_distill": {
+    "baseline": "experiments/857_vhat_distill/results_fixture_smoke.json",
+    "reads": "minute ohlcv panel, bar_minutes 240, n_assets 8 (the 861-style slice)",
+    "verdict": "STALE \u2014 the slice's axis moved 111 -> 532 rows at this stride; the distill acceptance legs' numbers were recorded on the sparse fixture",
+    "action": "DECLARED known-stale \u2014 same reasoning as 834"
+   }
+  },
+  "already_rebased_in_this_task": [
+   "832_linear_imprint/results_fixture_smoke.json (864 gate)",
+   "835_stage4_eval/results_fixture_smoke.json (shipped --smoke write path)",
+   "861_search_teacher_imprint/chosen_vectors_fixture.json (867 gate)",
+   "863/865/scorecard smokes (in-suite constants re-derived, all green)"
+  ],
+  "note": "861 results_fixture_smoke.json remains gated behind the release commit (see not_promoted); the 834/836/837/844/857 re-bases belong to that same wave."
+ },
+ "fix_round_2026_08_02": {
+  "flow1_imprint_unpinned_alias_disclosure": "imprint.py load_training_panel now returns asset_aliases and the unpinned artifact carries asset_aliases / n_aliased_slots / n_open_gated_decision_cells at top level (D31 (a1) rider was capture-only before). 832 baseline re-promoted through the 864 gate: md5 c0eca7e6647a2e3af3e52ae6cba115e6.",
+  "flow2_collection_alias_gate_disclosure": "eval_vector.build_chosen_vectors_doc provenance gains asset_aliases / n_aliased_slots / alias_union_rule / open_gate_rule / n_open_gated_decision_cells on the canon unpinned minute path (panel_frame is null there). 861 collection re-collected and re-promoted through the 867 gate functions: md5 69974ad48f92a43854bb89078a4bd462.",
+  "open_gate_closing_disclosure": "OPEN_GATE_RULE + decision_cell_rule now state exactly that the force-HOLD covers the WHOLE action (no open, no close, no rebalance) with the position carried at filled valuation and realized at the next real print; 835 baseline re-written via its shipped --smoke path after the string change.",
+  "gitignore_negation": "deliverable-file negations only; no .pyc stageable under runs/868_*."
+ }
+}

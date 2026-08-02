@@ -166,14 +166,19 @@ TEACHER_OPERATOR = [
 # Acceptance (i), 832 half: the scored values of the DEFAULT (flag-OFF) fixture smoke, captured
 # from the tree BEFORE this task's diff (`imprint.py` with no new flags). Float-exact.
 CANON_832_PINS = {
-    "policy_net21": -6.777552797287864,
-    "floor_net21": -3.4366469676609452,
-    "floor_gross": -1.8107111093013257,
-    "teacher_action_agreement": 0.8725,
-    "policy_ce_first": 2.5999953746795654,
-    "policy_ce_last": 0.299086332321167,
-    "gate_rel_diff": 0.09477011466699295,
-    "final_pv_net21": 95567.6015625,
+    # TASK_868 RE-BASE (2026-08): re-measured on the regenerated fixture (the 858 backfill
+    # densified the majors' minute history; the panel moved T=111/N=50 -> T=532/N=471 and now
+    # carries the D31 (a2) causal open-gate) at the new fixture-canon 150 iters (was 80 — see
+    # imprint.py's --iters note). Old values are in this file's git history and in
+    # runs/868_asset_identity_repair/baseline_diffs/.
+    "policy_net21": -2.308594834971675,
+    "floor_net21": -4.233984143132649,
+    "floor_gross": -2.256319048873474,
+    "teacher_action_agreement": 0.9376326963906582,
+    "policy_ce_first": 2.449171543121338,
+    "policy_ce_last": 0.25362908840179443,
+    "gate_rel_diff": 0.09108936603652518,
+    "final_pv_net21": 95216.765625,
 }
 # Keys of the 835 scorecard that legitimately move with the invocation (out-dir pointer) or the
 # calendar (the LEDGER row stamps date.today()) — excluded from the canon-pin comparison.
@@ -318,27 +323,30 @@ def _expect_config_refusal(run_doc, oracle_doc, run_label, oracle_label, field):
 MINUTE_FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
                         "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
 MINUTE_FRAME_INACTIVE_SLOTS = [1, 4]
-# Slots 5 and 7 list one bar late => PARTIAL (pre-listing rows flat-zero, force-HOLD). `ZEC/USD` at
-# slot 6 is a STALE TAIL (minute data ends 2025-09-30; the last panel BAR carrying a real print is
-# row 103 of 110): under D30 (ruled 2026-07-30, opt (i)) its 7 trailing rows are FORWARD-FILLED at
-# that close and stay TRADEABLE at a frozen price, so it contributes ZERO force-HOLD cells and is
-# NOT partial — it is disclosed on its own axis (`stale_tail_slots` / `frozen_slots`), the only
-# place it appears. Force-HOLD cells are therefore 2*50 = 100 (it was 107 while the tail was zeroed,
-# a treatment MEASURED to fabricate -/+25% of PV; see the (0) PV-conservation leg of the 865 smoke).
-# Exhaustive assertions live in the 865 smoke.
-MINUTE_FRAME_PARTIAL_SLOTS = [5, 7]
-MINUTE_FRAME_STALE_TAIL_SLOTS = [6]
-MINUTE_FRAME_FROZEN_SLOTS = [6]
-MINUTE_FRAME_FORCE_HOLD_CELLS = 100
-# FIX PASS — the honest CELL-level partition of this leg's 50x8 decision grid, OBSERVED out of the
-# artifact: 100 INERT (no price at all => force-HOLD) + 6 FROZEN (forward-filled, TRADEABLE: the
-# stale tail's 6 in-decision rows) + 294 LIVE. Asserted here so the 861 chain's own coverage of the
-# path its real legs run on cannot report a grid as fully live when it is not.
-MINUTE_FRAME_CELL_HONESTY = {"n_decision_cells": 400, "n_inert_decision_cells": 100,
-                             "n_frozen_decision_cells": 6,
+# TASK_868 RE-BASE (fixture regenerated 2026-08 — the 858 backfill densified the majors' minute
+# history; the panel moved T=111/N=50 -> T=532/N=471). Slots 3, 5 and 7 list one bar late =>
+# PARTIAL (pre-listing rows flat-zero, force-HOLD). `ZEC/USD` (slot 6) and `ETC/USD` (slot 7)
+# are STALE TAILS (minute data ends 2025-09-30; last real panel bar 103): under D30 opt (i) the
+# 428 trailing rows each are FORWARD-FILLED at that close (PV-exact for VALUATION) and under
+# TASK_868 (D31 a2) force-HELD for OPENING by the causal open-gate. Slot 6 is the tail-only
+# case (in NEITHER other list); slot 7 is partial AND stale-tailed. Force-HOLD cells are
+# therefore 2*471 (inert) + 2*427 (open-gated) = 1,796 of 3,768. Exhaustive assertions live in
+# the 865 smoke.
+MINUTE_FRAME_PARTIAL_SLOTS = [3, 5, 7]
+MINUTE_FRAME_STALE_TAIL_SLOTS = [6, 7]
+MINUTE_FRAME_TAIL_ONLY_SLOTS = [6]
+MINUTE_FRAME_FROZEN_SLOTS = [6, 7]
+MINUTE_FRAME_FORCE_HOLD_CELLS = 1796
+# FIX PASS — the honest CELL-level partition of this leg's 471x8 decision grid, OBSERVED out of
+# the artifact: 942 INERT (no price at all => force-HOLD) + 854 FROZEN (forward-filled,
+# force-HELD for OPENING under D31 a2: the two stale tails' 2x427 in-decision rows) + 1,972 LIVE.
+# Asserted here so the 861 chain's own coverage of the path its real legs run on cannot report
+# a grid as fully live when it is not.
+MINUTE_FRAME_CELL_HONESTY = {"n_decision_cells": 3768, "n_inert_decision_cells": 942,
+                             "n_frozen_decision_cells": 854,
                              "n_frozen_interior_decision_cells": 0,
-                             "n_frozen_stale_tail_decision_cells": 6,
-                             "n_live_decision_cells": 294}
+                             "n_frozen_stale_tail_decision_cells": 854,
+                             "n_live_decision_cells": 1972}
 # D30 rider (b): 6 of 8 slots are covered by design here, below the shared default breadth floor —
 # opt out EXPLICITLY rather than weakening the default that guards the real legs.
 MINUTE_FRAME_REQUIRE_ACTIVE = ["--require-active-slots", "0"]
@@ -608,9 +616,12 @@ def imprint_cmd(out_json, ckpt_out, seed=0, collection=COLLECTION, shuffle=False
     # checkpoint it just minted, which can never equal the pinned runs/832_e5/ckpt_imprint_full.
     # Leg iii below pins the honesty of that escape hatch — the ONLY off-pin field may be
     # 'checkpoint'; every operator knob must still match the +8.024 pin.
+    # TASK_868 re-base: 150 iters (was 80) — measured escape point for the total-HOLD collapse
+    # on the regenerated fixture's ~47%-masked 471x8 decision grid (the collapse band is
+    # configuration-dependent by design; see the 865 smoke's pass-leg note).
     cmd = [sys.executable, IMPRINT_PY, *PANEL, "--vector-weight-rebalance",
            "--teacher-vectors", collection, "--allow-off-pin-teacher",
-           "--iters", "80", "--seed", str(seed),
+           "--iters", "150", "--seed", str(seed),
            "--ckpt-out", ckpt_out, "--out", out_json]
     if shuffle:
         cmd.append("--shuffle-teacher-vectors")
@@ -1109,11 +1120,11 @@ def main():
         "stale_tail_disclosed_on_its_own_axis": (
             rm.get("stale_tail_slots") == MINUTE_FRAME_STALE_TAIL_SLOTS
             and mpf.get("stale_tail_slots") == MINUTE_FRAME_STALE_TAIL_SLOTS),
-        "stale_tail_slot_is_in_NEITHER_other_list": all(
+        "tail_only_slot_is_in_NEITHER_other_list": all(
             sl not in (rm.get("inactive_slots") or [])
             and sl not in (rm.get("partial_slots") or [])
-            for sl in MINUTE_FRAME_STALE_TAIL_SLOTS),
-        "force_hold_cells_exact_stale_tail_TRADEABLE": (
+            for sl in MINUTE_FRAME_TAIL_ONLY_SLOTS),
+        "force_hold_cells_exact_inert_plus_open_gated": (
             mpf.get("n_force_hold_cells") == MINUTE_FRAME_FORCE_HOLD_CELLS),
         # FIX PASS: frozen spans (interior INCLUDED) are disclosed, and the decision grid's honest
         # INERT / FROZEN / LIVE partition is OBSERVED out of the artifact, not assumed.

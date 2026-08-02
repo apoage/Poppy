@@ -353,6 +353,14 @@ def create_jax_env_historical(
     vector_weight_unit: float = -1.0,
     vector_weight_max: float = 4.0,
     vector_rebalance_deadband: float = -1.0,
+    # TASK_868 (D31 a2): also capture the causal frozen-cell OPEN-GATE mask (default
+    # OFF = canon, no extra memory and the canon 3-tuple return). When True the loader
+    # keeps the pre-fill 1-min real-print mask and this returns a 5-tuple
+    # (states, prices, config, open_gate, asset_aliases): open_gate (n_rows, n_assets)
+    # bool at PANEL (post-stride) resolution — True iff the slot printed a real close
+    # anywhere inside that panel row's bar — and asset_aliases the per-slot D31 (a1)
+    # alias-union disclosure.
+    capture_open_gate: bool = False,
 ) -> Tuple[Any, jnp.ndarray, Any]:
     """Create JAX environment with HISTORICAL prices from database.
 
@@ -401,6 +409,7 @@ def create_jax_env_historical(
         specific_symbols=specific_symbols,
         initial_cash=10000.0,
         max_steps=100,  # Doesn't matter, just for loading
+        capture_raw_nonzero=capture_open_gate,   # TASK_868 (a2): pre-fill 1-min mask
     )
     prices_np = temp_env.prices  # (n_steps, n_loaded_assets)
 
@@ -408,13 +417,31 @@ def create_jax_env_historical(
     if bar_minutes > 1:
         prices_np = prices_np[::bar_minutes]
 
+    # TASK_868 (D31 a2): the causal OPEN-GATE mask at panel (post-stride) resolution.
+    # Panel row r stands for the bar ((r-1)*bar, r*bar]; the gate is True iff the slot
+    # printed a real close anywhere inside it — knowable from data <= the decision bar
+    # alone (no look-ahead into whether a gap later resumes), which is exactly why it
+    # also covers trailing gaps: at decision time a delisting and an interior hole are
+    # indistinguishable. The D30 forward-fill still values every row; the gate only
+    # force-HOLDs OPENING where the price is one no market printed.
+    open_gate = None
+    asset_aliases = None
+    if capture_open_gate:
+        from mcts_trader.data.asset_aliases import real_bar_mask
+        open_gate = real_bar_mask(temp_env.raw_nonzero_, prices_np.shape[0], bar_minutes)
+        asset_aliases = [dict(a) for a in temp_env.asset_aliases_]
+
     # Pad to n_assets if needed
     if prices_np.shape[1] < n_assets:
         n_loaded = prices_np.shape[1]
         pad_indices = [i % n_loaded for i in range(n_assets)]
         prices_np = prices_np[:, pad_indices]
+        if open_gate is not None:
+            open_gate = open_gate[:, pad_indices]
     elif prices_np.shape[1] > n_assets:
         prices_np = prices_np[:, :n_assets]
+        if open_gate is not None:
+            open_gate = open_gate[:, :n_assets]
 
     prices = jnp.array(prices_np, dtype=jnp.float32)
 
@@ -454,6 +481,8 @@ def create_jax_env_historical(
     keys = jax.random.split(rng_key, n_envs)
     states = jit_batch_reset(keys, prices, config)
 
+    if capture_open_gate:
+        return states, prices, config, open_gate, asset_aliases
     return states, prices, config
 
 

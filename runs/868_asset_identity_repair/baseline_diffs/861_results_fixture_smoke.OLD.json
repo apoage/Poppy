@@ -1,0 +1,467 @@
+{
+  "legs": {
+    "i_canon_835": {
+      "passed": true,
+      "baseline": "committed experiments/835_stage4_eval/results_fixture_smoke.json",
+      "excluded_keys": [
+        "out_name",
+        "out_pointer",
+        "ledger_row",
+        "checkpoint",
+        "roundtrip.ckpt_dir"
+      ],
+      "excluded_reason": "invocation-dependent (out-dir / smoke-ckpt-dir paths) or calendar-dependent (the LEDGER row stamps date.today()); every SCORED key is compared byte-for-byte"
+    },
+    "i_canon_832": {
+      "passed": true,
+      "pins": {
+        "policy_net21": -6.777552797287864,
+        "floor_net21": -3.4366469676609452,
+        "floor_gross": -1.8107111093013257,
+        "teacher_action_agreement": 0.8725,
+        "policy_ce_first": 2.5999953746795654,
+        "policy_ce_last": 0.299086332321167,
+        "gate_rel_diff": 0.09477011466699295,
+        "final_pv_net21": 95567.6015625
+      },
+      "observed": {
+        "policy_net21": -6.777552797287864,
+        "floor_net21": -3.4366469676609452,
+        "floor_gross": -1.8107111093013257,
+        "teacher_action_agreement": 0.8725,
+        "policy_ce_first": 2.5999953746795654,
+        "policy_ce_last": 0.299086332321167,
+        "gate_rel_diff": 0.09477011466699295,
+        "final_pv_net21": 95567.6015625
+      },
+      "recipe_identity": {
+        "vector_weight_rebalance": false,
+        "imprint_mapping": "order-code"
+      },
+      "recipe_identity_is_weight_off_order_code": true,
+      "additive_block_absent": true
+    },
+    "ib_weight_on_pin": {
+      "passed": true,
+      "checks": {
+        "weight_on_run_matches_tracked_baseline": true,
+        "mutation_weight_on_field_fails_pin": true,
+        "mutation_weight_off_field_fails_pins": true,
+        "weight_off_artifact_vs_weight_on_oracle_REFUSED": true,
+        "weight_on_artifact_vs_weight_off_oracle_REFUSED": true
+      },
+      "oracle": "experiments/832_linear_imprint/results_fixture_smoke.json (tracked, weight-ON order-code; fail-closed on missing/dirty/wrong-config)",
+      "oracle_recipe_identity": {
+        "vector_weight_rebalance": true,
+        "imprint_mapping": "order-code"
+      },
+      "excluded_keys": [
+        "db",
+        "checkpoint"
+      ],
+      "excluded_reason": "absolute invocation paths (clone-path / --ckpt-out dependent, SPEC.md 'Reproducibility precondition'); every scored key is compared float-exact",
+      "observed": {
+        "policy_net21": -7.338765372099343,
+        "floor_net21": -3.110955540465744,
+        "floor_gross": -1.5789815857757585,
+        "teacher_action_agreement": 0.9025,
+        "policy_ce_first": 2.602405071258545,
+        "policy_ce_last": 0.26968371868133545,
+        "gate_rel_diff": 0.09477011466699295,
+        "final_pv_net21": 80785.515625
+      },
+      "differing_keys": [],
+      "weight_off_refusal_message": "[866] CROSS-CONFIGURATION REFUSAL: flagless weight-OFF run and the oracle (tracked weight-ON baseline) are DIFFERENT configurations \u2014 vector_weight_rebalance: flagless weight-OFF run is False but the oracle (tracked weight-ON baseline) is True. Comparing them would be the wrong-oracle bug this pin exists to close; check the artifact against an oracle of its OWN configuration.",
+      "weight_on_refusal_message": "[866] CROSS-CONFIGURATION REFUSAL: fresh weight-ON run and the oracle (weight-OFF default run used as oracle) are DIFFERENT configurations \u2014 vector_weight_rebalance: fresh weight-ON run is True but the oracle (weight-OFF default run used as oracle) is False. Comparing them would be the wrong-oracle bug this pin exists to close; check the artifact against an oracle of its OWN configuration."
+    },
+    "ii_pure_recorder": {
+      "passed": true,
+      "n_decisions": 50,
+      "collection_walk_net21": 13.89300020243101,
+      "schema": "861/chosen-vectors/v1"
+    },
+    "iii_provenance": {
+      "window": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "window.start",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "frame": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "loaded_symbols",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "env_flags": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "env_flags.vector_weight_rebalance",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "env_psp_conditional": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "env_flags.position_size_pct",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "off_pin_operator": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "operator.sims",
+        "keyword": "OFF-PIN TEACHER REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "payload_digest": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "PAYLOAD DIGEST MISMATCH",
+        "keyword": "PAYLOAD DIGEST MISMATCH",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "payload_non_integer": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "NON-INTEGER action code",
+        "keyword": "PROVENANCE REFUSAL",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "replay_integrity": {
+        "passed": true,
+        "exit_code": 1,
+        "named_field": "REPLAY INTEGRITY FAILURE",
+        "keyword": "REPLAY INTEGRITY FAILURE",
+        "field_named": true,
+        "artifact_written": false
+      },
+      "multi_checkpoint": {
+        "passed": true,
+        "exit_code": 2
+      }
+    },
+    "iiib_empty_flags": {
+      "eval_empty_collect_path": {
+        "passed": true,
+        "exit_code": 2,
+        "seconds": 0.98,
+        "walk_started": false
+      },
+      "eval_unwritable_collect_path": {
+        "passed": true,
+        "exit_code": 2,
+        "seconds": 0.97,
+        "walk_started": false
+      },
+      "imprint_empty_teacher_vectors": {
+        "passed": true,
+        "exit_code": 2,
+        "canon_832_baseline_untouched": true,
+        "baseline": "experiments/832_linear_imprint/results_fixture_smoke.json"
+      }
+    },
+    "iv_falsification": {
+      "legit": [
+        {
+          "seed": 0,
+          "exit_code": 0,
+          "nll_reduction": 0.36180147231220816,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.8075,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 1,
+          "exit_code": 0,
+          "nll_reduction": 0.1943804944491569,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.77,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 2,
+          "exit_code": 0,
+          "nll_reduction": 0.24004938255873476,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7775,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 3,
+          "exit_code": 0,
+          "nll_reduction": 0.3159160266767784,
+          "expected_exit_zero": true,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.795,
+          "modal_action_rate": 0.7675
+        }
+      ],
+      "shuffled": [
+        {
+          "seed": 0,
+          "exit_code": 1,
+          "nll_reduction": -0.21338548340900232,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7525,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 1,
+          "exit_code": 1,
+          "nll_reduction": -0.11595200936863495,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.74,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 2,
+          "exit_code": 1,
+          "nll_reduction": -0.16094269782748577,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.735,
+          "modal_action_rate": 0.7675
+        },
+        {
+          "seed": 3,
+          "exit_code": 1,
+          "nll_reduction": -0.17010462571311852,
+          "expected_exit_zero": false,
+          "passed": true,
+          "argmax_agreement_vs_original": 0.7475,
+          "modal_action_rate": 0.7675
+        }
+      ]
+    },
+    "ivb_escape_hatch_honesty": {
+      "passed": true,
+      "operator_off_pin": true,
+      "operator_off_pin_fields": [
+        "checkpoint"
+      ],
+      "position_size_pct_exemption_exercised": true,
+      "env_exempt_mismatches": [
+        "max_steps: collection=400 imprint=8 (episode-length knob only: BOTH walkers override max_episode_steps on the STATE (835 _finalize_panel / this module's walk_env), so the config value is inert for the replay)",
+        "position_size_pct: collection=0.1 imprint=0.0625 (CONDITIONAL on vector_weight_rebalance being true on BOTH sides (refused otherwise). Under weight-rebalance, step_vector overwrites cash/positions wholesale (jax_trading_env.py:1791-1798), limit legs are sized w_unit*PV (:1785) reserving 0 (:1561), so ideal_trade_value = PV*position_size_pct (:1418) is DEAD CODE. Verified empirically at fixture scale (fix pass): the pinned operator walked at --position-size-pct 0.1 vs 0.0625 gives 1.000 chosen-vector agreement, 1.000 realized-book agreement, net@21 +13.89300020243101 BOTH and final_pv 107485.84375 BOTH, with position_size_pct the ONLY differing env field. The same pair walked with weight-rebalance OFF diverges (net@21 +17.2151 vs +17.1620, final_pv 109773.20 vs 106052.72) \u2014 which is exactly why the exemption is CONDITIONAL. Needed because the teacher of record records 0.1 while the pinned imprint manifest (runs/832_e5/jobs_imprint_full.manifest) uses 0.5/64 = 0.0078125 \u2014 without this the two pre-registered real legs cannot run together.)",
+        "reward_attributable: collection=False imprint=True (TRAJECTORY-inert but NOT consequence-free. It is a reward-only term (jax_trading_env.py:1854): it never touches the state transition, so the recorded action vectors replay to the identical PV path and the identical teacher floor. The 835 harness exposes no flag for it (its panel is always False) while this runner defaults True, so a hard refusal would block the pre-registered real leg. CONSEQUENCE, recorded because the WARN fires on 100% of legitimate pairings and a warning that always fires carries no signal: inject_teacher turns THIS run's reward stream into the MC value targets, so the student's value/reward heads are fit under a reward definition the search teacher never optimised. The POLICY targets (the BC objective this task is about) are unaffected. Pass --no-reward-attributable to align the two definitions.)"
+      ],
+      "in_runner_replay_integrity": {
+        "checked": true,
+        "recorded_walk_net21": 13.89300020243101,
+        "replayed_floor_net21": 13.892973302731274,
+        "abs_delta": 2.689969973523887e-05,
+        "rel_delta": 1.9362052359670976e-06,
+        "rel_tolerance": 0.0001,
+        "passed": true
+      },
+      "floor": {
+        "floor": 0.05,
+        "was": 0.1,
+        "why": "n=10 seeds (fixture panel, 80 iters): legit min +0.1248 / max +0.3618 / mean +0.2649 / sd 0.0717 vs shuffled min -0.2265 / max -0.0799 / mean -0.1611 / sd 0.0428. Cloud gap 0.2047 (Cohen's d 7.2) \u2014 the separation is excellent, the placement was not: at 0.10 the legit margin is only 0.0248 (0.35 sd, ~1% false-FAIL per seed, ~4% over a 4-seed sweep). 0.05 leaves 1.04 sd on the legit side and 3.04 sd on the sabotage side, and still sits above the 0.0 a constant marginal predictor can never beat."
+      },
+      "legit_nll_reduction_min": 0.1943804944491569,
+      "shuffled_nll_reduction_max": -0.11595200936863495
+    },
+    "v_pinned_recipe_corunnable": {
+      "passed": true,
+      "exit_code": 0,
+      "imprint_mapping": "search-teacher-vectors",
+      "note": "leg 1 argv (teacher of record, position_size_pct 0.1) and leg 2 argv (jobs_imprint_full.manifest recipe: weight-native, 0.5/n sizing) run together; the 845 --vector-weight-rebalance fail-closed assert is still enforced on this path"
+    },
+    "vi_minute_frame_pin": {
+      "passed": true,
+      "checks": {
+        "imprint_exit_zero": true,
+        "panel_frame_source_minute": true,
+        "frame_symbols_in_recorded_order": true,
+        "inactive_slots_disclosed": true,
+        "partial_slots_head_only": true,
+        "stale_tail_disclosed_on_its_own_axis": true,
+        "stale_tail_slot_is_in_NEITHER_other_list": true,
+        "force_hold_cells_exact_stale_tail_TRADEABLE": true,
+        "frozen_slots_disclosed": true,
+        "decision_cell_honesty_exact": true,
+        "breadth_floor_recorded": true,
+        "sanity_replay_both_tiers": true,
+        "replay_integrity_passed": true,
+        "reordered_frame_REFUSED": true
+      },
+      "frame": [
+        "XBT/USD",
+        "/EURGBP",
+        "ETH/USD",
+        "LTC/USD",
+        "/USDCAD",
+        "XMR/USD",
+        "ZEC/USD",
+        "ETC/USD"
+      ],
+      "inactive_slots": [
+        1,
+        4
+      ],
+      "partial_slots": [
+        5,
+        7
+      ],
+      "stale_tail_slots": [
+        6
+      ],
+      "frozen_slots": [
+        6
+      ],
+      "decision_cell_honesty": {
+        "n_decision_cells": 400,
+        "n_inert_decision_cells": 100,
+        "n_frozen_decision_cells": 6,
+        "n_frozen_interior_decision_cells": 0,
+        "n_frozen_stale_tail_decision_cells": 6,
+        "n_not_real_decision_cells": 106,
+        "n_live_decision_cells": 294,
+        "inert_decision_cell_pct": 25.0,
+        "frozen_decision_cell_pct": 1.5,
+        "not_real_decision_cell_pct": 26.5,
+        "live_decision_cell_pct": 73.5,
+        "frozen_span_slots": [
+          {
+            "slot": 6,
+            "symbol": "ZEC/USD",
+            "frozen_decision_cells": 6,
+            "interior": 0,
+            "tail": 6,
+            "n_frozen_spans": 1,
+            "frozen_spans_truncated": false,
+            "no_real_panel_rows": false
+          }
+        ],
+        "rule": "INERT = no price at all (force-HOLD via hold_mask); FROZEN = a forward-filled price no market printed, still TRADEABLE and weight-eligible (trailing spans cannot fabricate PnL, INTERIOR spans can \u2014 they re-anchor); LIVE = the panel row samples a real close. Disjoint, and they sum to n_decision_cells."
+      },
+      "sanity_net21": 12.013395865385741,
+      "note": "same window/stride/size as the legacy 861 panel \u2014 only the universe is PINNED instead of coverage-ranked (TASK_865). Exhaustive matrix: experiments/865_minute_frame_pin/smoke_minute_frame_pin.py",
+      "sanity_net21_attribution": "FIX PASS \u2014 do NOT attribute a swing in this number to the stale tail's tradeability. The stale-tail treatment changes exactly the tail cells of ONE slot; replaying the SAME recorded teacher stream on the filled and zeroed panels isolates that channel and it is SMALL (measured and reported by the (i-b) walk_net21 reconciliation leg of experiments/865_minute_frame_pin/smoke_minute_frame_pin.py, which also carries the sign). A before/after difference in sanity_net21 is dominated by the operator RE-DECIDING on a different panel and by the student being retrained on that different stream \u2014 not by the tail becoming tradeable."
+    },
+    "roundtrip_teacher_floor": {
+      "passed": true,
+      "imprint_floor_net21": 13.892973302731274,
+      "collection_walk_net21": 13.89300020243101,
+      "abs_delta": 2.689969973523887e-05,
+      "rel_delta": 1.9362052359670976e-06,
+      "rel_tolerance": 0.0001,
+      "note": "same actions, same rows, same env \u2014 walked by 835 rollout (batched vmap PV) and 832 walk_env (unbatched PV); agreement to float32 rounding proves the recorded target stream replays as the identical trajectory"
+    },
+    "vii_baseline_pins": {
+      "passed": true,
+      "checks": {
+        "collection_pin_fresh_vs_committed": true,
+        "results_pin": true,
+        "committed_results_seed_identity_is_canon_full_seed": true,
+        "promote_refuses_quick_downgrade": true,
+        "promote_refuses_seeds_subset": true,
+        "promote_refuses_invalid_collection": true,
+        "promote_refuses_invalid_report": true
+      },
+      "collection_baseline": "experiments/861_search_teacher_imprint/chosen_vectors_fixture.json (tracked; fail-closed on missing/dirty/corrupt pre-run)",
+      "results_baseline": "experiments/861_search_teacher_imprint/results_fixture_smoke.json (tracked; same gate)",
+      "collection_volatile_excluded": [
+        "created_utc",
+        "db",
+        "db_abspath"
+      ],
+      "collection_differing_leaves": [],
+      "results_compared_full_recipe": true,
+      "results_differing_leaves": [],
+      "results_excluded": "top-level ['verdict', 'all_passed', 'elapsed_seconds'], the self-referential pin leg, iiib wall-clock seconds; verdict/all_passed are recomputed fresh every run",
+      "promote_demonstrations": {
+        "quick": "[867] --promote-baselines REFUSED: this is not the CANON full-seed recipe, so promoting it would install a DIFFERENT artifact as the tracked oracle (a seeds-subset report over the seeds-0..3 baseline is the --quick downgrade, TASK_867 scope 2).\n    --quick: got True, canon expects False\n  The canon recipe is EXACTLY: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines\n  (expected values re-derived from this module's argparse defaults, not a second hardcoded copy).",
+        "seeds_subset": "[867] --promote-baselines REFUSED: this is not the CANON full-seed recipe, so promoting it would install a DIFFERENT artifact as the tracked oracle (a seeds-subset report over the seeds-0..3 baseline is the --quick downgrade, TASK_867 scope 2).\n    --seeds: got 1, canon expects 4\n  The canon recipe is EXACTLY: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines\n  (expected values re-derived from this module's argparse defaults, not a second hardcoded copy).",
+        "invalid_collection": "[867] --promote-baselines REFUSED: the collection artifact did NOT pass its own validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 analogue).\n    - payload_sha256 does NOT match the decisions block (stale or tampered digest \u2014 the artifact failed its own integrity seal)\n  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon recipe: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines",
+        "invalid_report": "[867] --promote-baselines REFUSED: the results report did NOT pass its own validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 analogue).\n    - leg iv_falsification did not pass \u2014 an artifact that was never green must not become the tracked oracle\n  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon recipe: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines"
+      },
+      "note": "default invocations write the gitignored *_local.json outputs; the tracked baselines move ONLY via --promote-baselines (recipe-pinned full-seed, validity-gated, atomic, dirty-refusing, per-field diff printed \u2014 the TASK_864 gate ported). The dirty/missing refusal of BOTH baselines is enforced pre-run on every invocation, so a hand-edited committed baseline fails the smoke before any leg runs (acceptance iii)."
+    }
+  },
+  "seeds": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "imprint_sanity_first_seed": {
+    "policy_net21": 12.736197747762771,
+    "teacher_floor_net21": 13.892973302731274,
+    "corridor_position_net21": -1.1567755549685028,
+    "teacher_action_agreement": 0.8075,
+    "note": "fixture plumbing numbers \u2014 NO threshold applied (the binding in-sample bar is the planner's real-panel leg 3: sanity replay net@21 > +0.839)"
+  },
+  "verdict": {
+    "i_canon_835": true,
+    "i_canon_832": true,
+    "ib_weight_on_pin": true,
+    "ii_pure_recorder": true,
+    "iii_provenance": true,
+    "iiib_empty_flags": true,
+    "iv_falsification": true,
+    "ivb_escape_hatch_honesty": true,
+    "v_pinned_recipe_corunnable": true,
+    "vi_minute_frame_pin": true,
+    "roundtrip_teacher_floor": true,
+    "vii_baseline_pins": true
+  },
+  "all_passed": true,
+  "elapsed_seconds": 857.8,
+  "panel": {
+    "db": "fixtures/trading_fixture.db",
+    "window": [
+      "2025-09-14",
+      "2025-12-12"
+    ],
+    "bar_minutes": 240,
+    "n_assets": 8,
+    "n_decisions": 50,
+    "collect_position_size_pct": 0.1,
+    "imprint_position_size_pct": 0.0625
+  },
+  "teacher_operator": [
+    "--operator",
+    "search",
+    "--vector-proposal-scheme",
+    "dithered-book",
+    "--vector-k",
+    "16",
+    "--sims",
+    "32",
+    "--vector-hold-bias",
+    "3.0",
+    "--vector-dither-scale",
+    "1.0",
+    "--vector-proposal-temp",
+    "1.0",
+    "--vector-proposal-explore-slots",
+    "2",
+    "--prior-weight",
+    "0.0",
+    "--leaf-eval",
+    "true-env",
+    "--leaf-rollout-r",
+    "3",
+    "--no-leaf-vhat-tail",
+    "--gumbel-scale",
+    "3.0",
+    "--vector-weight-rebalance"
+  ]
+}

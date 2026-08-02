@@ -377,31 +377,29 @@ def load_row_timestamps(db_path, start_date, end_date, specific_symbols, n_asset
     """Reconstruct the panel's row-timestamp axis with the SAME queries the training
     loader runs (VectorBTTradingEnv._load_database_prices), then the SAME
     ``[::bar_minutes]`` stride as env_factory. Read-only; consistency is asserted by the
-    caller (len must equal prices.shape[0]). Returns (row_ts int64 array, loaded_symbols)."""
+    caller (len must equal prices.shape[0]). Returns (row_ts int64 array, loaded_symbols).
+
+    TASK_868 (D31 a1): mirrors the canon loader's ALIAS UNION — each requested symbol
+    resolves to every ``assets`` row whose normalized form matches (per-id coverage
+    counts grouped and summed in the ranked branch), and the axis is the DISTINCT
+    timestamps over the unioned member ids. On a DB whose duplicate spellings carry no
+    rows in the window (e.g. the fixture) this is bit-identical to the pre-868 mirror."""
+    from mcts_trader.data.asset_aliases import (
+        ranked_minute_universe, resolve_requested_symbols)
     conn = _ro_connect(db_path)
     cur = conn.cursor()
     s_ts = _to_epoch(start_date, 0)
     e_ts = _to_epoch(end_date, 9999999999)
     if specific_symbols:
-        ph = ",".join("?" * len(specific_symbols))
-        rows = cur.execute(
-            f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})",
-            specific_symbols).fetchall()
-        sym_to_id = {r[1]: r[0] for r in rows}
-        asset_ids, symbols = [], []
-        for sym in specific_symbols:           # preserve order; skip missing (loader parity)
-            if sym in sym_to_id:
-                asset_ids.append(sym_to_id[sym])
-                symbols.append(sym)
+        all_asset_rows = cur.execute("SELECT id, symbol FROM assets").fetchall()
+        resolution, _unknown = resolve_requested_symbols(all_asset_rows, specific_symbols)
+        # preserve order; skip missing (loader parity — the canon loader warns+skips)
+        asset_ids = sorted({aid for r in resolution for aid in r["asset_ids"]})
+        symbols = [r["symbol"] for r in resolution]
     else:
-        rows = cur.execute(
-            """SELECT a.id, a.symbol, COUNT(*) as cnt FROM ohlcv o
-               JOIN assets a ON o.asset_id = a.id
-               WHERE o.timestamp >= ? AND o.timestamp <= ?
-               GROUP BY a.id ORDER BY cnt DESC LIMIT ?""",
-            (s_ts, e_ts, n_assets)).fetchall()
-        asset_ids = [r[0] for r in rows]
-        symbols = [r[1] for r in rows]
+        ranked = ranked_minute_universe(cur, s_ts, e_ts, n_assets)
+        asset_ids = sorted({aid for g in ranked for aid in g["asset_ids"]})
+        symbols = [g["symbol"] for g in ranked]
     if not asset_ids:
         conn.close()
         raise RuntimeError(f"no assets resolved in {db_path} for the requested universe")
@@ -444,12 +442,19 @@ def _daily_table_exists(db_path):
 def _minute_ranked_symbols(db_path, start_date, end_date, n_assets):
     """The minute path's default universe: top-N symbols coverage-ranked over the MINUTE
     `ohlcv` table (COUNT(*) DESC in the window — VectorBTTradingEnv._load_database_prices'
-    no-symbols branch, verbatim). The daily source and the equivalence gate BOTH route their
+    no-symbols branch). The daily source and the equivalence gate BOTH route their
     no-symbols universe through this single resolver, so the daily panel is scored on the
     SAME asset set as the minute baseline (on the real DB the majors still hold the deepest
     ohlcv history even though it ends ~Oct-2025, so they still rank top-N). Fail-loud if the
     minute table is absent/empty — never silently rank over ohlcv_daily (a disjoint universe
-    that corrupts the OOS benchmark)."""
+    that corrupts the OOS benchmark).
+
+    TASK_868 (D31 a1): the ranking is GROUPED by normalized symbol (per-id in-window
+    counts summed across alias twins), mirroring the canon loader's repaired ranking —
+    a split series now ranks on its whole history instead of each twin ranking
+    separately (D31: "the split slots' coverage ranking is itself distorted today").
+    Bit-identical to the pre-868 resolver wherever no alias twin carries window rows."""
+    from mcts_trader.data.asset_aliases import ranked_minute_universe
     conn = _ro_connect(db_path)
     try:
         has = conn.execute(
@@ -461,14 +466,10 @@ def _minute_ranked_symbols(db_path, start_date, end_date, n_assets):
                 f"minute baseline's top-N; pass --symbols explicitly, or point --db at a DB "
                 f"that carries the minute table.")
         s_ts, e_ts = _to_epoch(start_date, 0), _to_epoch(end_date, 9999999999)
-        rows = conn.execute(
-            """SELECT a.symbol FROM ohlcv o JOIN assets a ON o.asset_id = a.id
-               WHERE o.timestamp >= ? AND o.timestamp <= ?
-               GROUP BY a.id ORDER BY COUNT(*) DESC LIMIT ?""",
-            (s_ts, e_ts, n_assets)).fetchall()
+        ranked = ranked_minute_universe(conn, s_ts, e_ts, n_assets)
+        syms = [g["symbol"] for g in ranked]
     finally:
         conn.close()
-    syms = [r[0] for r in rows]
     if not syms:
         raise RuntimeError(
             f"cannot resolve a universe without --symbols: the minute `ohlcv` table in "
@@ -822,14 +823,14 @@ def provenance_meta_block(prov, path):
 # ---------------------------------------------------------------------------------------------
 STALE_TAIL_RULE = (
     "a STALE-TAIL slot's LAST REAL close precedes the window end (delisting / ticker migration). "
-    "Its trailing panel rows are FORWARD-FILLED at that last real close and stay TRADEABLE on a "
-    "constant series — the fill rule the shipped daily pin has always applied, made uniform across "
-    "both pin paths by D30 (ruled 2026-07-30, opt (i)). These rows are NOT masked and NOT "
-    "force-HELD: force-HOLD gates OPENING, not VALUATION, so zeroing the tail instead marks a "
-    "position open at the boundary against price 0 (a long wiped, a short handed a 100% windfall) "
-    "and freezes it there — MEASURED at 75,002.50 / 124,997.50 for a long/short book on flat "
-    "prices at fee 0 where any book must end at exactly 100,000.00, while the forward fill is "
-    "PV-exact to the cent. WHAT A FORWARD FILL CAN AND CANNOT DO, stated exactly (fix pass — the "
+    "Its trailing panel rows are FORWARD-FILLED at that last real close — the fill rule the "
+    "shipped daily pin has always applied, made uniform across both pin paths by D30 (ruled "
+    "2026-07-30, opt (i)). The alternative — ZEROING the tail and letting price_valid force-HOLD "
+    "it — was measured to FABRICATE PnL: force-HOLD gates OPENING, not VALUATION, so zeroing "
+    "marks a position open at the boundary against price 0 (a long wiped, a short handed a 100% "
+    "windfall) and freezes it there — MEASURED at 75,002.50 / 124,997.50 for a long/short book "
+    "on flat prices at fee 0 where any book must end at exactly 100,000.00, while the forward "
+    "fill is PV-exact to the cent. WHAT A FORWARD FILL CAN AND CANNOT DO, stated exactly (fix pass — the "
     "earlier blanket claim was FALSE for one of the two cases): (1) on a TRAILING span the series "
     "is constant to the window end, so a round trip nets exactly 0 at fee 0 and is a strict fee "
     "drag above it — it cannot fabricate PnL and is biased AGAINST the bar being graded; (2) on an "
@@ -838,11 +839,11 @@ STALE_TAIL_RULE = (
     "whole accumulated gap move is then delivered in ONE bar at the re-anchor. That is real, "
     "sign-indeterminate PnL — MEASURED on the 861 leg-1 window at re-anchor jumps of +64.52% "
     "(ETHBTC), +33.88% (BTCCAD), +32.69% (BTCGBP), +24.29% (BTCCHF), -7.76% (/USDTEUR). Choosing "
-    "what to DO about (2) — mask / refuse / accept-with-disclosure — is a D30-class semantics "
-    "ruling that also implicates the canon UNPINNED minute loader (mcts_trader/env/"
-    "vectorbt_env.py:645-655 fills the same way), and it is DELIBERATELY NOT decided here: this "
-    "loader's job is to MEASURE and DISCLOSE it (see frozen_spans / n_frozen_decision_cells) so "
-    "the ruling can be made on numbers. So: every frozen row — interior or trailing — is disclosed, "
+    "what to DO about (2) — mask / refuse / accept-with-disclosure — was left OPEN here (this "
+    "loader measured and disclosed it so the ruling could be made on numbers) and is now RULED: "
+    "DECISIONS D31 opt (a) — repair the ingest identity split at load time (a1) and mask the "
+    "residual frozen cells causally (a2); see the TASK_868 AMENDMENT at the end of this rule. "
+    "So: every frozen row — interior or trailing — is disclosed, "
     "and a slot with a frozen span is still counted inside n_active_slots, is weight-eligible, and "
     "is NOT listed in inactive_slots or (for a tail-only slot) partial_slots. Consumers COULD "
     "previously mistake a frozen price for a live market — an interior span left no trace at all "
@@ -850,7 +851,46 @@ STALE_TAIL_RULE = (
     "keys close. TRUE LIQUIDATION (close at the last real close, then mask) is PARKED as its own "
     "task (D30 opt (ii)) — it needs a state-aware forced close in walk_env AND in eval's search "
     "rollout. Asserted by the PV-conservation leg of "
-    "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py.")
+    "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py. TASK_868 AMENDMENT (D31 opt "
+    "(a2), ruled 2026-08-01): on the MINUTE paths (this pinned minute loader AND the canon "
+    "unpinned minute loader) a trailing frozen row is now force-HELD by the causal "
+    "open-gate — at decision time a trailing gap and an interior hole are indistinguishable "
+    "without look-ahead into whether the gap later resumes, and the ruling requires the mask to "
+    "be derived from data <= the decision bar alone. VALUATION is untouched everywhere: the "
+    "forward-fill stands and stays PV-exact. The DAILY pin is NOT masked (gate (v): daily paths "
+    "bit-identical) — there these rows remain tradeable on the constant series, as ruled in D30.")
+
+# TASK_868 (D31 opt (a1)) — the alias-union contract, emitted into artifacts.
+ALIAS_UNION_RULE = (
+    "ALIAS UNION (DECISIONS D31 opt (a1)): each requested/recorded symbol resolves to EVERY "
+    "assets row whose NORMALIZED spelling matches (symbol.upper().replace('/', '') — slash-only, "
+    "deliberately NOT XBT->BTC folding), and the group's ohlcv rows are unioned into the slot's "
+    "single series at load time (NO DB writes — the ingest identity split is repaired at the "
+    "loader). Where aliased series overlap in time the closes must AGREE (rel <= 1e-12) or the "
+    "load REFUSES, naming both asset_ids and the first disagreeing timestamp — never average, "
+    "never prefer silently; agreeing duplicate timestamps dedupe. Per-slot usage is disclosed "
+    "(asset_ids / db_symbols / per_id_rows / overlap_agreement).")
+
+# TASK_868 (D31 opt (a2)) — the causal open-gate contract, emitted into artifacts.
+OPEN_GATE_RULE = (
+    "CAUSAL OPEN-GATE (DECISIONS D31 opt (a2)): a decision cell whose slot printed NO real close "
+    "anywhere inside its feature bar is force-HELD (the shipped price_valid force-HOLD mechanic), "
+    "on the pinned AND canon unpinned minute loaders uniformly. The mask is CAUSAL by construction "
+    "— bar r's value reads only prints inside bar r, so the mask at decision t is identical "
+    "whether or not rows after t exist (no look-ahead into whether a gap later resumes; that is "
+    "also why TRAILING gaps are gated — at decision time a delisting and an interior hole are "
+    "indistinguishable). WHAT THE FORCE-HOLD COVERS, stated exactly (regression-panel amendment): "
+    "the channel holds the WHOLE action, not only the open — on a masked cell no position can "
+    "OPEN and none can CLOSE or rebalance either, so a book already holding the slot is CARRIED "
+    "through the frozen span at the D30 forward-filled valuation (PV-exact to the cent — the "
+    "PV-conservation smoke leg, both books, mask ON) and realizes its PnL at the NEXT REAL print. "
+    "That is the sound semantics, not an oversight: a close at a frozen price would realize PnL "
+    "against a price no market offered — the same fabrication class the mask exists to remove — "
+    "and a state-aware close-at-the-boundary channel is D30 opt (ii) TRUE LIQUIDATION, which the "
+    "ruling keeps PARKED. 'The mask only gates OPENING' in the task text is the contrast with "
+    "VALUATION (the fill still values every row), not a claim that closes execute on frozen "
+    "cells. Conservative by construction: a masked cell cannot trade, so it can only reduce "
+    "measured performance, never flatter it.")
 
 # D30 rider (b): the minute framed loader used to refuse ONLY when EVERY slot was uncovered, so a
 # 4-of-8-inert fixture run exited 0 with a publishable net@21, and the real 2021-01-01..2022-01-01
@@ -1335,8 +1375,10 @@ def _build_panel_framed(args):
 # THE STALE TAIL (D30, ruled 2026-07-30, opt (i)). A slot whose last REAL close falls before the end
 # of the window (delisting / ticker migration) is NOT zero-coverage, so the 853 INACTIVE rule does
 # not see it. Its trailing rows are FORWARD-FILLED at that last real close — identical to what the
-# shipped daily loader has always done, now uniform across both pin paths — and stay TRADEABLE on a
-# constant series. The rejected alternative (zero the tail and let ``price_valid`` force-HOLD it) was
+# shipped daily loader has always done, now uniform across both pin paths. On the DAILY pin they
+# stay TRADEABLE on a constant series; on the MINUTE paths TASK_868 (D31 a2) force-HOLDs them
+# (whole action — see OPEN_GATE_RULE). The rejected alternative (zero the tail and let
+# ``price_valid`` force-HOLD it) was
 # MEASURED to FABRICATE PnL: force-HOLD gates OPENING, not VALUATION, so a position open at the
 # boundary is marked against price 0 and frozen there — 75,002.50 / 124,997.50 for a long/short book
 # where any book must end at exactly 100,000.00, i.e. -/+25% on 1 of 4 slots. On the 861 leg-1 window
@@ -1527,16 +1569,13 @@ def _real_bar_mask(raw_nz, n_steps, step):
     exact-minute count is still recorded, as a separate DIAGNOSTIC
     (``n_no_print_at_sampled_minute``), because it measures something real about the canon
     ``[::bar_minutes]`` operator — it samples ONE MINUTE rather than aggregating the bar — it just
-    is not fabrication."""
-    if step <= 1:
-        return np.asarray(raw_nz, dtype=bool)[:n_steps]
-    nz = np.asarray(raw_nz, dtype=bool)
-    n_full = nz.shape[0]
-    cs = np.concatenate(([0], np.cumsum(nz, dtype=np.int64)))         # cs[i] = prints in [0, i)
-    r = np.arange(n_steps, dtype=np.int64)
-    hi = np.minimum(r * step, n_full - 1)
-    lo = np.where(r == 0, 0, (r - 1) * step + 1)
-    return (cs[hi + 1] - cs[lo]) > 0
+    is not fabrication.
+
+    TASK_868: the implementation is SHARED (``mcts_trader.data.asset_aliases.real_bar_mask``)
+    with the canon unpinned path's open-gate (env_factory) and the duplicate sweep, so the
+    pinned and canon loaders can never drift on the bar definition."""
+    from mcts_trader.data.asset_aliases import real_bar_mask
+    return real_bar_mask(raw_nz, n_steps, step)
 
 
 def frozen_decision_cells(coverage, warm, n_decisions):
@@ -1647,7 +1686,11 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
     and the same fail-louds (missing table, unknown symbol, empty window, all-slots-inactive),
     PLUS the D30 rider (b) breadth refusal (``require_active_slots``).
 
-    Returns (prices_np (T, n_frame) float32, frame_symbols, row_ts int64 (T,), coverage)."""
+    Returns (prices_np (T, n_frame) float32, frame_symbols, row_ts int64 (T,), coverage,
+    open_gate (T, n_frame) bool). ``open_gate[r, col]`` is the causal TASK_868 (D31 a2)
+    open-gate: True iff the slot printed a real close anywhere inside panel row r's bar
+    (== the per-slot ``real_panel`` mask the frozen accounting derives). Consumers
+    force-HOLD OPENING where it is False; VALUATION (the D30 forward-fill) is untouched."""
     if int(bar_minutes) < 1:
         raise RuntimeError(
             f"--panel-frame-source minute: --bar-minutes must be >= 1 (got {bar_minutes}); the "
@@ -1661,12 +1704,17 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
     e_ts = _to_epoch(end_date, 9999999999)
     conn = _ro_connect(db_path)
     cur = conn.cursor()
-    ph = ",".join("?" * len(frame_symbols))
-    rows = cur.execute(
-        f"SELECT a.id, a.symbol FROM assets a WHERE a.symbol IN ({ph})",
-        frame_symbols).fetchall()
-    sym_to_id = {r[1]: r[0] for r in rows}
-    unknown = [s for s in frame_symbols if s not in sym_to_id]
+    # TASK_868 (D31 a1) — ALIAS UNION. Each recorded frame symbol resolves to EVERY
+    # ``assets`` row whose normalized form matches (``/USDTEUR`` == ``USDTEUR`` etc.); the
+    # slot's column is the UNION of the group's rows. A symbol with NO group at all is the
+    # same unknown-symbol refusal as before; a KNOWN group with a missing exact spelling
+    # (e.g. the frame records ``USDTEUR`` but only ``/USDTEUR`` exists) resolves to the
+    # group — the alternative (refuse a slot whose data exists under a spelling variant)
+    # is exactly the identity split D31 repairs.
+    from mcts_trader.data.asset_aliases import (
+        alias_agreement_gate, resolve_requested_symbols)
+    all_asset_rows = cur.execute("SELECT id, symbol FROM assets").fetchall()
+    resolution, unknown = resolve_requested_symbols(all_asset_rows, frame_symbols)
     if unknown:
         conn.close()
         raise RuntimeError(
@@ -1674,13 +1722,24 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
             f"the `assets` table of {db_path} (unknown symbols — the frame cannot be dropped or "
             f"reordered to skip them without scrambling slot identity): "
             f"{unknown[:10]}{' ...' if len(unknown) > 10 else ''}")
-    # One asset_id per slot, in recorded frame order (slot k IS asset k). NOTE the contrast with
-    # VectorBTTradingEnv._load_database_prices' specific_symbols branch, which DROPS a symbol the
-    # DB does not know with a logging.warning — that silently shortens and re-indexes the panel,
-    # the exact failure a frame pin exists to refuse.
-    asset_ids = [sym_to_id[s] for s in frame_symbols]
-    covered_ids = _minute_coverage_ids(db_path, asset_ids, s_ts, e_ts)
-    covered_ids_ordered = [aid for aid in asset_ids if aid in covered_ids]
+    # One alias GROUP per slot, in recorded frame order (slot k IS asset k). NOTE the contrast
+    # with VectorBTTradingEnv._load_database_prices' specific_symbols branch, which DROPS a
+    # symbol the DB does not know with a logging.warning — that silently shortens and
+    # re-indexes the panel, the exact failure a frame pin exists to refuse.
+    id_groups = [r["asset_ids"] for r in resolution]
+    db_symbols = [r["db_symbols"] for r in resolution]
+    # FAIL-LOUD agreement gate (D31 a1), once per load BEFORE the stream: every alias pair's
+    # shared-timestamp closes in the window must agree (rel <= 1e-12) — a disagreement
+    # REFUSES naming both asset_ids + the first disagreeing timestamp (never average, never
+    # prefer silently). Agreeing duplicates dedupe in the union below.
+    gate_disclosure = alias_agreement_gate(conn, "ohlcv", id_groups, s_ts, e_ts)
+    gate_by_ids = {tuple(d["asset_ids"]): d["overlaps"] for d in gate_disclosure}
+    asset_ids_flat = sorted({aid for g in id_groups for aid in g})
+    covered_ids = _minute_coverage_ids(db_path, asset_ids_flat, s_ts, e_ts)
+    # A slot is covered iff ANY member of its alias group has a real close in the window.
+    slot_covered = [any(aid in covered_ids for aid in g) for g in id_groups]
+    covered_ids_ordered = sorted(aid for g, cov in zip(id_groups, slot_covered) if cov
+                                 for aid in g if aid in covered_ids)
     if not covered_ids_ordered:
         conn.close()
         raise RuntimeError(
@@ -1694,7 +1753,7 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
     try:
         _guard_active_slots(
             [{"slot": i, "symbol": s,
-              "status": "active" if asset_ids[i] in covered_ids else "inactive"}
+              "status": "active" if slot_covered[i] else "inactive"}
              for i, s in enumerate(frame_symbols)],
             frame_symbols, require_active_slots, start_date, end_date)
     except Exception:
@@ -1702,8 +1761,8 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
         # malformed or unsatisfiable floor, and that used to leak this connection.
         conn.close()
         raise
-    # Row axis: DISTINCT minute timestamps over the COVERED slots (the canon minute loader's axis
-    # query with the frame's covered ids; uncovered slots contribute no rows anyway).
+    # Row axis: DISTINCT minute timestamps over the COVERED slots' UNIONED member ids (the canon
+    # minute loader's axis query; uncovered slots contribute no rows anyway).
     phc = ",".join("?" * len(covered_ids_ordered))
     timestamps = [r[0] for r in cur.execute(
         f"""SELECT DISTINCT timestamp FROM ohlcv
@@ -1716,9 +1775,12 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
             f"--panel-frame-source minute: the minute `ohlcv` table has no rows for the frame in "
             f"[{start_date}..{end_date}] (empty window). Widen --start/--end.")
     ts_to_idx = {ts: i for i, ts in enumerate(timestamps)}
-    id_to_col = {aid: i for i, aid in enumerate(asset_ids)}     # slot == frame position
+    id_to_col = {aid: col for col, g in enumerate(id_groups) for aid in g}   # slot == frame position
     n_full = len(timestamps)
     raw = np.zeros((n_full, len(frame_symbols)), dtype=np.float32)
+    # Per-id in-window row counts, accumulated during the stream (the D31 disclosure rider:
+    # per-slot asset_ids used + per-id row counts).
+    per_id_rows = {aid: 0 for aid in asset_ids_flat}
     # Streamed (no fetchall): the real leg's window is ~60M minute rows and materialising them as
     # a Python list would cost tens of GB. Same rows, same values, bounded memory.
     for asset_id, ts, close in cur.execute(
@@ -1728,11 +1790,24 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
         i = ts_to_idx.get(ts)
         c = id_to_col.get(asset_id)
         if i is not None and c is not None and close:
+            # Alias union: duplicate (timestamp, group) rows AGREED at the gate above, so a
+            # second write lands the same value — dedupe is numerically free.
             raw[i, c] = close
+            per_id_rows[asset_id] += 1
     conn.close()
     step = int(bar_minutes) if int(bar_minutes) > 1 else 1
     n_steps = len(range(0, n_full, step))
     prices = np.zeros((n_steps, len(frame_symbols)), dtype=np.float32)
+    # TASK_868 (D31 a2): the causal OPEN-GATE mask at panel resolution — open_gate[r, col]
+    # is True iff the slot printed a real close anywhere inside panel row r's bar. This is
+    # the per-slot ``real_panel`` mask the frozen accounting already derives, assembled as
+    # one matrix so the rollout/walk can force-HOLD OPENING on every frozen cell. It is
+    # CAUSAL by construction: bar r's value reads only prints inside bar r, so the mask at
+    # decision t is identical whether or not rows after t exist (no look-ahead into whether
+    # a gap later resumes — which is also why TRAILING gaps are gated: at decision time a
+    # delisting and an interior hole are indistinguishable). The D30 forward-fill still
+    # values every row; the gate only gates OPENING.
+    open_gate = np.zeros((n_steps, len(frame_symbols)), dtype=bool)
     coverage = []
     for col, sym in enumerate(frame_symbols):
         raw_col = raw[:, col]
@@ -1740,16 +1815,22 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
         n_real = int(raw_nz.sum())
         prices[:, col] = _ffill_interior_only(raw_col)[::step]    # fill THEN stride (canon order)
         panel_nz = prices[:, col] != 0
-        aid = asset_ids[col]
-        if aid not in covered_ids or not panel_nz.any():
+        # TASK_868 (a1) disclosure: the alias group this slot unioned, per-id row counts,
+        # and the gate's measured overlap agreement.
+        alias_block = {"asset_ids": list(id_groups[col]),
+                       "db_symbols": list(db_symbols[col]),
+                       "aliased": len(id_groups[col]) > 1,
+                       "per_id_rows": {str(aid): per_id_rows[aid] for aid in id_groups[col]},
+                       "overlap_agreement": gate_by_ids.get(tuple(id_groups[col]), [])}
+        if not slot_covered[col] or not panel_nz.any():
             # Zero minute coverage in the window (or no real close early enough to reach a strided
             # row): flat-zero column -> INACTIVE for the whole window, exactly like 853's daily.
             coverage.append({"slot": col, "symbol": sym, "status": "inactive",
                              "reason": ("zero minute ohlcv coverage in window"
-                                        if aid not in covered_ids else
+                                        if not slot_covered[col] else
                                         "no real minute close reaches a strided panel row"),
                              "span": [start_date, end_date],
-                             "real_minute_rows": n_real})
+                             "real_minute_rows": n_real, **alias_block})
             continue
         first = int(np.argmax(panel_nz))
         last_real_full = int(np.max(np.nonzero(raw_nz)[0]))
@@ -1764,6 +1845,7 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
         #     close lands outside every strided bar). It used to read covered_rows == n_rows and
         #     count ACTIVE toward the breadth guard with 100% fabricated cells and no disclosure.
         real_panel = _real_bar_mask(raw_nz, n_steps, step)
+        open_gate[:, col] = real_panel          # TASK_868 (a2): the causal open-gate column
         n_real_panel = int(real_panel.sum())
         # DIAGNOSTIC, not a frozen count: rows whose exact sampled minute carries no print. Normal
         # on sparse minute data (the canon [::bar_minutes] operator samples one minute, it does not
@@ -1787,10 +1869,13 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
         # STALE TAIL (TASK_865 + D30 opt (i)): the slot's real data STOPS before the window end
         # (delisting / ticker migration). Its trailing panel rows are FORWARD-FILLED at the last
         # real close — the same rule the shipped daily pin has always applied, and the only one
-        # measured PV-exact (see _ffill_interior_only) — so they stay TRADEABLE on a constant
-        # series rather than being marked against price 0. They are therefore NOT force-HOLD and
-        # NOT 'partial' (every row carries a price); they are disclosed on their OWN axis
-        # (stale_tail / stale_tail_slots / stale_tail_spans) because the price is frozen, not live.
+        # measured PV-exact (see _ffill_interior_only). TASK_868 (D31 a2): those rows are now
+        # ALSO inside the causal open-gate (open_gate=False there), i.e. force-HELD
+        # on this MINUTE path — at decision time a trailing gap and an interior hole are
+        # indistinguishable without look-ahead, and D31 ruled the mask causal. VALUATION is
+        # untouched (the fill stands; the PV-conservation leg stays green). The tail is still
+        # disclosed on its OWN axis (stale_tail / stale_tail_slots / stale_tail_spans) and is
+        # NOT 'partial' (every row carries a price).
         # Fix pass: ``last_covered_row`` is derived from the STRIDED panel's REAL rows, not from
         # ``last_real_full // step``. That old expression names the panel row at-or-before the last
         # 1-min close, which need NOT itself sample a real close — so it could name a row whose
@@ -1831,17 +1916,19 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
             entry["frozen_spans"] = spans
             entry["n_frozen_spans"] = n_spans
             entry["frozen_interior_rows"] = n_frozen - trailing
+        entry.update(alias_block)               # TASK_868 (a1): per-slot alias disclosure
         coverage.append(entry)
     _guard_active_slots(coverage, frame_symbols, require_active_slots, start_date, end_date)
-    return prices, list(frame_symbols), np.asarray(timestamps[::step], dtype=np.int64), coverage
+    return (prices, list(frame_symbols), np.asarray(timestamps[::step], dtype=np.int64),
+            coverage, open_gate)
 
 
 def create_minute_panel_framed(args, frame_symbols):
     """Minute analogue of ``create_daily_panel_framed``: load the framed minute closes (one column
     per recorded slot, zero-coverage columns flat-zero), build the SAME EnvConfig
     ``create_jax_env_historical`` would have built for these args, reset. Returns
-    (states0, prices_j, env_cfg, row_ts, frame_symbols, coverage)."""
-    prices_np, symbols, row_ts, coverage = load_minute_prices_framed(
+    (states0, prices_j, env_cfg, row_ts, frame_symbols, coverage, open_gate)."""
+    prices_np, symbols, row_ts, coverage, open_gate = load_minute_prices_framed(
         args.db, args.start, args.end, frame_symbols, args.bar_minutes,
         require_active_slots=_resolve_require_active(args))
     n_assets = args.n_assets
@@ -1868,7 +1955,7 @@ def create_minute_panel_framed(args, frame_symbols):
     )
     keys = jax.random.split(jax.random.PRNGKey(args.eval_seed), 1)
     states = jit_batch_reset(keys, prices_j, config)
-    return states, prices_j, config, row_ts, symbols, coverage
+    return states, prices_j, config, row_ts, symbols, coverage, open_gate
 
 
 def _build_panel_framed_minute(args):
@@ -1878,10 +1965,14 @@ def _build_panel_framed_minute(args):
     disclosed — reported to stdout AND into the JSON artifact (the 853 dual-disclosure rule)."""
     frame_symbols, prov = _load_frame_provenance(
         args.panel_frame_from_checkpoint, args.n_assets, args.symbols)
-    states0, prices, env_cfg, row_ts, loaded_syms, coverage = create_minute_panel_framed(
-        args, frame_symbols)
+    states0, prices, env_cfg, row_ts, loaded_syms, coverage, open_gate = \
+        create_minute_panel_framed(args, frame_symbols)
     result = _finalize_panel(states0, prices, env_cfg, row_ts, loaded_syms, args)
     prices_f, env_cfg_f, state_init, row_ts_f, col_symbols, panel_info = result
+    # TASK_868 (D31 a2): the causal open-gate travels in panel_info for the rollout/evaluate
+    # layer (stripped before JSON emission — see evaluate_checkpoint); the scalar disclosure
+    # lands in the panel_frame block below.
+    panel_info["open_gate"] = open_gate
     inactive = [c for c in coverage if c["status"] == "inactive"]
     partial = [c for c in coverage if c["status"] == "partial"]
     stale = [c for c in coverage if c.get("stale_tail")]
@@ -1915,15 +2006,25 @@ def _build_panel_framed_minute(args):
           f"[{args.start}..{args.end}] — minute `ohlcv` [::{args.bar_minutes}], 853 semantics")
     print(f"[865] ... of the {n_active} ACTIVE: {len(partial)} PARTIAL (listed mid-window: "
           f"pre-listing rows flat-zero => force-HOLD), {len(stale)} STALE-TAIL (delisted "
-          f"mid-window: trailing rows FORWARD-FILLED at a frozen price, still tradeable) and "
+          f"mid-window: trailing rows FORWARD-FILLED at a frozen price, force-HELD "
+          f"under the TASK_868 causal gate) and "
           f"{fz['n_slots']} carrying FROZEN spans on the decision grid (tails AND interior holes). "
           f"'ACTIVE' means 'has at least one real close', NOT 'live all window'.")
+    aliased = [c for c in coverage if c.get("aliased")]
+    if aliased:
+        print(f"[865] ALIAS-UNION slots ({len(aliased)}) — TASK_868 (D31 a1): the slot's recorded "
+              f"symbol resolved to MULTIPLE assets rows (ingest identity split) and their rows "
+              f"were unioned into one series (overlap agreement verified, rel <= 1e-12):")
+        for c in aliased:
+            print(f"        slot {c['slot']:>3}  {c['symbol']:<16} asset_ids {c['asset_ids']} "
+                  f"db spellings {c['db_symbols']} per-id rows {c['per_id_rows']}")
     print(f"[865] DECISION GRID ({n_dec} x {args.n_assets} = {n_cells} cells):")
     print(f"[865]   INERT  (no price at all => force-HOLD under both operators) : "
           f"{n_inert_cells} ({pct(n_inert_cells):.2f}%)")
-    print(f"[865]   FROZEN (a forward-filled price no market printed, TRADEABLE) : "
+    print(f"[865]   FROZEN (a forward-filled price no market printed, force-HELD "
+          f"by the TASK_868 causal open-gate; D30 fill still values it) : "
           f"{n_frozen_cells} ({pct(n_frozen_cells):.2f}%) = {n_frozen_tail_cells} trailing "
-          f"(delisted; a constant tail cannot fabricate PnL) + {n_frozen_interior_cells} INTERIOR "
+          f"(delisted) + {n_frozen_interior_cells} INTERIOR "
           f"(a hole that RE-ANCHORS: it CAN fabricate PnL — see stale_tail_rule / DECISIONS D31)")
     print(f"[865]   LIVE   (a real close at that (decision, slot))               : "
           f"{n_live_cells} ({pct(n_live_cells):.2f}%)")
@@ -1945,8 +2046,9 @@ def _build_panel_framed_minute(args):
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} INACTIVE "
                   f"[{c['span'][0]}..{c['span'][1]}]  ({c['reason']})")
     # A slot may be short at the HEAD (listed mid-window => PARTIAL, flat-zero force-HOLD rows) or
-    # at the TAIL (delisted mid-window => STALE TAIL, forward-filled tradeable rows at a frozen
-    # price), or both. Reported separately: different keys, different causes, different treatment.
+    # at the TAIL (delisted mid-window => STALE TAIL, forward-filled rows at a frozen price,
+    # force-HELD by the TASK_868 causal open-gate), or both. Reported separately: different keys,
+    # different causes, different treatment.
     partial_head = [c for c in coverage if c.get("leading_inactive_rows")]
     if partial_head:
         print(f"[865] PARTIAL-HEAD slots ({len(partial_head)}) — listed mid-window: pre-listing "
@@ -1960,9 +2062,10 @@ def _build_panel_framed_minute(args):
               f"BEFORE the window end (delisting / ticker migration). The trailing rows are "
               f"FORWARD-FILLED at that last real close (D30 opt (i): the only treatment measured "
               f"PV-exact; zeroing the tail marks an open position against price 0 and fabricates "
-              f"-/+25% of PV on a flat series). Those rows are still TRADEABLE and still "
-              f"weight-eligible, at a FROZEN price — disclosed here because they are in NEITHER "
-              f"inactive_slots NOR partial_slots:")
+              f"-/+25% of PV on a flat series). The fill still VALUES those rows (PV-exact), but "
+              f"under TASK_868 (D31 a2) they are force-HELD: the causal open-gate "
+              f"cannot distinguish a delisting from an interior hole without look-ahead — "
+              f"disclosed here because they are in NEITHER inactive_slots NOR partial_slots:")
         for c in stale:
             print(f"        slot {c['slot']:>3}  {c['symbol']:<16} last real close ts "
                   f"{c['last_real_ts']} = panel row {c['last_covered_row']} of {c['n_rows'] - 1}; "
@@ -2050,12 +2153,27 @@ def _build_panel_framed_minute(args):
         "frozen_spans_display_max": FROZEN_SPANS_ARTIFACT_MAX,
         "n_slots_with_elided_frozen_span_list": sum(
             1 for c in cov_art if c.get("frozen_spans_truncated")),
+        # TASK_868 (D31 a1) — the alias-union disclosure, panel level (per-slot detail is on
+        # each coverage entry: asset_ids / db_symbols / per_id_rows / overlap_agreement).
+        "n_aliased_slots": len(aliased),
+        "aliased_slots": [int(c["slot"]) for c in aliased],
+        "alias_union_rule": ALIAS_UNION_RULE,
+        # TASK_868 (D31 a2) — the causal open-gate mask, what it gates and why it is causal.
+        # The mask force-HOLDs OPENING on exactly the FROZEN decision cells above (interior
+        # AND trailing); VALUATION is untouched (the D30 forward-fill stands, PV-exact).
+        "open_gate_rule": OPEN_GATE_RULE,
+        "n_open_gated_decision_cells": n_frozen_cells,
+        "open_gated_decision_cell_pct": round(pct(n_frozen_cells), 4),
         "decision_cell_rule": (
             "INERT = no price at all at that (decision row, slot) (pre-listing head or a wholly "
             "uncovered slot) => force-HOLD under both operators. FROZEN = the panel carries a "
-            "forward-filled price the market never printed at that row; still TRADEABLE and "
-            "weight-eligible. LIVE = the panel row samples a real close for that slot. The three "
-            "are disjoint and sum to n_decision_cells. 'not real data' = INERT + FROZEN."),
+            "forward-filled price the market never printed at that row; force-HELD by the "
+            "TASK_868 causal open-gate (interior AND trailing — at decision time the two are "
+            "indistinguishable without look-ahead). The hold covers the WHOLE action — no open, "
+            "no close, no rebalance — a held position is carried at the D30 forward-filled "
+            "valuation (PV-exact) and realizes at the next real print (see open_gate_rule). "
+            "LIVE = the panel row samples a real close for that slot. "
+            "The three are disjoint and sum to n_decision_cells. 'not real data' = INERT + FROZEN."),
         "require_active_slots": _resolve_require_active(args),
         "coverage": cov_art,
     }
@@ -2271,7 +2389,7 @@ def _trees_allclose(a, b):
 
 def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
             eval_seed, max_positions, min_cash_threshold, policy_actions=None,
-            leaf_eval='model', collect=None):
+            leaf_eval='model', collect=None, open_gate=None):
     """Walk the full timeline once: obs → mask → deterministic vector search → step_vector.
     Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics.
 
@@ -2289,7 +2407,15 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     TASK_861: ``collect`` (default None) is a PURE RECORDER — a dict of two lists that receive
     the per-decision CHOSEN action vector and the post-step realized book. It draws no RNG,
     issues no extra env/model call and changes no control flow, so a collecting walk is
-    numerically IDENTICAL to a non-collecting one (acceptance ii)."""
+    numerically IDENTICAL to a non-collecting one (acceptance ii).
+
+    TASK_868 (D31 a2): ``open_gate`` (N, A) bool, default None = pre-868 behaviour. Where
+    ``open_gate[k]`` is False the slot printed nothing inside decision k's bar (a frozen,
+    forward-filled price), so the search's legal mask is restricted to HOLD for that
+    (decision, slot) — the SAME force-HOLD the env's own ``price_valid = price > 0`` rule
+    applies to inert cells, extended to frozen ones, and CAUSAL (bar k's value reads only
+    prints inside bar k). VALUATION is untouched: step_vector still marks the book at the
+    filled price."""
     enc_cfg = EncoderConfig(n_assets=n_assets, window_size=env_cfg.window_size,
                             n_channels=27)                    # self_play.py:627 (27ch)
     book = jnp.ones((1, n_assets), dtype=jnp.int32)           # v1 book = HOLD (DEC-3)
@@ -2320,6 +2446,18 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
             current_prices = prices[price_idx]                            # (1, A)
             mask = jit_batch_compute_action_mask(
                 state, current_prices, env_cfg, max_positions, min_cash_threshold)
+            # TASK_868 (D31 a2): force-HOLD the frozen cells — restrict the legal mask to
+            # HOLD wherever the slot printed nothing inside this decision's bar. Same
+            # mechanic as the env's own price_valid gate, one layer up (the frozen price
+            # is > 0, so the env's own mask cannot see it).
+            if open_gate is not None and not bool(open_gate[k].all()):
+                # batch_compute_action_mask returns the FLAT (n_envs, A*5) mask —
+                # gate per (slot, action): every action of a gated slot illegal but HOLD.
+                n_act = mask.shape[-1] // n_assets
+                gated = jnp.repeat(jnp.asarray(~open_gate[k], dtype=bool), n_act)
+                hold_flat = (jnp.arange(mask.shape[-1]) % n_act) == HOLD
+                mask = jnp.where(gated.reshape((1,) * (mask.ndim - 1) + (-1,)),
+                                 hold_flat.astype(mask.dtype), mask)
             # B. deterministic Sampled-MuZero vector search (visit-argmax selection)
             key, step_rng = jax.random.split(key)
             if leaf_eval == 'true-env':
@@ -2530,6 +2668,15 @@ def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier
             "panel_source": getattr(args, "panel_source", "minute"),
             "panel_frame_from_checkpoint": getattr(args, "panel_frame_from_checkpoint", None),
             "panel_frame": panel_info.get("panel_frame"),
+            # TASK_868 (D31 a1/a2 rider): the alias-union + causal open-gate disclosure on the
+            # canon UNPINNED minute panel (panel_frame is null there — the frame block only
+            # exists under --panel-frame-from-checkpoint, and it carries its own copy). None
+            # on the daily paths (no union, no gate).
+            "asset_aliases": panel_info.get("asset_aliases"),
+            "n_aliased_slots": panel_info.get("n_aliased_slots"),
+            "alias_union_rule": panel_info.get("alias_union_rule"),
+            "open_gate_rule": panel_info.get("open_gate_rule"),
+            "n_open_gated_decision_cells": panel_info.get("n_open_gated_decision_cells"),
             "symbols_cli": list(args.symbols) if args.symbols else None,
             "loaded_symbols": list(col_symbols[:n_loaded]),
             "col_symbols": list(col_symbols),
@@ -2715,6 +2862,16 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     period_minutes = float(args.bar_minutes)
     ts_dec = row_ts[warm:warm + n_decisions]
 
+    # TASK_868 (D31 a2): the causal OPEN-GATE, present on BOTH minute panels (the pinned
+    # minute loader returns it; the canon unpinned panel captures it in build_panel). It is
+    # a (T, A) bool — True iff the slot printed a real close inside that panel row's bar.
+    # Where it is False the panel price is forward-filled: fine for VALUATION (D30, PV-exact)
+    # but OPENING there is force-HELD, uniformly across the search operator, the policy-argmax
+    # replay and the teacher-floor walk. None on the DAILY paths (bit-identical, gate (v)).
+    open_gate = panel_info.get("open_gate")
+    gate_dec = (np.asarray(open_gate)[warm:warm + n_decisions]
+                if open_gate is not None else None)
+
     # TASK_848: policy-argmax = the deterministic direct-replay operator lifted from 832.
     # Obs depend only on prices (state-independent), so the whole per-asset argmax vector
     # sequence batches through the net ONCE and replays across every cost tier (the policy
@@ -2748,6 +2905,13 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             if _invalid.any():
                 policy_actions = np.array(policy_actions, copy=True)
                 policy_actions[_invalid] = HOLD
+        # TASK_868 (D31 a2): the causal open-gate applies to the replay too — a FROZEN cell
+        # (price > 0 but no print inside the bar) is force-HELD on BOTH minute panels, the
+        # SAME rule the search operator now reads via rollout's open-gate. Daily/unpinned-
+        # daily replays carry no gate and are byte-identical.
+        if gate_dec is not None and (~gate_dec).any():
+            policy_actions = np.array(policy_actions, copy=True)
+            policy_actions[~gate_dec] = HOLD
 
     # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
     teacher_floor = book_warm = None
@@ -2771,6 +2935,17 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             _floor_mask = _dec_px <= 0
             if not _floor_mask.any():
                 _floor_mask = None
+        # TASK_868 (D31 a2): on the minute panels the teacher-floor walk reads the SAME causal
+        # open-gate the operator and the replay read (uniform OPENING rule). This MOVES the
+        # minute floor wherever frozen cells exist — the sanctioned D31 re-base; the DAILY
+        # floor stays bit-identical (no gate on daily panels). TASK_869 owns the daily
+        # teacher-floor mask question — out of scope here.
+        if gate_dec is not None:
+            _gate_hold = ~gate_dec
+            if _floor_mask is None:
+                _floor_mask = _gate_hold if _gate_hold.any() else None
+            else:
+                _floor_mask = _floor_mask | _gate_hold
         teacher_floor, book_warm = compute_teacher_floor(
             prices, env_cfg0, warm, n_decisions, period_minutes,
             hold_mask=_floor_mask)
@@ -2792,7 +2967,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
                       env_cfg0.n_assets, n_decisions, args.eval_seed,
                       args.max_positions, args.min_cash_threshold,
                       policy_actions=policy_actions, leaf_eval=args.leaf_eval,
-                      collect=collect)
+                      collect=collect, open_gate=gate_dec)
         if collect is not None:
             collected = collect
         st = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
@@ -2842,7 +3017,9 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         "tag": args.tag, "checkpoint": label["path"], "checkpoint_label": label["name"],
         "db": args.db, "window": [args.start, args.end], "bar_minutes": args.bar_minutes,
         "eval_seed": args.eval_seed,
-        "panel": panel_info,
+        # TASK_868: ``open_gate`` is the in-memory (T, A) mask for the rollout layer — NOT
+        # JSON (a numpy bool matrix; its scalar disclosure is recorded beside it).
+        "panel": {k: v for k, v in panel_info.items() if k != "open_gate"},
         "operator": {
             "mode": args.operator,                                   # TASK_848
             "vector_k": args.vector_k, "sims": args.sims,
@@ -3055,7 +3232,13 @@ def build_panel(args):
         return _build_panel_framed(args)
     if getattr(args, "panel_source", "minute") == "daily":
         return _build_panel_daily(args)
-    states0, prices, env_cfg = create_jax_env_historical(
+    # TASK_868 (D31 a2): the canon UNPINNED minute path captures the causal open-gate too
+    # (uniform with the pinned minute loader — the ruling's (a2) is explicit that the mask
+    # is uniform on BOTH minute loaders). The loader itself is repaired by (a1)'s alias
+    # union; capture_open_gate makes it ALSO return the pre-fill real-print mask + the
+    # per-slot alias disclosure. Canon TRAINING callers of create_jax_env_historical do
+    # not pass the flag and are byte-identical (canon 3-tuple, no extra memory).
+    states0, prices, env_cfg, open_gate, asset_aliases = create_jax_env_historical(
         db_path=args.db,
         start_date=args.start,
         end_date=args.end,
@@ -3081,6 +3264,7 @@ def build_panel(args):
         vector_weight_max=args.vector_weight_max,
         vector_rebalance_deadband=args.vector_rebalance_deadband,
         rng_key=jax.random.PRNGKey(args.eval_seed),
+        capture_open_gate=True,
     )
     row_ts, loaded_syms = load_row_timestamps(
         args.db, args.start, args.end, args.symbols, args.n_assets, args.bar_minutes)
@@ -3115,6 +3299,19 @@ def build_panel(args):
         "n_decisions": n_decisions, "n_loaded_symbols": n_loaded, "padded": padded,
         "position_size_pct": float(env_cfg.position_size_pct),
         "row_spacing_minutes_median": spacing,
+        # TASK_868 (D31 a2): the causal open-gate travels in panel_info for the
+        # rollout/evaluate layer and is STRIPPED before JSON emission (see
+        # evaluate_checkpoint); the scalar + alias disclosure below is what the
+        # artifact records. (This is the canon UNPINNED minute panel — the framed
+        # loaders route through _finalize_panel and add their own keys.)
+        "open_gate": open_gate,
+        # TASK_868 (D31 a1): per-slot alias-union disclosure on the canon unpinned path.
+        "asset_aliases": asset_aliases,
+        "n_aliased_slots": sum(1 for a in asset_aliases if a.get("aliased")),
+        "alias_union_rule": ALIAS_UNION_RULE,
+        "open_gate_rule": OPEN_GATE_RULE,
+        "n_open_gated_decision_cells": int(
+            (~np.asarray(open_gate)[warm:warm + n_decisions]).sum()),
     }
     return prices, env_cfg, state_init, row_ts, col_symbols, panel_info
 

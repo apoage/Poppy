@@ -725,9 +725,15 @@ def main():
         "no_masked_cell_keys": not any(k in leg["sanity"] for k in
                                       ("masked_cell_fraction", "active_cells_only",
                                        "n_masked_cells", "n_decision_cells", "dilution_note")),
-        "no_active_cells_in_per_tier": not any(
-            k.endswith("_active_cells") for t in leg["sanity"]["per_tier"].values() for k in t),
-        "no_active_companion_in_861_fit": not any(
+        # TASK_868 (D31 a2) AMENDMENT: the causal open-gate mask rides the canon UNPINNED
+        # minute path too (uniform with the pinned minute loader), so the legacy unpinned
+        # panel now HAS masked cells and the active-cells companions legitimately appear
+        # there. That is the ruling's intended re-base, not a frame-key leak — the identity
+        # keys above stay absent and remain the additive-parity assertion.
+        "active_cell_companions_disclose_the_868_mask": all(
+            leg["sanity"]["per_tier"][t].get("avg_long_active_cells") is not None
+            for t in ("0", "21")),
+        "active_companion_in_861_fit_discloses_the_868_mask": all(
             k in (leg["teacher_vectors"]["fit_vs_original_targets"] or {})
             for k in ("active_cells_only", "masked_cell_fraction", "active_cells_note")),
     }

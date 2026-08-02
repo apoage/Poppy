@@ -10,14 +10,116 @@
   "bar_minutes": 60,
   "eval_seed": 0,
   "panel": {
-    "n_rows": 447,
+    "n_rows": 2127,
     "n_assets": 8,
     "warm": 60,
     "n_decisions": 40,
     "n_loaded_symbols": 8,
     "padded": false,
     "position_size_pct": 0.1,
-    "row_spacing_minutes_median": 60.0
+    "row_spacing_minutes_median": 60.0,
+    "asset_aliases": [
+      {
+        "slot": 0,
+        "symbol": "XBT/USD",
+        "asset_ids": [
+          1091
+        ],
+        "per_id_counts": {
+          "1091": 127515
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 1,
+        "symbol": "ETH/USD",
+        "asset_ids": [
+          359
+        ],
+        "per_id_counts": {
+          "359": 126540
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 2,
+        "symbol": "LTC/USD",
+        "asset_ids": [
+          589
+        ],
+        "per_id_counts": {
+          "589": 105967
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 3,
+        "symbol": "XMR/USD",
+        "asset_ids": [
+          1111
+        ],
+        "per_id_counts": {
+          "1111": 90667
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 4,
+        "symbol": "ZEC/USD",
+        "asset_ids": [
+          24
+        ],
+        "per_id_counts": {
+          "24": 6836
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 5,
+        "symbol": "ETC/USD",
+        "asset_ids": [
+          346
+        ],
+        "per_id_counts": {
+          "346": 3426
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 6,
+        "symbol": "DASH/USD",
+        "asset_ids": [
+          297
+        ],
+        "per_id_counts": {
+          "297": 2178
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      },
+      {
+        "slot": 7,
+        "symbol": "REP/USD",
+        "asset_ids": [
+          814
+        ],
+        "per_id_counts": {
+          "814": 207
+        },
+        "aliased": false,
+        "overlap_agreement": []
+      }
+    ],
+    "n_aliased_slots": 0,
+    "alias_union_rule": "ALIAS UNION (DECISIONS D31 opt (a1)): each requested/recorded symbol resolves to EVERY assets row whose NORMALIZED spelling matches (symbol.upper().replace('/', '') \u2014 slash-only, deliberately NOT XBT->BTC folding), and the group's ohlcv rows are unioned into the slot's single series at load time (NO DB writes \u2014 the ingest identity split is repaired at the loader). Where aliased series overlap in time the closes must AGREE (rel <= 1e-12) or the load REFUSES, naming both asset_ids and the first disagreeing timestamp \u2014 never average, never prefer silently; agreeing duplicate timestamps dedupe. Per-slot usage is disclosed (asset_ids / db_symbols / per_id_rows / overlap_agreement).",
+    "open_gate_rule": "CAUSAL OPEN-GATE (DECISIONS D31 opt (a2)): a decision cell whose slot printed NO real close anywhere inside its feature bar is force-HELD (the shipped price_valid force-HOLD mechanic), on the pinned AND canon unpinned minute loaders uniformly. The mask is CAUSAL by construction \u2014 bar r's value reads only prints inside bar r, so the mask at decision t is identical whether or not rows after t exist (no look-ahead into whether a gap later resumes; that is also why TRAILING gaps are gated \u2014 at decision time a delisting and an interior hole are indistinguishable). WHAT THE FORCE-HOLD COVERS, stated exactly (regression-panel amendment): the channel holds the WHOLE action, not only the open \u2014 on a masked cell no position can OPEN and none can CLOSE or rebalance either, so a book already holding the slot is CARRIED through the frozen span at the D30 forward-filled valuation (PV-exact to the cent \u2014 the PV-conservation smoke leg, both books, mask ON) and realizes its PnL at the NEXT REAL print. That is the sound semantics, not an oversight: a close at a frozen price would realize PnL against a price no market offered \u2014 the same fabrication class the mask exists to remove \u2014 and a state-aware close-at-the-boundary channel is D30 opt (ii) TRUE LIQUIDATION, which the ruling keeps PARKED. 'The mask only gates OPENING' in the task text is the contrast with VALUATION (the fill still values every row), not a claim that closes execute on frozen cells. Conservative by construction: a masked cell cannot trade, so it can only reduce measured performance, never flatter it.",
+    "n_open_gated_decision_cells": 24
   },
   "operator": {
     "mode": "search",
@@ -55,30 +157,30 @@
   "annualization_period_minutes": 60.0,
   "tiers": {
     "0": {
-      "sharpe_full": -17.69700466604034,
+      "sharpe_full": -14.84774289163221,
       "steps_completed": 40,
       "steps_expected": 40,
       "partial": false,
-      "final_pv": 98803.109375,
-      "avg_long": 1.3,
-      "avg_short": 3.85,
-      "pct_hold_agg": 64.6875,
+      "final_pv": 98970.859375,
+      "avg_long": 1.925,
+      "avg_short": 2.775,
+      "pct_hold_agg": 63.4375,
       "pct_hold_per_asset": {
-        "XBT/USD": 65.0,
-        "ETH/USD": 50.0,
-        "LTC/USD": 72.5,
-        "XMR/USD": 60.0,
-        "ZEC/USD": 65.0,
-        "ETC/USD": 77.5,
-        "DASH/USD": 50.0,
-        "REP/USD": 77.5
+        "XBT/USD": 52.5,
+        "ETH/USD": 47.5,
+        "LTC/USD": 55.0,
+        "XMR/USD": 55.0,
+        "ZEC/USD": 67.5,
+        "ETC/USD": 87.5,
+        "DASH/USD": 55.0,
+        "REP/USD": 87.5
       },
       "action_hist_pct": [
-        6.5625,
-        64.6875,
+        7.5,
+        63.4375,
         9.375,
-        7.8125,
-        11.5625
+        10.3125,
+        9.375
       ],
       "bankrupt_at": -1,
       "terminated_early_at": -1,
@@ -129,48 +231,48 @@
         }
       },
       "activity": {
-        "hold_pct": 0.646875,
-        "trades_per_step": 2.825,
-        "n_trades_total": 113,
-        "n_long": 67,
-        "n_short": 46,
+        "hold_pct": 0.634375,
+        "trades_per_step": 2.925,
+        "n_trades_total": 117,
+        "n_long": 60,
+        "n_short": 57,
         "active_assets": 8,
         "top5_traded": {
-          "ETH/USD": 20,
-          "DASH/USD": 20,
-          "XMR/USD": 16,
-          "XBT/USD": 14,
-          "ZEC/USD": 14
+          "ETH/USD": 21,
+          "XBT/USD": 19,
+          "LTC/USD": 18,
+          "XMR/USD": 18,
+          "DASH/USD": 18
         }
       },
       "teacher_floor_inenv": null,
       "corridor_position": null
     },
     "21": {
-      "sharpe_full": -43.972249581758106,
+      "sharpe_full": -46.43191211763346,
       "steps_completed": 40,
       "steps_expected": 40,
       "partial": false,
-      "final_pv": 96934.875,
-      "avg_long": 1.3,
-      "avg_short": 3.85,
-      "pct_hold_agg": 64.6875,
+      "final_pv": 96835.65625,
+      "avg_long": 1.925,
+      "avg_short": 2.775,
+      "pct_hold_agg": 63.4375,
       "pct_hold_per_asset": {
-        "XBT/USD": 65.0,
-        "ETH/USD": 50.0,
-        "LTC/USD": 72.5,
-        "XMR/USD": 60.0,
-        "ZEC/USD": 65.0,
-        "ETC/USD": 77.5,
-        "DASH/USD": 50.0,
-        "REP/USD": 77.5
+        "XBT/USD": 52.5,
+        "ETH/USD": 47.5,
+        "LTC/USD": 55.0,
+        "XMR/USD": 55.0,
+        "ZEC/USD": 67.5,
+        "ETC/USD": 87.5,
+        "DASH/USD": 55.0,
+        "REP/USD": 87.5
       },
       "action_hist_pct": [
-        6.5625,
-        64.6875,
+        7.5,
+        63.4375,
         9.375,
-        7.8125,
-        11.5625
+        10.3125,
+        9.375
       ],
       "bankrupt_at": -1,
       "terminated_early_at": -1,
@@ -221,18 +323,18 @@
         }
       },
       "activity": {
-        "hold_pct": 0.646875,
-        "trades_per_step": 2.825,
-        "n_trades_total": 113,
-        "n_long": 67,
-        "n_short": 46,
+        "hold_pct": 0.634375,
+        "trades_per_step": 2.925,
+        "n_trades_total": 117,
+        "n_long": 60,
+        "n_short": 57,
         "active_assets": 8,
         "top5_traded": {
-          "ETH/USD": 20,
-          "DASH/USD": 20,
-          "XMR/USD": 16,
-          "XBT/USD": 14,
-          "ZEC/USD": 14
+          "ETH/USD": 21,
+          "XBT/USD": 19,
+          "LTC/USD": 18,
+          "XMR/USD": 18,
+          "DASH/USD": 18
         }
       },
       "teacher_floor_inenv": null,
@@ -247,10 +349,10 @@
     "reference_gross": 0.9557594651716449,
     "ceiling_gross": 31.36710570497202,
     "source": "experiments/830_corridor/results_real_panel.json",
-    "agent_net21": -43.972249581758106,
-    "agent_gross": -17.69700466604034,
+    "agent_net21": -46.43191211763346,
+    "agent_gross": -14.84774289163221,
     "partial_rollout": false,
-    "position_in_corridor_net21": -1.5165580461390145,
+    "position_in_corridor_net21": -1.6005795476184992,
     "beats_floor_net21": false,
     "beats_reference_net21": false,
     "hold_collapse": false,
@@ -266,5 +368,5 @@
   },
   "out_name": "results_fixture_smoke.json",
   "out_pointer": "experiments/835_stage4_eval/results_fixture_smoke.json",
-  "ledger_row": "| 835/S4 | 2026-07-24 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -43.972 \u00b7 gross -17.697; final PV 96935; avgL 1.3 avgS 3.9; no HOLD collapse (pct_hold 64.7%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -43.972 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
+  "ledger_row": "| 835/S4 | 2026-08-03 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -46.432 \u00b7 gross -14.848; final PV 96836; avgL 1.9 avgS 2.8; no HOLD collapse (pct_hold 63.4%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -46.432 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
 }
