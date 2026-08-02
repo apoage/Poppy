@@ -57,9 +57,20 @@ collection walk's own net@21 Sharpe — the same actions, the same rows, the sam
 two different modules. (The runner now asserts this internally too; this leg re-derives it from
 the artifacts.)
 
+  (vii) TRACKED-BASELINE PINS (TASK_867) — the two COMMITTED baselines of this module
+        (``chosen_vectors_fixture.json`` and ``results_fixture_smoke.json``) are pinned against
+        what the current code + recipe reproduces, minus documented volatile fields. Default
+        invocations write UNTRACKED ``*_local.json`` outputs, so no ordinary verification run
+        can dirty (or, under ``--quick``, silently DOWNGRADE) a tracked baseline; overwriting
+        one requires the explicit ``--promote-baselines`` flag — recipe-pinned (full-seed
+        canon re-derived from argparse defaults), validity-gated, atomic (``.tmp`` +
+        ``os.replace``), dirty-refusing, per-field diff printed. This is the shipped TASK_864
+        promote gate (``imprint.py``) ported to this module's two baselines.
+
 CPU / fixture only; no training spend beyond the ~80-iteration smoke imprints. NEVER touches
 trading_data.db. Run: ``python experiments/861_search_teacher_imprint/smoke_e2e.py``
-(``--quick`` runs one seed per falsification arm instead of four).
+(``--quick`` runs one seed per falsification arm instead of four). Both invocations leave the
+tracked baselines untouched; ``--promote-baselines`` is the ONLY way they move.
 """
 import argparse
 import copy
@@ -95,6 +106,38 @@ COLLECT_POSITION_SIZE_PCT = 0.1      # teacher of record
 IMPRINT_POSITION_SIZE_PCT = 0.5 / 8  # imprint.py's fixture default (0.5/n_assets)
 CANON_832_SMOKE = os.path.join(_REPO, "experiments", "832_linear_imprint",
                                "results_fixture_smoke.json")
+
+# ---- TASK_867: tracked-baseline hygiene (port of the shipped TASK_864 promote gate) ---------
+# The failure mode this closes (confirmed module-wide in runs 21/23): BOTH tracked baselines of
+# this module used to be rewritten in place by ordinary verification runs — a bare suite run
+# clobbered chosen_vectors_fixture.json THREE times in one session with a stamp-only
+# created_utc diff, and `--quick` silently DOWNGRADED results_fixture_smoke.json to falsification
+# seed 0 where the committed baseline holds seeds 0..3, while still reading complete and green.
+# Fix (mirroring imprint.py TASK_864): default invocations write UNTRACKED *_local outputs;
+# overwriting a tracked baseline requires the explicit --promote-baselines flag, which is
+# recipe-pinned, validity-gated, atomic and dirty-refusing, and prints a per-field diff.
+RESULTS_BASELINE = os.path.join(EXP_DIR, "results_fixture_smoke.json")
+RESULTS_LOCAL = os.path.join(EXP_DIR, "results_fixture_smoke_local.json")
+COLLECTION_LOCAL = os.path.join(EXP_DIR, "chosen_vectors_fixture_local.json")
+CANON_PROMOTE_RECIPE = ("python experiments/861_search_teacher_imprint/smoke_e2e.py "
+                        "--promote-baselines")
+# The promote flag itself is the delta; every OTHER argparse dest (quick, seeds) is compared
+# against the canon full-seed recipe re-derived from this module's own argparse defaults.
+CANON_PROMOTE_EXEMPT_FIELDS = ("promote_baselines",)
+# Collection provenance fields that legitimately move between identical reproductions: the
+# wall-clock stamp (the thrice-observed clobber), and the clone-path-dependent db paths (the
+# 866 WEIGHT_ON_ORACLE_VOLATILE precedent). Every other leaf is pinned exactly.
+COLLECTION_VOLATILE = ("created_utc", "db", "db_abspath")
+# Results-report fields excluded from the committed-vs-fresh pin: wall-clock timings, the
+# self-referential pin leg itself, and the derived verdict (recomputed fresh every run — a
+# tampered committed verdict cannot change this run's own pass/fail).
+RESULTS_PIN_EXCLUDED_TOP = ("verdict", "all_passed", "elapsed_seconds")
+RESULTS_PIN_SELF_LEG = "vii_baseline_pins"
+# The report's invocation/panel identity block, pinned as part of the results comparison.
+PANEL_DOC = {"db": "fixtures/trading_fixture.db", "window": ["2025-09-14", "2025-12-12"],
+             "bar_minutes": 240, "n_assets": 8, "n_decisions": 50,
+             "collect_position_size_pct": COLLECT_POSITION_SIZE_PCT,
+             "imprint_position_size_pct": IMPRINT_POSITION_SIZE_PCT}
 # FIX 5 (fix pass): the falsification floor moved 0.10 -> 0.05 after an n=10 re-measurement.
 FLOOR_NOTE = {
     "floor": 0.05,
@@ -322,6 +365,206 @@ def canon_json(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
+# ---- TASK_867 helpers (ported from imprint.py's TASK_864 block, same semantics) --------------
+
+def _json_leaves(obj, prefix=""):
+    """Flatten a JSON document to (path, scalar) pairs -- the per-field unit of the diff."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _json_leaves(v, f"{prefix}/{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _json_leaves(v, f"{prefix}[{i}]")
+    else:
+        yield prefix, obj
+
+
+def _diff_leaf_paths(old, new):
+    """Sorted leaf paths whose scalar differs (or exists on only one side)."""
+    o, n = dict(_json_leaves(old)), dict(_json_leaves(new))
+    absent = object()
+    return sorted(k for k in set(o) | set(n) if o.get(k, absent) != n.get(k, absent))
+
+
+def _git_status_porcelain(path):
+    """`git status --porcelain` for one path; None when cleanliness cannot be VERIFIED."""
+    try:
+        p = subprocess.run(["git", "-C", _REPO, "status", "--porcelain", "--", path],
+                           capture_output=True, text=True, timeout=120)
+        return p.stdout if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _assert_one_baseline_clean(path, label):
+    """Fail-CLOSED: a missing, git-unverifiable or git-DIRTY tracked baseline refuses loud
+    (mirroring imprint.py::_assert_baseline_promotable and the 866 oracle loader)."""
+    rel = os.path.relpath(path, _REPO)
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"[867] REFUSING: the tracked {label} baseline {rel} is MISSING. The pins read the "
+            f"committed bytes, so a deleted baseline must refuse loud, never fail open. "
+            f"Restore it (git checkout -- {rel}) and re-run.")
+    status = _git_status_porcelain(path)
+    if status is None:
+        raise SystemExit(
+            f"[867] REFUSING: could not read `git status` for the tracked {label} baseline "
+            f"{rel} (git missing, or {_REPO} is not a work tree) — the baselines are only "
+            f"pinnable from a verifiably clean working copy (the TASK_864 rule).")
+    if status.strip():
+        raise SystemExit(
+            f"[867] REFUSING: the tracked {label} baseline {rel} is git-DIRTY\n"
+            f"          {status.strip()}\n"
+            f"  The pins guard the COMMITTED bytes. Commit the refresh or "
+            f"`git checkout -- {rel}`, then re-run — running against uncommitted edits would "
+            f"bless an unreviewed baseline, the exact 864 laundering path.")
+
+
+def _assert_tracked_baselines_clean():
+    """Pre-run hygiene gate on BOTH tracked baselines, on EVERY invocation (promote or not):
+    cheap, and it is what makes a hand-edit of a committed baseline an immediate loud FAIL."""
+    _assert_one_baseline_clean(COLLECTION, "collection")
+    _assert_one_baseline_clean(RESULTS_BASELINE, "results report")
+
+
+def _assert_promote_recipe(args, canon):
+    """--promote-baselines pins the RECIPE, not just the destination (864 FIX 1). The canon
+    recipe is the FULL-seed default: expected values are re-derived from this module's own
+    argparse defaults (canon = ap.parse_args([])), never a second hardcoded copy. A seeds-subset
+    run (--quick or --seeds N<4) promoted onto the seeds-0..3 baseline is the silent downgrade
+    this gate exists to kill, and it REFUSES here, naming every offending field."""
+    bad = [(f, getattr(args, f, "<missing>"), want)
+           for f, want in sorted(vars(canon).items())
+           if f not in CANON_PROMOTE_EXEMPT_FIELDS and getattr(args, f, "<missing>") != want]
+    if bad:
+        raise SystemExit(
+            "[867] --promote-baselines REFUSED: this is not the CANON full-seed recipe, so "
+            "promoting it would install a DIFFERENT artifact as the tracked oracle (a "
+            "seeds-subset report over the seeds-0..3 baseline is the --quick downgrade, "
+            "TASK_867 scope 2).\n"
+            + "".join(f"    --{f.replace('_', '-')}: got {g!r}, canon expects {w!r}\n"
+                      for f, g, w in bad)
+            + f"  The canon recipe is EXACTLY: {CANON_PROMOTE_RECIPE}\n"
+              f"  (expected values re-derived from this module's argparse defaults, not a "
+              f"second hardcoded copy).")
+
+
+def _assert_collection_valid(doc):
+    """Validity gate on the collection artifact being promoted (864 FIX 2 analogue): schema
+    identity, the payload digest recomputed from the decisions block, and the decision-count
+    self-consistency. Independent of any other flag or check."""
+    bad = []
+    if doc.get("schema") != "861/chosen-vectors/v1":
+        bad.append(f"schema = {doc.get('schema')!r} (need '861/chosen-vectors/v1')")
+    prov = doc.get("provenance") or {}
+    dec = doc.get("decisions") or {}
+    if not isinstance(dec.get("chosen_vectors"), list) or not dec["chosen_vectors"]:
+        bad.append("decisions.chosen_vectors is missing/empty (no recorded stream)")
+    else:
+        if payload_digest(dec) != prov.get("payload_sha256"):
+            bad.append("payload_sha256 does NOT match the decisions block (stale or tampered "
+                       "digest — the artifact failed its own integrity seal)")
+        n = prov.get("n_decisions_collected")
+        counts = {len(dec["chosen_vectors"])}
+        for k in ("row_index", "timestamp"):
+            if isinstance(dec.get(k), list):
+                counts.add(len(dec[k]))
+        if n is None or len(counts) != 1 or n not in counts:
+            bad.append(f"n_decisions_collected = {n!r} but the payload lengths are "
+                       f"{sorted(counts)} (internally inconsistent artifact)")
+    if bad:
+        raise SystemExit(
+            "[867] --promote-baselines REFUSED: the collection artifact did NOT pass its own "
+            "validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 "
+            "analogue).\n"
+            + "".join(f"    - {b}\n" for b in bad)
+            + "  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon "
+              f"recipe: {CANON_PROMOTE_RECIPE}")
+
+
+def _assert_report_promotable(report, verdict, canon_seeds):
+    """Validity gate on the results report being promoted (864 FIX 2 analogue): every leg must
+    have passed EXCEPT the parity-vs-old pin leg (a pin failure is parity drift against the OLD
+    baseline — precisely what a reviewed promotion installs — not an internal-invalidity), and
+    the recorded seed set must be the canon full-seed identity."""
+    bad = []
+    if list(report.get("seeds") or []) != list(canon_seeds):
+        bad.append(f"seeds = {report.get('seeds')!r}, the canon full-seed identity is "
+                   f"{list(canon_seeds)!r} (a seeds-subset report is the --quick downgrade)")
+    for k, v in sorted(verdict.items()):
+        if k == RESULTS_PIN_SELF_LEG:
+            continue
+        if not v:
+            bad.append(f"leg {k} did not pass — an artifact that was never green must not "
+                       f"become the tracked oracle")
+    if bad:
+        raise SystemExit(
+            "[867] --promote-baselines REFUSED: the results report did NOT pass its own "
+            "validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 "
+            "analogue).\n"
+            + "".join(f"    - {b}\n" for b in bad)
+            + "  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon "
+              f"recipe: {CANON_PROMOTE_RECIPE}")
+
+
+def _expect_refusal(fn, token):
+    """Demonstration harness: the refusal MUST fire (SystemExit) and MUST name ``token``.
+    Returns (ok, message)."""
+    try:
+        fn()
+    except SystemExit as e:
+        msg = str(e)
+        return token in msg, msg
+    return False, "no refusal raised"
+
+
+def _promote_baseline(new_doc, dst_path, label, dump_kwargs, max_show=40):
+    """Print the per-field diff vs the checked-in baseline, then replace it ATOMICALLY.
+
+    Port of imprint.py::promote_parity_baseline: the git-dirty gate is re-checked HERE (an edit
+    landing during the ~15min run is not silently lost), the promoted bytes are serialised from
+    THIS run's in-memory document with the producer's json params (never re-read from the shared
+    local path), and the write goes to <baseline>.tmp + os.replace so an interrupt can never
+    leave the tracked oracle truncated."""
+    _assert_one_baseline_clean(dst_path, label)
+    rel = os.path.relpath(dst_path, _REPO)
+    new_text = json.dumps(new_doc, **dump_kwargs)
+    print("\n" + "=" * 84)
+    print(f"[867] --promote-baselines: per-field diff vs the checked-in {rel}")
+    print(f"  promoting recipe: {CANON_PROMOTE_RECIPE}")
+    print(f"  bytes source: this run's in-memory document")
+    with open(dst_path) as fh:
+        old = dict(_json_leaves(json.load(fh)))
+    new = dict(_json_leaves(json.loads(new_text)))
+    moved = sorted(k for k in set(old) & set(new) if old[k] != new[k])
+    removed, added = sorted(set(old) - set(new)), sorted(set(new) - set(old))
+    print(f"  leaves {len(old)} -> {len(new)}   moved {len(moved)}   "
+          f"removed {len(removed)}   added {len(added)}")
+    for sym, keys, fmt in (
+            ("~", moved, lambda k: f"{old[k]!r}  ->  {new[k]!r}"),
+            ("-", removed, lambda k: f"was {old[k]!r}"),
+            ("+", added, lambda k: f"= {new[k]!r}")):
+        for k in keys[:max_show]:
+            print(f"    {sym} {k}\n        {fmt(k)}")
+        if len(keys) > max_show:
+            print(f"    ... {len(keys) - max_show} more '{sym}' field(s)")
+    if not (moved or removed or added):
+        print("  IDENTICAL -- the baseline already matches this run")
+    tmp = dst_path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(new_text)
+        os.replace(tmp, dst_path)                        # atomic; no truncated oracle window
+    finally:
+        if os.path.exists(tmp):                          # only reachable if the write failed
+            os.unlink(tmp)
+    print(f"[867] {label} baseline PROMOTED -> {rel}  (md5 "
+          f"{hashlib.md5(new_text.encode()).hexdigest()})")
+    print("      A refresh commit MUST carry the per-field attribution table (every moved "
+          "field traced to the commit that moved it) -- TASK_864 acceptance (iii).")
+    print("=" * 84)
+
+
 def mint_teacher_checkpoint():
     """Fresh-init checkpoint for the collection walk. The pinned teacher operator is pw0 +
     true-env leaf + no v̂ tail (net_dependent=false — LEDGER 832/E5-exit2), so its decisions do
@@ -399,7 +642,28 @@ def main():
     ap.add_argument("--quick", action="store_true",
                     help="one seed per falsification arm instead of four")
     ap.add_argument("--seeds", type=int, default=4)
+    ap.add_argument("--promote-baselines", dest="promote_baselines",
+                    action="store_true", default=False,
+                    help="TASK_867: promote this run's outputs onto the TWO CHECKED-IN "
+                         "baselines (chosen_vectors_fixture.json + results_fixture_smoke.json). "
+                         "Default OFF => the run writes the gitignored *_local.json files, so "
+                         "NO ordinary verification run can dirty (or, under --quick, silently "
+                         "DOWNGRADE) a tracked baseline. Recipe-pinned to the canon full-seed "
+                         "invocation, validity-gated, atomic (.tmp + os.replace), "
+                         "dirty-refusing, per-field diff printed. Canon recipe: "
+                         + CANON_PROMOTE_RECIPE)
     args = ap.parse_args()
+    # TASK_867: the canon promoting recipe, re-derived from this module's own argparse defaults
+    # (no second hardcoded copy of any default).
+    canon_args = ap.parse_args([])
+    canon_seeds = list(range(canon_args.seeds))
+    # TASK_867: fail-CLOSED hygiene gate BEFORE anything expensive — a missing or git-dirty
+    # tracked baseline refuses every invocation loud (a hand-edited baseline is an immediate
+    # FAIL, never a silent read). The promote recipe pin is likewise pre-run: a refused
+    # promotion costs nothing.
+    _assert_tracked_baselines_clean()
+    if args.promote_baselines:
+        _assert_promote_recipe(args, canon_args)
     seeds = list(range(1 if args.quick else args.seeds))
     os.makedirs(RUN_DIR, exist_ok=True)
     report = {"legs": {}, "seeds": seeds}
@@ -542,7 +806,10 @@ def main():
     for d in (off_dir, on_dir):
         os.makedirs(d, exist_ok=True)
     sh(eval_cmd(off_dir), os.path.join(RUN_DIR, "walk_off.log"))
-    sh(eval_cmd(on_dir, collect=COLLECTION), os.path.join(RUN_DIR, "walk_on.log"))
+    # TASK_867: the collection walk writes the UNTRACKED *_local path — the tracked
+    # chosen_vectors_fixture.json is only ever moved by --promote-baselines (leg vii pins the
+    # fresh local reproduction against the committed bytes).
+    sh(eval_cmd(on_dir, collect=COLLECTION_LOCAL), os.path.join(RUN_DIR, "walk_on.log"))
     name = "results_861fx_861_search_teacher_imprint__ckpt_teacher_src.json"
     a = open(os.path.join(off_dir, name), "rb").read()
     b = open(os.path.join(on_dir, name), "rb").read()
@@ -914,6 +1181,135 @@ def main():
         "note": "fixture plumbing numbers — NO threshold applied (the binding in-sample bar is "
                 "the planner's real-panel leg 3: sanity replay net@21 > +0.839)"}
 
+    # ----------------------- (vii) TASK_867: TRACKED-BASELINE PINS — the COMMITTED bytes must
+    # match what the current code + recipe reproduces. The pre-867 checks here were within-run
+    # byte-identity only and passed against ARBITRARY committed content — the named defect.
+    print("\n=== (vii) TRACKED-BASELINE PINS (TASK_867) — committed baselines vs fresh "
+          "reproduction ===")
+
+    def _coll_view(doc):
+        d = copy.deepcopy(doc)
+        for k in COLLECTION_VOLATILE:
+            (d.get("provenance") or {}).pop(k, None)
+        return d
+
+    def _results_view(doc):
+        d = copy.deepcopy(doc)
+        for k in RESULTS_PIN_EXCLUDED_TOP:
+            d.pop(k, None)
+        legs = d.get("legs") or {}
+        legs.pop(RESULTS_PIN_SELF_LEG, None)               # self-referential: records this pin
+        for sub in (legs.get("iiib_empty_flags") or {}).values():
+            if isinstance(sub, dict):
+                sub.pop("seconds", None)                   # wall-clock timing
+        return d
+
+    # Collection half: this run's FRESH collection (written to the untracked *_local path in
+    # leg ii) vs the COMMITTED baseline, minus the volatile stamp/clone-path fields. Presence
+    # and git-cleanliness of the committed file were already gated pre-run (fail-closed).
+    fresh_coll = json.load(open(COLLECTION_LOCAL))
+    try:
+        committed_coll = json.load(open(COLLECTION))
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(
+            f"[867] REFUSING the collection pin: the committed baseline "
+            f"{os.path.relpath(COLLECTION, _REPO)} is unreadable/corrupt ({e}). A truncated or "
+            f"hand-edited baseline must refuse loud, never fail open.")
+    coll_diff = _diff_leaf_paths(_coll_view(committed_coll), _coll_view(fresh_coll))
+    ok_coll_pin = not coll_diff
+    print(f"  collection: fresh reproduction vs the committed baseline (minus "
+          f"{COLLECTION_VOLATILE}): "
+          f"{'IDENTICAL' if ok_coll_pin else 'DIFFERS ' + str(coll_diff[:8])}")
+
+    # Results half: the FULL-seed recipe reproduces the committed report float-exact (minus the
+    # documented volatile/derived fields). A seeds-subset run (--quick) CANNOT reproduce a
+    # seeds-0..3 baseline, so it SKIPS the value comparison — SAYING SO (acceptance iv) — and
+    # instead validates the committed baseline's recorded recipe/seed-set identity, which is
+    # exactly the identity the pre-867 --quick downgrade destroyed.
+    try:
+        committed_results = json.load(open(RESULTS_BASELINE))
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(
+            f"[867] REFUSING the results pin: the committed baseline "
+            f"{os.path.relpath(RESULTS_BASELINE, _REPO)} is unreadable/corrupt ({e}). A "
+            f"truncated or hand-edited baseline must refuse loud, never fail open.")
+    ok_seed_identity = committed_results.get("seeds") == canon_seeds
+    full_recipe = (not args.quick) and args.seeds == canon_args.seeds
+    fresh_results_view = _results_view({**report, "panel": PANEL_DOC,
+                                        "teacher_operator": TEACHER_OPERATOR})
+    res_diff = None
+    if full_recipe:
+        res_diff = _diff_leaf_paths(_results_view(committed_results), fresh_results_view)
+        ok_res_pin = not res_diff and ok_seed_identity
+        print(f"  results: fresh full-seed report vs the committed baseline (minus "
+              f"{RESULTS_PIN_EXCLUDED_TOP}, the self-referential pin leg and iiib timings): "
+              f"{'IDENTICAL' if not res_diff else 'DIFFERS ' + str(res_diff[:8])}")
+    else:
+        ok_res_pin = ok_seed_identity
+        print(f"  results: seeds {seeds} are a SUBSET of the canon {canon_seeds} — the value "
+              f"comparison is SKIPPED (said out loud per acceptance iv; --quick must never "
+              f"stand in for the full-seed baseline). Validating the committed baseline's "
+              f"seed-set identity instead: recorded {committed_results.get('seeds')} -> "
+              f"{'canon full-seed' if ok_seed_identity else 'NOT the full-seed baseline — REFUSED'}")
+
+    # Scope-2/864 demonstrations, in-leg and cheap: the promote machinery MUST refuse (a) the
+    # --quick downgrade, (b) a seeds-subset, (c) an invalid collection artifact (stale payload
+    # digest), (d) an invalid report (a red leg) — each naming what it refused.
+    ok_demo_quick, msg_demo_quick = _expect_refusal(
+        lambda: _assert_promote_recipe(
+            argparse.Namespace(quick=True, seeds=canon_args.seeds, promote_baselines=True),
+            canon_args), "quick")
+    ok_demo_seeds, msg_demo_seeds = _expect_refusal(
+        lambda: _assert_promote_recipe(
+            argparse.Namespace(quick=False, seeds=1, promote_baselines=True),
+            canon_args), "seeds")
+    bad_coll = copy.deepcopy(fresh_coll)
+    bad_coll["decisions"]["chosen_vectors"][0][0] = (
+        0 if bad_coll["decisions"]["chosen_vectors"][0][0] != 0 else 2)   # digest now stale
+    ok_demo_coll, msg_demo_coll = _expect_refusal(
+        lambda: _assert_collection_valid(bad_coll), "payload")
+    ok_demo_rep, msg_demo_rep = _expect_refusal(
+        lambda: _assert_report_promotable(report, {"iv_falsification": False}, canon_seeds),
+        "iv_falsification")
+    print(f"  promote-gate demos: --quick REFUSED {ok_demo_quick} | seeds-subset REFUSED "
+          f"{ok_demo_seeds} | invalid collection REFUSED {ok_demo_coll} | invalid report "
+          f"REFUSED {ok_demo_rep}")
+
+    vii_checks = {
+        "collection_pin_fresh_vs_committed": bool(ok_coll_pin),
+        "results_pin": bool(ok_res_pin),
+        "committed_results_seed_identity_is_canon_full_seed": bool(ok_seed_identity),
+        "promote_refuses_quick_downgrade": bool(ok_demo_quick),
+        "promote_refuses_seeds_subset": bool(ok_demo_seeds),
+        "promote_refuses_invalid_collection": bool(ok_demo_coll),
+        "promote_refuses_invalid_report": bool(ok_demo_rep),
+    }
+    for k, v in vii_checks.items():
+        print(f"  {'OK  ' if v else 'FAIL'} {k}")
+    report["legs"][RESULTS_PIN_SELF_LEG] = {
+        "passed": all(vii_checks.values()), "checks": vii_checks,
+        "collection_baseline": "experiments/861_search_teacher_imprint/"
+                               "chosen_vectors_fixture.json (tracked; fail-closed on "
+                               "missing/dirty/corrupt pre-run)",
+        "results_baseline": "experiments/861_search_teacher_imprint/"
+                            "results_fixture_smoke.json (tracked; same gate)",
+        "collection_volatile_excluded": list(COLLECTION_VOLATILE),
+        "collection_differing_leaves": coll_diff,
+        "results_compared_full_recipe": bool(full_recipe),
+        "results_differing_leaves": res_diff,
+        "results_excluded": ("top-level " + str(list(RESULTS_PIN_EXCLUDED_TOP)) +
+                             ", the self-referential pin leg, iiib wall-clock seconds; "
+                             "verdict/all_passed are recomputed fresh every run"),
+        "promote_demonstrations": {
+            "quick": msg_demo_quick, "seeds_subset": msg_demo_seeds,
+            "invalid_collection": msg_demo_coll, "invalid_report": msg_demo_rep},
+        "note": "default invocations write the gitignored *_local.json outputs; the tracked "
+                "baselines move ONLY via --promote-baselines (recipe-pinned full-seed, "
+                "validity-gated, atomic, dirty-refusing, per-field diff printed — the TASK_864 "
+                "gate ported). The dirty/missing refusal of BOTH baselines is enforced "
+                "pre-run on every invocation, so a hand-edited committed baseline fails the "
+                "smoke before any leg runs (acceptance iii)."}
+
     # ------------------------------------------------------------------- verdict
     def leg_ok(x):
         if isinstance(x, dict):
@@ -927,12 +1323,11 @@ def main():
     report["verdict"] = verdict
     report["all_passed"] = all(verdict.values())
     report["elapsed_seconds"] = round(time.time() - t_start, 1)
-    report["panel"] = {"db": "fixtures/trading_fixture.db", "window": ["2025-09-14", "2025-12-12"],
-                       "bar_minutes": 240, "n_assets": 8, "n_decisions": 50,
-                       "collect_position_size_pct": COLLECT_POSITION_SIZE_PCT,
-                       "imprint_position_size_pct": IMPRINT_POSITION_SIZE_PCT}
+    report["panel"] = PANEL_DOC
     report["teacher_operator"] = TEACHER_OPERATOR
-    out_path = os.path.join(EXP_DIR, "results_fixture_smoke.json")
+    # TASK_867: the report goes to the UNTRACKED *_local path on every invocation — the tracked
+    # results_fixture_smoke.json moves ONLY through the explicit promote below.
+    out_path = RESULTS_LOCAL
     with open(out_path, "w") as fh:
         json.dump(report, fh, indent=2, default=float)
     print("\n" + "=" * 84)
@@ -940,6 +1335,21 @@ def main():
         print(f"  {'PASS' if v else 'FAIL'}  {k}")
     print(f"  elapsed {report['elapsed_seconds']}s   ->  {os.path.relpath(out_path, _REPO)}")
     print("=" * 84)
+    if args.promote_baselines:
+        # Validity gates are INDEPENDENT of the parity-vs-old pin leg (864 FIX 2 analogue): a
+        # pin failure is drift against the OLD baseline — precisely what this reviewed
+        # promotion installs — while any OTHER red leg or an invalid collection refuses.
+        _assert_collection_valid(fresh_coll)
+        _assert_report_promotable(report, verdict, canon_seeds)
+        _promote_baseline(fresh_coll, COLLECTION, "collection",
+                          dict(indent=1, default=float))   # eval_vector's write params
+        _promote_baseline(report, RESULTS_BASELINE, "results report",
+                          dict(indent=2, default=float))   # this module's write params above
+    else:
+        print("[867] tracked baselines UNTOUCHED (default): the collection is at "
+              f"{os.path.relpath(COLLECTION_LOCAL, _REPO)} and the report at "
+              f"{os.path.relpath(RESULTS_LOCAL, _REPO)}; promotion is explicit: "
+              f"{CANON_PROMOTE_RECIPE}")
     if not report["all_passed"]:
         raise SystemExit("861 SMOKE FAIL — see the legs above")
     print("[861] SMOKE PASS: canon bit-identical, recorder inert, provenance fail-loud, "

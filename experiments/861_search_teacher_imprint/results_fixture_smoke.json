@@ -160,7 +160,7 @@
       "eval_unwritable_collect_path": {
         "passed": true,
         "exit_code": 2,
-        "seconds": 0.98,
+        "seconds": 0.97,
         "walk_started": false
       },
       "imprint_empty_teacher_vectors": {
@@ -363,6 +363,36 @@
       "rel_delta": 1.9362052359670976e-06,
       "rel_tolerance": 0.0001,
       "note": "same actions, same rows, same env \u2014 walked by 835 rollout (batched vmap PV) and 832 walk_env (unbatched PV); agreement to float32 rounding proves the recorded target stream replays as the identical trajectory"
+    },
+    "vii_baseline_pins": {
+      "passed": true,
+      "checks": {
+        "collection_pin_fresh_vs_committed": true,
+        "results_pin": true,
+        "committed_results_seed_identity_is_canon_full_seed": true,
+        "promote_refuses_quick_downgrade": true,
+        "promote_refuses_seeds_subset": true,
+        "promote_refuses_invalid_collection": true,
+        "promote_refuses_invalid_report": true
+      },
+      "collection_baseline": "experiments/861_search_teacher_imprint/chosen_vectors_fixture.json (tracked; fail-closed on missing/dirty/corrupt pre-run)",
+      "results_baseline": "experiments/861_search_teacher_imprint/results_fixture_smoke.json (tracked; same gate)",
+      "collection_volatile_excluded": [
+        "created_utc",
+        "db",
+        "db_abspath"
+      ],
+      "collection_differing_leaves": [],
+      "results_compared_full_recipe": true,
+      "results_differing_leaves": [],
+      "results_excluded": "top-level ['verdict', 'all_passed', 'elapsed_seconds'], the self-referential pin leg, iiib wall-clock seconds; verdict/all_passed are recomputed fresh every run",
+      "promote_demonstrations": {
+        "quick": "[867] --promote-baselines REFUSED: this is not the CANON full-seed recipe, so promoting it would install a DIFFERENT artifact as the tracked oracle (a seeds-subset report over the seeds-0..3 baseline is the --quick downgrade, TASK_867 scope 2).\n    --quick: got True, canon expects False\n  The canon recipe is EXACTLY: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines\n  (expected values re-derived from this module's argparse defaults, not a second hardcoded copy).",
+        "seeds_subset": "[867] --promote-baselines REFUSED: this is not the CANON full-seed recipe, so promoting it would install a DIFFERENT artifact as the tracked oracle (a seeds-subset report over the seeds-0..3 baseline is the --quick downgrade, TASK_867 scope 2).\n    --seeds: got 1, canon expects 4\n  The canon recipe is EXACTLY: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines\n  (expected values re-derived from this module's argparse defaults, not a second hardcoded copy).",
+        "invalid_collection": "[867] --promote-baselines REFUSED: the collection artifact did NOT pass its own validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 analogue).\n    - payload_sha256 does NOT match the decisions block (stale or tampered digest \u2014 the artifact failed its own integrity seal)\n  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon recipe: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines",
+        "invalid_report": "[867] --promote-baselines REFUSED: the results report did NOT pass its own validity gate, so it must not become the tracked oracle (TASK_864 FIX 2 analogue).\n    - leg iv_falsification did not pass \u2014 an artifact that was never green must not become the tracked oracle\n  The tracked baseline is UNCHANGED. Fix the run, then re-run the canon recipe: python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines"
+      },
+      "note": "default invocations write the gitignored *_local.json outputs; the tracked baselines move ONLY via --promote-baselines (recipe-pinned full-seed, validity-gated, atomic, dirty-refusing, per-field diff printed \u2014 the TASK_864 gate ported). The dirty/missing refusal of BOTH baselines is enforced pre-run on every invocation, so a hand-edited committed baseline fails the smoke before any leg runs (acceptance iii)."
     }
   },
   "seeds": [
@@ -389,10 +419,11 @@
     "ivb_escape_hatch_honesty": true,
     "v_pinned_recipe_corunnable": true,
     "vi_minute_frame_pin": true,
-    "roundtrip_teacher_floor": true
+    "roundtrip_teacher_floor": true,
+    "vii_baseline_pins": true
   },
   "all_passed": true,
-  "elapsed_seconds": 849.8,
+  "elapsed_seconds": 857.8,
   "panel": {
     "db": "fixtures/trading_fixture.db",
     "window": [
