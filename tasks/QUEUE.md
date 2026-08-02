@@ -3,6 +3,8 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-02 (post factory run 24) — TASK_866 SHIPPED (`task866-weight-on-pin`, `ac8dfe1`): the weight-ON configuration of the 832 module is now pinned against the tracked baseline read as its OWN-configuration oracle (fail-closed on missing/dirty/corrupt/wrong-config; cross-config = named REFUSAL). The 864 incident class is closed — every committed parity baseline in the 832 module is guarded by an oracle of its own configuration (scope-3 sweep: no siblings). Correctness judge GREEN first-hand, 0 BLOCKER/MAJOR; selftest 12/12, 861 smoke 11/11. Ready = TASK_867 → 868 → 869, STRICTLY SERIAL (shared surface, unchanged per D31). Factory GREEN.**
+Prior grooming:
 **2026-08-01 (D31 RULED by the OPERATOR: opt (a) as amended — repair the identity split, mask the
 ~1% genuine residue, ONE re-base wave, then re-measure references) — Ready = TASK_866 → 867 →
 868 (alias union + interior mask) → 869 (UTC windows + masked daily floor), STRICTLY SERIAL

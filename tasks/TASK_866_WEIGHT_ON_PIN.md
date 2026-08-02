@@ -1,6 +1,20 @@
 # TASK_866 — Weight-ON parity pin for the 832 module (close the CLASS the 864 incident exposed) — FILLER
 
-**Status**: READY 2026-07-29 (seeded from the factory run-21 wrap, row B).
+> **STATUS (2026-08-02): SHIPPED as `task866-weight-on-pin` (`ac8dfe1`).** Factory run 24. All
+> three acceptance gates verified FIRST-HAND by the correctness judge (GREEN, 0 BLOCKER/MAJOR):
+> (i) mutation tests both directions independently reproduced — the judge re-ran BOTH imprint
+> configurations itself (weight-OFF matches CANON_832_PINS float-exact; weight-ON matches the
+> tracked oracle on every key minus `db`/`checkpoint`), then confirmed run-side AND oracle-side
+> single-field perturbations FAIL the pin; (ii) cross-configuration refusal fires both directions
+> naming `vector_weight_rebalance` (in-memory artifact surgery; a schema-broken artifact missing
+> `imprint.config` also refuses, never degrades to a numeric diff); (iii) selftest 12/12, 861
+> smoke 11/11 legs green exit 0. Fail-closed oracle load proven live: the judge dirtied the
+> tracked oracle in place and the pin REFUSED (git-porcelain dirty check), restored byte-identical.
+> Scope-3 sweep result: `experiments/832_linear_imprint/` has exactly ONE committed baseline
+> artifact — now guarded by an own-configuration oracle; no unguarded siblings. 1 MINOR found and
+> closed in the wrap (an unrelated CLAUDE.md deletion in the working tree, reverted before commit).
+
+**Was**: READY 2026-07-29 (seeded from the factory run-21 wrap, row B).
 **Size: XS/S. Risk: low.** SAME-SURFACE constraint: `experiments/832_linear_imprint/` — serial
 with TASK_865/867, never parallel.
 
