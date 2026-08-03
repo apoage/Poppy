@@ -3,6 +3,18 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-03 (planner, FINAL) — THE OOS RE-MEASURE REVERSES THE PROGRAM'S HEADLINE (LEDGER
+861/ref-oos-rebase): the +0.898 OOS / WF-pass anchors are REVOKED as contamination artifacts.**
+Clean-trained ref seeds: regime form PASS 3/3 (+0.59..+1.59) but oos_full median +0.064 · wf_q4
+−1.767 · wf_q1 −1.041; attribution leg (OLD ckpt × clean battery) NEGATIVE everywhere in-window
+(form FAIL 0/4) — the old profile was contamination-DEPENDENT. Program state under honest
+measurement: real in-window learning (+0.9914 median, seed-stable), NO demonstrated OOS edge
+anywhere in the stack; search ceiling +8.118 stands (clean-measured, non-deployable). Recommended
+factory row for next grooming: imprint.py emits frame provenance for its output ckpt (the gap
+cost a REFUSE round-trip tonight; provenance derived planner-side with order-exact assert,
+runs/861_ref/frame_provenance_ref_s*.json). Ready = TASK_870 → 871 unchanged; factory GREEN.
+The frontier question (what generalizes OOS?) returns to the planner on clean instruments.**
+Prior grooming:
 **2026-08-03 (planner, LATE) — 861 CHAIN COMPLETE, VERDICT IN: search-teacher imprint FAIL 0/3
 (median +0.6923 vs re-based reference median +0.9914 — every seed below the book-teacher
 battery; LEDGER 861/search-teacher-imprint). The re-based reference itself is the headline:
