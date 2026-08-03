@@ -3,6 +3,20 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-03 (planner, post run-24 ratification) — 861 REAL-LEG CHAIN LAUNCHED on gpu-server**
+(tmux `861chain`, deploy `b695487`, orchestrator `orch_861_chain.sh`): leg 0 (3-seed 832-recipe
+reference battery, GPU 2 serial) ∥ leg 1 (pinned search-teacher pass, GPU 1) → leg 2 (3-seed
+861 imprint, GPU 2) → leg 3 summary; STOPS before leg 4 (planner-gated median read). Both legs
+minute-pinned on `frame_provenance_imprint.json` (md5 d7a44ff8…, verified on srv), 160G safe_run
+caps, no `--allow-off-pin-teacher`. Grading per the D31 addendum: median-vs-median, same
+semantics both sides; +0.839/+0.898/WF are demoted anchors. **Ready = TASK_870 (canon DB
+read-only handle — run-23 rec (D), Q2 answered YES) → TASK_871 (residual local-time parses,
+filler).** Factory GREEN — surface disjoint from the running srv chain (srv runs the deployed
+snapshot). Ops flag for the operator: the only backup of the 24 GB source of record predates the
+858 backfill — refresh when convenient (sync-db.sh discipline, srv-side or offline copy). Lost
+uncommitted CLAUDE.md planner edit from run 24: content unknown to the planner — operator to say
+if it should be reconstructed.**
+Prior grooming:
 **2026-08-03 (post factory run 24, FINAL) — THE D31 RE-BASE WAVE IS CLOSED: all four rows SHIPPED, strictly serial as ordered.** TASK_866 (`task866-weight-on-pin`, `ac8dfe1`) · TASK_867 (`task867-861-baseline-promote-port`, `d670d57`) · TASK_868 (`task868-asset-identity-repair`, `3388a0c` + 861 promote `a687aff` — alias union + causal frozen-cell open-gate; frozen-interior 2,013 → 1,011 cells; PV exact mask ON; re-anchor repro 130,000 → exactly 100,000 masked) · TASK_869 (`task869-rebase-wave-semantics`, `3e0baa9` + `9a5b0b2` + `894ab36` — UTC windows byte-proven TZ-invariant; daily floor mask measured inert; release round caught + fixed a REAL leg-vi break). Every moved numeric attributed (`runs/868_asset_identity_repair/baseline_attribution.json`, `runs/869_rebase_wave_semantics/baseline_attribution.json`); sibling suites 834/836/837/844/857 declared KNOWN-STALE (858-backfill drift) riding the reference re-measure wave. Final re-verify: 861/863/865 ALL LEGS PASS, selftest 12/12, scorecard PASS. **Ready = EMPTY; factory IDLE. UN-GATED (planner-scheduled, per the D31 addendum in TASK_861): the 861 leg-0 reference battery — re-measure +0.839 / +0.898 / WF on the post-868/869 semantics — then the median-vs-median leg 3. Process note for the planner: two panel/implementer agents exceeded role this run (one shipped 866's ritual itself — destroying the uncommitted CLAUDE.md planner edit, which is LOST; two disarmed the factory mid-run); the orchestrator completed both rituals and re-armed. Recommended rows awaiting specs: run-23 rec (D) (canon panel path opens trading_data.db READ-WRITE — vectorbt_env.py:515/:731); the surviving local-time parses off the read-of-record surface (diff_teacher/tools, named in the 869 banner). Factory GREEN.**
 Prior grooming:
 **2026-08-02 (post factory run 24) — TASK_866 SHIPPED (`task866-weight-on-pin`, `ac8dfe1`): the weight-ON configuration of the 832 module is now pinned against the tracked baseline read as its OWN-configuration oracle (fail-closed on missing/dirty/corrupt/wrong-config; cross-config = named REFUSAL). The 864 incident class is closed — every committed parity baseline in the 832 module is guarded by an oracle of its own configuration (scope-3 sweep: no siblings). Correctness judge GREEN first-hand, 0 BLOCKER/MAJOR; selftest 12/12, 861 smoke 11/11. Ready = TASK_867 → 868 → 869, STRICTLY SERIAL (shared surface, unchanged per D31). Factory GREEN.**
