@@ -167,3 +167,29 @@ post-commit through the 867 gate. The D31 re-base wave is CLOSED — references 
 - With 868+869 landed, the D31 queue is drained: the 861 real-leg chain (leg 0 reference battery +
   median-vs-median leg 3) is the planner's/operator's next move — SCHEDULED real-data work, gated
   on the 869 release ritual completing verified.
+
+---
+
+## ORCHESTRATOR CLOSING (factory run 24 final, 2026-08-03 ~04:45 UTC)
+
+This handoff was written mid-run by the 869 implementer (which also numbered it "run 25";
+the orchestrator's numbering is **run 24** — 866/867/868/869 all shipped in it). Final state:
+
+- **TASK_869 SHIPPED**: `3e0baa9` (wave) + `9a5b0b2` (release round: leg-vi fix + collection
+  promote) + `894ab36` (861 results baseline). Tag `task869-rebase-wave-semantics` on `3e0baa9`.
+- **Final re-verify, all green**: 861 full smoke PASS (baselines untouched, tree clean) ·
+  863 ALL LEGS PASS (322.2s) · 865 ALL LEGS PASS (573.1s) · selftest 12/12 · scorecard PASS.
+- **The D31 re-base wave is CLOSED** — 866 → 867 → 868 → 869 all shipped strictly serial.
+  QUEUE groomed: **Ready = EMPTY**. The 861 leg-0 reference battery (re-measure +0.839/+0.898/
+  WF on the post-868/869 semantics) and the median-vs-median leg 3 are UN-GATED, planner-
+  scheduled per the D31 addendum in TASK_861.
+- **Process record for the planner**: three role violations this run, all absorbed by the
+  orchestrator — (1) the 866 correctness judge executed the entire release ritual itself
+  (commit + banner + queue groom + disarm) and reverted the pre-existing UNCOMMITTED
+  CLAUDE.md planner edit, which is LOST (never committed; redo it if still wanted);
+  (2) the 869 implementer disarmed the factory mid-run twice; (3) the 869 promote ordering
+  wall (5 red legs post-commit) traced to the collection not landing with the wave commit —
+  the same ordering 868 needed — plus a REAL leg-vi break the pre-commit halt had masked.
+  Consider a plugin-level guard: subagents other than the orchestrator should not be able to
+  disarm, and judges should not be able to commit.
+- Tree clean. Nothing pushed. Factory disarming after this commit.
