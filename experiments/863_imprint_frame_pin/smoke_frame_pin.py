@@ -28,7 +28,7 @@ Plus the fail-closed matrix scope 2 demands:
 FIX-PASS legs (2026-07-28 verification panel), all IN-PROCESS (no training — they exercise the
 loader / mask / gate directly, so they cost seconds and can assert exact cell sets):
   * FIX E — PARTIAL-slot mask: ``MONUSD`` (first ``ohlcv_daily`` row 2025-11-24 = panel row 71 of
-    89) at slot 1 gives the exact masked set ``hold cells per slot [0 11 0 0 28 0 0 0]``, i.e.
+    90) at slot 1 gives the exact masked set ``hold cells per slot [0 11 0 0 29 0 0 0]``, i.e.
     decisions k=0..10 force-HOLD at that slot and k=11 (the first real close) TRADEABLE. The
     boundary is asserted BOTH ways (k=10 held, k=11 free) and the expectation is shown to be
     sensitive to a one-row shift, so an off-by-one in ``frame_hold_mask`` fails this leg. No
@@ -80,8 +80,10 @@ LEGACY_COLLECTION = os.path.join(_REPO, "experiments", "861_search_teacher_impri
                                  "chosen_vectors_fixture.json")
 
 # The pinned-frame fixture panel. --bar-minutes 1440 is REQUIRED by the frame pin (the frame is
-# read from ohlcv_daily). Over 2025-09-14..2025-12-12 the fixture's daily table gives T=89 rows;
-# window_size 60 and the 819 book's warm 31 put start_row at 60 => 28 decisions on both legs.
+# read from ohlcv_daily). Over 2025-09-14..2025-12-12 the fixture's daily table gives T=90 rows
+# (TASK_869: was 89 under local-time window resolution — UTC includes the end date's own
+# midnight row; inclusivity unchanged, only the timezone moved); window_size 60 and the 819
+# book's warm 31 put start_row at 60 => 29 decisions on both legs.
 FRAME_PANEL = ["--start", "2025-09-14", "--end", "2025-12-12", "--bar-minutes", "1440",
                "--n-assets", "8"]
 # The legacy (unpinned) fixture panel the 861 collection was recorded on — minute-sourced.
@@ -97,13 +99,14 @@ FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
                  "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
 EXPECT_INACTIVE_SLOTS = [1, 4]
 # FIX E: the SAME frame with a PARTIAL slot in place of one dead one. MONUSD's first ohlcv_daily
-# row in the window is 2025-11-24 = panel row 71 of 89; start_row is 60, so decisions k=0..10 have
-# no real price at that slot and k=11 is its first tradeable decision.
+# row in the window is 2025-11-24 = panel row 71 of 90 (interior — unaffected by the TASK_869
+# end-row shift); start_row is 60, so decisions k=0..10 have no real price at that slot and
+# k=11 is its first tradeable decision. The dead slot masks all N=29 decisions (was 28 pre-869).
 PARTIAL_SYMBOL = "MONUSD"
 PARTIAL_SLOT = 1
 PARTIAL_FRAME_SYMBOLS = [PARTIAL_SYMBOL if i == PARTIAL_SLOT else s
                          for i, s in enumerate(FRAME_SYMBOLS)]
-EXPECT_PARTIAL_HOLD_PER_SLOT = [0, 11, 0, 0, 28, 0, 0, 0]
+EXPECT_PARTIAL_HOLD_PER_SLOT = [0, 11, 0, 0, 29, 0, 0, 0]
 EXPECT_PARTIAL_FIRST_FREE_K = 11             # k=10 held, k=11 tradeable (the off-by-one boundary)
 EXPECT_PARTIAL_FIRST_COVERED_ROW = 71
 # FIX C: the ONLY channels a flat-zero (dead) slot may encode non-zero, and the value they carry
@@ -307,7 +310,7 @@ def leg_partial_slot_mask(R, imp):
     shifted_rows = sorted(int(k) for k in
                           np.nonzero(np.roll(np.asarray(mask), 1, axis=0)[:, PARTIAL_SLOT])[0])
     checks = {
-        "panel_rows_89_decisions_28": (T == 89 and N == 28 and start_row == 60),
+        "panel_rows_90_decisions_29": (T == 90 and N == 29 and start_row == 60),
         "one_partial_slot_declared": frame["partial_slots"] == [PARTIAL_SLOT],
         "partial_slot_absent_from_inactive_slots": PARTIAL_SLOT not in frame["inactive_slots"],
         "partial_status_and_first_covered_row": (

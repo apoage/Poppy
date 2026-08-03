@@ -48,6 +48,15 @@ runs/868_asset_identity_repair/*
 !runs/868_asset_identity_repair/harvest_gate_i.py
 !runs/868_asset_identity_repair/baseline_diffs/
 !runs/868_asset_identity_repair/baseline_diffs/*.json
+# TASK_869: the D31 (a3) wave's attribution record + TZ-invariance demo artifacts are
+# COMMITTED runs/-side deliverables (the task file's scope 3) — same named-file-only pattern.
+!runs/869_rebase_wave_semantics/
+runs/869_rebase_wave_semantics/*
+!runs/869_rebase_wave_semantics/baseline_attribution.json
+!runs/869_rebase_wave_semantics/tz_demo/
+runs/869_rebase_wave_semantics/tz_demo/*
+!runs/869_rebase_wave_semantics/tz_demo/results_fixture_smoke.TZ-UTC.json
+!runs/869_rebase_wave_semantics/tz_demo/results_fixture_smoke.TZ-Europe-Prague.json
 wandb/
 output/
 

@@ -1,0 +1,114 @@
+{
+ "task": "TASK_869 (D31 (a3)) — re-base-wave semantics: UTC window boundaries + masked daily teacher floor. Baseline re-promote attribution.",
+ "why": "Two measurement-semantics defects landed in the SAME re-base wave as TASK_868, so the minute panel re-bases once, not three times. Scope (1): _to_epoch resolved --start/--end in LOCAL time, so a benchmark window's extent depended on which machine ran it (measured pre-fix: a 308-row-class CEST offset on the OOS window; the 1734-vs-1735 / 2-vs-3 / 90-vs-91 count-by-one disagreements between parties). Scope (2): the daily-framed teacher floor walked UNMASKED (same defect class as D30 rider (a) on the minute floor). Every moved numeric below is attributed to scope (1) or scope (2) explicitly. Scope (2) moved NO recorded numeric: it is measured INERT on every panel the daily loader can emit (see scope_2_measurement) and ships as defence-in-depth, the 865 precedent.",
+ "scope_1_changes": {
+  "eval_vector._to_epoch": "naive dates now resolve at UTC midnight (was local-timezone strptime); digits pass through; end = midnight of the end date (inclusivity UNCHANGED — only the timezone moved). Exact mirror of the canon loader.",
+  "vectorbt_env._load_database_prices": "same UTC rule (the canon minute loader eval_vector mirrors); now agrees with mcts_trader/data/history.py and trader/backtest.py, which were always UTC.",
+  "artifacts_record_window_utc": "every eval_vector result / comparison doc / chosen-vectors collection provenance, every imprint.py artifact, and every scorecard window row now carries window_utc: [start_epoch, end_epoch] — the RESOLVED bounds — so cross-machine and cross-boundary comparisons compare epochs, not date strings. Grandfathering: nothing is refused; a pre-869 artifact is distinguishable from a post-869 one by comparing window_utc against the date strings' UTC resolution.",
+  "smoke_synthetic_dbs": "865's synthetic PV/gap/clip DB builders and its real-db gate window resolve in UTC too (they must agree with the loaders they are read through).",
+  "fixtures/make_fixture.py": "SLICE_END and the TASK_868 synthetic-anchor _T868 now parse in UTC, so a fixture regen on ANY machine resolves the same bounds. NOTE: the COMMITTED fixture was cut under local-time resolution (CEST), so the next regen shifts the slice bounds by the old local offset (a one-time, disclosed boundary move; the suites' baselines would re-base then, exactly as they did here).",
+  "837_walkforward loader_epoch mirror": "now UTC (identical to utc_epoch; the conservative min/max helpers collapse to one bound). 837's baseline was ALREADY declared known-stale in the 868 wave (source-data drift); it is deliberately NOT re-measured here (out of scope: re-measuring references is the planner's 861 leg 0)."
+ },
+ "scope_2_changes": {
+  "eval_vector.evaluate_checkpoint": "the D30 rider (a) price-validity hold-mask on the teacher-floor walk now applies on BOTH framed pins (minute AND daily) — was minute-only. Uniform with the search operator and the policy-argmax replay, which already applied the rule on both pins. The walk's mask is DISCLOSED in the artifact (teacher_floor.hold_mask: rule, panel_frame_source, per-cause cell counts). The UNPINNED paths (minute and daily) stay unmasked and bit-identical (865 canon-parity invariant).",
+  "compute_teacher_floor docstring": "restated honestly: the minute-path inertness finding did NOT transfer by assumption — the daily path was MEASURED (865 smoke leg iia6); the mask is inert on every panel the daily loader can emit (interior-only forward fill leaves only LEADING zeros, and a leading flat-zero run reads as ladder sign 0 => HOLD anyway) and ships as defence-in-depth."
+ },
+ "scope_2_measurement": {
+  "suite_leg": "experiments/865_minute_frame_pin/smoke_minute_frame_pin.py::leg_daily_teacher_floor_masked (iia6)",
+  "inert_on_shipped_daily_panel": "masked == unmasked BIT-IDENTICAL on the loader's daily framed panel (FTM/USD stale tail window 2025-01-01..2025-06-30): tier0bp sharpe 0.3663 / pv 102,092.70, tier21bp sharpe -0.3013 / pv 92,211.62, both walks.",
+  "mutation_proof_both_ways": "the same panel plus a synthetic 9th slot (FLAT 100.0 while real => ladder sign 0, never held; ZEROED from decision row 80 to the panel end = a synthetic stale daily span no post-D30 loader emits): the UNMASKED walk moves (tier0bp sharpe -0.1230 / pv 94,551.06, tier21bp -0.7420 / pv 85,867.73 — the synthetic slot's whole weight destroyed, pv ratio 0.931 on both tiers); the MASKED walk is bit-identical to the unmutated masked walk (tier0bp 0.3312 / pv 101,564.84). The mask bites exactly where the defect class lives and costs nothing elsewhere.",
+  "moved_recorded_numerics": "NONE — the mask is inert on every shippable daily panel, so no baseline/scorecard numeric moved from scope (2)."
+ },
+ "tz_invariance_evidence": {
+  "fixture_artifact_byte_identity": "SAME command (`eval_vector.py --smoke --out-dir runs/869_rebase_wave_semantics/tz_demo --smoke-ckpt-dir <shared>`) under TZ=UTC and TZ=Europe/Prague produced BYTE-IDENTICAL artifacts: md5 33cf9c05d0f187210d129f59d12a0bf6 both ways (copies: tz_demo/results_fixture_smoke.TZ-UTC.json and .TZ-Europe-Prague.json).",
+  "oos_window_epoch_identity": "OOS window oos_full 2025-10-05..2026-03-31 on trading_data.db (mode=ro): resolved epochs [1759622400, 1774915200] under BOTH TZ=UTC and TZ=Europe/Prague (pre-869 local resolution on this machine was [1759615200, 1774908000] — the offset class).",
+  "oos_window_panel_axis_identity": "load_row_timestamps on the 64-slot frame of record (runs/832_e5/frame_provenance_imprint.json), bar 1440: panel_rows=177, first=1759622400, last=1774865400, axis sha256 9255c10a3b89a5b9... — IDENTICAL under both TZs. The 308-row-class offset is gone."
+ },
+ "baselines": {
+  "832_results_fixture_smoke": {
+   "promote_path": "imprint.py --vector-weight-rebalance --write-parity-baseline (TASK_864 gate: recipe-pinned, validity-gated, atomic, per-field diff; md5 4280721c88ecb4b2ea4f276c6d14591a, was c0eca7e6647a2e3af3e52ae6cba115e6)",
+   "leaves": {"old": 941, "new": 953},
+   "moved": 828,
+   "removed": 0,
+   "added": 12,
+   "attribution": "scope (1) — every moved leaf is the UTC window shift on the fixture minute panel (axis +2h at the start, +1h at the end): per-id in-window coverage counts, n_open_gated_decision_cells 1717 -> 1724, all teacher/policy walk numerics. The 12 added leaves are window_utc (2, the scope-(1) record itself) and the expressibility gate's weight_native_regate block (10): the pre-registered contingency that ships ONLY when the order-code gate misses — the shifted panel moved rel_diff 0.0911 -> 0.1173 (> 0.10), so the contingency fired. Warn-level by design (imprint.py prints the INCONCLUSIVE note; the binding read is the scheduled real-panel run).",
+   "key_field_moves": {
+    "/expressibility_gate/rel_diff": {"old": 0.09108936603652518, "new": 0.11732254092942986, "scope": 1},
+    "/expressibility_gate/passed": {"old": true, "new": false, "scope": 1, "note": "order-code gate miss -> weight_native_regate contingency ships (added leaves); the run remains validity-green by design (assert: passed OR regate present)"},
+    "/expressibility_gate/teacher_order_net21": {"old": -4.233984143132649, "new": -4.75615421861688, "scope": 1},
+    "/expressibility_gate/teacher_weight_net21": {"old": -3.848313211725996, "new": -4.19815012063652, "scope": 1},
+    "/ledger_row/policy_net21": {"old": -0.5755315326072664, "new": -4.1415457838821155, "scope": 1},
+    "/ledger_row/teacher_floor_net21": {"old": -3.848313211725996, "new": -4.19815012063652, "scope": 1},
+    "/ledger_row/imprint_corridor_position_net21": {"old": 3.2727816791187294, "new": 0.056604336754404905, "scope": 1},
+    "/n_open_gated_decision_cells": {"old": 1717, "new": 1724, "scope": 1},
+    "/sanity/per_tier/21/final_pv": {"old": 97597.609375, "new": 99451.296875, "scope": 1},
+    "/sanity/per_tier/21/policy_inenv": {"old": -0.5755315326072664, "new": -4.1415457838821155, "scope": 1},
+    "/sanity/per_tier/21/teacher_floor_inenv": {"old": -3.848313211725996, "new": -4.19815012063652, "scope": 1},
+    "/sanity/teacher_action_agreement": {"old": 0.9477176220806794, "new": 0.9450636942675159, "scope": 1},
+    "/teacher/floor_inenv/21": {"old": -3.848313211725996, "new": -4.19815012063652, "scope": 1},
+    "/window_utc": {"old": null, "new": [1757808000, 1765497600], "scope": 1, "note": "the scope-(1) record itself (added)"}
+   }
+  },
+  "835_results_fixture_smoke": {
+   "promote_path": "eval_vector.py --smoke (the shipped direct-write path for the default-search config; md5 e7ab9c0a83720b59291b15ac0a56407f, was fb7820970d148eca8bfd9fcb1f5f33e0)",
+   "leaves": {"old": 242, "new": 244},
+   "moved": 5,
+   "removed": 0,
+   "added": 2,
+   "attribution": "scope (1) — panel/n_rows 2127 -> 2128 (the UTC end bound includes one more 60-min bar) and the four per-id in-window coverage counts (window shift); the scored tier numerics did NOT move at full precision (the 40 capped decisions land on the same strided prices). Added: window_utc (the scope-(1) record).",
+   "key_field_moves": {
+    "/panel/n_rows": {"old": 2127, "new": 2128, "scope": 1},
+    "/panel/asset_aliases[0]/per_id_counts/1091": {"old": 127515, "new": 127575, "scope": 1},
+    "/panel/asset_aliases[1]/per_id_counts/359": {"old": 126540, "new": 126600, "scope": 1},
+    "/panel/asset_aliases[2]/per_id_counts/589": {"old": 105967, "new": 106019, "scope": 1},
+    "/panel/asset_aliases[3]/per_id_counts/1111": {"old": 90667, "new": 90716, "scope": 1},
+    "/window_utc": {"old": null, "new": [1757721600, 1765497600], "scope": 1, "note": "added"}
+   }
+  }
+ },
+ "in_suite_constants": {
+  "865_smoke (experiments/865_minute_frame_pin/smoke_minute_frame_pin.py)": {
+   "attribution": "all scope (1) — the UTC window shift re-bins the fixture minute panel's boundary bars and adds the daily panels' end-date row",
+   "moves": {
+    "stale tails (ZEC/ETC)": "last real panel row 103 -> 102; trailing rows 428 -> 429; frozen decision cells 427 -> 428 per slot (frozen-K range 44..470 -> 43..470)",
+    "frozen-cell accounting": "FROZEN 854 -> 856 (all trailing; interior 0), NOT-REAL 1,796 -> 1,798, LIVE 1,972 -> 1,970 (INERT 942 unchanged — heads are pre-listing)",
+    "hold cells": "per slot [0,471,0,0,471,0,427,427] -> [0,471,0,0,471,0,428,428]; total 1,796 -> 1,798",
+    "partial slots": "[3,5,7] -> [7] (slots 3 and 5's first real prints re-bin INTO bar 0 under UTC, so they are covered from open; slot 7 still lists one bar late)",
+    "exact-minute diagnostic": "no_print_at_sampled_minute_rows {0:2,2:7,3:76,5:148,6:506,7:514} -> {0:0,2:3,3:100,5:157,6:495,7:514} (re-binned sampled minutes)",
+    "daily stale window (FTM 2025-01-01..2025-06-30)": "panel rows 180 -> 181, trailing 90 -> 91, frozen span [[90,179]] -> [[90,180]] — exactly D30's original '91 of 181' (the UTC end bound INCLUDES the end date's own midnight row; inclusivity unchanged)",
+    "daily interior window (2015-07-20..2015-08-20)": "panel rows 31 -> 32 (same end-row mechanism; interior spans unchanged)",
+    "twin per-id counts (T868 window)": "{90001: 1440, 90002: 2160} -> {90001: 1320, 90002: 2160} — the fixture's synthetic rows are anchored at the local-time epoch the fixture was CUT with; the UTC start bound lands 120 minutes into the original's span",
+    "open-gate causality leg": "hole-bar derivation made window-aware (derived from HOLE's MIN timestamp + the loaded axis) instead of pinning absolute fixture minutes — tracks the window resolution rather than one anchor",
+    "imprint_cmd default iters": "150 -> 250 — the total-HOLD collapse band is configuration-dependent and MOVED with the grid: 150 AND 200 measured collapsed on the post-869 grid (seed 0, this frame/teacher), 250 and 300 measured HEALTHY"
+   }
+  },
+  "863_smoke (experiments/863_imprint_frame_pin/smoke_frame_pin.py)": {
+   "attribution": "all scope (1) — the daily pinned panel gains the end date's own row",
+   "moves": {
+    "FRAME_PANEL": "T=89/N=28 -> T=90/N=29 (2025-12-12's midnight row included under UTC)",
+    "FIX E expectations": "hold cells per slot [0,11,0,0,28,0,0,0] -> [0,11,0,0,29,0,0,0] (dead slot masks all N=29); MONUSD first covered row 71 and the k=10/k=11 boundary UNCHANGED (interior)"
+   }
+  },
+  "861_smoke (experiments/861_search_teacher_imprint/smoke_e2e.py)": {
+   "attribution": "all scope (1) — re-measured on the post-UTC fixture minute panel (weight-OFF default imprint run)",
+   "moves": {
+    "CANON_832_PINS": "policy_net21 -2.308594834971675 -> -1.13547115152307; floor_net21 -4.233984143132649 -> -4.75615421861688; floor_gross -2.256319048873474 -> -2.6532860340724875; teacher_action_agreement 0.9376326963906582 -> 0.9333864118895966; policy_ce_first 2.449171543121338 -> 2.4369685649871826; policy_ce_last 0.25362908840179443 -> 0.23627693951129913; gate_rel_diff 0.09108936603652518 -> 0.11732254092942986; final_pv_net21 95216.765625 -> 98732.046875"
+   }
+  }
+ },
+ "not_promoted": {
+  "861 chosen_vectors_fixture.json + results_fixture_smoke.json": "BLOCKED BY DESIGN, mechanism stated precisely (run-25 panel fix): 861's OWN baselines are committed-clean, so the 867 pre-run hygiene gate PASSES — the halt is one leg later, the 866 oracle loader at leg (i-b) refusing the git-DIRTY 832 baseline (`_load_832_weight_on_oracle` is fail-closed on missing/dirty/wrong-config, and the promoted 832 baseline is uncommitted until the 869 commit lands). The promote is blocked TRANSITIVELY by the same check: --promote-baselines requires an all-green-except-vii report, which requires (i-b). Fail-fast ordering note: the 866 oracle check fires at (i-b) BEFORE any 867 promote-gate check is reached, so the first refusal a pre-commit run prints names the 832 baseline, not the 861 ones. Release ritual: commit the 869 changeset -> `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines` ((i-b) then pins the committed 832 baseline; expected red only on vii's pre-promote parity pin — the designed exemption; the promote installs it) -> commit -> re-verify. EXPECTED move class (scope 1): the unpinned minute panel axis shifted +2h/+1h — the collection's decision timestamps move (first divergence at k=0: 1758668460 -> 1758672060) while n_decisions stays 471; every walk numeric on the shifted rows re-derives. Until the promote, the suites' legs pinned to the tracked collection (863 parity-lite, 865 parity-lite, 861 vii baseline pins) are RED BY DESIGN — the provenance gate correctly refuses the cross-boundary collection; each was verified GREEN against a scratch post-869 collection recorded with the canon recipe (no tracked file touched), and (i-b)'s substance was verified IDENTICAL manually via the smoke's own check_832_parity_against_oracle.",
+  "837_walkforward baseline": "already declared known-stale in the 868 wave (source-data drift); its loader_epoch mirror is now UTC but the baseline is deliberately NOT re-measured here (re-measuring references = planner 861 leg 0, out of scope).",
+  "865 --real-db-coverage opt-in leg (iii)": "its real-db cell-share constants were registered under local-time window resolution (and re-registered post-868). The leg is opt-in and was NOT run in this task; its REAL_WINDOW now resolves in UTC and the boundary-sensitive counts (EXPECT_N_PANEL_ROWS 1734 +/- 1, the stale-tail band, the frozen-cell shares) may need re-registration on the next real-db run. Flagged, not silently stale."
+ },
+ "suites": {
+  "selftest": "12/12 PASS (numpy determinism reference — untouched by the wave)",
+  "835 --smoke": "green; baseline re-written via the shipped direct-write path (above)",
+  "832 parity baseline": "promoted through the 864 gate (above); the run's only WARN is the designed expressibility-gate contingency (scope 1)",
+  "863 smoke": "all legs green EXCEPT (i) parity-lite — red by design until the 861 collection promote (provenance gate refuses the pre-869 tracked collection); the identical leg verified green against a scratch post-869 collection",
+  "865 smoke": "all legs green (incl. the new iia6 daily teacher-floor mask leg) EXCEPT (i) parity-lite — same designed pre-promote state, same scratch verification",
+  "861 e2e": "run modulo the pre-commit gate: legs reading the dirty/pending baselines ((i-b) weight-ON oracle dirty-check, vii baseline pins) red by design pre-commit; CANON_832_PINS re-derived (above) so the post-promote run is fully green",
+  "scorecard smoke": "toy battery on the fixture; window_utc is now validated per row (schema) and echoed from eval_vector's own artifact"
+ },
+ "pv_conservation": "865 leg (0) green on the post-869 tree: flat-price panel, fee 0 — LONG and SHORT books both end at exactly 100,000.00 with the mask ON (29 tail cells force-HELD) and OFF; the zeroed-tail control still breaks both books in opposite directions (+/- one slot's 25% weight). The daily-pin PV conservation holds: the daily teacher-floor mask is inert on the shipped daily panel (scope_2_measurement), so no daily-pinned PV moved from scope (2)."
+}

@@ -332,7 +332,20 @@ def operator_net_dependent(args):
 
 def _to_epoch(v, default):
     """EXACT mirror of VectorBTTradingEnv._load_database_prices date parsing
-    (local-timezone strptime → .timestamp(); digits pass through)."""
+    (digits pass through; naive dates resolve at UTC midnight).
+
+    TASK_869 (D31 (a3) scope 1): the parse is now UTC, not local-timezone — a benchmark
+    window's extent no longer depends on which machine ran it (measured pre-fix: a
+    308-row-class CEST offset on the OOS window; the reason several counts differed by one
+    between parties). Same resolution rule as mcts_trader/data/history.py and
+    trader/backtest.py, which were always UTC. Window SEMANTICS are otherwise unchanged:
+    ``end`` still resolves to MIDNIGHT of the end date (inclusivity stays as-is), only the
+    timezone moved. Artifacts record the resolved ``window_utc`` epochs so cross-machine
+    comparisons compare epochs, not date strings.
+
+    FIX (run-25 panel): a TZ-AWARE ISO-8601 input (``2025-06-01T00:00:00+05:00``) keeps its
+    explicit offset — it is converted to the correct instant (``astimezone(utc)``), never
+    silently re-labeled UTC. Only NAIVE inputs are labeled UTC."""
     if v is None:
         return default
     if isinstance(v, (int, float)):
@@ -341,12 +354,24 @@ def _to_epoch(v, default):
     if s.isdigit():
         return int(s)
     try:
-        return int(datetime.strptime(s, "%Y-%m-%d").timestamp())
+        return int(datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     except ValueError:
         try:
-            return int(datetime.fromisoformat(s).timestamp())
+            dt = datetime.fromisoformat(s)
+            dt = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
         except Exception:
             return default
+
+
+def _window_utc(args):
+    """TASK_869 (D31 (a3) scope 1): the artifact's RECORD of how --start/--end resolved —
+    ``[start_epoch, end_epoch]`` under the SAME rule the loader applied (``_to_epoch`` with
+    the loader's own sentinels). Cross-machine/cross-boundary comparisons compare EPOCHS,
+    not date strings: two machines running the same command now produce identical windows,
+    and an artifact written before the UTC re-base is distinguishable from one written
+    after by comparing this field against the date strings' UTC resolution."""
+    return [_to_epoch(args.start, 0), _to_epoch(args.end, 9999999999)]
 
 
 def _validate_eval_date(v, which):
@@ -527,10 +552,10 @@ def load_daily_prices(db_path, start_date, end_date, specific_symbols, n_assets)
         specific_symbols = _minute_ranked_symbols(db_path, start_date, end_date, n_assets)
     conn = _ro_connect(db_path)
     cur = conn.cursor()
-    # Window bounds via _to_epoch (LOCAL-time date parsing) — intentionally identical to the
-    # minute path (VectorBTTradingEnv parses dates in local time too), so the daily and minute
-    # panels apply the SAME window semantics. (The equivalence gate uses UTC bounds instead;
-    # that's a gate-only choice affecting boundary-day close bucketing, not the panels.)
+    # Window bounds via _to_epoch — intentionally identical to the minute path
+    # (VectorBTTradingEnv parses dates the same way), so the daily and minute panels apply
+    # the SAME window semantics. TASK_869: that shared parse is now UTC on both paths (was
+    # local-time), so the panels are machine-timezone-invariant; inclusivity unchanged.
     s_ts = _to_epoch(start_date, 0)
     e_ts = _to_epoch(end_date, 9999999999)
     ph = ",".join("?" * len(specific_symbols))
@@ -2663,6 +2688,7 @@ def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier
             "checkpoint": label["path"], "checkpoint_label": label["name"],
             "db": args.db, "db_abspath": os.path.abspath(args.db),
             "window": [args.start, args.end],
+            "window_utc": _window_utc(args),          # TASK_869: resolved epoch bounds
             "bar_minutes": int(args.bar_minutes),
             "n_assets": int(args.n_assets),
             "panel_source": getattr(args, "panel_source", "minute"),
@@ -2804,8 +2830,9 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
     On a FRAMED panel the pre-listing HEADS are flat-zero by design (the 853 leak fix), and this
     walk hands its vector straight to ``step_vector``, bypassing the env's
     ``price_valid = current_prices > 0`` action mask — exactly like the policy-argmax replay above,
-    which already applies the rule. Gated on the MINUTE pin only; ``None`` (the default) = the
-    unmasked walk, bit-identical to HEAD.
+    which already applies the rule. As of TASK_869 (D31 (a3)) gated on BOTH framed pins (minute
+    AND daily); ``None`` = the unmasked walk, which only the UNPINNED DAILY path keeps (the
+    unpinned MINUTE path passes 868's causal open-gate as the mask — uniform there by ruling).
 
     WHAT THIS RIDER ACTUALLY BUYS, restated honestly (fix pass — the previous docstring asserted a
     mechanism that CANNOT OCCUR on any panel this loader emits, and quoted numbers from a build
@@ -2826,9 +2853,17 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
     So this is DEFENCE IN DEPTH, not a live bug fix: it keeps the ladder teacher reading the SAME
     price-validity rule the search operator and the policy-argmax replay already apply, so a future
     loader (or a hand-built panel) that CAN emit a non-leading zero cannot short at price 0 through
-    this door. It stays gated on the minute pin because turning it on for the DAILY pin would be a
-    numerics change on a shipped path even though it is provably inert today — that needs its own
-    ruling, not a fix pass."""
+    this door.
+
+    TASK_869 (D31 (a3) scope 2): the mask is no longer minute-pin-only — the DAILY-framed floor
+    gets the SAME mask (rider (a)'s semantics are uniform across both pin paths; the unmasked
+    daily walk was the same defect class). The minute-path inertness finding did NOT transfer by
+    assumption: the 865 smoke measures the daily path directly (masked == unmasked, bit-identical,
+    on the shipped daily panel — the daily fill is interior-only too, so only leading zeros
+    survive and those read as ladder sign 0 => HOLD anyway), with a synthetic non-leading-zero
+    CONTROL proving the mask still bites there. The UNPINNED daily path stays unmasked and
+    bit-identical; the unpinned MINUTE path is masked only by 868's open-gate (no
+    price-validity half), exactly as the operator and the replay read it there."""
     imp = load_imprint_module()
     n_assets = int(env_cfg0.n_assets)
     # FAIL-CLOSED (fix pass, imprint.py:479-482 precedent): the weight-native ladder emits
@@ -2916,36 +2951,50 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
     teacher_floor = book_warm = None
     if args.teacher_floor:
-        # D30 rider (a): on a MINUTE-framed panel the ladder teacher reads the SAME price-validity
-        # rule the search operator and the policy-argmax replay already apply, so it cannot act on
-        # a cell with no market. DEFENCE IN DEPTH, not a live rescue — on every panel this loader
-        # can emit the mask is PROVABLY INERT (a flat-zero head gives the ladder sign 0 => HOLD, and
-        # the forward fill makes a real->0 transition impossible), and masked vs unmasked is
-        # bit-identical on both fixture pins. See compute_teacher_floor's docstring for the full
-        # measurement; the "-15.83 / 0.00 / bankrupt_at 45" the rider was written against was the
-        # ZEROED-tail build, which D30 opt (i) replaced.
-        # Gated on the minute pin: the default, unpinned and DAILY-pinned floors stay bit-identical
-        # to task864-parity-baseline-hygiene HEAD (the 865 canon-parity invariant). Applying it to
-        # the daily pin as well would be a numerics change on a shipped path — inert in fact, but
-        # unproven for every window — so it needs its own ruling, not a fix pass.
+        # D30 rider (a): on a FRAMED panel the ladder teacher reads the SAME price-validity
+        # rule the search operator and the policy-argmax replay already apply, so it cannot act
+        # on a cell with no market. DEFENCE IN DEPTH, not a live rescue — on every panel these
+        # loaders can emit the mask is PROVABLY INERT (a flat-zero head gives the ladder sign 0
+        # => HOLD, and the forward fill makes a real->0 transition impossible). See
+        # compute_teacher_floor's docstring for the full measurement; the "-15.83 / 0.00 /
+        # bankrupt_at 45" the rider was written against was the ZEROED-tail build, which D30
+        # opt (i) replaced.
+        # TASK_869 (D31 (a3) scope 2): the mask now covers the DAILY pin too — rider (a)'s
+        # semantics are uniform across both pin paths (D30's uniformity ruling), and the
+        # daily-framed teacher floor walking UNMASKED was the same defect class. MEASURED on
+        # the daily path (the minute-path inertness finding does NOT transfer by assumption —
+        # the 865 smoke's daily teacher-floor leg measures it): bit-identical masked vs
+        # unmasked on the shipped daily panel, for the same structural reason (interior-only
+        # forward fill leaves only LEADING zeros, and a leading flat-zero run reads as ladder
+        # sign 0 => HOLD anyway), so this ships as defence-in-depth exactly as 865's minute
+        # rider did. The price-validity half is FRAMED-pins-only; the UNPINNED DAILY path
+        # carries no mask and is bit-identical (865 canon-parity invariant). The unpinned
+        # MINUTE path is masked the way 868 made it — no price-validity half, but the D31 (a2)
+        # open-gate below applies there uniformly (gate_dec is not None).
         _pf = panel_info.get("panel_frame") or {}
         _floor_mask = None
-        if _pf.get("panel_frame_source") == "minute":
+        _pv_masked_cells = 0
+        # The 853 convention: an ABSENT ``panel_frame_source`` key in the frame block IS the
+        # daily pin (the key exists only on the minute sibling). _pf is non-empty only under
+        # --panel-frame-from-checkpoint, so the unpinned paths skip the PRICE-VALIDITY half
+        # entirely (the open-gate half below still applies on the canon unpinned minute panel).
+        _pf_source = (_pf.get("panel_frame_source") or "daily") if _pf else None
+        if _pf_source in ("minute", "daily"):
             _dec_px = np.asarray(prices[warm:warm + n_decisions])
-            _floor_mask = _dec_px <= 0
-            if not _floor_mask.any():
-                _floor_mask = None
+            _pv_mask = _dec_px <= 0
+            if _pv_mask.any():
+                _floor_mask = _pv_mask
+                _pv_masked_cells = int(_pv_mask.sum())
         # TASK_868 (D31 a2): on the minute panels the teacher-floor walk reads the SAME causal
-        # open-gate the operator and the replay read (uniform OPENING rule). This MOVES the
-        # minute floor wherever frozen cells exist — the sanctioned D31 re-base; the DAILY
-        # floor stays bit-identical (no gate on daily panels). TASK_869 owns the daily
-        # teacher-floor mask question — out of scope here.
+        # open-gate the operator and the replay read (uniform OPENING rule). Daily panels carry
+        # no gate (gate_dec is None there) — the daily floor's mask is the price-validity rule
+        # above only.
+        _gate_masked_cells = 0
         if gate_dec is not None:
             _gate_hold = ~gate_dec
-            if _floor_mask is None:
-                _floor_mask = _gate_hold if _gate_hold.any() else None
-            else:
-                _floor_mask = _floor_mask | _gate_hold
+            if _gate_hold.any():
+                _gate_masked_cells = int(_gate_hold.sum())
+                _floor_mask = _gate_hold if _floor_mask is None else (_floor_mask | _gate_hold)
         teacher_floor, book_warm = compute_teacher_floor(
             prices, env_cfg0, warm, n_decisions, period_minutes,
             hold_mask=_floor_mask)
@@ -3016,6 +3065,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     result = {
         "tag": args.tag, "checkpoint": label["path"], "checkpoint_label": label["name"],
         "db": args.db, "window": [args.start, args.end], "bar_minutes": args.bar_minutes,
+        "window_utc": _window_utc(args),              # TASK_869: resolved epoch bounds
         "eval_seed": args.eval_seed,
         # TASK_868: ``open_gate`` is the in-memory (T, A) mask for the rollout layer — NOT
         # JSON (a numpy bool matrix; its scalar disclosure is recorded beside it).
@@ -3056,6 +3106,23 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             "book_warm": book_warm,
             "weight_rebalance_env": bool(env_cfg0.vector_weight_rebalance),
             "same_rows_as_operator": True,
+            # TASK_869: the walk's hold-mask DISCLOSED (D30 rider (a) + D31 (a3) scope 2) —
+            # which pin paths it applies on and how many decision cells it force-HOLDs.
+            "hold_mask": {
+                "rule": "force-HOLD the whole action where the decision row has no real price "
+                        "(flat-zero) — the SAME price-validity rule the search operator and the "
+                        "policy-argmax replay apply — OR-ed with the D31 (a2) causal open-gate on "
+                        "EVERY minute panel (pinned AND canon unpinned: 868's gate is uniform "
+                        "there, so n_open_gate_masked_cells is legitimately > 0 on an unpinned "
+                        "minute run). The price-validity half applies on the framed pins only "
+                        "(minute AND daily); the unpinned DAILY path carries no mask at all and "
+                        "is bit-identical.",
+                "panel_frame_source": _pf_source,
+                "n_price_validity_masked_cells": _pv_masked_cells,
+                "n_open_gate_masked_cells": _gate_masked_cells,
+                "n_masked_decision_cells": (
+                    int(_floor_mask.sum()) if _floor_mask is not None else 0),
+            },
             "per_tier": {str(c): teacher_floor[c] for c in GATE_COSTS},
         }),
     }
@@ -3333,10 +3400,10 @@ def _resolve_universe(db_path, start_date, end_date, specific_symbols, n_assets)
 def _utc_day_bounds(start_date, end_date):
     """Whole-UTC-day epoch bounds [s, e] for the gate's close comparison. Parsed in UTC
     (calendar.timegm) and the end extended to the last second of the end day, so a boundary
-    day's minute last-of-day is NOT clipped mid-day. This is deliberately UTC-consistent
-    with the daily table's midnight-UTC row timestamps — distinct from the loader's
-    _to_epoch (local-time) window bounds, which the daily loader keeps for byte-parity with
-    the minute path (VectorBTTradingEnv parses dates in local time too)."""
+    day's minute last-of-day is NOT clipped mid-day. The gate has always been UTC; as of
+    TASK_869 the loaders' ``_to_epoch`` is UTC too, so the gate and the panels now differ
+    ONLY in the gate's end-of-day extension (a gate-only choice affecting boundary-day
+    close bucketing, not the panels)."""
     import calendar
     def p(s, default):
         if s is None:
@@ -4051,6 +4118,7 @@ def main():
         print_comparison(results)
         comp = {
             "tag": args.tag, "db": args.db, "window": [args.start, args.end],
+            "window_utc": _window_utc(args),          # TASK_869: resolved epoch bounds
             "eval_seed": args.eval_seed, "n_checkpoints": len(results),
             "rows": [{
                 "checkpoint_label": r["checkpoint_label"],

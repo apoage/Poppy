@@ -1227,6 +1227,12 @@ def run_window(manifest, window, out_root, jax_platforms, verbose=True,
         "kind": window["kind"],
         "status": "OK",
         "window": [span[0], span[1]],
+        # TASK_869: the window's RESOLVED epoch bounds, OBSERVED out of eval_vector's own
+        # artifact — cross-machine comparisons compare epochs, not date strings. A pre-869
+        # artifact carries no such key (this reads null then), and the SCHEMA refuses the row
+        # (validate_scorecard: window_utc must be [int, int]) — fail-closed, so a pre-869
+        # artifact can never produce an OK scorecard.
+        "window_utc": res.get("window_utc"),
         "n_decisions": panel.get("n_decisions"),
         "steps_completed": net.get("steps_completed"),
         "partial": bool(net.get("partial") or res["tiers"]["0"].get("partial")),
@@ -1549,6 +1555,12 @@ def validate_scorecard(sc):
             raise ValueError(f"{where}: missing key 'max_decisions' (may be null)")
         if not isinstance(r["max_decisions"], (int, type(None))):
             raise ValueError(f"{where}: 'max_decisions' must be an int or null")
+        # TASK_869: every graded row carries the window's RESOLVED epoch bounds, so a
+        # cross-machine / cross-re-base comparison compares epochs, not date strings.
+        wu = r.get("window_utc")
+        if (not isinstance(wu, list) or len(wu) != 2
+                or any(not isinstance(x, int) or isinstance(x, bool) for x in wu)):
+            raise ValueError(f"{where}: 'window_utc' must be [start_epoch, end_epoch] ints")
         # Every graded row must SAY which price table it read, and it must be the one the header
         # declares: a battery whose legs disagree about the source is the D30 rider (c) defect, and
         # the schema is where that becomes unrepresentable rather than merely discouraged.

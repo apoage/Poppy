@@ -776,6 +776,28 @@ def leg_viii_source_guards(work, ckpt):
         print(f"[smoke] (viii) schema REFUSED      a row that does not say — {str(e)[:110]}")
     else:
         raise SystemExit("[smoke] FAIL (viii): the schema accepted a row with no source at all")
+    # TASK_869 fix pass: the window_utc schema rule has the same teeth — a row whose window
+    # resolution is MISSING or MALFORMED is refused (a pre-869 artifact, which carries no
+    # window_utc, can therefore never produce an OK scorecard row: fail-closed, not null).
+    no_wu = json.loads(json.dumps(good))
+    no_wu["windows"][0].pop("window_utc", None)
+    try:
+        sc_mod.validate_scorecard(no_wu)
+    except ValueError as e:
+        print(f"[smoke] (viii) schema REFUSED      a row with no window_utc — {str(e)[:110]}")
+    else:
+        raise SystemExit("[smoke] FAIL (viii): the schema accepted a row with no window_utc")
+    for bad_wu in (None, ["2025-09-14", "2025-12-12"], [1757808000], [1757808000, True],
+                   [1765497600, 1757808000.5]):
+        bad = json.loads(json.dumps(good))
+        bad["windows"][0]["window_utc"] = bad_wu
+        try:
+            sc_mod.validate_scorecard(bad)
+        except ValueError:
+            continue
+        raise SystemExit(f"[smoke] FAIL (viii): the schema accepted window_utc {bad_wu!r}")
+    print("[smoke] (viii) schema REFUSED      malformed window_utc "
+          "(null / date strings / wrong length / bool / non-int)")
     sc_mod.validate_scorecard(good)          # negative control: the unmutated artifact is valid
     print("[smoke] (viii) PASS")
 

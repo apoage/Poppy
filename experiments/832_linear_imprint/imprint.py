@@ -74,6 +74,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import datetime as _dt
 from functools import partial
 
 import numpy as np
@@ -117,6 +118,27 @@ CANON_BASELINE_RECIPE = ("python experiments/832_linear_imprint/imprint.py "
 # delta; every OTHER argparse dest is compared, because every other one reaches the artifact.
 CANON_RECIPE_EXEMPT_FIELDS = ("write_parity_baseline", "out")
 FEE_BPS, SLIP_BPS = 16.0, 5.0          # net@21 = fee16 (Kraken taker) + slip5 bp/side
+
+
+def _window_epoch(v, default):
+    """TASK_869 (D31 (a3) scope 1): the artifact's RECORD of how --start/--end resolved, in
+    UTC epoch seconds — the SAME rule the canon loader now applies (digits pass through;
+    naive dates at UTC midnight, exactly ``trader.backtest._to_epoch``'s long-standing rule).
+    Cross-machine comparisons compare epochs, not date strings."""
+    if v is None:
+        return default
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v)
+    if s.isdigit():
+        return int(s)
+    try:
+        return backtest._to_epoch(s)
+    except ValueError:
+        dt = _dt.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return int(dt.timestamp())
 GATE_COSTS = (0, 21)                    # cost tiers, mirroring 830/831
 N_ACTIONS_PER_ASSET = 5
 HOLD_ACTION_CODE = 1                    # == eval_vector.HOLD; {0,3}=short {2,4}=long
@@ -2078,6 +2100,8 @@ def run(args, out_path, tag):
                 "reported figures are already active-cells-only")
     result = {
         "tag": tag, "db": args.db, "window": [args.start, args.end],
+        # TASK_869: the window's resolved UTC epoch bounds (compare epochs across machines).
+        "window_utc": [_window_epoch(args.start, 0), _window_epoch(args.end, 9999999999)],
         "bar_minutes": args.bar_minutes, "n_assets": A, "n_panel_rows": T,
         "warm": int(warm), "start_row": start_row, "n_decisions": N,
         "position_size_pct": args.position_size_pct,

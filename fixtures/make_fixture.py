@@ -33,9 +33,10 @@ if not top:
 # `max(timestamp) - DAYS*86400` cutoff silently re-based every fixture panel on each regen.
 # The verification suites pin their windows inside 2025-09-13..2025-12-12; re-pin the slice
 # deliberately here, never implicitly.
-from datetime import datetime as _dt
-SLICE_END = "2025-12-12"            # inclusive local-calendar end day of the minute slice
-end_ts = int(_dt.strptime(SLICE_END, "%Y-%m-%d").timestamp()) + 86399
+from datetime import datetime as _dt, timezone as _tz
+SLICE_END = "2025-12-12"            # inclusive UTC-calendar end day of the minute slice
+# TASK_869: UTC, not local — a regen on any machine resolves the same bounds.
+end_ts = int(_dt.strptime(SLICE_END, "%Y-%m-%d").replace(tzinfo=_tz.utc).timestamp()) + 86399
 cutoff = end_ts - DAYS * 86400 + 1
 
 dst = sqlite3.connect(DST)
@@ -59,8 +60,17 @@ dst.executemany(f"insert into ohlcv values ({','.join('?' * ncols)})", cur)
 # BEFORE the copied slice (2025-09-10..2025-09-12), so every smoke window's coverage-ranked
 # universe and every existing panel is untouched (zero synthetic rows in any smoke window).
 # The ohlcv_daily table is NOT touched (daily paths stay bit-identical).
-from datetime import datetime
-_T868 = int(datetime.strptime("2025-09-10", "%Y-%m-%d").timestamp())
+#
+# *** REGEN TRAP (TASK_869, run-25 panel NIT) *** The COMMITTED fixture's synthetic rows are
+# anchored at the LOCAL-TIME epoch the fixture was cut with (CEST); _T868 below now anchors
+# UTC, and SLICE_END above likewise. A REGEN therefore shifts every synthetic row (and the
+# slice bounds) by the old local offset, which SILENTLY re-bases several 865 smoke
+# expectations (the T868-window twin per-id counts {90001: 1320, 90002: 2160}, the
+# window-aware hole-bar derivation, and anything measured off the synthetic anchor) — plus
+# the minute-slice panels themselves. After ANY regen, re-derive those constants: the full
+# list of what moves and why is in runs/869_rebase_wave_semantics/baseline_attribution.json.
+from datetime import datetime, timezone
+_T868 = int(datetime.strptime("2025-09-10", "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 def _t868_rows(aid, minutes, price):
     return [(aid, _T868 + 60 * m, price, price, price, price, 1.0, 1) for m in minutes]
 

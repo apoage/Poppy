@@ -44,8 +44,9 @@ window). This harness BUILDS THE RAILS — it trains nothing:
 LEAK-FREE GATES AS CODE (the deliverable): ``validate`` parses the GENERATED artifacts
 (it never trusts construction) and FAILS LOUD if any fold violates:
   ASSERT-1  no train/eval date overlap in any generated fold artifact (train + eval
-            periods-files re-parsed with BOTH the training loader's local-midnight parse
-            (vectorbt_env.py:584 ``timestamp <= end_ts`` inclusive semantics) and the
+            periods-files re-parsed with BOTH the training loader's UTC-midnight parse
+            (vectorbt_env.py:660 ``timestamp <= end_ts`` inclusive semantics; TASK_869:
+            was local-midnight) and the
             backtest UTC parse — the conservative envelope must be disjoint);
   ASSERT-2  no eval-window data can enter a train periods-file: the loader's own ingest
             query is run against the db with the PARSED train-file bounds and the max
@@ -186,10 +187,12 @@ def utc_epoch(d):
 
 
 def loader_epoch(d):
-    """The training loader's parse (VectorBTTradingEnv._load_database_prices:
-    local-timezone strptime -> .timestamp(); the 835 mirror). Loader bounds are
-    INCLUSIVE: ``timestamp >= start AND timestamp <= end`` (vectorbt_env.py:584)."""
-    return int(datetime.strptime(d, "%Y-%m-%d").timestamp())
+    """The training loader's parse (VectorBTTradingEnv._load_database_prices; the 835
+    mirror). TASK_869: the loader's parse is now UTC-midnight (was local-timezone), so this
+    is IDENTICAL to ``utc_epoch`` — the conservative min/max helpers below collapse to one
+    bound, which is the point of the re-base. Loader bounds are INCLUSIVE:
+    ``timestamp >= start AND timestamp <= end`` (vectorbt_env.py:660)."""
+    return int(datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 
 
 def _max_end_epoch(d):
@@ -546,7 +549,7 @@ def validate_folds(fold_root, db_path, verbose=True):
         e_start = min(_min_start_epoch(ev0), _min_start_epoch(le0))
         rec(fid, "ASSERT-1 train/eval windows disjoint", t_end < e_start,
             f"parsed train end {tr1} (<= {t_end}) vs eval start {ev0} (>= {e_start}); "
-            f"loader bounds are end-INCLUSIVE (vectorbt_env.py:584)")
+            f"loader bounds are end-INCLUSIVE (vectorbt_env.py:660)")
         rec(fid, "windows well-formed",
             tr0 < tr1 and ev0 < ev1 and (tr0, tr1) == (lt0, lt1) and (ev0, ev1) == (le0, le1),
             f"train {tr0}..{tr1}, eval {ev0}..{ev1}, leaky dates match pit dates")

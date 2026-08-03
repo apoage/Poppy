@@ -540,7 +540,7 @@ class VectorBTTradingEnv(gym.Env):
         pre-868 loader.
         """
         import sqlite3
-        from datetime import datetime
+        from datetime import datetime, timezone
         import logging
         from mcts_trader.data.asset_aliases import (
             alias_agreement_gate, ranked_minute_universe, resolve_requested_symbols)
@@ -552,6 +552,11 @@ class VectorBTTradingEnv(gym.Env):
         filter_start_ts = 0
         filter_end_ts = 9999999999
 
+        # TASK_869 (D31 (a3) scope 1): dates resolve at UTC midnight, NOT local time — the
+        # window extent no longer depends on the machine's timezone (pre-fix a CEST
+        # workstation and a UTC server read different windows for the same --start/--end;
+        # measured 308-row-class offset on the OOS window). Same rule history.py always
+        # used; inclusivity semantics unchanged (end = midnight of the end date).
         if start_date:
             if isinstance(start_date, (int, float)):
                 filter_start_ts = int(start_date)
@@ -559,10 +564,14 @@ class VectorBTTradingEnv(gym.Env):
                 filter_start_ts = int(start_date)
             else:
                 try:
-                    filter_start_ts = int(datetime.strptime(str(start_date), '%Y-%m-%d').timestamp())
+                    filter_start_ts = int(datetime.strptime(str(start_date), '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
                 except ValueError:
                     try:
-                        filter_start_ts = int(datetime.fromisoformat(str(start_date)).timestamp())
+                        # FIX (run-25 panel): an offset-bearing ISO input keeps its offset
+                        # (astimezone to the correct instant); only NAIVE inputs are labeled UTC.
+                        _dt = datetime.fromisoformat(str(start_date))
+                        _dt = _dt.astimezone(timezone.utc) if _dt.tzinfo else _dt.replace(tzinfo=timezone.utc)
+                        filter_start_ts = int(_dt.timestamp())
                     except:
                         logging.warning(f"Could not parse start_date: {start_date}")
 
@@ -573,10 +582,14 @@ class VectorBTTradingEnv(gym.Env):
                 filter_end_ts = int(end_date)
             else:
                 try:
-                    filter_end_ts = int(datetime.strptime(str(end_date), '%Y-%m-%d').timestamp())
+                    filter_end_ts = int(datetime.strptime(str(end_date), '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
                 except ValueError:
                     try:
-                        filter_end_ts = int(datetime.fromisoformat(str(end_date)).timestamp())
+                        # FIX (run-25 panel): an offset-bearing ISO input keeps its offset
+                        # (astimezone to the correct instant); only NAIVE inputs are labeled UTC.
+                        _dt = datetime.fromisoformat(str(end_date))
+                        _dt = _dt.astimezone(timezone.utc) if _dt.tzinfo else _dt.replace(tzinfo=timezone.utc)
+                        filter_end_ts = int(_dt.timestamp())
                     except:
                         logging.warning(f"Could not parse end_date: {end_date}")
 

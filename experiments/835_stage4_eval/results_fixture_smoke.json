@@ -8,9 +8,13 @@
     "2025-12-12"
   ],
   "bar_minutes": 60,
+  "window_utc": [
+    1757721600,
+    1765497600
+  ],
   "eval_seed": 0,
   "panel": {
-    "n_rows": 2127,
+    "n_rows": 2128,
     "n_assets": 8,
     "warm": 60,
     "n_decisions": 40,
@@ -26,7 +30,7 @@
           1091
         ],
         "per_id_counts": {
-          "1091": 127515
+          "1091": 127575
         },
         "aliased": false,
         "overlap_agreement": []
@@ -38,7 +42,7 @@
           359
         ],
         "per_id_counts": {
-          "359": 126540
+          "359": 126600
         },
         "aliased": false,
         "overlap_agreement": []
@@ -50,7 +54,7 @@
           589
         ],
         "per_id_counts": {
-          "589": 105967
+          "589": 106019
         },
         "aliased": false,
         "overlap_agreement": []
@@ -62,7 +66,7 @@
           1111
         ],
         "per_id_counts": {
-          "1111": 90667
+          "1111": 90716
         },
         "aliased": false,
         "overlap_agreement": []

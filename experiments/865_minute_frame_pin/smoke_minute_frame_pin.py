@@ -86,14 +86,16 @@ COLLECT_POSITION_SIZE_PCT = 0.1          # teacher of record (conditionally exem
 FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
                  "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
 EXPECT_INACTIVE_SLOTS = [1, 4]
-# Slots 3, 5 and 7 list one bar late (mid-window listing) => PARTIAL: their pre-listing rows are
-# flat-zero and force-HOLD. Slots 6 and 7 are the STALE TAILS: their trailing rows are
+# Slot 7 lists one bar late (mid-window listing) => PARTIAL: its pre-listing rows are
+# flat-zero and force-HOLD. (TASK_869: under UTC window resolution slots 3 and 5's first real
+# prints re-bin INTO bar 0, so they are covered from open and no longer partial — measured;
+# slot 7 still lists one bar late.) Slots 6 and 7 are the STALE TAILS: their trailing rows are
 # FORWARD-FILLED at the last real close (D30 opt (i), PV-exact for VALUATION) and, as of
 # TASK_868 (D31 a2), force-HELD for OPENING by the causal open-gate — at decision time a
 # delisting and an interior hole are indistinguishable without look-ahead. Slot 7 is BOTH
 # partial (head) and stale-tailed; slot 6 is a tail-only slot and is in NEITHER inactive_slots
 # NOR partial_slots — it is disclosed on its own axis (stale_tail_slots).
-EXPECT_PARTIAL_SLOTS = [3, 5, 7]
+EXPECT_PARTIAL_SLOTS = [7]
 EXPECT_STALE_TAIL_SLOTS = [6, 7]
 EXPECT_STALE_TAIL_SYMBOLS = ["ZEC/USD", "ETC/USD"]
 EXPECT_TAIL_ONLY_SLOTS = [6]               # stale-tailed and NOT partial
@@ -101,38 +103,42 @@ EXPECT_T_ROWS = 532
 EXPECT_DECISIONS = 471
 EXPECT_START_ROW = 60
 EXPECT_DEAD_SLOT_CHANNELS = [8, 9, 10, 11]
-# The stale tails, MEASURED (fixture, TASK_868 regen): ZEC/USD and ETC/USD both print their last
-# real minute close 2025-09-30; the LAST PANEL BAR carrying a real print is row 103 of 531, so
-# rows 104..531 are FROZEN (428 rows each). Decisions run rows 60..530 (k = row - 60), so
-# decisions k=44..470 (427 cells per slot) carry a FROZEN tail price. Under D30 those decisions
-# were TRADEABLE at the frozen price; under TASK_868 (D31 a2) they are force-HELD — the WHOLE
-# action (the causal open-gate) — while VALUATION still reads the fill: the polarity this
-# suite's stale-tail legs now assert.
-EXPECT_STALE_TAIL_LAST_ROW = 103
-EXPECT_STALE_TAIL_TRAILING_ROWS = 428
-EXPECT_STALE_TAIL_FROZEN_K = list(range(44, 471))
-# Per-slot force-HOLD decision cells: 471 each for the two ZERO-CVERAGE slots (inert) + 427
-# each for the two stale tails (open-gated) = 1,796 of 3,768.
-EXPECT_HOLD_CELLS_PER_SLOT = [0, 471, 0, 0, 471, 0, 427, 427]
-EXPECT_TOTAL_HOLD_CELLS = 1796
+# The stale tails, MEASURED (fixture, TASK_868 regen; TASK_869 UTC re-measurement): ZEC/USD and
+# ETC/USD both print their last real minute close 2025-09-30; under UTC window resolution the
+# LAST PANEL BAR carrying a real print is row 102 of 531 (was 103 under local-time resolution —
+# the +2h/+1h window shift re-bins the boundary bar), so rows 103..531 are FROZEN (429 rows
+# each). Decisions run rows 60..530 (k = row - 60), so decisions k=43..470 (428 cells per slot)
+# carry a FROZEN tail price. Under D30 those decisions were TRADEABLE at the frozen price;
+# under TASK_868 (D31 a2) they are force-HELD — the WHOLE action (the causal open-gate) —
+# while VALUATION still reads the fill: the polarity this suite's stale-tail legs now assert.
+EXPECT_STALE_TAIL_LAST_ROW = 102
+EXPECT_STALE_TAIL_TRAILING_ROWS = 429
+EXPECT_STALE_TAIL_FROZEN_K = list(range(43, 471))
+# Per-slot force-HOLD decision cells: 471 each for the two ZERO-CVERAGE slots (inert) + 428
+# each for the two stale tails (open-gated) = 1,798 of 3,768.
+EXPECT_HOLD_CELLS_PER_SLOT = [0, 471, 0, 0, 471, 0, 428, 428]
+EXPECT_TOTAL_HOLD_CELLS = 1798
 
 # ---- FIX PASS: FROZEN-CELL ACCOUNTING on the fixture grid, and the definition it turns on ------
-# (TASK_868 RE-BASE: numbers below are re-measured on the regenerated fixture — see MINUTE_PANEL.)
-# On THIS fixture frame, MEASURED under the bar rule: 942 INERT + 854 FROZEN (0 interior + 854
-# trailing) = 1,796 not real, 1,972 (52.34%) LIVE. NB the pre-868 fixture's "25% undisclosed-frozen"
+# (TASK_868 RE-BASE: numbers below are re-measured on the regenerated fixture — see MINUTE_PANEL.
+#  TASK_869: re-measured again under UTC window resolution — the boundary-bar re-bin moved the
+#  stale tails one decision cell each; INERT is unchanged, heads being pre-listing.)
+# On THIS fixture frame, MEASURED under the bar rule: 942 INERT + 856 FROZEN (0 interior + 856
+# trailing) = 1,798 not real, 1,970 (52.28%) LIVE. NB the pre-868 fixture's "25% undisclosed-frozen"
 # was the exact-minute reading of the old sparse grid — the bar rule is the shipped definition, the
 # exact-minute count is kept as a labelled DIAGNOSTIC (``no_print_at_sampled_minute_rows``).
 EXPECT_FROZEN_INTERIOR_CELLS = 0
-EXPECT_FROZEN_TAIL_CELLS = 854
-EXPECT_FROZEN_CELLS_TOTAL = 854
-EXPECT_LIVE_CELLS = 1972
+EXPECT_FROZEN_TAIL_CELLS = 856
+EXPECT_FROZEN_CELLS_TOTAL = 856
+EXPECT_LIVE_CELLS = 1970
 EXPECT_INERT_CELLS = 942
-EXPECT_NOT_REAL_CELLS = 1796
-EXPECT_FROZEN_PER_SLOT = {6: 427, 7: 427}                 # interior + trailing, per slot
+EXPECT_NOT_REAL_CELLS = 1798
+EXPECT_FROZEN_PER_SLOT = {6: 428, 7: 428}                 # interior + trailing, per slot
 EXPECT_FROZEN_SLOTS = [6, 7]
 # The exact-minute DIAGNOSTIC on the same grid (the panel's number), asserted so the two readings
-# are both recorded and can never be silently conflated again.
-EXPECT_NO_PRINT_AT_SAMPLED_MINUTE_ROWS = {0: 2, 2: 7, 3: 76, 5: 148, 6: 506, 7: 514}
+# are both recorded and can never be silently conflated again. (TASK_869 re-measure: the +2h/+1h
+# UTC window shift re-bins every sampled minute — slot 0 now prints on ALL its sampled rows.)
+EXPECT_NO_PRINT_AT_SAMPLED_MINUTE_ROWS = {0: 0, 2: 3, 3: 100, 5: 157, 6: 495, 7: 514}
 
 # ---- a SYNTHETIC interior gap, through the REAL loader ----------------------------------------
 # The fixture's own minute table has NO multi-bar interior hole under the bar rule, so the interior
@@ -217,12 +223,13 @@ DAILY_STALE_FRAME = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
 DAILY_STALE_SLOT = 5
 DAILY_STALE_SYMBOL = "FTM/USD"
 DAILY_STALE_WINDOW = ("2025-01-01", "2025-06-30")
-# MEASURED under the loader's own window convention (eval_vector._to_epoch(end) is MIDNIGHT of the
-# end date, so 2025-06-30's daily row is outside): 180 panel rows, 90 real + 90 forward-filled.
-# D30's "91 of 181" is the same slot one row wider (an end-of-day boundary); see the report's note
-# on _to_epoch's local-midnight convention.
-DAILY_STALE_EXPECT_ROWS = 180
-DAILY_STALE_EXPECT_TRAILING = 90
+# MEASURED under the loader's (now UTC) window convention: _to_epoch(end) is UTC MIDNIGHT of the
+# end date and the bound is INCLUSIVE, so 2025-06-30's own daily row (timestamp == midnight) is
+# INSIDE: 181 panel rows, 90 real + 91 forward-filled — exactly D30's "91 of 181". (Pre-TASK_869
+# local-time resolution put the end bound at local midnight = 23:00Z the previous day, excluding
+# that row: 180 rows / 90 trailing. Inclusivity unchanged; only the timezone moved.)
+DAILY_STALE_EXPECT_ROWS = 181
+DAILY_STALE_EXPECT_TRAILING = 91
 # FIX PASS 2 — the DAILY path's frozen/interior disclosure had ZERO coverage. Replacing the whole
 # daily ``_frozen_spans`` block (eval_vector.load_daily_prices_framed) with ``pass`` left EVERY leg
 # of both suites green: the daily STALE-TAIL half has teeth, the FROZEN/INTERIOR half shipped
@@ -232,12 +239,12 @@ DAILY_STALE_EXPECT_TRAILING = 90
 #   * a second window with real INTERIOR daily holes — the case the daily path had no test for at
 #     all. MEASURED on fixtures/trading_fixture.db over 2015-07-20..2015-08-20 (31 daily rows):
 #     ETH/USD lists mid-window and then misses 2 interior days; LTC/USD misses 5 across 3 runs.
-DAILY_STALE_EXPECT_FROZEN_ROWS = 90
-DAILY_STALE_EXPECT_FROZEN_SPANS = [[90, 179]]
+DAILY_STALE_EXPECT_FROZEN_ROWS = 91
+DAILY_STALE_EXPECT_FROZEN_SPANS = [[90, 180]]
 DAILY_STALE_EXPECT_INTERIOR_ROWS = 0
 DAILY_STALE_EXPECT_REAL_ROWS = 90
 DAILY_INTERIOR_WINDOW = ("2015-07-20", "2015-08-20")
-DAILY_INTERIOR_EXPECT_ROWS = 31
+DAILY_INTERIOR_EXPECT_ROWS = 32      # TASK_869: UTC end bound includes the end date's own row (was 31)
 DAILY_INTERIOR_EXPECT_SPANS = {2: [[20, 21]], 3: [[7, 7], [10, 10], [14, 16]]}
 DAILY_INTERIOR_EXPECT_FROZEN_ROWS = {2: 2, 3: 5}
 DAILY_INTERIOR_EXPECT_CELLS = (7, 7, 0)      # total, INTERIOR, trailing — over the whole panel
@@ -400,13 +407,16 @@ def eval_cmd(out_dir, collect, frame=None, source="minute", panel=None):
 
 
 def imprint_cmd(out_json, ckpt_out, collection, frame=None, source="minute", panel=None,
-                iters=150, extra=()):
+                iters=250, extra=()):
     # TASK_868 re-base note (measured on the regenerated fixture): the decision grid is now
-    # 471x8 with 1,796 force-HOLD cells (47.7% — the two zero-coverage slots + the two long
-    # open-gated stale tails), and at the old 80 iters the student collapses to a total-HOLD
-    # policy (the degenerate-replay refusal fires, correctly). 150 iters is the measured
-    # escape point for THIS configuration (the collapse band is configuration-dependent by
-    # design); the degenerate legs below still exercise the collapse on purpose.
+    # 471x8 with 1,798 force-HOLD cells (47.7% — the two zero-coverage slots + the two long
+    # open-gated stale tails; TASK_869's UTC window shift moved the stale tails' last real
+    # panel row 103 -> 102, adding one frozen decision cell per tail slot, 1,796 -> 1,798).
+    # Collapse band, MEASURED per grid: at the old 80 iters the student collapses to a
+    # total-HOLD policy (the degenerate-replay refusal fires, correctly); 150 was the escape
+    # on the pre-869 grid but 150 AND 200 collapse on the post-869 one — 250 and 300 are
+    # measured HEALTHY (seed 0, this frame/teacher). The band is configuration-dependent by
+    # design; the degenerate legs below still exercise the collapse on purpose.
     cmd = [sys.executable, IMPRINT_PY, "--db", FIXTURE_DB, *(panel or MINUTE_PANEL),
            "--vector-weight-rebalance", "--teacher-vectors", collection,
            "--allow-off-pin-teacher", "--iters", str(iters), "--seed", "0",
@@ -498,7 +508,7 @@ def _write_pv_db(path):
     dead after ``PV_LAST_REAL_ROW`` (a delisting / ticker migration, mid-panel). Two tables, the
     fixture's own schema, ~470 rows. Written under the smoke's run dir; never near a real DB."""
     import sqlite3
-    from datetime import datetime
+    from datetime import datetime, timezone
     if os.path.exists(path):
         os.remove(path)
     con = sqlite3.connect(path)
@@ -507,7 +517,8 @@ def _write_pv_db(path):
         "CREATE TABLE ohlcv (asset_id INTEGER, timestamp INTEGER NOT NULL, open REAL, high REAL,"
         " low REAL, close REAL, volume REAL, trade_count INTEGER,"
         " PRIMARY KEY (asset_id, timestamp));")
-    t0 = int(datetime.strptime(PV_WINDOW[0], "%Y-%m-%d").timestamp())
+    # TASK_869: UTC, matching the loaders' window resolution (was local time).
+    t0 = int(datetime.strptime(PV_WINDOW[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     p = PV_FLAT_PRICE
     for i, sym in enumerate(PV_SYMBOLS):
         con.execute("INSERT INTO assets (id, symbol) VALUES (?, ?)", (i + 1, sym))
@@ -788,7 +799,7 @@ def _write_gap_db(path):
     throughout (so the row axis covers the gap). Read back through the REAL loader, so it tracks
     whatever fill/disclosure rule the loader actually applies."""
     import sqlite3
-    from datetime import datetime
+    from datetime import datetime, timezone
     if os.path.exists(path):
         os.remove(path)
     con = sqlite3.connect(path)
@@ -797,7 +808,8 @@ def _write_gap_db(path):
         "CREATE TABLE ohlcv (asset_id INTEGER, timestamp INTEGER NOT NULL, open REAL, high REAL,"
         " low REAL, close REAL, volume REAL, trade_count INTEGER,"
         " PRIMARY KEY (asset_id, timestamp));")
-    t0 = int(datetime.strptime(PV_WINDOW[0], "%Y-%m-%d").timestamp())
+    # TASK_869: UTC, matching the loaders' window resolution (was local time).
+    t0 = int(datetime.strptime(PV_WINDOW[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     rows = []
     for sid, sym in enumerate(GAP_SYMBOLS, start=1):
         con.execute("INSERT INTO assets (id, symbol) VALUES (?, ?)", (sid, sym))
@@ -824,7 +836,7 @@ def _write_clip_db(path, dark_pred, post=None, delist_bar=None):
     (dropping minutes by ``m // step`` instead leaves the previous bar's prints inside the mask
     window and produces no frozen row at all)."""
     import sqlite3
-    from datetime import datetime
+    from datetime import datetime, timezone
     if os.path.exists(path):
         os.remove(path)
     con = sqlite3.connect(path)
@@ -833,7 +845,8 @@ def _write_clip_db(path, dark_pred, post=None, delist_bar=None):
         "CREATE TABLE ohlcv (asset_id INTEGER, timestamp INTEGER NOT NULL, open REAL, high REAL,"
         " low REAL, close REAL, volume REAL, trade_count INTEGER,"
         " PRIMARY KEY (asset_id, timestamp));")
-    t0 = int(datetime.strptime(CLIP_WINDOW[0], "%Y-%m-%d").timestamp())
+    # TASK_869: UTC, matching the loaders' window resolution (was local time).
+    t0 = int(datetime.strptime(CLIP_WINDOW[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     rows = []
     for sid, sym in enumerate(CLIP_SYMBOLS, start=1):
         con.execute("INSERT INTO assets (id, symbol) VALUES (?, ?)", (sid, sym))
@@ -1668,6 +1681,110 @@ def leg_teacher_floor_masked(R, imp):
             "floor_control_masked": {str(c): ctl_masked[c] for c in ctl_masked}}
 
 
+def leg_daily_teacher_floor_masked(R, imp):
+    """(ii-a6) TASK_869 (D31 (a3) scope 2) — the DAILY-framed teacher floor now reads the SAME
+    price-validity rule as the minute pin. The minute-path inertness finding does NOT transfer
+    by assumption; it is MEASURED here on the daily path:
+
+      * the loader's DAILY framed panel (FTM/USD stale tail forward-filled, inactive slots
+        flat-zero), MASKED vs UNMASKED: **BIT-IDENTICAL** — the mask is INERT on the shipped
+        daily panel, for the same structural reason as the minute path (the daily fill is
+        interior-only, so only LEADING zeros survive, and a leading flat-zero run reads as
+        ladder sign 0 => HOLD anyway). It ships as DEFENCE IN DEPTH, the 865 precedent.
+      * CONTROL, mutation both ways: the same panel plus a synthetic 9th slot that is FLAT
+        (sign 0 => HOLD, never held) while real and then ZEROED over a synthetic stale tail —
+        the non-leading zero span no post-D30 loader can emit. The UNMASKED walk reads the
+        fabricated real->0 transition and MOVES (catastrophic); the MASKED walk is
+        bit-identical to the unmutated walk (the slot is never held, so the zeroed rows move
+        no valuation either). So the mask demonstrably bites exactly where the defect class
+        lives, and costs nothing elsewhere.
+    """
+    import numpy as np
+    print("\n=== (ii-a6) DAILY TEACHER FLOOR — masked like the minute pin (TASK_869 scope 2) ===")
+    ev = imp._load_eval_module()
+    import jax.numpy as jnp
+    px, syms, ts, cov = ev.load_daily_prices_framed(
+        FIXTURE_DB, DAILY_STALE_WINDOW[0], DAILY_STALE_WINDOW[1], DAILY_STALE_FRAME,
+        require_active_slots=0)
+    filled = np.asarray(px)
+    T = filled.shape[0]
+
+    def mk_cfg(n):
+        return ev.EnvConfig(
+            n_assets=n, initial_cash=100_000.0, fee_bps=0.0, slippage_bps=0.0, max_steps=400,
+            window_size=60, position_size_pct=COLLECT_POSITION_SIZE_PCT,
+            vector_action=True, vector_weight_rebalance=True, vector_weight_unit=-1.0,
+            vector_weight_max=4.0, vector_rebalance_deadband=-1.0)
+    warm, N = 60, T - 1 - 60
+
+    def floor_of(arr, masked):
+        cfg = mk_cfg(arr.shape[1])
+        dec = arr[warm:warm + N]
+        m = (dec <= 0) if masked else None
+        f, _ = ev.compute_teacher_floor(jnp.asarray(arr, dtype=jnp.float32), cfg, warm, N, 1440.0,
+                                        hold_mask=m)
+        return f
+
+    # Control: a 9th synthetic slot, FLAT at 100.0 while real (ladder sign 0 => HOLD on every
+    # decision, so the walk NEVER carries it), ZEROED from row z0 to the panel end — a synthetic
+    # stale daily span (non-leading zeros, the panel no post-D30 loader emits). z0 sits strictly
+    # inside the decision range so the fabricated real->0 transition is walked.
+    z0 = warm + 20
+    synth_real = np.full((T, 1), 100.0)
+    base9 = np.concatenate([filled, synth_real], axis=1)          # unmutated 9-slot panel
+    ctl9 = base9.copy()
+    ctl9[z0:, 8] = 0.0
+    live = floor_of(filled, True)
+    live_unmasked = floor_of(filled, False)
+    base_masked = floor_of(base9, True)
+    base_unmasked = floor_of(base9, False)
+    ctl_unmasked = floor_of(ctl9, False)
+    ctl_masked = floor_of(ctl9, True)
+    finite = lambda f: all(isinstance(v["sharpe"], float) for v in f.values())   # noqa: E731
+    moved = [c for c in base_unmasked if ctl_unmasked[c] != base_unmasked[c]]
+    checks = {
+        "shipped_daily_panel_no_bankruptcy_any_tier": all(
+            v["bankrupt_at"] == -1 for v in live.values()),
+        "shipped_daily_panel_sharpes_finite": finite(live),
+        # The MEASURED inertness on the daily path (not assumed from the minute path):
+        "MASKED_equals_UNMASKED_on_the_shipped_daily_panel": all(
+            live[c] == live_unmasked[c] for c in live),
+        "MASKED_equals_UNMASKED_on_the_9slot_base_panel": all(
+            base_masked[c] == base_unmasked[c] for c in base_masked),
+        # Mutation proof, both directions:
+        "synthetic_zeroed_span_MOVES_the_unmasked_walk": bool(moved),
+        "synthetic_zeroed_span_does_NOT_move_the_masked_walk": all(
+            ctl_masked[c] == base_masked[c] for c in base_masked),
+        # ... and the unmasked divergence is the synthetic slot's whole weight destroyed, not
+        # noise (the defect class the rider exists against: acting on a cell with no market).
+        # MEASURED: final_pv ratio 0.931 on BOTH tiers (the flat slot's notional plus costs,
+        # bounded by the ladder's per-slot weight — a daily bar caps the move, unlike the
+        # minute rider's zeroed-tail bankruptcy).
+        "control_unmasked_destroys_the_synthetic_slots_weight": all(
+            ctl_unmasked[c]["final_pv"] < 0.95 * base_unmasked[c]["final_pv"]
+            for c in moved),
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    for label, f in (("daily panel (ffilled tail), MASKED  ", live),
+                     ("daily panel (ffilled tail), UNMASKED", live_unmasked),
+                     ("control zeroed span, UNMASKED      ", ctl_unmasked),
+                     ("control zeroed span, MASKED        ", ctl_masked)):
+        print(f"    {label}: " + "  ".join(
+            f"tier{c}bp sharpe {f[c]['sharpe']:.4f} pv {f[c]['final_pv']:,.2f} "
+            f"bankrupt_at {f[c]['bankrupt_at']}" for c in sorted(f)))
+    print("    => the daily mask is INERT on the shipped panel (defence in depth, 865 "
+          "precedent) and BITES on the synthetic stale span — both directions measured.")
+    return {"leg": "iia6_daily_teacher_floor_masked", "passed": all(checks.values()),
+            "checks": checks, "zeroed_rows": [z0, T - 1],
+            "floor_shipped": {str(c): live[c] for c in live},
+            "floor_shipped_unmasked": {str(c): live_unmasked[c] for c in live_unmasked},
+            "mask_is_inert_on_shipped_daily_panel": all(
+                live[c] == live_unmasked[c] for c in live),
+            "floor_control_unmasked": {str(c): ctl_unmasked[c] for c in ctl_unmasked},
+            "floor_control_masked": {str(c): ctl_masked[c] for c in ctl_masked}}
+
+
 def leg_loader_identity_refusals(R, imp):
     """IDENTITY SCRAMBLING, at the LOADER: unknown symbol / duplicate symbol / wrong length are
     each a NAMED refusal — never a silent drop, pad or re-index."""
@@ -1926,8 +2043,9 @@ def leg_real_db_coverage():
     print("\n=== (iii) COVERAGE HONESTY + ALIAS UNION (CELL LEVEL) — read-only, gate (i) ===")
     prov = json.load(open(REAL_FRAME_JSON))
     frame = prov.get("frame_symbols") or prov.get("symbols")
-    s_ts = int(datetime.strptime(REAL_WINDOW[0], "%Y-%m-%d").timestamp())
-    e_ts = int(datetime.strptime(REAL_WINDOW[1], "%Y-%m-%d").timestamp())
+    # TASK_869: UTC, matching the loaders' window resolution (was local time).
+    s_ts = int(datetime.strptime(REAL_WINDOW[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    e_ts = int(datetime.strptime(REAL_WINDOW[1], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
     step = REAL_BAR_MINUTES
     con = sqlite3.connect(f"file:{REAL_DB}?mode=ro", uri=True, timeout=60)
     try:
@@ -2318,7 +2436,12 @@ def leg_alias_union_and_agreement_gate(R, imp):
     checks = {
         # --- BOTH WAYS, part 1: agreeing twins union CLEANLY ---
         "framed_slot_resolves_to_BOTH_twin_ids": c0["asset_ids"] == [id_a, id_b],
-        "framed_per_id_row_counts_exact": c0["per_id_rows"] == {str(id_a): 1440, str(id_b): 2160},
+        # TASK_869: the fixture's synthetic rows are anchored at the (local-time) epoch the
+        # fixture was CUT with; under UTC window resolution the T868 window's start bound
+        # lands 120 minutes INTO the original's span, so id_a contributes 1320 of its 1440
+        # rows (the twin's 720..2879 span is fully inside either way). Window-SEMANTICS
+        # unchanged — the anchor moved, not the rule.
+        "framed_per_id_row_counts_exact": c0["per_id_rows"] == {str(id_a): 1320, str(id_b): 2160},
         "framed_overlap_agreement_disclosed_ZERO_diff": any(
             o["shared_ts"] == 720 and o["max_rel_diff"] == 0.0
             for o in c0["overlap_agreement"]),
@@ -2368,7 +2491,7 @@ def leg_open_gate_causality(R, imp):
     step = 10
     frame_symbols = [T868_HOLE, "TWX/USD"]   # dense companion drives the axis
     # Full window: the hole resumes at minute 1600 (bar 160).
-    px_f, _, _, cov_f, gate_f = ev.load_minute_prices_framed(
+    px_f, _, ts_f, cov_f, gate_f = ev.load_minute_prices_framed(
         FIXTURE_DB, T868_WINDOW[0], T868_WINDOW[1], frame_symbols, step,
         require_active_slots=0)
     gate_full = np.asarray(gate_f)[:, 0]
@@ -2379,10 +2502,22 @@ def leg_open_gate_causality(R, imp):
         require_active_slots=0)
     gate_trunc = np.asarray(gate_t)[:, 0]
     n_common = min(gate_trunc.shape[0], gate_full.shape[0])
-    # The hole bars, derived (not hardcoded): bar b covers minutes ((b-1)*step, b*step]; the
-    # hole is minutes 1000..1599, so bar 100 catches minute 991..999's prints (LIVE), bars
-    # 101..159 are fully dark (GATED), and bar 160 catches the resumption print at 1600 (LIVE).
-    hole_bars = [b for b in range(px_f.shape[0]) if (b - 1) * step >= 1000 and b * step <= 1599]
+    # The hole bars, derived (not hardcoded): bar b covers AXIS rows ((b-1)*step, b*step]; the
+    # hole is minutes 1000..1599 RELATIVE TO THE FIXTURE'S OWN ANCHOR (the epoch the fixture was
+    # cut with — local-midnight at the time), while the axis starts at the window's first
+    # distinct minute, which under TASK_869's UTC resolution is 120 minutes into that anchor.
+    # Derive the hole's AXIS-relative indices from the DB itself (HOLE's MIN timestamp + the
+    # loaded axis), so the expectation tracks the window resolution instead of pinning one.
+    import sqlite3 as _sq
+    _con = _sq.connect(f"file:{FIXTURE_DB}?mode=ro", uri=True, timeout=60)
+    try:
+        t0_hole = _con.execute("SELECT MIN(timestamp) FROM ohlcv WHERE asset_id = ?",
+                               (T868_HOLE_ID,)).fetchone()[0]
+    finally:
+        _con.close()
+    axis_off = (int(ts_f[0]) - int(t0_hole)) // 60          # fixture-minute of axis row 0
+    d0, d1 = 1000 - axis_off, 1599 - axis_off               # the dark span, in axis rows
+    hole_bars = [b for b in range(px_f.shape[0]) if (b - 1) * step >= d0 and b * step <= d1]
     masked_bars = sorted(int(b) for b in np.nonzero(~gate_full)[0])
     checks = {
         # THE PROBE: identical masks over the shared prefix, whether or not the resumption exists
@@ -2412,6 +2547,64 @@ def leg_open_gate_causality(R, imp):
     return {"leg": "868iii_open_gate_causality", "passed": all(checks.values()),
             "checks": checks, "hole_bars": [hole_bars[0], hole_bars[-1]],
             "n_bars_full": int(gate_full.shape[0]), "n_bars_truncated": int(gate_trunc.shape[0])}
+
+
+def leg_tz_offset_iso_probe(R, imp):
+    """(869-fix) TZ-AWARE ISO-8601 inputs resolve to the CORRECT INSTANT — never silently
+    re-labeled UTC. The strict eval validator (eval_vector._validate_eval_date) accepts
+    ISO-8601, so --start/--end can carry an explicit offset; the run-25 panel found the
+    fromisoformat fallback clobbering it (``.replace(tzinfo=utc)`` unconditionally = a
+    "2025-06-01T00:00:00+05:00" window silently shifted 5h). Probed at BOTH levels:
+      * the mirror (eval_vector._to_epoch): offset-bearing -> the offset's instant;
+        naive -> UTC (unchanged); plain %Y-%m-%d -> UTC midnight (unchanged).
+      * the canon loader (VectorBTTradingEnv on the fixture): an offset-bearing start_date
+        yields the SAME panel as the equivalent epoch-seconds start, and a DIFFERENT panel
+        than the same digits read naive-UTC (the probe has teeth: 2h apart)."""
+    import numpy as np
+    from datetime import datetime, timezone
+    print("\n=== (869-fix) TZ-AWARE ISO PROBE — explicit offsets resolve to the correct instant ===")
+    ev = _load_eval_module()
+    off = ev._to_epoch("2025-06-01T00:00:00+05:00", None)
+    naive = ev._to_epoch("2025-06-01T00:00:00", None)
+    plain = ev._to_epoch("2025-06-01", None)
+    want_off = int(datetime(2025, 5, 31, 19, 0, tzinfo=timezone.utc).timestamp())
+    want_naive = int(datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc).timestamp())
+    # --- canon loader level: offset-bearing start == the same instant as epoch seconds ---
+    # (XBT's first fixture print is 2025-09-13T23:00Z, so the pair is chosen to straddle real
+    # prints: the offset start 22:30Z includes 23:00Z+ rows the naive same-digits start
+    # 00:30Z excludes — the teeth.)
+    from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
+    import logging
+    epoch_instant = int(datetime(2025, 9, 13, 22, 30, tzinfo=timezone.utc).timestamp())
+
+    def panel(start):
+        logging.disable(logging.CRITICAL)
+        env = VectorBTTradingEnv(db_path=FIXTURE_DB, start_date=start,
+                                 end_date="2025-09-16", specific_symbols=["XBT/USD"],
+                                 initial_cash=10000.0, max_steps=10)
+        logging.disable(logging.NOTSET)
+        return np.asarray(env.prices)
+
+    p_offset = panel("2025-09-14T00:30:00+02:00")      # == 2025-09-13T22:30Z == epoch_instant
+    p_epoch = panel(epoch_instant)
+    p_naive = panel("2025-09-14T00:30:00")             # naive -> 00:30Z, 2h LATER (the teeth)
+    checks = {
+        "offset_iso_resolves_to_the_offsets_instant": off == want_off,
+        "offset_iso_is_NOT_the_naive_reading": off != naive,
+        "naive_iso_still_labeled_UTC": naive == want_naive,
+        "plain_date_still_UTC_midnight": plain == want_naive,
+        "loader_offset_start_EQUALS_epoch_start": (
+            p_offset.shape == p_epoch.shape and bool((p_offset == p_epoch).all())),
+        "loader_offset_start_DIFFERS_from_naive_same_digits": (
+            p_offset.shape != p_naive.shape or not bool((p_offset == p_naive).all())),
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    print(f"    '2025-06-01T00:00:00+05:00' -> {off} (2025-05-31T19:00Z, the correct instant; "
+          f"the pre-fix re-label gave {naive} = 5h late); naive and plain dates -> UTC "
+          f"midnight, unchanged. Loader: '+02:00' start == epoch start, != naive start.")
+    return {"leg": "869fix_tz_offset_iso_probe", "passed": all(checks.values()),
+            "checks": checks, "offset_epoch": off, "naive_epoch": naive}
 
 
 def leg_masked_reanchor_nets_zero(R, imp):
@@ -2663,6 +2856,7 @@ def main():
     report["legs"].append(leg_interior_frozen_spans(R, imp))
     report["legs"].append(leg_canon_minute_equivalence(R, imp))
     report["legs"].append(leg_teacher_floor_masked(R, imp))
+    report["legs"].append(leg_daily_teacher_floor_masked(R, imp))
     report["legs"].append(leg_daily_disclosure_parity(R, imp))
     report["legs"].append(leg_require_active_slots(R, imp))
     report["legs"].append(leg_loader_identity_refusals(R, imp))
@@ -2670,6 +2864,7 @@ def main():
     # TASK_868 (D31 opt (a)): the identity repair + the causal frozen-cell mask, fixture-proven
     report["legs"].append(leg_alias_union_and_agreement_gate(R, imp))
     report["legs"].append(leg_open_gate_causality(R, imp))
+    report["legs"].append(leg_tz_offset_iso_probe(R, imp))
     report["legs"].append(leg_masked_reanchor_nets_zero(R, imp))
 
     # ------------------------------------------------- (ii-b) refusal matrix (subprocess)

@@ -171,14 +171,18 @@ CANON_832_PINS = {
     # carries the D31 (a2) causal open-gate) at the new fixture-canon 150 iters (was 80 — see
     # imprint.py's --iters note). Old values are in this file's git history and in
     # runs/868_asset_identity_repair/baseline_diffs/.
-    "policy_net21": -2.308594834971675,
-    "floor_net21": -4.233984143132649,
-    "floor_gross": -2.256319048873474,
-    "teacher_action_agreement": 0.9376326963906582,
-    "policy_ce_first": 2.449171543121338,
-    "policy_ce_last": 0.25362908840179443,
-    "gate_rel_diff": 0.09108936603652518,
-    "final_pv_net21": 95216.765625,
+    # TASK_869 RE-BASE (2026-08): re-measured under UTC window resolution (D31 (a3) scope 1 —
+    # was local-time; the fixture panel axis shifted +2h/+1h, every value below moved). The
+    # expressibility gate now MISSES at rel 0.117 > 0.10, so the pre-registered weight-native
+    # re-gate contingency ships in the artifact (warn-level by design; see imprint.py).
+    "policy_net21": -1.13547115152307,
+    "floor_net21": -4.75615421861688,
+    "floor_gross": -2.6532860340724875,
+    "teacher_action_agreement": 0.9333864118895966,
+    "policy_ce_first": 2.4369685649871826,
+    "policy_ce_last": 0.23627693951129913,
+    "gate_rel_diff": 0.11732254092942986,
+    "final_pv_net21": 98732.046875,
 }
 # Keys of the 835 scorecard that legitimately move with the invocation (out-dir pointer) or the
 # calendar (the LEDGER row stamps date.today()) — excluded from the canon-pin comparison.
