@@ -1,3 +1,18 @@
+> **STATUS (2026-08-03): SHIPPED as `task868-asset-identity-repair` (`3388a0c` + 861 promote
+> `a687aff`).** Factory run 24. (a1) load-time alias union (NO DB writes; fail-loud agreement
+> gate; disclosed) — the 6 identity-split slots read as REAL data; frozen-interior 2,013 →
+> 1,011 cells (0.94%); honest not-real share 10.6687% → 9.7334%. (a2) causal frozen-cell
+> open-gate (all-frozen bar-rule — interior-only is non-causal by construction; whole-action
+> force-HOLD via `price_valid`; D30 fill still values; PV exact to the cent mask ON; re-anchor
+> repro 130,000.00 → exactly 100,000.00 masked). Duplicate sweep committed (55 groups = 13
+> live twins + 42 stubs). Fixture: twin pair + 600-min hole, pinned slice window. Re-base
+> disclosed per-field (`runs/868_asset_identity_repair/baseline_attribution.json`); 834/836/
+> 837/844/857 declared KNOWN-STALE (858-backfill drift, not 868 semantics — re-base rides the
+> D31 (a3) wave). Medium panel, 2 cycles: regression MAJOR (unattributed blast radius) + 4
+> MINORs closed and re-verified first-hand. Selftest 12/12 · 865 28/28 · 863 13/13 · 861
+> re-verify green. **Remainder → planner: the 861 real-leg chain un-gates once 869 ships
+> verified; the +0.839/+0.898/WF references get re-measured on the new semantics (D31 a3).**
+
 > **[AUTHORIZED 2026-08-01 — D31 RULED by the OPERATOR: opt (a) as amended. Attribution
 > resolved: the "unattributed actor" was the planner session writing while the factory was
 > armed; the orchestrator's quarantine was correct and is preserved in the D31 row. This is now
