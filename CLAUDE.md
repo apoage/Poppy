@@ -39,10 +39,6 @@ train_easy.py                 # Foxglove entry (retiring — TASK_829)
 real_trade_jax.py             # Live trading
 trader/                       # numpy CTA engine (eval bar + factory test baseline)
 
-mcts_trader/                  # Poppy — see subtree CLAUDE.md
-diff_teacher/                 # Bella  — see subtree CLAUDE.md
-tools/orchestration/          # Dojos (retiring — TASK_829)
-
 tools/DS24/                   # Training dashboard (localhost:8050)
 tools/benchmarks/             # Performance testing
 tools/benchmark_easy.py       # Canonical eval scorecard
@@ -90,24 +86,6 @@ Goal: keep GPU saturated with gradient compute, offload everything else.
 - Repeated disk reads in training loop
 - Intermediate tensors on disk
 - Any compute touching disk when RAM/VRAM available
-
-```python
-# BAD: disk in the loop
-for batch in training_loop:
-    data = load_from_disk()
-    train_step(data)
-
-# GOOD: on-the-fly in VRAM
-for batch in training_loop:
-    data = generate_on_the_fly()   # JIT, ~20ms
-    train_step(data)
-
-# GOOD: pre-load to RAM, stream to VRAM
-data_in_ram = load_once_at_startup()
-for batch in training_loop:
-    batch = data_in_ram[idx]
-    train_step(batch)
-```
 
 ## JAX Pitfalls
 
