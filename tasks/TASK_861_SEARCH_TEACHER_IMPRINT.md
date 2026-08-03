@@ -1,5 +1,16 @@
 # TASK_861 — Search-teacher imprint (D26 ruled: park the search-leaf lane, test the better-teacher × proven-recipe combination)
 
+> **CLOSED 2026-08-03 — REAL LEGS RUN, VERDICT: FAIL (LEDGER 861/search-teacher-imprint).**
+> Executed on gpu-server (tmux `861chain`, deploy `b695487`) per the D31-final registration.
+> Leg 1 teacher: net@21 **+8.118**, all hard checks PASS. Leg 0 re-based reference: median
+> **+0.9914** (s +0.991/+0.994/+0.953 — seed spread 0.041; supersedes the demoted +0.839,
+> LEDGER 861/ref-rebase). Leg 3: search-teacher imprint median **+0.6923**
+> (s +0.572/+0.692/+0.780), **0/3 seeds above the reference — every seed below the
+> book-teacher battery.** Teacher quality does not transfer through hard-target BC;
+> imitability, not quality, is what the recipe rewards. Leg 4 not run (gated on leg 3).
+> The better-teacher hypothesis on the imprint lane is CLOSED. Five pre-launch framings
+> (D26→D31) bought a number interpretable in ONE run: zero confounds left to argue.
+
 > **STATUS (2026-07-28): SHIPPED as `task861-search-teacher-imprint`** (factory run 20).
 > Both flags OFF bit-identical (orchestrator-reproduced vs `HEAD`: 0 differing leaves on both
 > modules; selftest 12/12). 3-member panel over 2 fix rounds, **5 MAJOR found and closed**:

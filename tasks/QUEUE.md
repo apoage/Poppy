@@ -3,6 +3,17 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-03 (planner, LATE) — 861 CHAIN COMPLETE, VERDICT IN: search-teacher imprint FAIL 0/3
+(median +0.6923 vs re-based reference median +0.9914 — every seed below the book-teacher
+battery; LEDGER 861/search-teacher-imprint). The re-based reference itself is the headline:
++0.9914 median, seed spread 0.041, supersedes the demoted +0.839 (LEDGER 861/ref-rebase).
+Better-teacher hypothesis on the imprint lane CLOSED (joins the parked 857/860 distill lane:
+the search's edge lives in lookahead timing that neither distillation nor hard-target BC can
+carry). Leg 4 not run. Ready = TASK_870 → 871 unchanged; factory GREEN. Planner remainder,
+sanctioned by D31 (a3): re-measure the +0.898 OOS and WF quarters for the RE-BASED reference
+(862 scorecard over ckpt_ref_s{0,1,2}) — the reference's OOS standing is still the pre-D31
+number.**
+Prior grooming:
 **2026-08-03 (planner, post run-24 ratification) — 861 REAL-LEG CHAIN LAUNCHED on gpu-server**
 (tmux `861chain`, deploy `b695487`, orchestrator `orch_861_chain.sh`): leg 0 (3-seed 832-recipe
 reference battery, GPU 2 serial) ∥ leg 1 (pinned search-teacher pass, GPU 1) → leg 2 (3-seed
