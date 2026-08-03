@@ -64,6 +64,25 @@
     "/panel/asset_aliases[3]/per_id_counts/1111": {"old": 90667, "new": 90716, "scope": 1},
     "/window_utc": {"old": null, "new": [1757721600, 1765497600], "scope": 1, "note": "added"}
    }
+  },
+  "861_chosen_vectors_fixture": {
+   "promote_path": "smoke_e2e._assert_collection_valid + _promote_baseline (the TASK_867 gate FUNCTIONS, validity-gated, atomic, per-field diff — the SAME pre-commit ordering 868 used: the collection lands first so the post-commit --promote-baselines run finds legs iii-vi green; md5 68c7567faa981a955c50c45f071e87a7, was a687aff's post-868 collection)",
+   "leaves": {"old": 8637, "new": 8639},
+   "moved": 3052,
+   "removed": 0,
+   "added": 2,
+   "attribution": "scope (1) — the UTC window shift on the unpinned minute panel (axis +2h/+1h): all 471 decision timestamps moved (first divergence k=0: 1758668460 -> 1758672060), 517 chosen-vector cells and 2,053 realized-book cells re-decided on the shifted rows, per-id in-window coverage counts, n_open_gated_decision_cells 1717 -> 1724, and the walk score re-derived. n_decisions stays 471; the collection schema/operator/panel-frame blocks are unchanged. Added: window_utc (the scope-(1) record). created_utc is the declared-volatile wall-clock stamp (COLLECTION_VOLATILE).",
+   "key_field_moves": {
+    "/provenance/walk_net21": {"old": 18.82398476363263, "new": 18.371944890897968, "scope": 1},
+    "/provenance/walk_final_pv": {"old": 232673.5, "new": 230787.65625, "scope": 1},
+    "/provenance/walk_pct_hold_agg": {"old": 85.72186836518047, "new": 85.19108280254777, "scope": 1},
+    "/provenance/n_open_gated_decision_cells": {"old": 1717, "new": 1724, "scope": 1},
+    "/provenance/payload_sha256": {"old": "3988835595cbaee38811ff3a4e221faa8de1f9c5d987360d3afd9279c2892c1a", "new": "6eb4466537e08c574592896763e442f0595ba98d1436704a79083190d9c1cc0c", "scope": 1, "note": "recomputed seal over the shifted payload; verified by the 867 validity gate"},
+    "/provenance/window_utc": {"old": null, "new": [1757808000, 1765497600], "scope": 1, "note": "added"},
+    "/decisions/timestamp[*]": {"old": "axis anchored 1758668460", "new": "axis anchored 1758672060 (+3600s, all 471 rows)", "scope": 1},
+    "/decisions/chosen_vectors": {"old": "pre-UTC walk", "new": "517 of 3768 cells re-decided on the shifted rows", "scope": 1},
+    "/decisions/realized_book": {"old": "pre-UTC walk", "new": "2053 of 3768 cells moved (downstream of the shifted decisions)", "scope": 1}
+   }
   }
  },
  "in_suite_constants": {
@@ -90,14 +109,31 @@
    }
   },
   "861_smoke (experiments/861_search_teacher_imprint/smoke_e2e.py)": {
-   "attribution": "all scope (1) — re-measured on the post-UTC fixture minute panel (weight-OFF default imprint run)",
+   "attribution": "all scope (1) — re-measured on the post-UTC fixture minute panel (weight-OFF default imprint run for the canon pins; the leg-vi constants move with the 865 smoke's identical frame/panel; the iters bump follows the UTC-shifted collapse band)",
    "moves": {
-    "CANON_832_PINS": "policy_net21 -2.308594834971675 -> -1.13547115152307; floor_net21 -4.233984143132649 -> -4.75615421861688; floor_gross -2.256319048873474 -> -2.6532860340724875; teacher_action_agreement 0.9376326963906582 -> 0.9333864118895966; policy_ce_first 2.449171543121338 -> 2.4369685649871826; policy_ce_last 0.25362908840179443 -> 0.23627693951129913; gate_rel_diff 0.09108936603652518 -> 0.11732254092942986; final_pv_net21 95216.765625 -> 98732.046875"
+    "CANON_832_PINS": "policy_net21 -2.308594834971675 -> -1.13547115152307; floor_net21 -4.233984143132649 -> -4.75615421861688; floor_gross -2.256319048873474 -> -2.6532860340724875; teacher_action_agreement 0.9376326963906582 -> 0.9333864118895966; policy_ce_first 2.449171543121338 -> 2.4369685649871826; policy_ce_last 0.25362908840179443 -> 0.23627693951129913; gate_rel_diff 0.09108936603652518 -> 0.11732254092942986; final_pv_net21 95216.765625 -> 98732.046875",
+    "MINUTE_FRAME_* (leg vi, release round)": "PARTIAL_SLOTS [3,5,7] -> [7]; FORCE_HOLD_CELLS 1796 -> 1798; CELL_HONESTY frozen 854 -> 856 / frozen_stale_tail 854 -> 856 / live 1972 -> 1970 (inert 942 unchanged) — same values as the 865 smoke's identical frame/panel, which these duplicate",
+    "imprint_cmd iters (release round)": "150 -> 250 — the UTC shift moved the total-HOLD collapse band; seed-dependent on the unpinned grid (legit seed 2 collapses at 150, all 4 seeds healthy at 250) and the pinned grid collapses at 150 too (the 865 pass-leg band). Falsification separation re-measured at 250: legit min +0.1761 vs shuffled max +0.0256 (floor +0.05)"
    }
   }
  },
+ "release_round_2026_08_03": {
+  "wall": "post-commit (3e0baa9) `smoke_e2e.py --promote-baselines` REFUSED with 5 red legs: iii_provenance, iv_falsification, roundtrip_teacher_floor, v_pinned_recipe_corunnable, vi_minute_frame_pin ('an artifact that was never green must not become the tracked oracle').",
+  "diagnosis": "TWO distinct causes, separated at leg level. (a) STALE COLLECTION — iii/iv/v/roundtrip run imprints against the tracked pre-869 collection: the provenance gate refuses on decision-timestamp divergence (k=0: 1758668460 vs 1758672060), which preempts iv's legit arms (expect exit 0), v's co-run, roundtrip's floor comparison, and iii's replay_integrity case (the permuted-payload tamper must reach the WALK-SCORE refusal; the stale timestamps fire the earlier provenance refusal instead). This is the 868 ordering requirement: the collection must be re-collected and promoted PRE-COMMIT through the 867 gate functions. (b) REAL 869-SIDE MISSES in leg vi (it records its OWN fresh collection, so the stale collection was never its problem): the MINUTE_FRAME_* constants were still the 868-era values (the 865 smoke's identical-frame constants were re-derived but these duplicates were not — leg vi was unreachable pre-commit because the e2e halted at (i-b)), and the pinned-frame imprint collapsed to total-HOLD at the smoke's 150 iters (degenerate_replay fired, correctly).",
+  "fixes": "smoke_e2e.py: MINUTE_FRAME_PARTIAL_SLOTS [3,5,7] -> [7] (slots 3/5 re-bin into bar 0 under UTC), FORCE_HOLD_CELLS 1796 -> 1798, CELL_HONESTY frozen 854 -> 856 / live 1972 -> 1970 (identical values to the 865 smoke's, same frame/panel); imprint_cmd iters 150 -> 250 — the collapse band is seed-dependent post-869: MEASURED legit seed 2 collapses at 150 (seeds 0/1/3 healthy), all four seeds healthy at 250 (seed 2 policy net21 +3.33, NLL-reduction +0.1899), and the falsification separation holds at 250 (shuffled seed 0 NLL-reduction -0.0045 < +0.05 floor).",
+  "collection_promote": "re-collected with the smoke's exact eval_cmd under post-869 code, promoted through the 867 gate FUNCTIONS (_assert_collection_valid PASS; _promote_baseline atomic, per-field diff): md5 68c7567faa981a955c50c45f071e87a7 (diff stats in baselines.861_chosen_vectors_fixture above).",
+  "verification_vs_promoted_collection": {
+   "iii_provenance": "ALL 8 refusal cases PASS, incl. replay_integrity now reaching the walk-score refusal ('REPLAY INTEGRITY FAILURE', 8.0s replay vs 5.1s provenance fast-fail) — plus multi-checkpoint and empty-flag cases unaffected",
+   "iv_falsification": "legit 4/4 exit 0 (NLL-reduction +0.1761/+0.1857/+0.1899/+0.1761, min +0.1761 vs +0.05 floor), shuffled 4/4 refused (max +0.0256; all exit 1) — separation holds at the shipped 250-iter recipe",
+   "v_pinned_recipe_corunnable": "PASS (exit 0, imprint_mapping search-teacher-vectors, at the shipped 250 iters)",
+   "vi_minute_frame_pin": "ALL checks PASS (exit 0, partial [7], force-hold 1798, cell honesty exact, sanity both tiers finite, replay integrity passed, reordered frame refused)",
+   "roundtrip_teacher_floor": "MATCH — imprint replay floor +18.371944 vs collection walk +18.371945 (rel 5.84e-08 < 1e-4)",
+   "ivb_escape_hatch_honesty": "PASS (off-pin fields == ['checkpoint'] only, position_size_pct exemption exercised, replay integrity checked+passed)"
+  },
+  "remaining_for_the_orchestrator": "commit this fix-round changeset (smoke_e2e.py leg-vi/iters fixes + the promoted collection + this attribution update); run `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines` — legs i-vi + roundtrip now green, expected red ONLY on vii's results-baseline pin (the designed exemption the promote installs); commit the results baseline; re-run plain for the fully-green state (then 863/865 parity-lite legs go green too — the provenance gate now sees a post-869 tracked collection)."
+ },
  "not_promoted": {
-  "861 chosen_vectors_fixture.json + results_fixture_smoke.json": "BLOCKED BY DESIGN, mechanism stated precisely (run-25 panel fix): 861's OWN baselines are committed-clean, so the 867 pre-run hygiene gate PASSES — the halt is one leg later, the 866 oracle loader at leg (i-b) refusing the git-DIRTY 832 baseline (`_load_832_weight_on_oracle` is fail-closed on missing/dirty/wrong-config, and the promoted 832 baseline is uncommitted until the 869 commit lands). The promote is blocked TRANSITIVELY by the same check: --promote-baselines requires an all-green-except-vii report, which requires (i-b). Fail-fast ordering note: the 866 oracle check fires at (i-b) BEFORE any 867 promote-gate check is reached, so the first refusal a pre-commit run prints names the 832 baseline, not the 861 ones. Release ritual: commit the 869 changeset -> `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines` ((i-b) then pins the committed 832 baseline; expected red only on vii's pre-promote parity pin — the designed exemption; the promote installs it) -> commit -> re-verify. EXPECTED move class (scope 1): the unpinned minute panel axis shifted +2h/+1h — the collection's decision timestamps move (first divergence at k=0: 1758668460 -> 1758672060) while n_decisions stays 471; every walk numeric on the shifted rows re-derives. Until the promote, the suites' legs pinned to the tracked collection (863 parity-lite, 865 parity-lite, 861 vii baseline pins) are RED BY DESIGN — the provenance gate correctly refuses the cross-boundary collection; each was verified GREEN against a scratch post-869 collection recorded with the canon recipe (no tracked file touched), and (i-b)'s substance was verified IDENTICAL manually via the smoke's own check_832_parity_against_oracle.",
+  "861 results_fixture_smoke.json": "BY DESIGN — the results baseline is the SECOND half of the 867 ordering (same as 868's a687aff): it promotes only from an all-green-except-vii run against the COMMITTED post-869 collection, i.e. after the orchestrator commits the collection above. Until then the suite's only red legs are vii's pre-promote parity pins (collection pin: the designed exemption; results pin: installs on promote).",
   "837_walkforward baseline": "already declared known-stale in the 868 wave (source-data drift); its loader_epoch mirror is now UTC but the baseline is deliberately NOT re-measured here (re-measuring references = planner 861 leg 0, out of scope).",
   "865 --real-db-coverage opt-in leg (iii)": "its real-db cell-share constants were registered under local-time window resolution (and re-registered post-868). The leg is opt-in and was NOT run in this task; its REAL_WINDOW now resolves in UTC and the boundary-sensitive counts (EXPECT_N_PANEL_ROWS 1734 +/- 1, the stale-tail band, the frozen-cell shares) may need re-registration on the next real-db run. Flagged, not silently stale."
  },
@@ -107,7 +143,7 @@
   "832 parity baseline": "promoted through the 864 gate (above); the run's only WARN is the designed expressibility-gate contingency (scope 1)",
   "863 smoke": "all legs green EXCEPT (i) parity-lite — red by design until the 861 collection promote (provenance gate refuses the pre-869 tracked collection); the identical leg verified green against a scratch post-869 collection",
   "865 smoke": "all legs green (incl. the new iia6 daily teacher-floor mask leg) EXCEPT (i) parity-lite — same designed pre-promote state, same scratch verification",
-  "861 e2e": "run modulo the pre-commit gate: legs reading the dirty/pending baselines ((i-b) weight-ON oracle dirty-check, vii baseline pins) red by design pre-commit; CANON_832_PINS re-derived (above) so the post-promote run is fully green",
+  "861 e2e": "run modulo the pre-commit gate: legs reading the dirty/pending baselines ((i-b) weight-ON oracle dirty-check, vii baseline pins) red by design pre-commit; CANON_832_PINS re-derived (above). RELEASE ROUND (see release_round_2026_08_03): the post-commit wall (5 red legs) diagnosed = stale pre-869 collection (iii/iv/v/roundtrip) + real leg-vi misses (MINUTE_FRAME_* constants, seed-dependent collapse at 150 iters); the collection is now re-collected and promoted through the 867 gate functions (md5 68c7567faa981a955c50c45f071e87a7) and every previously-red leg verified GREEN against it — the orchestrator's --promote-baselines run should be green except vii's designed results-pin exemption",
   "scorecard smoke": "toy battery on the fixture; window_utc is now validated per row (schema) and echoed from eval_vector's own artifact"
  },
  "pv_conservation": "865 leg (0) green on the post-869 tree: flat-price panel, fee 0 — LONG and SHORT books both end at exactly 100,000.00 with the mask ON (29 tail cells force-HELD) and OFF; the zeroed-tail control still breaks both books in opposite directions (+/- one slot's 25% weight). The daily-pin PV conservation holds: the daily teacher-floor mask is inert on the shipped daily panel (scope_2_measurement), so no daily-pinned PV moved from scope (2)."

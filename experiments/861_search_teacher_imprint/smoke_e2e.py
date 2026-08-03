@@ -328,29 +328,32 @@ MINUTE_FRAME_SYMBOLS = ["XBT/USD", "/EURGBP", "ETH/USD", "LTC/USD",
                         "/USDCAD", "XMR/USD", "ZEC/USD", "ETC/USD"]
 MINUTE_FRAME_INACTIVE_SLOTS = [1, 4]
 # TASK_868 RE-BASE (fixture regenerated 2026-08 — the 858 backfill densified the majors' minute
-# history; the panel moved T=111/N=50 -> T=532/N=471). Slots 3, 5 and 7 list one bar late =>
-# PARTIAL (pre-listing rows flat-zero, force-HOLD). `ZEC/USD` (slot 6) and `ETC/USD` (slot 7)
-# are STALE TAILS (minute data ends 2025-09-30; last real panel bar 103): under D30 opt (i) the
-# 428 trailing rows each are FORWARD-FILLED at that close (PV-exact for VALUATION) and under
-# TASK_868 (D31 a2) force-HELD for OPENING by the causal open-gate. Slot 6 is the tail-only
-# case (in NEITHER other list); slot 7 is partial AND stale-tailed. Force-HOLD cells are
-# therefore 2*471 (inert) + 2*427 (open-gated) = 1,796 of 3,768. Exhaustive assertions live in
-# the 865 smoke.
-MINUTE_FRAME_PARTIAL_SLOTS = [3, 5, 7]
+# history; the panel moved T=111/N=50 -> T=532/N=471). TASK_869 RE-BASE (UTC window resolution):
+# the +2h/+1h axis shift re-binned the boundary bars — slots 3 and 5's first real prints now land
+# INSIDE bar 0 (covered from open), so only slot 7 is still PARTIAL (lists one bar late;
+# pre-listing rows flat-zero, force-HOLD). `ZEC/USD` (slot 6) and `ETC/USD` (slot 7) are STALE
+# TAILS (minute data ends 2025-09-30; last real panel bar 102, was 103 under local-time
+# resolution): under D30 opt (i) the 429 trailing rows each are FORWARD-FILLED at that close
+# (PV-exact for VALUATION) and under TASK_868 (D31 a2) force-HELD for OPENING by the causal
+# open-gate. Slot 6 is the tail-only case (in NEITHER other list); slot 7 is partial AND
+# stale-tailed. Force-HOLD cells are therefore 2*471 (inert) + 2*428 (open-gated) = 1,798 of
+# 3,768. Exhaustive assertions live in the 865 smoke (identical frame/panel — these constants
+# must move with experiments/865_minute_frame_pin/smoke_minute_frame_pin.py's).
+MINUTE_FRAME_PARTIAL_SLOTS = [7]
 MINUTE_FRAME_STALE_TAIL_SLOTS = [6, 7]
 MINUTE_FRAME_TAIL_ONLY_SLOTS = [6]
 MINUTE_FRAME_FROZEN_SLOTS = [6, 7]
-MINUTE_FRAME_FORCE_HOLD_CELLS = 1796
+MINUTE_FRAME_FORCE_HOLD_CELLS = 1798
 # FIX PASS — the honest CELL-level partition of this leg's 471x8 decision grid, OBSERVED out of
-# the artifact: 942 INERT (no price at all => force-HOLD) + 854 FROZEN (forward-filled,
-# force-HELD for OPENING under D31 a2: the two stale tails' 2x427 in-decision rows) + 1,972 LIVE.
+# the artifact: 942 INERT (no price at all => force-HOLD) + 856 FROZEN (forward-filled,
+# force-HELD for OPENING under D31 a2: the two stale tails' 2x428 in-decision rows) + 1,970 LIVE.
 # Asserted here so the 861 chain's own coverage of the path its real legs run on cannot report
 # a grid as fully live when it is not.
 MINUTE_FRAME_CELL_HONESTY = {"n_decision_cells": 3768, "n_inert_decision_cells": 942,
-                             "n_frozen_decision_cells": 854,
+                             "n_frozen_decision_cells": 856,
                              "n_frozen_interior_decision_cells": 0,
-                             "n_frozen_stale_tail_decision_cells": 854,
-                             "n_live_decision_cells": 1972}
+                             "n_frozen_stale_tail_decision_cells": 856,
+                             "n_live_decision_cells": 1970}
 # D30 rider (b): 6 of 8 slots are covered by design here, below the shared default breadth floor —
 # opt out EXPLICITLY rather than weakening the default that guards the real legs.
 MINUTE_FRAME_REQUIRE_ACTIVE = ["--require-active-slots", "0"]
@@ -623,9 +626,14 @@ def imprint_cmd(out_json, ckpt_out, seed=0, collection=COLLECTION, shuffle=False
     # TASK_868 re-base: 150 iters (was 80) — measured escape point for the total-HOLD collapse
     # on the regenerated fixture's ~47%-masked 471x8 decision grid (the collapse band is
     # configuration-dependent by design; see the 865 smoke's pass-leg note).
+    # TASK_869 re-base: 250 iters (was 150) — the UTC window shift moved the band again, and it
+    # is SEED-dependent on the unpinned grid: MEASURED post-869, legit seed 2 collapses to a
+    # total-HOLD student at 150 (seeds 0/1/3 healthy) while all four seeds are healthy at 250
+    # (seed 2: policy net21 +3.33, NLL-reduction +0.1899). The falsification separation holds
+    # at 250: shuffled seed 0 measures NLL-reduction -0.0045, below the +0.05 floor (refused).
     cmd = [sys.executable, IMPRINT_PY, *PANEL, "--vector-weight-rebalance",
            "--teacher-vectors", collection, "--allow-off-pin-teacher",
-           "--iters", "150", "--seed", str(seed),
+           "--iters", "250", "--seed", str(seed),
            "--ckpt-out", ckpt_out, "--out", out_json]
     if shuffle:
         cmd.append("--shuffle-teacher-vectors")
@@ -1098,6 +1106,9 @@ def main():
              *MINUTE_FRAME_REQUIRE_ACTIVE]
     sh(eval_cmd(m_dir, collect=m_coll) + m_pin, os.path.join(RUN_DIR, "walk_minute_pin.log"))
     m_out = os.path.join(RUN_DIR, "imprint_minute_pin.json")
+    # TASK_869: the pinned grid's total-HOLD collapse band moved with the UTC shift — the
+    # imprint_cmd default (250) is the measured healthy point on BOTH grids (seed 0; 150
+    # collapses here, identical band to the 865 smoke's pass leg, same frame/panel).
     rc_m, _ = sh(imprint_cmd(m_out, os.path.join(RUN_DIR, "ck_minute_pin"), seed=0,
                              collection=m_coll, extra=tuple(m_pin)),
                  os.path.join(RUN_DIR, "imprint_minute_pin.log"), expect_ok=False)

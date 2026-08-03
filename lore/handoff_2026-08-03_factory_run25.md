@@ -97,6 +97,33 @@ planner wrap): local-time parses in `diff_teacher/data_loader.py`,
 `tools/orchestration/train_manager.py`, `tools/map_training_data.py`,
 `mcts_trader/data/stream.py`.
 
+## Release round (2026-08-03, post-3e0baa9) — the wall, diagnosed and unblocked
+
+The post-commit `--promote-baselines` refused with 5 red legs (iii, iv, roundtrip, v, vi).
+Diagnosis separated TWO causes at leg level: **(a) stale pre-869 collection** — iii/iv/v/roundtrip
+run against the tracked collection, and the provenance gate's timestamp refusal preempts them
+(the 868 ordering requirement: the collection must be re-collected and promoted PRE-COMMIT
+through the 867 gate functions — the wave's implementer note said "orchestrator promotes," which
+was wrong for the COLLECTION half; it must land with the changeset commit); **(b) real 869-side
+misses in leg vi** — it records its own fresh collection, so its redness was stale
+`MINUTE_FRAME_*` constants (the 865 smoke's duplicates were re-derived, these were not — the leg
+was unreachable pre-commit since the e2e halted at (i-b)) plus the pinned-frame imprint
+collapsing to total-HOLD at the smoke's 150 iters. Fixes: constants re-derived ([7], 1798,
+856/1970 — identical to the 865 smoke's, same frame/panel) and `imprint_cmd` 150→250 iters
+(measured: legit seed 2 collapses at 150 on the unpinned grid, all 4 seeds healthy at 250,
+shuffled still refused, separation re-measured). The collection was re-collected with the smoke's
+exact `eval_cmd` and promoted through the 867 gate FUNCTIONS (`_assert_collection_valid` +
+`_promote_baseline`, atomic, per-field diff): **md5 68c7567faa981a955c50c45f071e87a7** (3,052
+moved leaves, all scope 1 — see the attribution JSON). Every previously-red leg then verified
+GREEN against the promoted collection (iii matrix 8/8 incl. the walk-score replay-integrity
+refusal; iv legit 4/4 + shuffled 4/4 at 250; v co-runnable; vi all checks; roundtrip rel
+5.84e-08).
+
+**Remaining release steps (orchestrator):** commit this round (smoke_e2e.py fixes + promoted
+collection + attribution/handoff updates) → `--promote-baselines` (green except vii's designed
+results-pin exemption, which the promote installs) → commit the results baseline → plain re-run
+fully green (863/865 parity-lite go green with it).
+
 ## Release ritual (orchestrator, in order)
 
 1. Commit the 869 changeset (14 files + `runs/869_rebase_wave_semantics/`; `.gitignore` negations

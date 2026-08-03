@@ -1,3 +1,23 @@
+> **STATUS (2026-08-03): SHIPPED as `task869-rebase-wave-semantics` (`3e0baa9` + 861 promote
+> commit).** Factory run 24. (1) `_to_epoch` → UTC everywhere windows resolve; `window_utc`
+> recorded in artifacts; TZ-invariance byte-proven (fixture smoke + OOS window, 4 TZs, DST
+> edge) — the 308-row CEST offset class is gone; TZ-aware ISO converts correctly (two lenses
+> caught the relabel clobber). (2) Daily teacher floor masked like the minute floor —
+> MEASURED INERT (mutation proof both ways), ships as defence-in-depth. (3) Every moved
+> numeric attributed (`runs/869_rebase_wave_semantics/baseline_attribution.json`); 832/835
+> re-promoted through their gates; 861 via the promote handoff. Medium panel, 2 cycles, no
+> BLOCKER/MAJOR; 5 MINORs + NITs closed, re-verified 7/7 with mutation tests. Selftest 12/12;
+> scorecard PASS. **Release round:** the post-commit promote exposed a REAL leg-vi break the
+> pre-commit halt had masked (stale `MINUTE_FRAME_*` constants + seed-dependent collapse at
+> 150 iters) — constants fixed, imprint recipe bumped to a measured 250 iters, the 861
+> collection re-collected and promoted through the 867 gate (3,052 moved leaves, all
+> attributed to scope 1); legs iii/iv/v/vi/roundtrip green against it. **The D31 re-base
+> wave is CLOSED (866→867→868→869 all shipped) — the 861 leg-0 reference battery +
+> median-vs-median leg 3 un-gate, planner-scheduled per the D31 addendum in TASK_861.
+> Remainders → planner: local-time parses off the read-of-record surface (diff_teacher/
+> tools); next fixture regen re-bases several 865 expectations once more (pointed at
+> in-code).**
+
 > **[AUTHORIZED 2026-08-01 — D31 RULED by the OPERATOR: opt (a) as amended. Attribution
 > resolved: the "unattributed actor" was the planner session writing while the factory was
 > armed; the orchestrator's quarantine was correct and is preserved in the D31 row. This is now
