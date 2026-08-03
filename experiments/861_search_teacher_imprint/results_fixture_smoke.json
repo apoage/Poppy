@@ -15,24 +15,24 @@
     "i_canon_832": {
       "passed": true,
       "pins": {
-        "policy_net21": -2.308594834971675,
-        "floor_net21": -4.233984143132649,
-        "floor_gross": -2.256319048873474,
-        "teacher_action_agreement": 0.9376326963906582,
-        "policy_ce_first": 2.449171543121338,
-        "policy_ce_last": 0.25362908840179443,
-        "gate_rel_diff": 0.09108936603652518,
-        "final_pv_net21": 95216.765625
+        "policy_net21": -1.13547115152307,
+        "floor_net21": -4.75615421861688,
+        "floor_gross": -2.6532860340724875,
+        "teacher_action_agreement": 0.9333864118895966,
+        "policy_ce_first": 2.4369685649871826,
+        "policy_ce_last": 0.23627693951129913,
+        "gate_rel_diff": 0.11732254092942986,
+        "final_pv_net21": 98732.046875
       },
       "observed": {
-        "policy_net21": -2.308594834971675,
-        "floor_net21": -4.233984143132649,
-        "floor_gross": -2.256319048873474,
-        "teacher_action_agreement": 0.9376326963906582,
-        "policy_ce_first": 2.449171543121338,
-        "policy_ce_last": 0.25362908840179443,
-        "gate_rel_diff": 0.09108936603652518,
-        "final_pv_net21": 95216.765625
+        "policy_net21": -1.13547115152307,
+        "floor_net21": -4.75615421861688,
+        "floor_gross": -2.6532860340724875,
+        "teacher_action_agreement": 0.9333864118895966,
+        "policy_ce_first": 2.4369685649871826,
+        "policy_ce_last": 0.23627693951129913,
+        "gate_rel_diff": 0.11732254092942986,
+        "final_pv_net21": 98732.046875
       },
       "recipe_identity": {
         "vector_weight_rebalance": false,
@@ -61,14 +61,14 @@
       ],
       "excluded_reason": "absolute invocation paths (clone-path / --ckpt-out dependent, SPEC.md 'Reproducibility precondition'); every scored key is compared float-exact",
       "observed": {
-        "policy_net21": -0.5755315326072664,
-        "floor_net21": -3.848313211725996,
-        "floor_gross": -1.682949049180998,
-        "teacher_action_agreement": 0.9477176220806794,
-        "policy_ce_first": 2.451845645904541,
-        "policy_ce_last": 0.21661189198493958,
-        "gate_rel_diff": 0.09108936603652518,
-        "final_pv_net21": 97597.609375
+        "policy_net21": -4.1415457838821155,
+        "floor_net21": -4.19815012063652,
+        "floor_gross": -2.080458671588327,
+        "teacher_action_agreement": 0.9450636942675159,
+        "policy_ce_first": 2.4448585510253906,
+        "policy_ce_last": 0.21534700691699982,
+        "gate_rel_diff": 0.11732254092942986,
+        "final_pv_net21": 99451.296875
       },
       "differing_keys": [],
       "weight_off_refusal_message": "[866] CROSS-CONFIGURATION REFUSAL: flagless weight-OFF run and the oracle (tracked weight-ON baseline) are DIFFERENT configurations \u2014 vector_weight_rebalance: flagless weight-OFF run is False but the oracle (tracked weight-ON baseline) is True. Comparing them would be the wrong-oracle bug this pin exists to close; check the artifact against an oracle of its OWN configuration.",
@@ -77,7 +77,7 @@
     "ii_pure_recorder": {
       "passed": true,
       "n_decisions": 471,
-      "collection_walk_net21": 18.82398476363263,
+      "collection_walk_net21": 18.371944890897968,
       "schema": "861/chosen-vectors/v1"
     },
     "iii_provenance": {
@@ -154,13 +154,13 @@
       "eval_empty_collect_path": {
         "passed": true,
         "exit_code": 2,
-        "seconds": 0.99,
+        "seconds": 0.98,
         "walk_started": false
       },
       "eval_unwritable_collect_path": {
         "passed": true,
         "exit_code": 2,
-        "seconds": 0.98,
+        "seconds": 0.97,
         "walk_started": false
       },
       "imprint_empty_teacher_vectors": {
@@ -175,76 +175,76 @@
         {
           "seed": 0,
           "exit_code": 0,
-          "nll_reduction": 0.15830438424291676,
+          "nll_reduction": 0.17605273018590922,
           "expected_exit_zero": true,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8572186836518046,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8527070063694268,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 1,
           "exit_code": 0,
-          "nll_reduction": 0.17539483478466458,
+          "nll_reduction": 0.18569374087976798,
           "expected_exit_zero": true,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8580148619957537,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8484607218683652,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 2,
           "exit_code": 0,
-          "nll_reduction": 0.17511461265883627,
+          "nll_reduction": 0.18991568131273423,
           "expected_exit_zero": true,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8556263269639066,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.851380042462845,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 3,
           "exit_code": 0,
-          "nll_reduction": 0.15714223846906494,
+          "nll_reduction": 0.17611476181359412,
           "expected_exit_zero": true,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8572186836518046,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8495222929936306,
+          "modal_action_rate": 0.8519108280254777
         }
       ],
       "shuffled": [
         {
           "seed": 0,
           "exit_code": 1,
-          "nll_reduction": 0.04842927956061088,
+          "nll_reduction": -0.0044992347571789874,
           "expected_exit_zero": false,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8564225053078556,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8466029723991507,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 1,
           "exit_code": 1,
-          "nll_reduction": -0.013269261776687557,
+          "nll_reduction": 0.025597778861859884,
           "expected_exit_zero": false,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8535031847133758,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8492569002123143,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 2,
           "exit_code": 1,
-          "nll_reduction": 0.008250761401939226,
+          "nll_reduction": 0.001511910867279897,
           "expected_exit_zero": false,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8524416135881104,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.846868365180467,
+          "modal_action_rate": 0.8519108280254777
         },
         {
           "seed": 3,
           "exit_code": 1,
-          "nll_reduction": 0.036566175548316586,
+          "nll_reduction": 0.011495037454384025,
           "expected_exit_zero": false,
           "passed": true,
-          "argmax_agreement_vs_original": 0.8556263269639066,
-          "modal_action_rate": 0.8572186836518046
+          "argmax_agreement_vs_original": 0.8476645435244161,
+          "modal_action_rate": 0.8519108280254777
         }
       ]
     },
@@ -262,10 +262,10 @@
       ],
       "in_runner_replay_integrity": {
         "checked": true,
-        "recorded_walk_net21": 18.82398476363263,
-        "replayed_floor_net21": 18.823967834180092,
-        "abs_delta": 1.692945253850553e-05,
-        "rel_delta": 8.993554101899147e-07,
+        "recorded_walk_net21": 18.371944890897968,
+        "replayed_floor_net21": 18.371943818222444,
+        "abs_delta": 1.072675523516864e-06,
+        "rel_delta": 5.838660685555946e-08,
         "rel_tolerance": 0.0001,
         "passed": true
       },
@@ -274,8 +274,8 @@
         "was": 0.1,
         "why": "n=10 seeds (fixture panel, 80 iters): legit min +0.1248 / max +0.3618 / mean +0.2649 / sd 0.0717 vs shuffled min -0.2265 / max -0.0799 / mean -0.1611 / sd 0.0428. Cloud gap 0.2047 (Cohen's d 7.2) \u2014 the separation is excellent, the placement was not: at 0.10 the legit margin is only 0.0248 (0.35 sd, ~1% false-FAIL per seed, ~4% over a 4-seed sweep). 0.05 leaves 1.04 sd on the legit side and 3.04 sd on the sabotage side, and still sits above the 0.0 a constant marginal predictor can never beat."
       },
-      "legit_nll_reduction_min": 0.15714223846906494,
-      "shuffled_nll_reduction_max": 0.04842927956061088
+      "legit_nll_reduction_min": 0.17605273018590922,
+      "shuffled_nll_reduction_max": 0.025597778861859884
     },
     "v_pinned_recipe_corunnable": {
       "passed": true,
@@ -316,8 +316,6 @@
         4
       ],
       "partial_slots": [
-        3,
-        5,
         7
       ],
       "stale_tail_slots": [
@@ -331,22 +329,22 @@
       "decision_cell_honesty": {
         "n_decision_cells": 3768,
         "n_inert_decision_cells": 942,
-        "n_frozen_decision_cells": 854,
+        "n_frozen_decision_cells": 856,
         "n_frozen_interior_decision_cells": 0,
-        "n_frozen_stale_tail_decision_cells": 854,
-        "n_not_real_decision_cells": 1796,
-        "n_live_decision_cells": 1972,
+        "n_frozen_stale_tail_decision_cells": 856,
+        "n_not_real_decision_cells": 1798,
+        "n_live_decision_cells": 1970,
         "inert_decision_cell_pct": 25.0,
-        "frozen_decision_cell_pct": 22.6645,
-        "not_real_decision_cell_pct": 47.6645,
-        "live_decision_cell_pct": 52.3355,
+        "frozen_decision_cell_pct": 22.7176,
+        "not_real_decision_cell_pct": 47.7176,
+        "live_decision_cell_pct": 52.2824,
         "frozen_span_slots": [
           {
             "slot": 6,
             "symbol": "ZEC/USD",
-            "frozen_decision_cells": 427,
+            "frozen_decision_cells": 428,
             "interior": 0,
-            "tail": 427,
+            "tail": 428,
             "n_frozen_spans": 1,
             "frozen_spans_truncated": false,
             "no_real_panel_rows": false
@@ -354,9 +352,9 @@
           {
             "slot": 7,
             "symbol": "ETC/USD",
-            "frozen_decision_cells": 427,
+            "frozen_decision_cells": 428,
             "interior": 0,
-            "tail": 427,
+            "tail": 428,
             "n_frozen_spans": 1,
             "frozen_spans_truncated": false,
             "no_real_panel_rows": false
@@ -364,16 +362,16 @@
         ],
         "rule": "INERT = no price at all (force-HOLD); FROZEN = a forward-filled price no market printed (force-HELD by the TASK_868 causal open-gate on the minute paths \u2014 interior spans re-anchor and can fabricate PnL; still forward-filled for VALUATION, D30 PV-exact); LIVE = the panel row samples a real close. Disjoint, and they sum to n_decision_cells; the force-HOLD mask total is INERT + FROZEN."
       },
-      "sanity_net21": -1.149635165887942,
+      "sanity_net21": 1.4041530896833772,
       "note": "same window/stride/size as the legacy 861 panel \u2014 only the universe is PINNED instead of coverage-ranked (TASK_865). Exhaustive matrix: experiments/865_minute_frame_pin/smoke_minute_frame_pin.py",
       "sanity_net21_attribution": "FIX PASS \u2014 do NOT attribute a swing in this number to the stale tail's tradeability. The stale-tail treatment changes exactly the tail cells of ONE slot; replaying the SAME recorded teacher stream on the filled and zeroed panels isolates that channel and it is SMALL (measured and reported by the (i-b) walk_net21 reconciliation leg of experiments/865_minute_frame_pin/smoke_minute_frame_pin.py, which also carries the sign). A before/after difference in sanity_net21 is dominated by the operator RE-DECIDING on a different panel and by the student being retrained on that different stream \u2014 not by the tail becoming tradeable."
     },
     "roundtrip_teacher_floor": {
       "passed": true,
-      "imprint_floor_net21": 18.823967834180092,
-      "collection_walk_net21": 18.82398476363263,
-      "abs_delta": 1.692945253850553e-05,
-      "rel_delta": 8.993554101899147e-07,
+      "imprint_floor_net21": 18.371943818222444,
+      "collection_walk_net21": 18.371944890897968,
+      "abs_delta": 1.072675523516864e-06,
+      "rel_delta": 5.838660685555946e-08,
       "rel_tolerance": 0.0001,
       "note": "same actions, same rows, same env \u2014 walked by 835 rollout (batched vmap PV) and 832 walk_env (unbatched PV); agreement to float32 rounding proves the recorded target stream replays as the identical trajectory"
     },
@@ -427,7 +425,6 @@
         "/legs/ib_weight_on_pin/observed/policy_net21",
         "/legs/ib_weight_on_pin/observed/teacher_action_agreement",
         "/legs/ii_pure_recorder/collection_walk_net21",
-        "/legs/ii_pure_recorder/n_decisions",
         "/legs/iv_falsification/legit[0]/argmax_agreement_vs_original",
         "/legs/iv_falsification/legit[0]/modal_action_rate",
         "/legs/iv_falsification/legit[0]/nll_reduction",
@@ -462,36 +459,21 @@
         "/legs/roundtrip_teacher_floor/collection_walk_net21",
         "/legs/roundtrip_teacher_floor/imprint_floor_net21",
         "/legs/roundtrip_teacher_floor/rel_delta",
-        "/legs/vi_minute_frame_pin/checks/force_hold_cells_exact_inert_plus_open_gated",
-        "/legs/vi_minute_frame_pin/checks/force_hold_cells_exact_stale_tail_TRADEABLE",
-        "/legs/vi_minute_frame_pin/checks/stale_tail_slot_is_in_NEITHER_other_list",
-        "/legs/vi_minute_frame_pin/checks/tail_only_slot_is_in_NEITHER_other_list",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_decision_cell_pct",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[0]/frozen_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[0]/tail",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/frozen_decision_cells",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/frozen_spans_truncated",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/interior",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/n_frozen_spans",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/no_real_panel_rows",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/slot",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/symbol",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/frozen_span_slots[1]/tail",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/live_decision_cell_pct",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/n_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/n_frozen_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/n_frozen_stale_tail_decision_cells",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/n_inert_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/n_live_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/n_not_real_decision_cells",
         "/legs/vi_minute_frame_pin/decision_cell_honesty/not_real_decision_cell_pct",
-        "/legs/vi_minute_frame_pin/decision_cell_honesty/rule",
-        "/legs/vi_minute_frame_pin/frozen_slots[1]",
         "/legs/vi_minute_frame_pin/partial_slots[0]",
         "/legs/vi_minute_frame_pin/partial_slots[1]",
         "/legs/vi_minute_frame_pin/partial_slots[2]",
-        "/legs/vi_minute_frame_pin/sanity_net21",
-        "/legs/vi_minute_frame_pin/stale_tail_slots[1]"
+        "/legs/vi_minute_frame_pin/sanity_net21"
       ],
       "results_excluded": "top-level ['verdict', 'all_passed', 'elapsed_seconds'], the self-referential pin leg, iiib wall-clock seconds; verdict/all_passed are recomputed fresh every run",
       "promote_demonstrations": {
@@ -510,10 +492,10 @@
     3
   ],
   "imprint_sanity_first_seed": {
-    "policy_net21": 1.742365653504319,
-    "teacher_floor_net21": 18.823967834180092,
-    "corridor_position_net21": -17.081602180675773,
-    "teacher_action_agreement": 0.8572186836518046,
+    "policy_net21": 2.3793913213723887,
+    "teacher_floor_net21": 18.371943818222444,
+    "corridor_position_net21": -15.992552496850056,
+    "teacher_action_agreement": 0.8527070063694268,
     "note": "fixture plumbing numbers \u2014 NO threshold applied (the binding in-sample bar is the planner's real-panel leg 3: sanity replay net@21 > +0.839)"
   },
   "verdict": {
@@ -531,7 +513,7 @@
     "vii_baseline_pins": false
   },
   "all_passed": false,
-  "elapsed_seconds": 990.4,
+  "elapsed_seconds": 1081.1,
   "panel": {
     "db": "fixtures/trading_fixture.db",
     "window": [
