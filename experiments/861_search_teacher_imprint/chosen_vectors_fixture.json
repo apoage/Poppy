@@ -1,7 +1,7 @@
 {
  "schema": "861/chosen-vectors/v1",
  "provenance": {
-  "created_utc": "2026-08-02T23:11:29+00:00",
+  "created_utc": "2026-08-02T23:52:28+00:00",
   "producer": "experiments/835_stage4_eval/eval_vector.py --collect-chosen-vectors",
   "tag": "861fx",
   "checkpoint": "experiments/861_search_teacher_imprint/ckpt_teacher_src",
