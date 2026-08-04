@@ -13,6 +13,23 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
+# TASK_871: reuse the repo's one canonical UTC-midnight date parse (already the rule
+# TASK_869 made canonical everywhere windows are resolved on the read-of-record surface)
+# instead of a second local-time-resolving copy.
+#
+# DISCLOSED COST, measured — this import is NOT free and does NOT leave this loader's
+# "completely independent from mcts_trader data loading" boundary intact as literally
+# written. `trader.backtest` pulls scipy AND (since TASK_870 routed its DB handle through
+# the shared read-only helper) `mcts_trader.utils.db`: importing this module went from
+# pulling zero mcts_trader modules to pulling `mcts_trader{,.utils,.utils.db}`, and 0.49s
+# -> 0.71s. The reached module is leaf-level (`os` + `sqlite3` only, no JAX — JAX is
+# already in this loader's import graph from its own pre-existing deps, unchanged here),
+# so the coupling is nominal rather than behavioural. It is recorded instead of hidden:
+# if the independence boundary is meant strictly, the fix is a neutral home for the date
+# parse (neither `trader.backtest` nor `mcts_trader`), which is a planner row, not this
+# filler's scope.
+from trader.backtest import _to_epoch
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -98,9 +115,14 @@ class MarketDataLoader:
     def _parse_dates(
         self, start_date: Optional[str], end_date: Optional[str]
     ) -> Tuple[int, int]:
-        """Parse date strings to timestamps."""
-        from datetime import datetime
+        """Parse date strings to timestamps.
 
+        TASK_871: 'YYYY-MM-DD' strings resolve at UTC midnight (`trader.backtest._to_epoch`)
+        rather than the machine's local timezone — this window feeds a SQL filter against
+        `ohlcv.timestamp`, which is UTC epoch seconds, so a local-time parse silently shifted
+        the window by the local UTC offset (the same 869 defect class, off the read-of-record
+        surface). Digit-string / int timestamps pass through unchanged, as before.
+        """
         start_ts = 0
         end_ts = 9999999999
 
@@ -109,9 +131,7 @@ class MarketDataLoader:
                 start_ts = int(start_date)
             else:
                 try:
-                    start_ts = int(
-                        datetime.strptime(str(start_date), "%Y-%m-%d").timestamp()
-                    )
+                    start_ts = _to_epoch(str(start_date))
                 except ValueError:
                     logger.warning(f"Could not parse start_date: {start_date}")
 
@@ -120,9 +140,7 @@ class MarketDataLoader:
                 end_ts = int(end_date)
             else:
                 try:
-                    end_ts = int(
-                        datetime.strptime(str(end_date), "%Y-%m-%d").timestamp()
-                    )
+                    end_ts = _to_epoch(str(end_date))
                 except ValueError:
                     logger.warning(f"Could not parse end_date: {end_date}")
 

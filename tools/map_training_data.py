@@ -6,14 +6,26 @@ Scans database to identify valid training periods and asset combinations.
 Outputs schedule compatible with dojo_v3_historical.py for TASK_062.
 """
 
-import sqlite3
 import json
 import os
 import sys
 import random
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Dict, Tuple, Optional
+
+# Repo root on the path so `trader` / `mcts_trader` import cleanly regardless of cwd
+# (same pattern as tools/precompute_bella_predictions.py, experiments/835_stage4_eval/eval_vector.py).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+# TASK_871: reuse the repo's one canonical UTC-midnight date parse (trader/ is a plain
+# numpy package, no JAX) instead of a second local-time-resolving copy; and the shared
+# read-only SQLite handle (TASK_870) for this file's read-only connections.
+from trader.backtest import _to_epoch
+from mcts_trader.utils.db import _ro_connect
 
 # Add orchestration directory to path to import train_manager
 sys.path.append(os.path.join(os.path.dirname(__file__), 'orchestration'))
@@ -31,8 +43,12 @@ def load_benchmark_periods(config_path: str = 'config/benchmark_periods.json') -
 
     periods = []
     for p in config.get('periods', []):
-        start = datetime.fromisoformat(p['start_date']).timestamp()
-        end = datetime.fromisoformat(p['end_date']).timestamp()
+        # TASK_871: UTC midnight, not local time — these bounds are compared directly
+        # against `ohlcv.timestamp` (UTC epoch seconds) in is_in_benchmark_period() below,
+        # so a local-time parse silently shifted the exclusion window by the local UTC
+        # offset (the same 869 defect class, off the read-of-record surface).
+        start = _to_epoch(p['start_date'])
+        end = _to_epoch(p['end_date'])
         periods.append({
             'name': p['name'],
             'start': int(start),
@@ -69,7 +85,7 @@ def find_initial_threshold(db_path: str, min_assets: int = 64) -> int:
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Database not found at {db_path}")
 
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
 
     # Get earliest timestamp
     row = conn.execute('SELECT MIN(timestamp) FROM ohlcv').fetchone()
@@ -166,7 +182,7 @@ def map_valid_periods(
     """
     if benchmark_periods is None:
         benchmark_periods = []
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
 
     # Get all timestamps in order
     print("Fetching timestamps...")
