@@ -539,13 +539,18 @@ class VectorBTTradingEnv(gym.Env):
         window (e.g. the verification fixture) this is numerically bit-identical to the
         pre-868 loader.
         """
-        import sqlite3
         from datetime import datetime, timezone
         import logging
         from mcts_trader.data.asset_aliases import (
             alias_agreement_gate, ranked_minute_universe, resolve_requested_symbols)
+        # TASK_870: this is the canon panel path — a plain read-write handle on the 24GB
+        # trading_data.db lets SQLite's hot-journal recovery rewrite the file on a pure
+        # SELECT (measured, run 23). _ro_connect (mcts_trader/utils/db.py, shared with the
+        # 865/868 experiments-surface fix) refuses that; it cannot change what a SELECT
+        # returns.
+        from mcts_trader.utils.db import _ro_connect
 
-        conn = sqlite3.connect(db_path)
+        conn = _ro_connect(db_path)
         cursor = conn.cursor()
 
         # Parse date filters
@@ -788,12 +793,13 @@ class VectorBTTradingEnv(gym.Env):
             prices: (n_steps, n_assets) array
             symbols: List of loaded symbols
         """
-        import sqlite3
         import logging
         from mcts_trader.data.asset_aliases import (
             alias_agreement_gate, resolve_requested_symbols)
+        # TASK_870: canon panel path, same read-only fix as _load_database_prices above.
+        from mcts_trader.utils.db import _ro_connect
 
-        conn = sqlite3.connect(db_path)
+        conn = _ro_connect(db_path)
         cursor = conn.cursor()
 
         # TASK_868 (a1): the SAME alias union as _load_database_prices — each schedule

@@ -174,7 +174,9 @@ def build_daily_panel_from_db(db_path=DB_PATH, asset_ids=None, start_ts=None, en
     and ffill/bfill'd per the 819 convention. Only the daily arrays live in RAM."""
     if asset_ids is None:
         raise ValueError("asset_ids required (use build_pit_universe to discover)")
-    con = _connect(db_path)
+    # TASK_870: pure-read (streaming SELECT + ffill) — no reason to hold a read-write handle
+    # on the 24GB read-only trading_data.db.
+    con = _connect(db_path, read_only=True)
     per_asset = []
     gmin, gmax = None, None
     for aid in asset_ids:
@@ -224,7 +226,8 @@ CREATE TABLE IF NOT EXISTS ohlcv_daily (
 
 
 def ohlcv_daily_exists(db_path=DB_PATH):
-    con = _connect(db_path)
+    # TASK_870: pure existence check, read-only.
+    con = _connect(db_path, read_only=True)
     try:
         r = con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ohlcv_daily'"
@@ -248,7 +251,8 @@ def read_ohlcv_daily(db_path=DB_PATH, asset_ids=None, start_ts=None, end_ts=None
             "ohlcv_daily table does not exist yet — run `python -m trader update-data "
             "--asset-ids ...` or wait for tools/fetch_daily_kraken.py to populate it."
         )
-    con = _connect(db_path)
+    # TASK_870: pure read.
+    con = _connect(db_path, read_only=True)
     cur = con.cursor()
     if asset_ids is None:
         asset_ids = [r[0] for r in cur.execute(
@@ -403,7 +407,8 @@ def build_pit_universe(db_path=DB_PATH, min_bars=0):
     Returns [(asset_id, symbol)] sorted by asset_id. If min_bars>0, keep only assets with at
     least that many 1-min bars (a coverage floor). PIT membership (listing/delisting) is handled
     downstream by the present-mask, not here."""
-    con = _connect(db_path)
+    # TASK_870: pure read.
+    con = _connect(db_path, read_only=True)
     cur = con.cursor()
     out = []
     for aid, sym in cur.execute("SELECT id, symbol FROM assets"):

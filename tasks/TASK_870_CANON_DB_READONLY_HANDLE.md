@@ -1,3 +1,25 @@
+> **STATUS (2026-08-04): SHIPPED as `task870-canon-db-readonly-handle`** — canon panel loader
+> (`vectorbt_env.py`, both `_load_database_prices*`) + 6 sibling sites routed through one shared
+> `_ro_connect` (`mcts_trader/utils/db.py`); `eval_vector.py` delegates to it instead of its own
+> copy. All three acceptance gates PASS first-hand: (i) hot-journal probe byte-identical with the
+> journal intact, and **CONTROL B showed the real pre-870 code path silently rewriting the file on
+> a bare SELECT** — the gate is not vacuous; (ii) canon numerics bit-identical, proven three times
+> against independent `git worktree`s at HEAD; (iii) `backfill_minute.py` still writes (17/17 + an
+> independent row-count probe). Medium panel, **zero BLOCKER/MAJOR, one cycle, no escalation**.
+> Selftest 12/12 · 863 smoke 13/13 (254.6s).
+>
+> **Remainders (planner):** `mcts_trader/data/database.py` is a real live-write path (aiosqlite,
+> needs a dual-connection refactor — beyond XS, deliberately untouched) and is now the only known
+> unaddressed RW reach at the canon layer. Three `_ro_connect`-style helpers still coexist
+> (shared / `837_walkforward` / `trader/data.py::_connect`) — "one implementation" holds for the
+> touched surface, not repo-wide. `trader/backtest.py:build_aligned_ohlcv` has zero live callers,
+> so its new call has no automated coverage (hand-verified). DB backup remains an ops item: the
+> only backup still predates the 858 backfill.
+>
+> **Operator note:** a hot journal now STOPS a canon run (fail-loud, db untouched) instead of
+> being silently rolled back — intended; see the docstring in `mcts_trader/utils/db.py` for how to
+> recover it deliberately.
+
 # TASK_870 — Canon panel path opens `trading_data.db` READ-WRITE (run-23 rec (D)) — close the last RW handle
 
 **Status**: READY 2026-08-03 (seeded from the run-23/24 wraps; planner Q2 answered YES by the

@@ -12,9 +12,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Iterator, Tuple
 import numpy as np
-import sqlite3
 import logging
 from datetime import datetime
+
+# TASK_870: read-only handle on the canon trading_data.db (see mcts_trader/utils/db.py) — a
+# plain read-write sqlite3.connect on this 24GB read-only source of record lets SQLite's
+# hot-journal recovery rewrite the file on the first pure-SELECT read.
+from mcts_trader.utils.db import _ro_connect
 
 
 @dataclass
@@ -79,7 +83,7 @@ class SQLiteDataProvider(DataProvider):
         self.n_assets = n_assets
         self.min_coverage = min_coverage
 
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn = _ro_connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
 
         # Load top assets by data coverage

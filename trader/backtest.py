@@ -26,7 +26,6 @@ gate/parity numbers are deterministic regardless of how the upstream signal was 
 """
 
 import datetime as _dt
-import sqlite3
 
 import numpy as np
 from scipy.stats import norm
@@ -34,6 +33,10 @@ from scipy.stats import norm
 from . import config
 from .config import K, MINUTES_PER_YEAR, REGIMES, REG_NAMES
 from . import strategy
+# TASK_870: read-only handle on the canon trading_data.db (see mcts_trader/utils/db.py) — a
+# plain read-write sqlite3.connect on this 24GB read-only source of record lets SQLite's
+# hot-journal recovery rewrite the file on the first pure-SELECT read.
+from mcts_trader.utils.db import _ro_connect
 from . import risk as riskmod
 
 
@@ -83,7 +86,7 @@ def build_aligned_ohlcv(db_path, asset_ids, grid_start, grid_end, bar_sec, W=0):
     T = len(grid_ts)
     ts_to_row = {int(t): i for i, t in enumerate(grid_ts)}
     ohlcv = np.full((T, n_assets, 5), np.nan, dtype=np.float64)
-    con = sqlite3.connect(db_path)
+    con = _ro_connect(db_path)
     cur = con.cursor()
     for col, aid in enumerate(asset_ids):
         cur.execute(

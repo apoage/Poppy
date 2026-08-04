@@ -1,9 +1,13 @@
-import sqlite3
 import logging
 import numpy as np
 import os
 import time
 from typing import Dict, Tuple, Optional
+
+# TASK_870: read-only handle on the canon trading_data.db (see mcts_trader/utils/db.py) — a
+# plain read-write sqlite3.connect on this 24GB read-only source of record lets SQLite's
+# hot-journal recovery rewrite the file on the first pure-SELECT read.
+from mcts_trader.utils.db import _ro_connect
 
 class HistoricalMarket:
     """
@@ -29,13 +33,13 @@ class HistoricalMarket:
             self._loaded_from_cache = True
             # Still need DB connection for any dynamic queries
             self.db_path = db_path
-            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn = _ro_connect(db_path, check_same_thread=False)
             self.cursor = self.conn.cursor()
             self.current_time = max(self.min_time, 0)
             return  # Skip all the heavy loading
 
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn = _ro_connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.n_assets = n_assets
         self.min_required_assets = min_required_assets

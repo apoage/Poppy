@@ -79,7 +79,6 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
-import sqlite3
 import sys
 from datetime import datetime, date, timezone
 
@@ -105,16 +104,15 @@ from mcts_trader.env.jax_trading_env import (
     EnvConfig, jit_batch_reset,
 )
 from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_simple
+# TASK_870: the ONE _ro_connect implementation now lives in mcts_trader/utils/db.py (this
+# module used to define its own; see the fix-pass note below for why it moved there instead
+# of the canon env loader importing this module).
+from mcts_trader.utils.db import _ro_connect, SQLITE_TIMEOUT_S
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DB = os.path.join(_REPO, "fixtures", "trading_fixture.db")
 PROTECTED_DB = os.path.join(_REPO, "trading_data.db")
 
-# Default busy timeout for every DB handle this harness opens. Python's sqlite3 default is 5s,
-# while the repo documents 60s (trader/data.py:29 SQLITE_TIMEOUT_S) precisely so a transient lock
-# from the fetcher (tools/fetch_daily_kraken.py:360 writes to the same file) cannot kill a
-# scheduled overnight battery mid-window.
-SQLITE_TIMEOUT_S = 60.0
 CORRIDOR_JSON = os.path.join(_REPO, "experiments", "830_corridor", "results_real_panel.json")
 EXT_WINDOW_NAMES = ("bear22w", "bull23w", "y2024", "recent")
 EXT_WINDOW_DIR = os.path.join(_REPO, "runs", "831_ext")
@@ -200,29 +198,15 @@ def load_imprint_module():
 # symlinks first (the ``_guard_out`` rule, experiments/840_weight_rebalance/acceptance_probe.py
 # :373-391 — abspath does NOT resolve an innocuously named symlink to trading_data.db).
 #
-# SCOPE, EXACTLY (fix pass 2 — this note used to read as though the invariant were repo-wide, and
-# it is not): ``_ro_connect`` covers every DB handle THIS harness and the 832/863/865 framed
-# loaders open. It does NOT cover the CANON UNPINNED panel path. ``build_panel`` ->
-# ``create_jax_env_historical`` reaches ``mcts_trader/env/vectorbt_env.py:515`` and ``:731``, which
-# still call a plain read-write ``sqlite3.connect`` on the same 24GB file, so a DEFAULT (unpinned)
-# eval run remains exposed to hot-journal recovery. That is pre-existing, wider than TASK_865 (it
-# is the canon env loader, shared with training), and is recorded by the planner as its own row —
-# deliberately NOT changed here. Do not read "all 11 sites go through _ro_connect" as "no
-# read-write handle can be opened on trading_data.db by this process".
-
-def _ro_connect(db_path):
-    """Open ``db_path`` STRICTLY read-only (``file:...?mode=ro``, repo's 60s busy timeout).
-
-    Refuses a path that does not exist (rather than creating a 0-byte db, which a read-write
-    handle would do), naming the resolved target so a symlink cannot hide what was opened."""
-    p = os.path.abspath(db_path)
-    rp = os.path.realpath(p)
-    if not os.path.isfile(rp):
-        raise RuntimeError(
-            f"--db {db_path}: no such SQLite file (resolved: {rp}). Refusing to open it — a "
-            f"read-write handle would CREATE a 0-byte database here and then fail with a "
-            f"misleading 'no such table'. Point --db at an existing database.")
-    return sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=SQLITE_TIMEOUT_S)
+# SCOPE, EXACTLY (fix pass 3 — TASK_870 closed the gap fix pass 2 recorded below; kept for
+# history). fix pass 2 read: ``_ro_connect`` covers every DB handle THIS harness and the
+# 832/863/865 framed loaders open, but NOT the CANON UNPINNED panel path
+# (``mcts_trader/env/vectorbt_env.py``'s two ``_load_database_prices*`` methods, reached via
+# ``build_panel`` -> ``create_jax_env_historical`` on a DEFAULT unpinned eval/training run).
+# TASK_870 routed those two sites through the SAME ``_ro_connect`` (now homed in
+# ``mcts_trader/utils/db.py``, imported above, so this harness and the canon env loader share
+# one implementation instead of ``vectorbt_env.py`` growing its own copy or importing this
+# module — the latter would be circular: this module -> env_factory -> vectorbt_env).
 
 
 # =============================================================================

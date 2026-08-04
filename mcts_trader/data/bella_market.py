@@ -42,9 +42,12 @@ def _load_bella_canonical_assets(db_path: str, n_assets: int = 64) -> List[str]:
     verbatim from `tools/precompute_bella_predictions.py:70-102`. Must match
     `diff_teacher/data_loader.py::MarketDataLoader._load_assets` exactly.
     """
-    import sqlite3
+    # TASK_870: read-only handle on the canon trading_data.db (see mcts_trader/utils/db.py) —
+    # a plain read-write sqlite3.connect on this 24GB read-only source of record lets
+    # SQLite's hot-journal recovery rewrite the file on the first pure-SELECT read.
+    from mcts_trader.utils.db import _ro_connect
     DELISTED = {"EOS/USD", "LUNA/USD", "FTT/USD", "SRM/USD"}
-    conn = sqlite3.connect(db_path)
+    conn = _ro_connect(db_path)
     try:
         cur = conn.cursor()
         cur.execute(
