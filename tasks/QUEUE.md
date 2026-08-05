@@ -3,6 +3,22 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-05 (planner, LATE — compute program + operator requirement) — Ready = TASK_876
+(score-based checkpoint retention, OPERATOR-REQUIRED, gates the long base-training program) → 872
+→ 873 → 874. RUNNING on gpu-server (planner-scheduled, GPUs 1-3, tmux `wf875`): the **TASK_875
+walk-forward generalization battery** — 5 expanding-window folds × 3 seeds, train 2021-01-01→fold
+cutoff, test the 6 unseen months after it, universe pinned identical across folds. Pre-registered
+bar (in the script header before launch): per fold take the seed MEDIAN; ≥4/5 folds positive AND
+above their own on-window teacher floor = real OOS edge · 2-3/5 inconclusive · ≤1/5 no edge. This
+replaces the n=2-quarter OOS evidence the withdrawn +0.898 claim rested on. **ISOLATION RESULT
+(leg D, done): the frozen-cell MASK is EXONERATED** — mask-off vs mask-on on the old ckpt is
+5/7 windows bit-identical, max |Δ| 0.032, still negative everywhere; after the 868 alias repair
+only ~1% of cells are frozen, so the gate had almost nothing to forbid. Remaining unisolated
+candidates for the old ckpt's collapse: the alias union (i.e. ADDING REAL DATA changed the panel —
+not contamination) and UTC windows. Operator architectural ruling recorded in LEDGER: forward-fill
+is REQUIRED (dense panel) and a stale price IS valid while nothing trades; the real defects were
+the zero price (fixed) and the identity split (fixed). Factory GREEN.**
+Prior grooming:
 **2026-08-05 (planner, post factory run 25) — run 25 RATIFIED: TASK_870
 (`task870-canon-db-readonly-handle`, `4fb0d77`) + TASK_871 (`task871-residual-localtime-parses`,
 `9790644`) both shipped, 0 BLOCKER/MAJOR each. The medium-tier escalation over the declared XS
@@ -184,11 +200,14 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_872_LIVE_STREAM_UTC.md` | XS | **The only known defect that is result-bearing on the LIVE path, not latent** (run-25 question 1, planner YES). `stream.py:145` strips a confirmed `Z`, then `:157`/`:162` call `.timestamp()` on a naive datetime → every live candle shifted by the host UTC offset (−7200 s here; different on srv, changes at DST). Live consumers confirmed: `real_trade_jax.py:42,374` + `exchange/paper.py:80`. Planner-measured scoping: the callback does NOT persist, so no source-of-record rows are implicated — if verification finds ANY persistence path, that is a STOP and a finding. Python 3.10 ⇒ attach `timezone.utc` explicitly (no 3.11 `Z` parsing). Both sites; TZ-invariance proven against a differing pre-fix control. |
-| 2 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
-| 3 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
+| 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | S | **OPERATOR REQUIREMENT, and a PREREQUISITE for the long base-training program that is about to use the idle server compute.** Measured today: snapshots are unbounded BY DESIGN (`snapshot_ep{N}` dirs, ~89 MB each — 2000 epochs at snapshot_every=25 ≈ 7 GB/seed, ~21 GB for 3 seeds, srv has 136 GB free), and the main save prunes by RECENCY (flax `keep=3`), which after a late-run collapse evicts the good checkpoints and keeps the broken ones. Keep top-K BY SCORE + always the latest resumable + the current best; score provenance recorded per checkpoint; missing score ⇒ never prunable (fail-safe); auditable `checkpoints_index.json`; disk floor; offline GC for existing leftovers. |
+| 2 | `tasks/TASK_872_LIVE_STREAM_UTC.md` | XS | **The only known defect that is result-bearing on the LIVE path, not latent** (run-25 question 1, planner YES). `stream.py:145` strips a confirmed `Z`, then `:157`/`:162` call `.timestamp()` on a naive datetime → every live candle shifted by the host UTC offset (−7200 s here; different on srv, changes at DST). Live consumers confirmed: `real_trade_jax.py:42,374` + `exchange/paper.py:80`. Planner-measured scoping: the callback does NOT persist, so no source-of-record rows are implicated — if verification finds ANY persistence path, that is a STOP and a finding. Python 3.10 ⇒ attach `timezone.utc` explicitly (no 3.11 `Z` parsing). Both sites; TZ-invariance proven against a differing pre-fix control. |
+| 3 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
+| 4 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
 
-_Sequencing: 872 first (live path). 873 and 874 touch different surfaces from each other and from
+_Sequencing: **876 first** — the operator named score-based pruning necessary and it gates the long
+base-training program; it touches the training save path, which no other Ready row touches. Then 872
+(live path, XS)._ _Original note:_ 872 first (live path). 873 and 874 touch different surfaces from each other and from
 872 — but 873 changes what every suite checks at start-up, so take it BEFORE 874 and re-run 874's
 suites under the pin. Serial is safest; all three are XS/S._
 
