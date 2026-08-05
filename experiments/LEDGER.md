@@ -5,6 +5,24 @@ nulls are results. Corridor = position in [linear floor, oracle ceiling] from TA
 Historical experiments 000–780 predate this ledger; their verdicts live in task banners and
 the memory index (scalar-architecture scope — see MEMORY.md "Direction").
 
+**FRAMEWORK EPOCHS — read before citing any verdict as "closed" (operator directive 2026-08-05:
+"if there is experiment on known broken framework we shall rerun experiment on fixed framework ..
+because experiment might get fixed").** A FAIL measured inside a broken framework falsifies the
+RUN, not the hypothesis. Epochs: **E-a** `step_vector` snapshot-cash "cash wall" fixed →
+weight-rebalance env (TASK_840/843/845/846) · **E-b** zero-price tails → forward-fill + disclosure
+(`task865…`, 2026-07-31) · **E-c** ingest identity split → alias union + interior frozen-cell
+handling (`task868…`, 2026-08-03) · **E-d** UTC windows + masked daily floor (`task869…`,
+2026-08-03) · **E-e** XBT↔BTC fold (TASK_877, pending) · **E-f** no-print = FAILED FILL with intent
+preserved in BC targets (TASK_878, pending — operator ruling: an order at a stale-but-reasonable
+quote is *placed and does not fill*, it is neither illegal nor fabricated).
+**Every verdict dated before E-c is PROVISIONAL**: citable as history, NOT citable as "closed" in
+any argument that gates work — it was measured on a panel that zeroed delisted tails, could not
+see ~6 assets' worth of split-identity data, and resolved windows in local time; pre-E-a training
+additionally learned inside a bankruptcy-inducing cash bug. Re-run ladder and sequencing:
+`tasks/TASK_879_RERUN_ON_FIXED_FRAMEWORK.md`. When a re-run lands, its row supersedes the old one
+explicitly. Same correction class as the 2026-07-06 "scoped to the old architecture" reframing in
+MEMORY.md — honest evidence about a formulation, not a law of nature.
+
 | ID | Date | H# | Question | Verdict | Corridor | Pointer |
 |----|------|----|----------|---------|----------|---------|
 | 830/E0 | 2026-07-08 | none (instrument) | Does the 819 book replayed through `step_vector` reproduce the `trader/` engine net@21? | **FIXTURE-SMOKE — real verdict PENDING scheduled CPU run.** floor misses ref by ±0.10 (Δ net@21 −0.33, gross −0.20; BEAR22 floor +0.23 vs ref +1.22 gross). NOT a `step_vector` defect: env reproduces an independent cash-account sim to 3–4 sig figs (finalPV to the dollar). Miss = replay-MAPPING artifact — dominated by fixed-weight 0.5/A vs 819 renormalized 1/n_present (gross 0.956→0.612) + hold-shares vs daily constant-$-rebalance (BEAR22); `step_vector` adds only +0.013 over the pure mapping. Attributed to the replay mapping, NOT 828 Stage 1; NOT tuned. Which mapping is the official floor = pending planner DECISIONS row. | fixture: [floor **+0.42**, ceil **+29.70**] net@21 (ref +0.75) | `experiments/830_corridor/SPEC.md` · `corridor.py` · `results_fixture_smoke.json` |
