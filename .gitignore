@@ -100,3 +100,9 @@ benchmark_results.json
 # (same pattern TASK_873 pins the gitignored fixture with).
 backups/*
 !backups/*.sha256
+
+# Checkpoint archive: blobs are large and disposable; MANIFESTs are TRACKED so what was
+# archived or deleted (identity, score, size) is recoverable from git history alone.
+archive/**
+!archive/**/
+!archive/**/MANIFEST_*.json

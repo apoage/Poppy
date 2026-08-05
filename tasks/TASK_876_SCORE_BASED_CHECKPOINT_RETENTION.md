@@ -1,9 +1,41 @@
-# TASK_876 — Score-based checkpoint retention (operator requirement; PREREQUISITE for the long base-training program)
+# TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
-**Status**: READY 2026-08-05 (operator: "checkpointing needs to be pruned based on checkpoint
-score .. that is necessary"). **Size: S. Risk: low-medium** (touches the training save path; must
-never delete a resumable checkpoint). Surface: `mcts_trader/training/safe_checkpoint.py`,
+> **SCOPE CORRECTED 2026-08-05 (operator: "this is off factory — there must be a mechanism that
+> will prune checkpoints or all are gone and we are syncing whole database").** The MECHANISM is
+> not a factory row and is no longer pending: the planner shipped it directly, because runs were
+> already writing checkpoints and a full disk on `gpu-server` puts `trading_data.db` — 26 GB,
+> unshippable on a ~5 Mbps uplink — at risk.
+> **Shipped by the planner (this repo, tested):**
+> * `tools/ckpt_gc.py` — score-based GC + disk-floor guard. Keeps top-K by score + always the
+>   newest (resume) + the best; unscored are NEVER score-pruned (only recency-pruned under the
+>   disk floor, and the log says so); refuses paths outside its roots or containing
+>   `trading_data`/`.git`/`fixtures`/`backups`; deletes move-then-rmtree so a half-deleted
+>   checkpoint can never look loadable; dry-run by default. Six acceptance gates pass, including
+>   **the collapse case** (scores rise then crash: flax `keep=3` keeps the broken checkpoints,
+>   this keeps the good ones) and "newest survives even when it scores worst".
+> * `tools/ckpt_archive.py` — the lifecycle the operator asked for: score the server's
+>   checkpoints, DOWNLOAD the interesting ones to the workstation (~440 GB free), verify the local
+>   copy, and only then clear the server (136 GB free, disposable compute). Never uploads.
+>   Manifest written before any deletion.
+> **What remains for the factory is the missing INPUT, not the policy:** nothing in this repo
+> writes a per-checkpoint score, so a 30 GB / 42-checkpoint sweep of the server on 2026-08-05
+> found **0 scored** — the GC's fail-safe then (correctly) protects everything, which makes it
+> unable to choose. Close that gap:
+
+**Status**: READY 2026-08-05 (operator requirement; scope corrected — mechanism shipped, this row
+is now the score-emission half). **Size: S. Risk: low-medium** (touches the training save path;
+must never delete a resumable checkpoint). Surface: `mcts_trader/training/safe_checkpoint.py`,
 `mcts_trader/jax_agent/trainer.py::save_checkpoint`, `train_jax_fast.py` (save/snapshot sites).
+
+## Scope 0 (NEW, and the reason this row still exists)
+
+Every checkpoint-writing run must emit a score the shipped tools can read: append
+`{"epoch": <int>, "score": <float>, "metric": "<name>"}` to `<run_dir>/scores.jsonl` at each
+save, and/or write `checkpoints_index.json` in the same shape. The metric is the run's designated
+one (periodic in-env eval where it exists, else the rolling train reward `SafeCheckpointManager`
+already tracks) and its NAME is recorded — never prune against a metric the run didn't measure.
+Retrofit is not required for the 42 legacy checkpoints (already archived to the workstation), but
+`--gc-checkpoints`-style cleanup of new runs must work end-to-end with real emitted scores.
 
 ## Why (measured 2026-08-05)
 

@@ -1,0 +1,257 @@
+{
+  "stamp": "2026-08-05T20:25:19Z",
+  "host": "operator@<redacted-ip>",
+  "policy": {
+    "host": "operator@<redacted-ip>",
+    "port": "22",
+    "remote_dir": "Trader",
+    "roots": [
+      "jax_ckpt_fast"
+    ],
+    "archive": "/home/lukas/Trader/archive/checkpoints/gpu-server",
+    "keep_best": 3,
+    "min_score": null,
+    "no_keep_newest": true,
+    "unscored": "drop",
+    "protect_from_ledger": "experiments/LEDGER.md",
+    "verify_sha": false,
+    "clear_remote": true,
+    "apply": true
+  },
+  "archived": [],
+  "dropped": [
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1c_cost0_s2",
+      "epoch": null,
+      "score": null,
+      "bytes": 2151065901,
+      "mtime": 1783858510.7305126
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit_fee16_s0_wedged_ep46",
+      "epoch": null,
+      "score": null,
+      "bytes": 281552984,
+      "mtime": 1784248605.2134147
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/818freq_1h",
+      "epoch": null,
+      "score": null,
+      "bytes": 280469018,
+      "mtime": 1782616360.3944507
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812fix3_rewardhybrid",
+      "epoch": null,
+      "score": null,
+      "bytes": 280753814,
+      "mtime": 1782581659.547816
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1b_cost0_s0_wedged_ep982",
+      "epoch": null,
+      "score": null,
+      "bytes": 1119515791,
+      "mtime": 1783814833.892171
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit2_pq_s2",
+      "epoch": null,
+      "score": null,
+      "bytes": 838359453,
+      "mtime": 1784832576.3636718
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/rh_on",
+      "epoch": null,
+      "score": null,
+      "bytes": 93975582,
+      "mtime": 1782566058.673553
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit_fee16_s0_wedged_ep706",
+      "epoch": null,
+      "score": null,
+      "bytes": 933995979,
+      "mtime": 1784262291.6213338
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1c_cost0_s1",
+      "epoch": null,
+      "score": null,
+      "bytes": 2151369310,
+      "mtime": 1783833862.3566017
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812_smoke",
+      "epoch": null,
+      "score": null,
+      "bytes": 93982776,
+      "mtime": 1782422578.5121846
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1b_cost0_s1",
+      "epoch": null,
+      "score": null,
+      "bytes": 2139796038,
+      "mtime": 1783692899.1557717
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1_cost0_s0",
+      "epoch": null,
+      "score": null,
+      "bytes": 2140085107,
+      "mtime": 1783653500.3375099
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1b_cost0_s0_wedged_ep162",
+      "epoch": null,
+      "score": null,
+      "bytes": 373791138,
+      "mtime": 1783661523.912513
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit2_pq_s1",
+      "epoch": null,
+      "score": null,
+      "bytes": 839149932,
+      "mtime": 1784832588.2375622
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812fix4_attributable",
+      "epoch": null,
+      "score": null,
+      "bytes": 280610581,
+      "mtime": 1782585340.6511807
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1b_cost0_s2",
+      "epoch": null,
+      "score": null,
+      "bytes": 2141749041,
+      "mtime": 1783692899.27396
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1_cost0_s0_wedged_ep1581",
+      "epoch": null,
+      "score": null,
+      "bytes": 1675546497,
+      "mtime": 1783575258.858263
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit_fee16_s1",
+      "epoch": null,
+      "score": null,
+      "bytes": 1213208898,
+      "mtime": 1784262460.0058458
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812fix_gross",
+      "epoch": null,
+      "score": null,
+      "bytes": 280108545,
+      "mtime": 1782557060.7788143
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812_mcts_probe",
+      "epoch": null,
+      "score": null,
+      "bytes": 279292624,
+      "mtime": 1782457267.9664435
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/818freq_15m",
+      "epoch": null,
+      "score": null,
+      "bytes": 280817900,
+      "mtime": 1782603457.827739
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1c_cost0_s0",
+      "epoch": null,
+      "score": null,
+      "bytes": 2151423802,
+      "mtime": 1783833273.6218042
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit_fee16_s2",
+      "epoch": null,
+      "score": null,
+      "bytes": 1213866069,
+      "mtime": 1784262442.459628
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/e5exit2_pq_s0",
+      "epoch": null,
+      "score": null,
+      "bytes": 838663658,
+      "mtime": 1784832613.432806
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1_cost0_s1",
+      "epoch": null,
+      "score": null,
+      "bytes": 2142024860,
+      "mtime": 1783581006.4441442
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/818freq_4h",
+      "epoch": null,
+      "score": null,
+      "bytes": 280020630,
+      "mtime": 1782616459.3305979
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/828s3p1_cost0_s2",
+      "epoch": null,
+      "score": null,
+      "bytes": 2141271354,
+      "mtime": 1783581161.8502672
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/rh_off",
+      "epoch": null,
+      "score": null,
+      "bytes": 93901923,
+      "mtime": 1782565741.5106084
+    },
+    {
+      "run": "jax_ckpt_fast",
+      "path": "jax_ckpt_fast/812fix2_debug",
+      "epoch": null,
+      "score": null,
+      "bytes": 93967575,
+      "mtime": 1782563199.8044393
+    }
+  ],
+  "verify_failures": []
+}
