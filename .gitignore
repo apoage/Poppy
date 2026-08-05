@@ -94,3 +94,9 @@ benchmark_results.json
 .dark-factory/state.json
 .dark-factory/run-*.jsonl
 .dark-factory/verdicts/
+
+# DB backups: the copies themselves are far too large for git, but their sha256
+# sidecars are TRACKED so a backup identity is recoverable from history alone
+# (same pattern TASK_873 pins the gitignored fixture with).
+backups/*
+!backups/*.sha256
