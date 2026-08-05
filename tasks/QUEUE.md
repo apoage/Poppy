@@ -3,6 +3,31 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-05 (planner, post factory run 25) — run 25 RATIFIED: TASK_870
+(`task870-canon-db-readonly-handle`, `4fb0d77`) + TASK_871 (`task871-residual-localtime-parses`,
+`9790644`) both shipped, 0 BLOCKER/MAJOR each. The medium-tier escalation over the declared XS
+was correct (870's diff reached `eval_vector.py` + `trader/`), and control B EARNED the task by
+catching the real pre-870 loader silently rewriting a journal-carrying DB on a bare SELECT —
+that plus the untouched `trading_data.db` (mtime/size unchanged, only atime moved, with two
+judges reaching it) is the shipped handle working on day one. The import-cost correction and the
+disclosed-cost block are the right call; a wrong "does not touch X" comment is worth catching.
+**Both run-25 questions answered YES.** (1) The live TZ defect is Ready #1 — TASK_872, and the
+planner verified its blast radius: live/paper decision path only, NO persistence, so no
+source-of-record rows are implicated. (2) The DB backup was refreshed FIRST, before anything
+else touches that file — and the situation was worse than "predates 858": the newest backup
+(`backups/trading_data_postquarantine_2026-07-26.db`) reaches only **2025-09-30**, so the entire
+858 OOS extension (2025-10-01 → 2026-03-31) — precisely the data every OOS read depends on —
+existed in NO backup. Integrity-gated copy → `backups/trading_data_858oos_2026-08-05.db`
+**RUNNING at commit time** (source `PRAGMA integrity_check` → `cp` → target `integrity_check` →
+content-parity assert → sha256 sidecar; staged as `.partial` and only renamed into place if every
+gate passes, so a failure leaves no file that looks like a good backup). Result recorded in a
+follow-up commit; if the source check FAILS that is itself a finding and the DB must not be
+written by anything until ruled.
+**Ready = TASK_872 → 873 (fixture identity pin) → 874 (imprint emits provenance).** The
+fixture-regen incident is recorded as a standing rule (memory + TASK_873): a gitignored fixture
+is invisible to the clean-tree check the whole ritual leans on, so no agent may regenerate it as
+a side effect — a re-base is planner-scheduled work. Factory GREEN.**
+Prior grooming:
 **2026-08-03 (planner, FINAL) — THE OOS RE-MEASURE REVERSES THE PROGRAM'S HEADLINE (LEDGER
 861/ref-oos-rebase): the +0.898 OOS / WF-pass anchors are REVOKED as contamination artifacts.**
 Clean-trained ref seeds: regime form PASS 3/3 (+0.59..+1.59) but oos_full median +0.064 · wf_q4
@@ -155,7 +180,19 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| — | _Ready = EMPTY (factory run 24, 2026-08-03)_ | — | All four D31-wave rows shipped; see the "Shipped 2026-08-02/03" block below and the task banners. Next work un-gates planner-side: the 861 leg-0 reference battery + leg 3 (scheduled), plus two recommended unspecced rows named in the grooming line (canon RW db handles; surviving local-time parses). |
+| 1 | `tasks/TASK_872_LIVE_STREAM_UTC.md` | XS | **The only known defect that is result-bearing on the LIVE path, not latent** (run-25 question 1, planner YES). `stream.py:145` strips a confirmed `Z`, then `:157`/`:162` call `.timestamp()` on a naive datetime → every live candle shifted by the host UTC offset (−7200 s here; different on srv, changes at DST). Live consumers confirmed: `real_trade_jax.py:42,374` + `exchange/paper.py:80`. Planner-measured scoping: the callback does NOT persist, so no source-of-record rows are implicated — if verification finds ANY persistence path, that is a STOP and a finding. Python 3.10 ⇒ attach `timezone.utc` explicitly (no 3.11 `Z` parsing). Both sites; TZ-invariance proven against a differing pre-fix control. |
+| 2 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
+| 3 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
+
+_Sequencing: 872 first (live path). 873 and 874 touch different surfaces from each other and from
+872 — but 873 changes what every suite checks at start-up, so take it BEFORE 874 and re-run 874's
+suites under the pin. Serial is safest; all three are XS/S._
+
+_Recommended, not yet specced (both named in shipped banners, neither urgent):_
+_(a) `mcts_trader/data/database.py` — the last known unaddressed RW reach at the canon layer
+(aiosqlite, real live-write path; needs a dual-connection refactor, beyond XS — 870 remainder).
+(b) `_ro_connect`-style helpers still coexist in three places (shared / `837_walkforward` /
+`trader/data.py::_connect`) — "one implementation" holds for 870's touched surface, not repo-wide._
 
 _Shipped 2026-08-02/03 factory run 24 (the D31 re-base wave, strictly serial):_
 - _**TASK_866** (`task866-weight-on-pin`, `ac8dfe1`) — weight-ON parity pin reads the tracked 832 baseline as its own-config oracle; the 864 incident class closed. See the task banner + CHANGELOG._
