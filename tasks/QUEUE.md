@@ -17,12 +17,16 @@ source-of-record rows are implicated. (2) The DB backup was refreshed FIRST, bef
 else touches that file — and the situation was worse than "predates 858": the newest backup
 (`backups/trading_data_postquarantine_2026-07-26.db`) reaches only **2025-09-30**, so the entire
 858 OOS extension (2025-10-01 → 2026-03-31) — precisely the data every OOS read depends on —
-existed in NO backup. Integrity-gated copy → `backups/trading_data_858oos_2026-08-05.db`
-**RUNNING at commit time** (source `PRAGMA integrity_check` → `cp` → target `integrity_check` →
-content-parity assert → sha256 sidecar; staged as `.partial` and only renamed into place if every
-gate passes, so a failure leaves no file that looks like a good backup). Result recorded in a
-follow-up commit; if the source check FAILS that is itself a finding and the DB must not be
-written by anything until ruled.
+existed in NO backup. **DONE 2026-08-05 18:09 UTC — `backups/trading_data_858oos_2026-08-05.db`,
+ALL GATES PASS**: source `PRAGMA integrity_check` ok · target `integrity_check` ok · content
+parity IDENTICAL on all 8 probes (size, min/max ts, n_assets, quarantine, ohlcv_daily, two
+per-asset row counts) · coverage **2013-09-10 .. 2026-03-31** · sha256
+`799dca96c99e76e9c84533585f2829f8e82e004b897bd163dc491f0f25fa5bc8` (sidecar committed-adjacent,
+file itself untracked). Live DB untouched throughout: mtime still 2026-07-26 20:47:32, size
+unchanged. (First attempt was killed mid-copy at 11 GB by a harness/session event; the truncated
+`.partial` was DISCARDED, not reused, and the retry ran detached under `setsid`.) **Residual ops
+item, operator-owned: all three backups sit on the SAME disk as the live DB — a second-disk or
+offsite copy is still unaddressed.**
 **Ready = TASK_872 → 873 (fixture identity pin) → 874 (imprint emits provenance).** The
 fixture-regen incident is recorded as a standing rule (memory + TASK_873): a gitignored fixture
 is invisible to the clean-tree check the whole ritual leans on, so no agent may regenerate it as
