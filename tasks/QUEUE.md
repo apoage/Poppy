@@ -190,6 +190,20 @@ acceptance (iv) → **D16 seeded, then RULED same night: SHIP AS-IS** (binding 6
 unsound). Prior context: **2026-07-14 D13 REDIRECT** (operator; H6 = rainy-day contingency) →
 critical path = E5 imprint→ExIt.
 
+**PLANNER NOTE 2026-08-05 — two OPEN QUESTIONS for the operator, both of the FORWARD-FILL CLASS
+(a design decision I may have misread as a defect). Neither is a task; both need a ruling, not a
+fix.** (a) **The interior frozen-cell MASK (868 a2) rests on a premise the operator rejects.** I
+shipped it believing stale fills fabricate PnL; the operator's position is that a stale price IS
+valid while nothing trades. Measurement says the mask is near-inert (0.94% of cells; mask-off vs
+mask-on = 5/7 windows bit-identical, LEDGER 861/ref-oos-maskoff) — harmless today, but it is an
+unconditional semantic gate in the canon loader justified by a premise now known to be wrong.
+KEEP as defence-in-depth, or REMOVE? (b) **The `[::bar_minutes]` stride samples ONE minute as the
+daily bar** instead of aggregating the day — so a sparse asset's "daily price" is whatever printed
+at that exact minute, else a fill (measured: MATIC/USD, 1,076 rows with no print at the sampled
+minute). If deliberate (fast, dense, deterministic) it is ARCHITECTURE and should be stated as
+such; if nobody chose it, it silently shapes every panel number. I do not know which, and guessing
+is how the last misreading happened.
+
 ## Ready — take from the top
 
 _D29 planner-RULED 2026-07-29 (opt (a); operator may override — see DECISIONS). Rows A/B/C from
@@ -203,7 +217,8 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 | 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | S | **OPERATOR REQUIREMENT, and a PREREQUISITE for the long base-training program that is about to use the idle server compute.** Measured today: snapshots are unbounded BY DESIGN (`snapshot_ep{N}` dirs, ~89 MB each — 2000 epochs at snapshot_every=25 ≈ 7 GB/seed, ~21 GB for 3 seeds, srv has 136 GB free), and the main save prunes by RECENCY (flax `keep=3`), which after a late-run collapse evicts the good checkpoints and keeps the broken ones. Keep top-K BY SCORE + always the latest resumable + the current best; score provenance recorded per checkpoint; missing score ⇒ never prunable (fail-safe); auditable `checkpoints_index.json`; disk floor; offline GC for existing leftovers. |
 | 2 | `tasks/TASK_872_LIVE_STREAM_UTC.md` | XS | **The only known defect that is result-bearing on the LIVE path, not latent** (run-25 question 1, planner YES). `stream.py:145` strips a confirmed `Z`, then `:157`/`:162` call `.timestamp()` on a naive datetime → every live candle shifted by the host UTC offset (−7200 s here; different on srv, changes at DST). Live consumers confirmed: `real_trade_jax.py:42,374` + `exchange/paper.py:80`. Planner-measured scoping: the callback does NOT persist, so no source-of-record rows are implicated — if verification finds ANY persistence path, that is a STOP and a finding. Python 3.10 ⇒ attach `timezone.utc` explicitly (no 3.11 `Z` parsing). Both sites; TZ-invariance proven against a differing pre-fix control. |
 | 3 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
-| 4 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
+| 4 | `tasks/TASK_877_XBT_ALIAS_FOLD.md` | XS/S | **Same defect class as D31 (a1), still live — planner-measured 2026-08-05.** The resolver normalizes SLASH-ONLY and deliberately does not fold `XBT`→`BTC`; `XBTCHF` (id 1175) holds **92,639 real rows inside the exact 2025-03-31→2025-10-01 gap** where `BTCCHF` (frame slot 23) has 697, and the 48,780-row overlap agrees to **max rel close diff 0.0**. So one of the 5 "genuine sparse" slots is recoverable data, not market absence: the identity repair is incomplete and the frozen-interior residue is overstated. Explicit alias TABLE (not a blanket replace), same fail-loud agreement gate, re-derive the disclosure numbers. |
+| 5 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
 
 _Sequencing: **876 first** — the operator named score-based pruning necessary and it gates the long
 base-training program; it touches the training save path, which no other Ready row touches. Then 872
