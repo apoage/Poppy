@@ -3,6 +3,51 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-06 (planner, post factory run 26) — run 26 RATIFIED. TASK_872 shipped
+(`task872-live-stream-utc`, `f5a74db`); TASK_876 STOPPED on the halt rule and D32 is now RULED.
+Ready (physically ordered): 1 TASK_876 (RESCOPED — emission half only, resume from the stash) →
+2 TASK_880 (NEW — `ckpt_archive.py` discovery, the tool that deletes REMOTELY) → 3 TASK_873 →
+4 TASK_877 → 5 TASK_874 → 6 TASK_878. TASK_881 (NEW — the checkpoint protection model) is GATED
+behind 876+880.**
+**D32 RULED (planner, operator may override): (d) SPLIT + (a) explicit fail-loud protection, and
+the destructive default goes OFF (`--ckpt-retention recency`).** Full text in DECISIONS.md. Two
+consequences the factory should read before taking row 1: the 876 stash resumes as the
+NON-DESTRUCTIVE half only (emission + three mechanical fixes + revert `flax_keep = 1_000_000`
+and set `overwrite=False`), and **there is an OPERATIONAL FREEZE on `tools/ckpt_archive.py
+--apply` until TASK_880 lands** — planner-verified in source: `is_ck()` returns true for any dir
+merely CONTAINING a `checkpoint_*` entry, so a whole scored run reads as one unscored opaque
+leaf and gets deleted on the training host under the (correct, operator-ruled) `--unscored drop`
+default.
+**TWO PLANNER ERRORS THE RUN CORRECTED, both owned:** (1) **the 872 ranking justification was
+false.** This queue ranked it "the only known defect result-bearing on the LIVE path, not
+latent"; both named consumers are DEAD CODE — `real_trade_jax.py` is self-documented BROKEN/
+LEGACY and `sys.exit`s before constructing, `PaperExchange.set_data_source` has had no caller
+since `c4a27e0` (planner re-verified both). The FIX is correct and worth having for the live
+rebuild; the ranking rationale was not, and it displaced work that was actually result-bearing.
+(2) **876 was sized "S" and carried irreversible-deletion semantics** — 1,208 insertions across
+6 files with three consecutive panels finding real BLOCKERs in the previous round's fixing code.
+Emission should have been split from deletion policy at authoring time; the halt rule caught a
+decomposition error, not an implementation one.
+**Also absorbed (factory finding 3, cross-cutting, no row of its own yet):** 872's specified
+two-line fix would have made a PRE-EXISTING defect silent — attaching `tzinfo=utc` to a naive
+parse is right, but upstream truncation had already destroyed the real offsets, so the guard
+made a wrong answer CONSISTENT rather than CORRECT, and the round's own test asserted the wrong
+value and passed. **A guard that normalizes looks identical to a guard that corrects.** Same
+class as the tooling defect the planner hit this window (a summary reader whose missing-key
+default turned absence into a result — LEDGER 875 pointer) and as TASK_878's masked-target
+hazard. Any guard or reader added anywhere in this program must state which of the two it is.
+**SCIENCE — the 875 walk-forward battery COMPLETED and returned a verdict (LEDGER
+875/wf-generalization): NO OOS EDGE, 1/5, the pre-registered "none" band.** Fold medians vs
+their own floors: +1.4957/+3.8987 · +0.3995/+1.4301 · +0.3108/+1.3952 · +0.4121/+0.2635 (the
+only clear, and only because the FLOOR collapsed) · **−2.9566/+0.4244** on 2025-H2, a 33% median
+drawdown on the half-year closest to deployment. The recipe's OOS median is flat (+0.31..+0.41
+on three folds) while the floor swings 15×, so it does not track window difficulty at all.
+Caveat recorded: fold 5's test window overlaps the known sparse span for 3 of its 6 months, so
+its MAGNITUDE is confounded (TASK_877 shrinks that set) — but folds 1-3 sit outside the span and
+all three fail the floor, so the verdict does not rest on it. **The imprint lane now has real
+in-window learning (+0.9914) and no out-of-sample edge on n=5 pre-registered folds.** Factory
+GREEN.**
+Prior grooming:
 **2026-08-05 (planner, LATE — compute program + operator requirement) — Ready = TASK_876
 (score-based checkpoint retention, OPERATOR-REQUIRED, gates the long base-training program) → 872
 → 873 → 874. RUNNING on gpu-server (planner-scheduled, GPUs 1-3, tmux `wf875`): the **TASK_875
@@ -233,16 +278,22 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | S | **OPERATOR REQUIREMENT, and a PREREQUISITE for the long base-training program that is about to use the idle server compute.** Measured today: snapshots are unbounded BY DESIGN (`snapshot_ep{N}` dirs, ~89 MB each — 2000 epochs at snapshot_every=25 ≈ 7 GB/seed, ~21 GB for 3 seeds, srv has 136 GB free), and the main save prunes by RECENCY (flax `keep=3`), which after a late-run collapse evicts the good checkpoints and keeps the broken ones. Keep top-K BY SCORE + always the latest resumable + the current best; score provenance recorded per checkpoint; missing score ⇒ never prunable (fail-safe); auditable `checkpoints_index.json`; disk floor; offline GC for existing leftovers. |
-| 2 | `tasks/TASK_878_FAILED_FILL_SEMANTICS.md` | S/M | **OPERATOR-RULED 2026-08-05 (+amendment) — resolves both open questions.** A no-print bar is an order PLACED THAT IS UNFILLED — not illegal, and not dead either: it could still execute on a later step, so execution is a **COINFLIP** (operator's simulation choice; the pending-order queue that holds it ~5 steps is the heavy variant and stays OUT of scope as its own future row — the per-step flip is its geometric special case). `p` comes from the slot's trailing print density (causal), not a magic number; the flip must be a seeded path-independent hash of (eval_seed, decision, slot) or every parity gate in the repo dies. A 3-arm ablation (never-fill / coinflip / always-fill) answers the operator's open question of whether flat-before-move cells carry SIGNAL rather than noise, instead of assuming. valuation marks at the last valid price (architecture), execution requires a real print, a failed fill changes position/cash/fee by nothing, and **the policy's INTENT is preserved** — today's 868 (a2) mask rewrites the BC target to HOLD, teaching "HOLD was intended" when the truth is "could not fill" (the 78.8%-class hazard). Force-HOLD survives only for zero-coverage slots (nothing quotable ⇒ nothing attemptable). PV conservation must stay exact. |
-| 3 | `tasks/TASK_872_LIVE_STREAM_UTC.md` | XS | **The only known defect that is result-bearing on the LIVE path, not latent** (run-25 question 1, planner YES). `stream.py:145` strips a confirmed `Z`, then `:157`/`:162` call `.timestamp()` on a naive datetime → every live candle shifted by the host UTC offset (−7200 s here; different on srv, changes at DST). Live consumers confirmed: `real_trade_jax.py:42,374` + `exchange/paper.py:80`. Planner-measured scoping: the callback does NOT persist, so no source-of-record rows are implicated — if verification finds ANY persistence path, that is a STOP and a finding. Python 3.10 ⇒ attach `timezone.utc` explicitly (no 3.11 `Z` parsing). Both sites; TZ-invariance proven against a differing pre-fix control. |
-| 4 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
-| 5 | `tasks/TASK_877_XBT_ALIAS_FOLD.md` | XS/S | **Same defect class as D31 (a1), still live — planner-measured 2026-08-05.** The resolver normalizes SLASH-ONLY and deliberately does not fold `XBT`→`BTC`; `XBTCHF` (id 1175) holds **92,639 real rows inside the exact 2025-03-31→2025-10-01 gap** where `BTCCHF` (frame slot 23) has 697, and the 48,780-row overlap agrees to **max rel close diff 0.0**. So one of the 5 "genuine sparse" slots is recoverable data, not market absence: the identity repair is incomplete and the frozen-interior residue is overstated. Explicit alias TABLE (not a blanket replace), same fail-loud agreement gate, re-derive the disclosure numbers. |
-| 6 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
+| 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | **M (was mis-sized S — planner error)** | **RESCOPED by the D32 ruling to the NON-DESTRUCTIVE half; resume FROM THE STASH.** In: `scores.jsonl` emission at every save (original scope 0 — the sweep found 0 of 42 checkpoints scored, and an unscored long run produces exactly the garbage weights the operator ruled against keeping); the three mechanical fixes needing no ruling (`_is_protected` descendant-aware · TTL re-scan not a launch snapshot · a failed `rmtree` recorded as a FAILED prune, not a success); **revert `flax_keep = 1_000_000` to the pre-876 bound and set `overwrite=False`** (the run-26 finding that mattered most: that pair is a protection-blind mass delete on any resume at a lower step, and the task had enlarged its own blast radius); `--ckpt-retention` defaults to **`recency`** — the destructive path stays OFF per invariant 1. OUT: the protection model (TASK_881) and the remote archive discovery (TASK_880). Nothing here deletes anything new, so none of it depends on D32's unsettled half. _Original context:_ snapshots are unbounded BY DESIGN (`snapshot_ep{N}` dirs, ~89 MB each — 2000 epochs at snapshot_every=25 ≈ 7 GB/seed, ~21 GB for 3 seeds, srv has 136 GB free), and the main save prunes by RECENCY (flax `keep=3`), which after a late-run collapse evicts the good checkpoints and keeps the broken ones. Keep top-K BY SCORE + always the latest resumable + the current best; score provenance recorded per checkpoint; missing score ⇒ never prunable (fail-safe); auditable `checkpoints_index.json`; disk floor; offline GC for existing leftovers. |
+| 2 | `tasks/TASK_880_CKPT_ARCHIVE_DISCOVERY_FIX.md` | S (risk HIGH by blast radius) | **NEW 2026-08-06 — the factory's recommended row, and the defect is the PLANNER'S own** (`ckpt_archive.py` was planner-shipped in `3e74a1e`, not a factory row). Planner-verified in source before scheduling: `REMOTE_PROBE`'s `is_ck()` returns true for any directory merely CONTAINING a `checkpoint_*` entry, so a run dir is misread as one opaque leaf, the walk is pruned, `ep_of()` finds no epoch in its basename and the run's own `scores.jsonl` is looked up one level too deep — **an entire SCORED run classifies UNSCORED and is then DELETED on `gpu-server`** under the correct, operator-ruled `--unscored drop` default. The default is right; the discovery feeding it is wrong. **OPERATIONAL FREEZE: no `--apply` on that tool until this ships** (dry-run enumeration is how you demonstrate the fix). Port the three landed `ckpt_gc.py` fixes: `_has_ckpt_subdirs()` before the listdir fallback, the full pattern set, path-keyed scores with epoch as fallback (never the reverse). Fail-closed on ambiguity: classifiable both ways ⇒ it is a RUN, never a leaf. |
+| 3 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
+| 4 | `tasks/TASK_877_XBT_ALIAS_FOLD.md` | XS/S | **Same defect class as D31 (a1), still live — planner-measured 2026-08-05.** The resolver normalizes SLASH-ONLY and deliberately does not fold `XBT`→`BTC`; `XBTCHF` (id 1175) holds **92,639 real rows inside the exact 2025-03-31→2025-10-01 gap** where `BTCCHF` (frame slot 23) has 697, and the 48,780-row overlap agrees to **max rel close diff 0.0**. So one of the 5 "genuine sparse" slots is recoverable data, not market absence: the identity repair is incomplete and the frozen-interior residue is overstated. Explicit alias TABLE (not a blanket replace), same fail-loud agreement gate, re-derive the disclosure numbers. |
+| 5 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
+| 6 | `tasks/TASK_878_FAILED_FILL_SEMANTICS.md` | S/M | **OPERATOR-RULED 2026-08-05 (+amendment) — resolves both open questions.** A no-print bar is an order PLACED THAT IS UNFILLED — not illegal, and not dead either: it could still execute on a later step, so execution is a **COINFLIP** (operator's simulation choice; the pending-order queue that holds it ~5 steps is the heavy variant and stays OUT of scope as its own future row — the per-step flip is its geometric special case). `p` comes from the slot's trailing print density (causal), not a magic number; the flip must be a seeded path-independent hash of (eval_seed, decision, slot) or every parity gate in the repo dies. A 3-arm ablation (never-fill / coinflip / always-fill) answers the operator's open question of whether flat-before-move cells carry SIGNAL rather than noise, instead of assuming. valuation marks at the last valid price (architecture), execution requires a real print, a failed fill changes position/cash/fee by nothing, and **the policy's INTENT is preserved** — today's 868 (a2) mask rewrites the BC target to HOLD, teaching "HOLD was intended" when the truth is "could not fill" (the 78.8%-class hazard). Force-HOLD survives only for zero-coverage slots (nothing quotable ⇒ nothing attemptable). PV conservation must stay exact. |
 
-_Sequencing: **876 first** — the operator named score-based pruning necessary and it gates the long
-base-training program; it touches the training save path, which no other Ready row touches. Then 872
-(live path, XS)._ _Original note:_ 872 first (live path). 873 and 874 touch different surfaces from each other and from
+_Sequencing (2026-08-06): **876 first** — emission gates the long base-training program, and it
+touches the training save path that no other Ready row touches. **880 second** — it lifts an
+operational freeze on a tool that deletes remotely, and the long run will want that tool. **873
+third** — it changes what every suite checks at start-up, so everything after it is measured
+under the pin. **877 fourth** — it shrinks the sparse-slot set, which is exactly the surface 878
+then re-specifies (878's own out-of-scope says do 877 first if it is scheduled). **874 fifth**
+(XS, independent). **878 last and alone** — it rewrites eval-core execution semantics with every
+parity gate in the repo riding on it; the factory deliberately deferred it in run 26 to finish
+one row properly, and that judgement is ratified here._ _Original note:_ 872 first (live path). 873 and 874 touch different surfaces from each other and from
 872 — but 873 changes what every suite checks at start-up, so take it BEFORE 874 and re-run 874's
 suites under the pin. Serial is safest; all three are XS/S._
 
@@ -545,6 +596,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 
 | Task | Gate |
 |------|------|
+| `tasks/TASK_881_CHECKPOINT_PROTECTION_MODEL.md` | **TASK_876 (rescoped emission half) AND TASK_880 must land first.** Created by the D32 ruling: protection becomes an EXPLICIT tracked per-run manifest, the GC FAILS LOUD on a run dir it cannot resolve one for, and prose citations are advisory-only (measured: only 3 of 7 run dirs get any protection today, and all four under `jax_ckpt_fast/` get zero — including `e5exit2_pq_s{0,1,2}`, which its SPEC cites BY NAME and never by path). The in-run `--ckpt-retention` default flips to `score` in this row's gate (vi), and only with `overwrite=False` and the collapse case re-proven on real flax saves rather than assumed. |
 | ~~`tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md`~~ | gate SATISFIED 2026-07-14 → moved to Ready #1 |
 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped ✓ (2026-07-08) + Stage-3 training run's rung verdicts green; SCHEDULED server run, not a factory-loop job |
 

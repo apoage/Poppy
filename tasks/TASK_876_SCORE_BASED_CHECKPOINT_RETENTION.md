@@ -1,6 +1,32 @@
 # TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
-> **STATUS (2026-08-06): STOPPED, NOT SHIPPED — built and gate-green, halted on the 3-cycle rule
+> **RESCOPED 2026-08-06 by the D32 ruling — READY again as the NON-DESTRUCTIVE half only.**
+> The row splits: deletion POLICY moves to [TASK_881](TASK_881_CHECKPOINT_PROTECTION_MODEL.md)
+> (the protection model), the remote archive tool's discovery defect moves to
+> [TASK_880](TASK_880_CKPT_ARCHIVE_DISCOVERY_FIX.md). What stays here, resuming FROM THE STASH:
+>
+> 1. **`scores.jsonl` emission at every save** — the original scope 0, and the thing the program
+>    actually needs (a 42-checkpoint sweep found 0 scored; under the operator's ruling an
+>    unscored checkpoint is garbage, so an unscored long run produces garbage by construction).
+> 2. **The three mechanical fixes that need no ruling**: `_is_protected` honouring DESCENDANT
+>    entries; a TTL re-scan instead of a launch snapshot; a failed `rmtree` recorded as a FAILED
+>    prune in the audit index instead of a successful one.
+> 3. **Revert `flax_keep = 1_000_000` to the pre-876 bound and set `overwrite=False`.** This is
+>    the finding that mattered most in the run-26 report — `flax_keep = 1_000_000` plus the
+>    pre-existing `overwrite=True` is a protection-blind mass delete on any resume at a lower
+>    step, and pre-876 that cost at most 2 dirs. The task had enlarged its own blast radius.
+> 4. **`--ckpt-retention` defaults to `recency` — the destructive path stays OFF** (invariant 1).
+>    Scope 1's demand that recency stop being the effective policy is met by the OFFLINE tool
+>    being the effective policy (`tools/ckpt_gc.py`, planner-shipped, operator-run), not by
+>    flipping an in-run default ahead of its protection model. The default flips in TASK_881,
+>    gate (vi), with the collapse case re-proven rather than assumed.
+>
+> Nothing in this half deletes anything new, so none of it depends on D32's unsettled question.
+> The factory's disclosure-instead-of-silent-choice on the default was correct, and the "S"
+> sizing was the planner's error, not the spec's content — emission and deletion policy should
+> have been separate rows at authoring time.
+>
+> **Prior status (2026-08-06): STOPPED, NOT SHIPPED — built and gate-green, halted on the 3-cycle rule
 > with a new human wall, D32 (the protection model).** Code preserved in `git stash`
 > ("TASK_876 … STOPPED on halt rule (protection model, D32)"), re-apply verified clean on HEAD;
 > nothing committed, nothing tagged. 1,208 insertions across 6 files — `tools/ckpt_gc.py`,
