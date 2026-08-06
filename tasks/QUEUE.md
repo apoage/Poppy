@@ -297,6 +297,12 @@ one row properly, and that judgement is ratified here._ _Original note:_ 872 fir
 872 — but 873 changes what every suite checks at start-up, so take it BEFORE 874 and re-run 874's
 suites under the pin. Serial is safest; all three are XS/S._
 
+_Recommended, not yet specced (XS, planner-found 2026-08-06, has now cost TWO launches):_
+_(0) `tools/deploy/run_queue.sh` does not activate the venv, so a bare `python` in a manifest
+resolves to **python2** on gpu-server and every job dies in ~30 s with a PEP-263 SyntaxError
+(the 861 chain, then the 879 rung-3 launch). Resolve `trader_env/bin/python` in the runner —
+or refuse a manifest whose command starts with a bare `python` — so the trap cannot recur._
+
 _Recommended, not yet specced (both named in shipped banners, neither urgent):_
 _(a) `mcts_trader/data/database.py` — the last known unaddressed RW reach at the canon layer
 (aiosqlite, real live-write path; needs a dual-connection refactor, beyond XS — 870 remainder).
