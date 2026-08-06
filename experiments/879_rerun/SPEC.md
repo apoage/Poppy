@@ -79,6 +79,67 @@ finding** (the old experiment is no longer runnable as specified); the re-run is
 WITH `--panel-frame-from-checkpoint runs/832_e5/frame_provenance_imprint.json` and the deviation
 recorded in the LEDGER row rather than quietly absorbed.
 
+## AMENDMENT 1 (2026-08-06, after the first 3 jobs returned) — the leg is VOID as designed, and it found something bigger
+
+**The hard check fired: all three completed runs went BANKRUPT** (`r3_pre` step 6, `r3_vd_s0`
+step 5, `r3_vd_s1` step 29, of 1730 expected; `final_pv 0.0`, `partial: true`). Per this SPEC
+that is a STOP, not a grade, so the remaining queue was killed rather than burning two more
+GPU-hours. Outcomes (i)/(ii)/(iii) are NOT decidable from this leg.
+
+**Then the originals were checked, and they are bankrupt too:**
+
+| artifact | net@21 | bankrupt_at | steps |
+|---|---|---|---|
+| 857 s0 | −19.224 | 1 | 2/1670 |
+| **857 s1 — the recorded "best −4.23"** | **−4.232** | **27** | **28/1670** |
+| 857 s2 | −19.232 | 1 | 2/1670 |
+| **860 s0 — the recorded "best −4.02"** | **−4.023** | **27** | **28/1673** |
+| 860 s1 | −13.730 | 2 | 3/1673 |
+| 860 s2 | −19.224 | 1 | 2/1673 |
+
+All six: `final_pv 0.0`, `partial: true`. **The two headline numbers in LEDGER
+`857/vhat-corridor` and `860/codistill-corridor` come from runs that died after 28 of ~1670
+decisions — 1.7% of the window. "Best" means "survived longest."**
+
+**Mechanism (identified, not guessed).** `--vector-weight-rebalance` is `store_true`, **default
+OFF**, and its own help says it "MUST match the step the checkpoint was trained under". The
+corridor command omits it. But `runs/832_e5/jobs_imprint_full.manifest` shows the source
+checkpoint was built `imprint.py … --vector-weight-rebalance --imprint-mapping weight-native`,
+and the 857/860 checkpoints are distilled from it. So a **weight-native checkpoint was walked
+through the ORDER env** — precisely the incoherence `eval_vector.py:2857` asserts against
+("the weight-native ladder emits 0/1/2 as −1/0/+1-unit TARGET-WEIGHT steps; walked through the
+ORDER env those codes are misread as SELL/HOLD/BUY orders"). Target-weight codes read as orders
+⇒ immediate over-leverage ⇒ margin cascade ⇒ bankruptcy in 1–27 steps.
+
+**Consequences.**
+1. `857/vhat-corridor` and `860/codistill-corridor` need CORRECTION stamps: they do not measure
+   the distilled leaf, and "residual structural in the dynamics embedding" is not supported by
+   them. **D26, which parked the search-leaf lane citing those numbers, rests on an env-mismatch
+   artifact.**
+2. **My own "run the command verbatim" principle was wrong here, and the reason is worth
+   keeping**: it assumed the framework fixes were unconditional semantics. That holds for E-b
+   (fill), E-c (alias union) and E-d (UTC) — but **E-a is FLAG-GATED**, so a verbatim command
+   faithfully re-runs the BROKEN env. Verbatim preserves comparability with a broken number;
+   it does not deliver "the fixed framework". Any future re-run must diff the command against
+   the flags each epoch introduced, not just re-execute it.
+3. The corrected leg (AMENDMENT 2 below) is the one that actually answers the rung-3 question.
+
+## AMENDMENT 2 (2026-08-06) — the corrected leg, pre-registered before launch
+
+Same checkpoints, same window, same operator, plus exactly two changes, both required for the
+measurement to be coherent at all: **`--vector-weight-rebalance`** (match the checkpoints'
+training env — the E-a fix, flag-gated) and **`--teacher-floor`** (emit the in-run floor on the
+same semantics, as the 861/875 work does; the code asserts it requires the weight env). No frame
+pin — the original ran unpinned and that is left alone so only the necessary variables move.
+Both deviations are recorded in the LEDGER row.
+
+Bar, restated for the corrected leg: the hard check comes FIRST — **a run that bankrupts is not
+graded**, it is reported as a survival failure. Only runs completing their full step count are
+scored, median of 3 seeds per lane vs the in-run `teacher_floor_inenv`. Then (i)/(ii)/(iii) as
+originally written, with the ORIGINAL numbers no longer usable as the comparison baseline (they
+are bankrupt artifacts) — so the honest framing of a pass is "the lane was never measured; here
+is its first coherent measurement", not "the FAIL was a framework artifact".
+
 ## Launch note (recorded so it stops recurring)
 
 The first launch failed all 7 jobs in ~30 s with `SyntaxError: Non-ASCII character '\xe2'` —
