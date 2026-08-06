@@ -4,6 +4,25 @@ import websockets
 from typing import Callable, List, Dict
 import logging
 
+# Index at which the time field starts in any string Python 3.10's
+# datetime.fromisoformat() can parse: a rigid 10-char 'YYYY-MM-DD' date plus exactly
+# one separator character. Used by the OHLC timestamp adapter below to locate a
+# trailing UTC offset without ever matching the date's own hyphens.
+#
+# JUDGEMENT (TASK_872 fix round): when a timestamp is too short to have a time field
+# (< 12 chars, e.g. a bare 'YYYY-MM-DD'), the offset detach is SKIPPED, not failed
+# loud. This is deliberate and is safe by construction, not by heuristic: such a
+# string cannot carry an offset that fromisoformat would honour, so the detach would
+# be a no-op anyway. The one adjacent-looking case, '2024-07-15+05:30', is NOT a
+# date-with-offset -- fromisoformat reads the '+' at index 10 as the separator and
+# '05:30' as the TIME (-> 2024-07-15 05:30:00), so detaching there would corrupt a
+# string that currently parses. Anything else short and malformed raises in BOTH
+# conversion branches and is already dropped loudly by the handler's outer except.
+# So there is no input for which skipping produces a silently wrong epoch, which is
+# the only failure mode a fail-loud branch here would buy us.
+_TIME_FIELD_START = 11
+
+
 class KrakenWebSocket:
     WS_URL = "wss://ws.kraken.com/v2"
     PING_INTERVAL = 30  # Send ping every 30 seconds
@@ -131,8 +150,8 @@ class KrakenWebSocket:
             # Adapt V2 OHLC to V1-like list structure
             # V2: {"data": [{"symbol": "BTC/USD", "open": 1.0, ...}]}
             # V1 Expected: [id, [time, etime, o, h, l, c, vwap, vol, count], name, pair]
-            from datetime import datetime
-            
+            from datetime import datetime, timezone
+
             for item in data.get('data', []):
                 try:
                     # Parse ISO timestamp to unix - robust handling
@@ -141,9 +160,48 @@ class KrakenWebSocket:
                     if not ts_str:
                         continue
 
-                    # Handle Z suffix if present
+                    # Handle Z suffix if present. Kraken's interval_begin is documented UTC,
+                    # but Python 3.10's fromisoformat() cannot parse a trailing 'Z' at all, so
+                    # it must be stripped here -- which leaves fromisoformat() with no offset
+                    # info, producing a NAIVE datetime. Naive .timestamp() resolves in the
+                    # HOST's local timezone, not UTC (TASK_872: was silently shifting every
+                    # live candle by the machine's UTC offset). Below, any naive result is
+                    # given tzinfo=utc explicitly before calling .timestamp(); a string that
+                    # already carries a real offset is left alone (fromisoformat already
+                    # returns it aware).
                     if ts_str.endswith('Z'):
                         ts_str = ts_str[:-1]
+
+                    # Detach any trailing numeric UTC offset (+HH:MM / -HH:MM) BEFORE the
+                    # nanosecond truncation below, and re-attach it at parse time. The
+                    # truncation slices the fractional FIELD, which for an offset-bearing
+                    # string also contains the offset: with >=6 fractional digits it
+                    # deleted the offset outright (silently naive, no exception), with
+                    # fewer it cut the offset in half (ValueError -> the fallback then
+                    # dropped it too). Either way the tzinfo guard below saw a naive
+                    # datetime and stamped UTC onto a wall-clock reading that was never
+                    # UTC -- a silent epoch error of exactly the offset.
+                    #
+                    # The scan is POSITIONAL, not separator-matched. Python 3.10's
+                    # fromisoformat() only accepts a rigid 10-character 'YYYY-MM-DD'
+                    # date ('2024-7-15...' etc. all raise), but it accepts ANY single
+                    # character as the date/time separator -- 'T', lowercase 't', a
+                    # space and even 'X' or '_' all parse. So the time field always
+                    # starts at index 11, and searching for a literal 'T'/' ' would
+                    # miss every other separator and silently skip the detach (the
+                    # exact defect class this block exists to close). Starting the
+                    # backward scan at index 11 also makes it structurally impossible
+                    # to match the date's own hyphens at indices 4 and 7, or the
+                    # separator at index 10.
+                    #
+                    # A string shorter than 12 chars yields an empty range and is left
+                    # alone deliberately -- see the note below.
+                    offset_suffix = ''
+                    for _i in range(len(ts_str) - 1, _TIME_FIELD_START - 1, -1):
+                        if ts_str[_i] in '+-':
+                            offset_suffix = ts_str[_i:]
+                            ts_str = ts_str[:_i]
+                            break
 
                     # Handle nanosecond precision (Python only supports microseconds - 6 digits)
                     # Kraken V2 sends 9 digits (nanoseconds)
@@ -154,12 +212,18 @@ class KrakenWebSocket:
                         ts_str = f"{main_part}.{frac_part}"
 
                     try:
-                        ts = datetime.fromisoformat(ts_str).timestamp()
+                        dt = datetime.fromisoformat(ts_str + offset_suffix)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        ts = dt.timestamp()
                     except ValueError:
                         # Fallback: try parsing without fractional seconds
                         if '.' in ts_str:
                             ts_str = ts_str.split('.')[0]
-                        ts = datetime.fromisoformat(ts_str).timestamp()
+                        dt = datetime.fromisoformat(ts_str + offset_suffix)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        ts = dt.timestamp()
                     
                     # Construct V1-like payload
                     v1_payload = [

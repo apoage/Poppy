@@ -1,5 +1,63 @@
 # TASK_872 — The LIVE candle path resolves timestamps in machine-local time (871 remainder, result-bearing today)
 
+> **STATUS (2026-08-06): SHIPPED as `task872-live-stream-utc`.** Both `fromisoformat` sites in
+> `KrakenWebSocket._handle_message`'s V2 OHLC adapter now resolve at UTC; regression suite
+> `tools/tests/test_stream_utc.py` 58/58; selftest 12/12; fixture `b0f8de8b…` and
+> `trading_data.db` byte-untouched. Medium panel (correctness + regression) over 3 cycles,
+> **2 MAJOR found and closed**, fix rounds escalated to opus.
+>
+> **The fix is larger than the two-line change this row specified, because the naive-datetime fix
+> alone would have made a second, pre-existing defect SILENT.** The nanosecond-truncation block
+> does `frac_part[:6]` and rebuilds the string without re-appending anything past the slice, which
+> DESTROYS a real numeric offset before `fromisoformat` ever sees it — so the new `tzinfo is None`
+> guard stamped UTC onto a wall clock that was never UTC. Measured: `2024-07-15T12:34:56.123+05:30`
+> → `1721046896.0` against a truth of `1721027096.123`, wrong by exactly the 19,800 s offset, on
+> every host. Not confined to the fallback: at ≥6 fractional digits the offset is sliced clean off
+> and the PRIMARY branch parses with no exception at all. **The first round's own test asserted
+> that wrong value as its oracle and passed** — the defect class the round was sent to close.
+> Closed by detaching any offset suffix before truncation and re-appending it at both call sites.
+>
+> **Pre-existing, verified:** that truncation defect is byte-identical at
+> `git show 67c8176:mcts_trader/data/stream.py`, where the same input already returned `1721046896`
+> under `TZ=UTC` and `1721039696` under `Europe/Prague`. It was NOT introduced here; it is closed
+> here because this diff re-touched that exact block and because 872's own guard is what converted
+> it from a naive-local error into a *silent* wrong-UTC stamp.
+>
+> **The offset-detach scan is POSITIONAL (from index 11), not separator-matched.** A fresh judge
+> caught the first attempt anchoring on `max(find('T'), find(' '))`: Python 3.10 accepts a lowercase
+> `t` separator, so `_sep == -1`, the detach was skipped, and the silent mis-stamp reproduced
+> exactly. Widening to case-insensitive would still have missed `X`/`_` — 3.10 accepts ANY single
+> character there. The positional rule is separator-agnostic by construction and structurally cannot
+> reach the date's own hyphens at indices 4 and 7. Verified through the real adapter: `T`/`t`/space/
+> `X`/`_` all yield `1721027096`, delta 0.0. Sub-12-char timestamps skip the detach deliberately —
+> safe by construction, and `2024-07-15+05:30` is a date whose `+` is the SEPARATOR, parsing to
+> 05:30 (`1721021400`, unchanged).
+>
+> **DECISION-CHANGING, for the planner — this row's stated priority is wrong.** The header below
+> calls this "the only known defect that is result-bearing on the LIVE path rather than latent".
+> The regression judge established that both named consumers are DEAD CODE: `real_trade_jax.py` is
+> self-documented "BROKEN / LEGACY … Do not use this file for live/paper trading", its
+> `RealPortfolioManager` import fails (`_REAL_PORTFOLIO_AVAILABLE = False`) and `__main__`
+> `sys.exit()`s before `RealTrader` is constructed; `PaperExchange.set_data_source` is called
+> nowhere (its only caller, `paper_trade_jax.py`, was deleted in `c4a27e0`). `KrakenWebSocket` is
+> instantiated only by that dead file and the new test. **The STOP condition is firmly not
+> triggered — no persistence is reachable — but the reason is stronger than "decision-path only":
+> today's live blast radius is zero.** The fix is correct and worth having for whenever the live
+> path is revived; its ranking justification should be restated.
+>
+> **Accepted, disclosed not fixed:** colon-less offsets (`+0530`) parse in neither branch on 3.10
+> and now FAIL LOUD (logged, candle dropped) rather than silently mis-stamping — better than the
+> pre-round silent `1721046896`, but not full handling. Sub-second precision is discarded downstream
+> regardless (`str(int(ts))`) — pre-existing. `int(ts) + 60` hardcodes a 60 s bar end: checked
+> CONSISTENT (`stream.py:50,75` and `real_trade_jax.py:268` all pin `interval=1`), but it breaks on
+> a non-1m subscription.
+>
+> **Spec correction (binding):** Acceptance (iii) below assumes a nanosecond-precision payload is
+> what reaches the `ValueError` fallback. That is empirically FALSE, and was false pre-fix too — no
+> well-formed `Z`-or-offset payload at any fractional length reaches it (always exactly one
+> `fromisoformat` call). Both sites are covered and proven fixed, but the fallback is exercised only
+> by malformed input. The wording should be amended where authored.
+
 **Status**: READY 2026-08-05 (seeded from the run-25 wrap, question 1 — planner: YES, take it).
 **Size: XS. Risk: low** (a two-line semantics fix plus its regression test; no numerics on any
 committed baseline). Surface: `mcts_trader/data/stream.py` (+ its regression test).
