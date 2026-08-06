@@ -1,5 +1,67 @@
 # TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
+> **STATUS (2026-08-06): STOPPED, NOT SHIPPED — built and gate-green, halted on the 3-cycle rule
+> with a new human wall, D32 (the protection model).** Code preserved in `git stash`
+> ("TASK_876 … STOPPED on halt rule (protection model, D32)"), re-apply verified clean on HEAD;
+> nothing committed, nothing tagged. 1,208 insertions across 6 files — `tools/ckpt_gc.py`,
+> `mcts_trader/training/{safe_checkpoint,config,cli}.py`, `mcts_trader/jax_agent/trainer.py`,
+> `train_jax_fast.py`. **The row was sized S; it is not — that mis-sizing is the finding to carry
+> forward, not a criticism of the spec's content.**
+>
+> **What is PROVEN (independent flow-verifier, real flax saves, not unit stubs).** All six
+> acceptance gates (i)–(vi) PASS. The collapse case — the task's entire reason for existing —
+> demonstrated side-by-side on one curve rising to +9 then crashing to −9.5: the OLD flax `keep=3`
+> ends holding `checkpoint_7000/8000/9000`, the three MOST collapsed; the new policy holds
+> `checkpoint_3000/4000/5000` (the good pre-collapse peak) plus the newest as the resume point.
+> Resume-after-prune works through the real load path for both latest and best. Disk stays bounded
+> under the floor with unscored checkpoints (peak 21.5 MB vs an unbounded 43 MB and climbing), the
+> resume point present at every step. Three real layouts all work end-to-end. Audit history is
+> reconstructable across interleaved in-run/offline prune waves. Idempotent. selftest 12/12;
+> fixture `b0f8de8b…` and `trading_data.db` byte-untouched throughout.
+>
+> **Answering the spec's own open question:** `SafeCheckpointManager` DOES reclaim its losers from
+> disk (`shutil.rmtree`, `safe_checkpoint.py`), not merely drop them from its in-memory list —
+> verified by direct exercise. One deletion site, not the two the task text estimated.
+>
+> **Three BLOCKERs found and closed across the cycles** (each reproduced, each re-verified):
+> the epoch-key fallback lent one checkpoint's score to a different UNSCORED one and deleted it
+> (flax names dirs by `step_count`, not epoch — `scores.get(500)` against `{10,20,30}`); a
+> fabricated `0.0` score on an epoch-0 crash out-ranked real negative scores and evicted a real
+> checkpoint; and the disk floor was measured once on `roots[0]` although `jax_ckpt_fast`
+> (`/dev/sdd1`) and `trading_data.db` (`/dev/nvme0n1p2`) are on DIFFERENT filesystems here — so it
+> deleted from a 664 GB-free disk because another was low, and could never fire for the DB whose
+> protection is its stated purpose.
+>
+> **Why it stopped — the protection model, now D32.** Scope 4 says anything referenced by an
+> `experiments/` artifact is never garbage, and that has no mechanical definition in this repo:
+> `experiments/828_stage3_train/SPEC.md:211` cites runs **by name** ("Battery e5exit2_pq_s{0,1,2}"),
+> never by path, and `experiments/LEDGER.md` holds zero `jax_ckpt_fast/` references — so 4 of 7 run
+> dirs get zero protection. A reference naming a path INSIDE a checkpoint protects the inner path
+> but not the checkpoint (ancestors-only walk), and the delete then destroys the protected path. The
+> protect set is a launch snapshot while `SERVER.md` documents mid-run SPEC drops as normal, so the
+> in-run deleter and the offline GC disagree about what is protected. **And `flax_keep = 1_000_000`
+> with the pre-existing `overwrite=True` is a protection-blind mass delete: on a resume at a lower
+> step flax removes every checkpoint above it, consulting no never-delete set (verified on flax
+> 0.10.7). Pre-876 that cost at most 2 dirs under `keep=3` — this task enlarged its own blast
+> radius, and it is the finding that argues against starting the long run on the current code.**
+> Smaller and open: the safe-manager is a 4th deletion site outside the policy (default OFF, already
+> bounded by its own `keep_best_n`), and a failed `rmtree` leaks bytes forever under
+> `*.gc-trash-<pid>` while the audit index records a normal successful prune.
+>
+> **Operator call carried in D32 alongside the model choice:** `ckpt_retention` currently defaults
+> to `'score'` — new destructive behavior default-ON, contradicting invariant 1 ("flag-gated,
+> default OFF") while Scope 1 explicitly demands recency-only be removed as the effective policy.
+> Three judges flagged the conflict independently; the factory left it default-ON and disclosed it
+> rather than silently choosing. `--ckpt-retention recency --ckpt-min-free-gb 0` is the full
+> pre-876 restore (recency alone does NOT restore it — the floor refusal still applies).
+>
+> **Out of scope, but load-bearing and urgent (planner row recommended before the srv program):**
+> `tools/ckpt_archive.py` carries the SAME discovery defect on the tool that **deletes on the
+> server** — its embedded `REMOTE_PROBE` (lines 41–45) misidentifies run dirs exactly as
+> `ckpt_gc.py` did, omits `checkpoint_\d+` / `checkpoint_epoch_\d+` / `checkpoint_golden`, and reads
+> scores epoch-keyed only, so an entire scored run can be judged uninteresting and removed from
+> `gpu-server`. Excluded here because the task file puts remote/off-host archival out of scope.
+
 > **SCOPE CORRECTED 2026-08-05 (operator: "this is off factory — there must be a mechanism that
 > will prune checkpoints or all are gone and we are syncing whole database").** The MECHANISM is
 > not a factory row and is no longer pending: the planner shipped it directly, because runs were
