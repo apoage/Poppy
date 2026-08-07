@@ -1058,7 +1058,15 @@ def run(args, out_path, tag):
               "(ckpt_smoke / results JSON preserved).")
     else:
         trainer.state = trainer.state.replace(params=distilled)
-        trainer.save_checkpoint(ckpt_path)
+        # TASK_876 fix-2 (M2): as in 832's imprint.py — `overwrite=True` keeps this one-shot
+        # runner re-runnable under the D32 default (overwrite=False on the training path).
+        # `ckpt_path` is a single-purpose, gitignored OUTPUT directory (`ckpt_smoke/` /
+        # `ckpt_distilled/`, see this module's .gitignore) holding only the distilled head
+        # this invocation produced; nothing resumes from a prior invocation's copy and no
+        # newer checkpoint can exist there, so the mass-delete overwrite=False guards against
+        # is impossible. Without it the second run of the same command aborts on
+        # `Destination .../checkpoint_<step> already exists`.
+        trainer.save_checkpoint(ckpt_path, overwrite=True)
         print(f"[857] distilled checkpoint -> {ckpt_path}")
         if out_path:
             with open(out_path, "w") as fh:

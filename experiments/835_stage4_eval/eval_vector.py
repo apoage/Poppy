@@ -3711,7 +3711,17 @@ def run_smoke(args, corridor, ext_windows):
     ckpt_dir = os.path.abspath(args.smoke_ckpt_dir or os.path.join(EXP_DIR, "smoke_ckpt"))
     os.makedirs(ckpt_dir, exist_ok=True)
     print(f"[smoke] save_checkpoint → {ckpt_dir}")
-    trainer_a.save_checkpoint(ckpt_dir)
+    # TASK_876 fix-2 (M2): `overwrite=True` is REQUIRED here and is safe HERE SPECIFICALLY.
+    # trainer.save_checkpoint defaults to overwrite=False (D32) so the TRAINING path can never
+    # mass-delete newer checkpoints on a lower-step resume. This is not the training path:
+    # `ckpt_dir` is a fixed, gitignored (experiments/835_stage4_eval/.gitignore: `smoke_ckpt*/`)
+    # smoke directory that is deliberately REUSED across runs, and this save is always at
+    # step 0 of a fresh-init trainer — so every re-run collides on exactly `checkpoint_0`. With
+    # overwrite=False the second `--smoke` run dies with an uncaught
+    # `ValueError: Destination .../checkpoint_0 already exists` (MEASURED: run 1 exit 0, run 2
+    # exit 1). There is nothing here for overwrite=False to protect: the directory holds only
+    # this smoke's own throwaway checkpoint, never a run's resume point.
+    trainer_a.save_checkpoint(ckpt_dir, overwrite=True)
 
     print("[smoke] building second fresh-init trainer (seed 1) + load_checkpoint ...")
     model_b, trainer_b = build_model_and_trainer(args, args.n_assets, init_seed=1)

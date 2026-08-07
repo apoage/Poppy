@@ -98,7 +98,8 @@ from mcts_trader.jax_agent.adaptive_noise import AdaptiveNoiseController, NoiseC
 from mcts_trader.jax_agent.adaptive_fees import AdaptiveFeeController, FeeConfig
 from mcts_trader.jax_agent.adaptive_burn import AdaptiveBurnController, BurnConfig
 from mcts_trader.jax_agent.schedules import SimsSchedule
-from mcts_trader.training.safe_checkpoint import SafeCheckpointManager
+from mcts_trader.training.safe_checkpoint import SafeCheckpointManager, append_checkpoint_score
+from mcts_trader.jax_agent.trainer import CheckpointVanishedError, CheckpointSidecarError
 from mcts_trader.training.evaluator import run_generalization_eval
 
 # TASK_042: ReDo - Recycling Dormant Neurons
@@ -106,6 +107,82 @@ from mcts_trader.jax_agent.redo import DormancyMonitor, recycle_dormant_neurons
 
 # TASK_040: SAC-style Adaptive Entropy
 from mcts_trader.jax_agent.exploration.sac_entropy import AdaptiveEntropyManager
+
+
+def _attempt_checkpoint_save(trainer, target_dir, keep, what, epoch, run_dir):
+    """TASK_876 fix-2 (B1 + M3): save, then decide what ACTUALLY happened.
+
+    Returns ``(written, msgs)``. ``written`` is a path VERIFIED to exist on disk, or None
+    when no usable checkpoint was produced — so the caller may emit a score row (and print a
+    success line) if and only if it is non-None.
+
+    RAISES for anything it does not recognise. This helper is a CLASSIFIER, not a
+    normalizer and not a corrector: it recognises exactly the three DESIGNED outcomes below
+    and converts them to "log and continue"; every other exception is re-raised unchanged so
+    it kills the run with a nonzero exit, exactly as the bare ``trainer.save_checkpoint(...)``
+    calls it replaced always did. That matters because
+    ``tools/orchestration/dojo_manager.py`` gates a curriculum level purely on the
+    subprocess ``returncode``: a swallowed disk-full/permission-denied would let a run print
+    "TRAINING COMPLETE!", exit 0 with no checkpoints on disk, and advance the orchestrator.
+
+    The three DESIGNED outcomes, deliberately NOT collapsed into one ``except Exception``
+    (before this fix a bare handler printed "likely a checkpoint already on disk at or above
+    this step" for every failure — the wrong diagnosis for a sidecar ENOSPC — and dropped the
+    score of a checkpoint that really was on disk):
+
+    1. :class:`CheckpointSidecarError` — flax dir on disk, a sidecar failed. Score it.
+    2. :class:`CheckpointVanishedError` — flax returned a path it then deleted itself.
+    3. ``ValueError: Destination ... already exists`` — the exact-step collision that
+       ``overwrite=False`` is *designed* to produce on a rollback-resume.
+    """
+    msgs = []
+    try:
+        written = trainer.save_checkpoint(target_dir, keep=keep)
+    except CheckpointSidecarError as _e:
+        # The flax checkpoint IS on disk; only trainer_metadata.json / popart_state.npz
+        # failed. Score it (it is a real, loadable artifact) and say what is actually wrong.
+        written = _e.path
+        msgs.append(
+            f"  [CKPT] {what} at epoch {epoch}: the checkpoint {written} IS on disk and is "
+            f"still resumable, but writing {_e.what} failed ({_e.__cause__}). A resume from "
+            f"it will fall back to defaults for the state that sidecar carries "
+            f"(entropy_coef / PopArt normalisation), which changes training behaviour "
+            f"silently. Free space or fix permissions under {target_dir}; the score row for "
+            f"this checkpoint IS being recorded.")
+    except CheckpointVanishedError as _e:
+        # The save reported success and left nothing behind (flax's own keep-N cleanup ate
+        # it inside the same call). This is the collapse-recovery resume window.
+        written = None
+        msgs.append(
+            f"  [CKPT] {what} VANISHED at epoch {epoch}: flax reported writing {_e.path} but "
+            f"nothing is on disk there ({_e.reason}). THIS RUN HAS NO RESUME POINT FOR ITS "
+            f"CURRENT TRAJECTORY — {run_dir} still holds only OLDER/higher-step checkpoints "
+            f"from a previous trajectory, and every later save at this step range will "
+            f"vanish the same way. No score row is being written (an unscored, non-existent "
+            f"checkpoint must never enter the audit trail). FIX: restart into a FRESH run "
+            f"directory (--name <new>), or move the stale higher-step checkpoints out of "
+            f"{run_dir}, before relying on any checkpoint from this run.")
+    except ValueError as _e:
+        # DESIGNED outcome 3 ONLY: the exact-step collision flax raises under
+        # overwrite=False ("Destination <dir>/checkpoint_<step> already exists"), i.e. a
+        # rollback-resume re-saving a step already on disk. That is the trade this task chose
+        # (a refused save beats a protection-blind mass delete) and it must not kill the run.
+        #
+        # This is a RECOGNITION guard, NOT a normalizer and NOT a corrector: it does not
+        # repair, retry, or rename anything, and it does not fold unrelated ValueErrors into
+        # a benign-looking log line. Any ValueError whose message is not that collision is
+        # re-raised UNCHANGED — an unrecognised failure must take the run down (nonzero exit)
+        # so dojo_manager's returncode gate cannot advance past a run with no checkpoints.
+        if 'already exists' not in str(_e):
+            raise
+        written = None
+        msgs.append(
+            f"  [CKPT] {what} REFUSED at epoch {epoch}: {type(_e).__name__}: {_e} — no "
+            f"checkpoint was written for this step. With overwrite=False this is a "
+            f"checkpoint already on disk at exactly this step (e.g. after a "
+            f"rollback-resume). Earlier checkpoints in {run_dir} are unaffected and still "
+            f"resumable; training continues.")
+    return written, msgs
 
 
 def main():
@@ -574,6 +651,22 @@ def main():
     checkpoint_dir = os.path.abspath(f"jax_ckpt_fast/{config.name}")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # ==== TASK_876 (D33): checkpoint retention (storage policy only, ZERO deleter surface) ====
+    # 'recency' is the only implemented mode; 'score' is refused at arg-validation time
+    # (mcts_trader/training/cli.py::parse_args), so `config.ckpt_retention` reaching this point
+    # can only be 'recency'. This is a REFUSAL guard, not a normalizer — see the comment there.
+    # Kept here too (defense in depth for any caller that builds TrainingConfig without going
+    # through parse_args) rather than trusting the CLI gate alone.
+    ckpt_retention = getattr(config, 'ckpt_retention', 'recency')
+    if ckpt_retention != 'recency':
+        raise ValueError(
+            f"--ckpt-retention {ckpt_retention!r} has NO IMPLEMENTATION in this build: the "
+            f"checkpoint protection model ships in TASK_881. Only 'recency' is supported.")
+    # flax's `keep` is 3 — the pre-876 bound, unchanged. `overwrite=False` (trainer.py, D32/D33)
+    # is the other intended delta: it makes a resume at a lower step REFUSE the collision
+    # instead of silently mass-deleting every checkpoint above the resume point.
+    flax_keep = 3
+
     # ==== RESTORED: Adaptive Controllers ====
     # Sims warmup schedule (TASK_020)
     sims_schedule = None
@@ -851,6 +944,30 @@ def main():
         )
         print(f"  [TASK_812] e-greedy target-mix schedule: {eps_schedule.initial}->{eps_schedule.final} "
               f"over {_decay} epochs (death-spiral mitigation, applied to policy targets)")
+
+    # TASK_876: pre-initialized so the `finally` block can always record a score,
+    # even if training crashes before completing epoch 0.
+    epoch = -1
+    # TASK_876 cycle 3 / B2: None, NOT 0.0. A run that dies during epoch 0 (OOM on a resume)
+    # would otherwise emit {"epoch": 0, "score": 0.0} as an ordinary finite row — and because
+    # train_reward_ma20 is routinely NEGATIVE early, that fabricated 0.0 would rank FIRST and
+    # a score-driven prune could delete a real, better checkpoint. (Not reachable through the
+    # SHIPPED ckpt_gc.py for `checkpoint_<step>` dirs, which it reads as unscored regardless —
+    # but it IS reachable for `snapshot_ep<N>`, and it must not become reachable when TASK_881
+    # lands the path-first reader.) An unmeasured checkpoint must be UNSCORED (never
+    # score-pruned), never top of the ranking.
+    ckpt_score, ckpt_metric = None, 'train_reward_ma20'
+    # TASK_876 M7: the `finally` save must be stamped with the last epoch that actually
+    # FINISHED, not with the epoch training died in.
+    last_completed_epoch = 0
+    last_completed_score, last_completed_metric = None, ckpt_metric
+    # TASK_876 FIX-1: exit-code flag for the FINAL save only. The final save lives inside
+    # `finally:`, where re-raising would REPLACE whatever actually stopped training and lose
+    # the original error. So an unrecognised failure there is recorded here instead of raised,
+    # and turned into `sys.exit(1)` AFTER the try/finally — a point only reached when nothing
+    # else is propagating. If something IS propagating, it already exits nonzero on its own.
+    # (Chosen over a module-level flag: the exit decision belongs to this one invocation.)
+    final_ckpt_save_failed = False
 
     try:
         pbar = tqdm(range(config.epochs), desc="Training", unit="ep",
@@ -1271,6 +1388,12 @@ def main():
             fee_bps = getattr(env, 'trading_fee_bps', 0) if env else config.fee
             steps = len(trajectory.get('actions', trajectory.get('action_vecs', [])))  # TASK_828: vector traj has action_vecs
             reward_ma20 = np.mean(all_rewards[-20:]) if len(all_rewards) >= 20 else np.mean(all_rewards) if all_rewards else score
+
+            # TASK_876: default per-checkpoint score = rolling train reward (what
+            # SafeCheckpointManager already uses). Overridden below with the periodic
+            # in-env eval score for this epoch when one is actually measured — never
+            # prune on a metric the run didn't measure.
+            ckpt_score, ckpt_metric = float(reward_ma20), 'train_reward_ma20'
 
             # PopArt stats (if available)
             popart_mean = 0.0
@@ -1741,6 +1864,10 @@ def main():
                     print(f"  [EVAL L{config.eval_level}] Reward={eval_result['reward']:+.2f}% | "
                           f"alpha={eval_result['alpha']:+.2f}% | HOLD={eval_result['pct_hold']:.0f}% | "
                           f"Time: {eval_time:.1f}s")
+                    # TASK_876: this epoch measured a real in-env eval score — prefer it
+                    # over the rolling train reward for the checkpoint's recorded score.
+                    ckpt_score = float(eval_result['reward'])
+                    ckpt_metric = f'eval_reward_L{config.eval_level}'
 
             # Write row
             csv_writer.writerow(csv_row)
@@ -1756,7 +1883,44 @@ def main():
                         'opt_state': trainer.state.opt_state,
                         'step_count': trainer.state.step_count,
                     }
+                    # TASK_876 FIX-2: the manager writes TWO checkpoint dirs on its first
+                    # save — `checkpoint_golden` and `checkpoint_epoch_<N>` — from the same
+                    # params and the same metric. Emission is supposed to be unconditional at
+                    # EVERY save, so capture whether golden gets created by this call and
+                    # score it too. (`golden_checkpoint` is None until the first save and is
+                    # only ever set there, so this is an exact test for "golden written now".)
+                    _golden_before = safe_ckpt_manager.golden_checkpoint
                     safe_ckpt_manager.save_checkpoint(ckpt_data, epoch + 1, reward_ma20)
+                    # TASK_876: record the score the manager itself decided on (reward_ma20,
+                    # under its own configured metric name), not the eval-preferring
+                    # `ckpt_score`/`ckpt_metric` used by the other save paths below — this
+                    # is what the manager's own keep_best_n/rollback logic actually measured.
+                    # TASK_876 B3/M4: the manager names its dirs `checkpoint_epoch_<N>`, so
+                    # record the real path as well as the epoch key. NOTE the shipped
+                    # `tools/ckpt_gc.py` cannot resolve either name (see
+                    # `append_checkpoint_score`'s docstring); the path-first reader is
+                    # TASK_881. Until then both read as UNSCORED, i.e. never score-pruned.
+                    _sc_metric = getattr(safe_ckpt_manager, 'metric_name',
+                                         'train_reward_ma20')
+                    append_checkpoint_score(
+                        safe_ckpt_manager.checkpoint_dir, epoch + 1, float(reward_ma20),
+                        _sc_metric,
+                        path=os.path.join(str(safe_ckpt_manager.checkpoint_dir),
+                                          f'checkpoint_epoch_{epoch + 1}'),
+                        step=int(trainer.state.step_count))
+                    if (_golden_before is None
+                            and safe_ckpt_manager.golden_checkpoint is not None):
+                        # Same epoch, same params, same metric as the row above — a distinct
+                        # on-disk artifact, so a distinct row. The manager never prunes
+                        # golden; the row exists so the audit trail is complete rather than
+                        # to make it prunable.
+                        append_checkpoint_score(
+                            safe_ckpt_manager.checkpoint_dir, epoch + 1, float(reward_ma20),
+                            _sc_metric,
+                            path=str(safe_ckpt_manager.golden_checkpoint),
+                            step=int(trainer.state.step_count),
+                            note='golden checkpoint (first SafeCheckpointManager save; '
+                                 'never pruned by the manager)')
 
                 # Check if we should rollback (performance degraded)
                 if safe_ckpt_manager.should_rollback(reward_ma20):
@@ -1770,18 +1934,77 @@ def main():
                     )
                     rollback_count += 1
                     print(f"  [SAFE CHECKPOINT] Restored from epoch {ckpt_epoch} (rollback #{rollback_count})")
+                    # TASK_876 cycle 3 / M6: the params in `trainer.state` are now from epoch
+                    # {ckpt_epoch}, but `ckpt_score` still holds THIS epoch's (degraded)
+                    # measurement. The snapshot block below sits outside this if/elif chain and
+                    # would attach that score to the rolled-back weights — a measurement of one
+                    # model recorded against another. Invalidate it: unscored => never score-pruned.
+                    ckpt_score = None
+                    ckpt_metric = (f"{ckpt_metric} INVALIDATED (rolled back to epoch "
+                                   f"{ckpt_epoch} after this epoch was measured)")
 
             # Standard checkpoint (fallback if safe not enabled)
             elif (epoch + 1) % 10 == 0 and not config.no_checkpoint:
-                trainer.save_checkpoint(checkpoint_dir)
+                # TASK_876 (D33): `overwrite=False` (trainer.py) makes flax refuse instead of
+                # silently mass-deleting when this save's step collides with a checkpoint
+                # already on disk — e.g. a rollback-resume into a directory that still holds
+                # later, worse checkpoints. That is the intended trade (a refused save beats a
+                # protection-blind delete), and THAT refusal must not take down the whole run.
+                # FIX-1: only that refusal. Any OTHER exception (ENOSPC, EACCES, an Orbax
+                # internal) propagates out of this loop and kills the run with a nonzero exit,
+                # as the bare save call here always did — dojo_manager gates on returncode.
+                # Fix-2 B1: a save behind the max step does NOT refuse on the Orbax backend —
+                # it returns a path flax then deletes inside the same call — so the helper
+                # verifies the artifact is really on disk before any success is reported or
+                # any score row is emitted.
+                written, _save_msgs = _attempt_checkpoint_save(
+                    trainer, checkpoint_dir, flax_keep, 'PERIODIC SAVE', epoch + 1,
+                    checkpoint_dir)
+                for _m in _save_msgs:
+                    print(_m)
+                if written is not None:
+                    # TASK_876 B3: flax names the dir by state.step_count, NOT by epoch —
+                    # record the path flax actually wrote, so a path-first reader can bind
+                    # this score to a real artifact. The SHIPPED tools/ckpt_gc.py cannot: it
+                    # is epoch-keyed and parses the digits out of the dir basename, which for
+                    # `checkpoint_<step>` is the STEP, so it reads this checkpoint as
+                    # UNSCORED — the fail-safe direction (never score-pruned; still
+                    # recency-prunable under ckpt_gc's disk floor, as before 876). The
+                    # path-first reader is TASK_881. See append_checkpoint_score's docstring.
+                    append_checkpoint_score(checkpoint_dir, epoch + 1, ckpt_score,
+                                            ckpt_metric, path=written,
+                                            step=int(trainer.state.step_count))
 
             # Snapshot checkpoint (periodic named snapshots that don't get overwritten)
             snapshot_every = getattr(config, 'snapshot_every', 0)
             if snapshot_every > 0 and (epoch + 1) % snapshot_every == 0 and not config.no_checkpoint:
                 snapshot_dir = os.path.join(checkpoint_dir, f'snapshot_ep{epoch + 1}')
                 os.makedirs(snapshot_dir, exist_ok=True)
-                trainer.save_checkpoint(snapshot_dir)
-                print(f"  [SNAPSHOT] Saved to {snapshot_dir}")
+                # See the periodic-save comment above: with overwrite=False this can refuse
+                # (step collision) or silently vanish (save behind the max step, self-pruned
+                # by flax's keep-N inside the same call). Both are reported loudly and
+                # training continues; neither may be reported as a success. Anything else
+                # (FIX-1) propagates and kills the run.
+                _snap_written, _save_msgs = _attempt_checkpoint_save(
+                    trainer, snapshot_dir, flax_keep, 'SNAPSHOT SAVE', epoch + 1,
+                    snapshot_dir)
+                for _m in _save_msgs:
+                    print(_m)
+                if _snap_written is not None:
+                    # TASK_876: the score belongs to the SNAPSHOT dir (the leaf the GC sees),
+                    # written into the PARENT run dir alongside its snapshot_ep<N> siblings.
+                    # `snapshot_ep<N>` is the ONE name the shipped ckpt_gc.py resolves today
+                    # (its epoch key really is the epoch); the other two read as UNSCORED
+                    # until TASK_881 lands the path-first reader.
+                    append_checkpoint_score(checkpoint_dir, epoch + 1, ckpt_score,
+                                            ckpt_metric, path=snapshot_dir,
+                                            step=int(trainer.state.step_count))
+                    print(f"  [SNAPSHOT] Saved to {snapshot_dir}")
+
+            # TASK_876 M7: only now is this epoch complete. The `finally` save below must
+            # attribute its params to THIS epoch, not to the one that crashed half-way.
+            last_completed_epoch = epoch + 1
+            last_completed_score, last_completed_metric = ckpt_score, ckpt_metric
 
     except KeyboardInterrupt:
         print("\nTraining interrupted.")
@@ -1793,11 +2016,65 @@ def main():
         print(f"Training metrics saved to: {csv_path}")
         if not config.no_checkpoint:
             print("Saving final checkpoint...")
-            trainer.save_checkpoint(checkpoint_dir)
-            print(f"  Checkpoint saved to {checkpoint_dir}")
+            # TASK_876 fix-2 B1: the final save reports success ONLY if the checkpoint is
+            # really on disk — this is the run's result, and "Checkpoint saved to …" used to
+            # print unconditionally, even for a save flax deleted inside the same call.
+            # TASK_876 FIX-1: this call CAN raise (the helper only swallows the three
+            # designed outcomes) and we are inside `finally:` — re-raising here would
+            # REPLACE whatever actually stopped training and lose the original error. So the
+            # unrecognised failure is reported in full AND recorded in
+            # `final_ckpt_save_failed`, which becomes `sys.exit(1)` after the try/finally.
+            # Both properties the fix requires therefore hold: the original exception is
+            # preserved and still propagates, and the process exits nonzero either way.
+            written, _save_msgs = None, []
+            try:
+                written, _save_msgs = _attempt_checkpoint_save(
+                    trainer, checkpoint_dir, flax_keep, 'FINAL SAVE', last_completed_epoch,
+                    checkpoint_dir)
+            except Exception as _final_e:
+                final_ckpt_save_failed = True
+                print(f"  [CKPT] FINAL SAVE FAILED at epoch {last_completed_epoch}: "
+                      f"{type(_final_e).__name__}: {_final_e} — NO final checkpoint is on "
+                      f"disk for this run. This is an unrecognised failure (not a step "
+                      f"collision, not a sidecar, not a vanished save); the run will exit "
+                      f"NONZERO so no orchestrator gating on returncode can advance past it.")
+                import traceback
+                traceback.print_exc()
+            for _m in _save_msgs:
+                print(_m)
+            if written is not None:
+                # TASK_876 M7: attribute this save to the last COMPLETED epoch. `epoch + 1`
+                # would stamp the crashed/interrupted epoch onto params that never finished
+                # it — an audit-trail lie. `last_completed_*` are pre-initialized before the
+                # `try:` above, so this is safe even if training died before epoch 0.
+                _partial = (epoch + 1) != last_completed_epoch
+                if last_completed_score is None:
+                    # No epoch ever completed (or a rollback invalidated the last one): there
+                    # is no measurement to record. `append_checkpoint_score` writes score:null
+                    # for a non-finite/None value, which ckpt_gc reads as UNSCORED (never
+                    # score-pruned).
+                    _note = (f"final save after training stopped during epoch {epoch + 1} with "
+                             f"no completed, validly-measured epoch — params are UNMEASURED")
+                else:
+                    _note = (f"final save; training stopped during epoch {epoch + 1} — params "
+                             f"are as of completed epoch {last_completed_epoch}" if _partial
+                             else "final save at end of run")
+                append_checkpoint_score(
+                    checkpoint_dir, last_completed_epoch, last_completed_score,
+                    last_completed_metric, path=written, step=int(trainer.state.step_count),
+                    note=_note)
+                print(f"  Checkpoint saved to {written}")
         print(f"\n{'='*70}")
-        print("TRAINING COMPLETE!")
+        # TASK_876 FIX-1: never claim COMPLETE when the run's own result failed to save.
+        print("TRAINING FAILED: FINAL CHECKPOINT NOT SAVED" if final_ckpt_save_failed
+              else "TRAINING COMPLETE!")
         print(f"{'='*70}")
+
+    # TASK_876 FIX-1: reached only when nothing propagated out of the try/finally above (a
+    # propagating exception already exits nonzero and carries the real cause). Exiting here
+    # rather than raising inside `finally:` is what keeps the original error intact.
+    if final_ckpt_save_failed:
+        sys.exit(1)
 
 if __name__ == "__main__":
     import torch # Required for encoder

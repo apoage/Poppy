@@ -27,11 +27,101 @@ Usage:
 
 import json
 import logging
+import math
+import os
 import shutil
+import time
+import uuid
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass, field
+
+# One id per training PROCESS. Written on every score row so a resumed run (which restarts
+# `epoch` at 0 while writing into the same scores.jsonl) stays distinguishable in the audit
+# trail from the run it resumed — see TASK_876 M8.
+_RUN_SESSION_ID = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
+
+
+def append_checkpoint_score(run_dir, epoch: int, score: float, metric: str,
+                            path=None, step: Optional[int] = None,
+                            note: Optional[str] = None) -> None:
+    """Append one score row for a just-saved checkpoint (TASK_876).
+
+    Writes one JSON object per line to ``<run_dir>/scores.jsonl``. ``run_dir`` is the
+    checkpoint's PARENT directory as ``tools/ckpt_gc.py``'s directory walk sees it (the
+    directory that holds the ``snapshot_ep<N>`` / ``checkpoint_<step>`` siblings), not the
+    checkpoint itself.
+
+    **What the CURRENTLY SHIPPED reader can actually do with these rows — measured, not
+    assumed.** ``tools/ckpt_gc.py`` is UNCHANGED by TASK_876 and is EPOCH-KEYED: its
+    ``_load_scores`` builds ``{int(row["epoch"]): float(row["score"])}`` and ignores ``path``
+    and ``step`` entirely, while ``plan()`` looks a checkpoint up by ``_epoch_of(dir)``, which
+    parses the digits out of the DIRECTORY BASENAME. So of the three names this codebase
+    writes:
+
+    * ``snapshot_ep<N>``      — round-trips. ``N`` really is the epoch, so the row resolves.
+    * ``checkpoint_<step>``   — does NOT resolve. flax names the dir by
+      ``state.step_count`` (= iterations_per_epoch x epoch), so ``_epoch_of`` yields the STEP
+      and the epoch-keyed lookup misses. Reads as UNSCORED.
+    * ``checkpoint_epoch_<N>`` (``SafeCheckpointManager``, incl. ``checkpoint_golden``) — does
+      NOT resolve either: ``_epoch_of``'s regex needs digits immediately after
+      ``checkpoint_`` and returns ``None``, and ``_is_ckpt_dir`` does not match the name.
+      Reads as UNSCORED.
+
+    UNSCORED is the FAIL-SAFE direction: ``plan()`` never score-prunes an unscored checkpoint,
+    so an unresolved row cannot itself cause a deletion. Precisely (do not round this up to
+    "unscored is immortal"): unscored dirs stay recency-prunable beyond ``--keep-unscored``
+    when the disk is under ``--min-free-gb``, exactly as they were before TASK_876. Making the
+    reader resolve by ``path``/``step`` (a path-first reader) is **TASK_881**, the checkpoint
+    protection model. This row deliberately ships ZERO deleter surface.
+
+    ``path`` and ``step`` are therefore recorded for that FUTURE path-first reader, and for
+    the audit trail today — the row format is forward-compatible, not yet fully consumed.
+    Always pass ``path`` when the on-disk name is known; ``epoch`` is the key the shipped
+    reader uses, and is meaningful for ``snapshot_ep<N>`` only.
+
+    A non-finite score is NOT written as a score (TASK_876 M6): NaN/Inf make a ranking sort
+    non-transitive and input-order dependent, and a NaN can take a kept slot from a
+    legitimately-scored checkpoint. The row is still written for the audit trail, with
+    ``score: null``; ``_load_scores`` drops such a row (``float(None)`` raises and the line is
+    skipped), so it reads as UNSCORED — see the fail-safe note above.
+
+    This is pure logging: append-only, best-effort, and MUST NEVER interrupt a training run.
+    A failure here (missing dir, disk full, bad permissions) is swallowed and warned — the
+    checkpoint save it documents has already happened, and a missing score row only means the
+    GC treats that checkpoint as unscored, which is its documented fail-safe.
+    """
+    try:
+        d = Path(run_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        row: Dict[str, Any] = {
+            "epoch": int(epoch),
+            "score": None,
+            "metric": str(metric),
+            "path": (os.path.abspath(str(path)) if path is not None else None),
+            "step": (int(step) if step is not None else None),
+            "ts": time.time(),
+            "session": _RUN_SESSION_ID,
+        }
+        if note:
+            row["note"] = str(note)
+        try:
+            s = float(score)
+        except (TypeError, ValueError):
+            s = float("nan")
+        if math.isfinite(s):
+            row["score"] = s
+        else:
+            row["score_invalid"] = repr(score)
+            logging.warning(
+                f"append_checkpoint_score: non-finite score {score!r} for epoch {epoch} in "
+                f"{run_dir} — recording as UNSCORED (the checkpoint is never score-pruned "
+                f"and never 'best'; it stays recency-prunable under ckpt_gc's disk floor)")
+        with open(d / "scores.jsonl", "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception as e:
+        logging.warning(f"append_checkpoint_score: failed to record score for {run_dir}: {e}")
 
 
 @dataclass

@@ -1,5 +1,54 @@
 # TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
+> **STATUS (2026-08-08): SHIPPED as `task876-score-emission`.** All three D33 items landed;
+> 0 BLOCKER / 0 MAJOR outstanding after a 4-lens panel + a 2-lens re-verify of the fix delta.
+> 2 cycles (implement=sonnet, fix=opus, panel=sonnet). `tools/ckpt_gc.py` byte-identical to
+> HEAD. selftest 12/12; new suite `tools/tests/test_ckpt_876_score_emission.py` 20/20,
+> mutation-checked 8/8 red-then-green. Full detail in the CHANGELOG entry.
+>
+> **REMAINDERS — all named, none silent:**
+>
+> 1. **HARD GATE ON TASK_881, and it AMENDS D34.** The scores this row emits are **not
+>    readable by the shipped GC for 2 of the 3 checkpoint naming schemes.**
+>    `tools/ckpt_gc.py::_load_scores` keys by `epoch`, but `plan()` looks up
+>    `scores.get(_epoch_of(p))` and `_epoch_of` parses the number out of the **directory
+>    basename** — which for flax-native `checkpoint_<step_count>` dirs is the STEP. For
+>    `checkpoint_epoch_<N>` dirs `_epoch_of` returns `None` and `_is_ckpt_dir` does not match
+>    the name at all. Only `snapshot_ep<N>` round-trips. Separately, `_is_ckpt_dir`'s fallback
+>    treats any directory merely CONTAINING a `checkpoint_*` entry as one opaque leaf, so the
+>    tool pointed at its own default root collapses a whole run into a single unit and never
+>    reads its `scores.jsonl` (`1 ckpts, 0 scored` against a run with 3 valid rows).
+>    **Reproduced independently by THREE agents.** Fail-SAFE (unreadable ⇒ UNSCORED ⇒ never
+>    score-pruned) and `--apply` is frozen, so nothing is at risk today. **881 must make the
+>    reader path-first**, resolving the `path`/`step` fields this row already writes.
+>    **Consequence for D34:** its gate ("876 deployed to gpu-server AND real `scores.jsonl`
+>    written there") can be met while `--unscored drop` still sees everything as unscored —
+>    the exact state the gate exists to prevent. **Necessary but NOT sufficient; 880 also
+>    needs 881's reader.**
+> 2. **`--safe-checkpoints` is broken at HEAD, independent of this row.**
+>    `SafeCheckpointManager._save_checkpoint_data` `json.dump`s `metric_history` holding
+>    `np.float32` → `TypeError: Object of type float32 is not JSON serializable`, crashing on
+>    the first golden save. Reproduced on clean HEAD by three agents; one-line `default=float`.
+> 3. **Accepted MINORs, disclosed not fixed.** The `already exists` collision classifier is
+>    coupled to an unasserted environment fact (`flax_use_orbax_checkpointing` defaults True in
+>    flax 0.10.7); if that flips the collision raises `flax.errors.InvalidCheckpointError`, not
+>    a `ValueError`, and a benign collision would kill the run — fail-safe direction
+>    (over-refusal), but unasserted. A late-run rollback stamps the final save's `note` with the
+>    rolled-back-FROM epoch (audit text only; score correctly `null`). The completion banner
+>    still prints from inside `finally:` when an unrelated exception is propagating
+>    (pre-existing; exit code correct regardless).
+> 4. Three `tools/tests` failures pre-exist at HEAD (`test_physics_core::test_physics_signals`
+>    missing `import flax`; two `test_jax_env::TestLimitOrders`). Three `experiments/` callers
+>    (`844_short_bias`, `836_value_ranking`, `834_e3_probe`) call `save_checkpoint(tmpdir)`
+>    without `overwrite=True` — safe only because each writes a fresh `tempfile` dir.
+>
+> **ORCHESTRATOR ERROR, OWNED:** the fix pass was started while the flow-verifier was still
+> running, so it observed the tree changing under it. It re-read the current source and
+> re-confirmed its findings, but the overlap was avoidable — the verifier should have been
+> stopped first.
+>
+> **Prior banner (2026-08-07, the D33 re-rescope) below.**
+
 > **RE-RESCOPED 2026-08-07 by the D33 ruling — READY as EXACTLY THREE ITEMS, with ZERO deleter
 > surface. Resume from `stash@{0}`; all three are already verified in it.**
 >

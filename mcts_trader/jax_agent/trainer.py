@@ -60,6 +60,70 @@ class TrainState(train_state.TrainState):
 # at the top of this file alongside the others.
 
 
+class CheckpointVanishedError(RuntimeError):
+    """TASK_876 fix-2 B1: ``save_checkpoint`` returned a path that is NOT on disk.
+
+    MEASURED on flax 0.10.7 (Orbax backend): with ``overwrite=False``, saving a step that is
+    BEHIND the newest checkpoint on disk raises nothing and returns
+    ``<dir>/checkpoint_<step>`` — and flax's own unconditional keep-N cleanup deletes that
+    very directory inside the same call. Seed ``checkpoint_{10..50}`` with ``keep=3``, save
+    step 15: returns ``.../checkpoint_15``, ``os.path.exists`` is False.
+
+    Reporting that as a success is the collapse-recovery trap this whole task exists for: the
+    run believes it has a resume point for its current trajectory and the audit trail asserts
+    one, while none exists. The save path raises this instead.
+    """
+
+    def __init__(self, path, ckpt_dir, step, reason):
+        self.path = str(path) if path is not None else None
+        self.ckpt_dir = str(ckpt_dir)
+        self.step = step
+        self.reason = str(reason)
+        super().__init__(
+            f"checkpoint save reported success but nothing usable is on disk: "
+            f"flax returned {self.path!r} for step {step} in {self.ckpt_dir} ({reason})")
+
+
+class CheckpointSidecarError(RuntimeError):
+    """TASK_876 fix-2 M3: the flax checkpoint IS on disk, a LATER sidecar write failed.
+
+    ``save_checkpoint`` writes the flax directory first, then ``trainer_metadata.json``, then
+    ``popart_state.npz``. If one of the sidecars fails (ENOSPC is the plausible case under
+    exactly the disk pressure this task addresses) the checkpoint itself is real and must
+    still be scored — it is NOT a collision and NOT a vanished save. ``.path`` carries the
+    verified on-disk checkpoint so the caller can record it.
+    """
+
+    def __init__(self, path, what, cause):
+        self.path = str(path) if path is not None else None
+        self.what = str(what)
+        super().__init__(f"checkpoint {self.path} was written, but {what} failed: {cause}")
+
+
+def _verify_checkpoint_on_disk(written, ckpt_dir, step):
+    """TASK_876 fix-2 B1: a save is 'successful' only if the artifact it claims exists.
+
+    Raises :class:`CheckpointVanishedError` unless ``written`` names a real, non-empty
+    checkpoint. Non-empty matters: flax/Orbax commits a DIRECTORY, and a half-written or
+    self-pruned one can leave an empty shell that ``os.path.exists`` alone would accept.
+    """
+    import os
+    if not written:
+        raise CheckpointVanishedError(written, ckpt_dir, step, "no path returned")
+    p = str(written)
+    if not os.path.exists(p):
+        raise CheckpointVanishedError(
+            p, ckpt_dir, step,
+            "path does not exist — flax's own keep-N cleanup removed it inside the same "
+            "call (the save was behind the newest checkpoint already on disk)")
+    if os.path.isdir(p):
+        if not os.listdir(p):
+            raise CheckpointVanishedError(p, ckpt_dir, step, "checkpoint directory is EMPTY")
+    elif os.path.getsize(p) == 0:
+        raise CheckpointVanishedError(p, ckpt_dir, step, "checkpoint file is zero bytes")
+    return p
+
+
 class MuZeroTrainer:
     """
     Complete JAX MuZero training pipeline.
@@ -1653,49 +1717,109 @@ class MuZeroTrainer:
 
         return history
 
-    def save_checkpoint(self, path: str):
-        """Save model checkpoint with additional metadata"""
+    def save_checkpoint(self, path: str, keep: int = 3, keep_every_n_steps: int = None,
+                        overwrite: bool = False):
+        """Save model checkpoint with additional metadata.
+
+        Args:
+            path: checkpoint directory (flax writes ``<path>/checkpoint_<step_count>``)
+            keep: how many of the MOST RECENT flax checkpoints to keep. Default 3 = the
+                historical, pre-TASK_876 behaviour.
+            keep_every_n_steps: forwarded to flax; None = historical behaviour.
+            overwrite: forwarded to flax. **Defaults to False** — the TASK_876 D32 ruling.
+                Leave it False on any TRAINING path. Pass True only from a caller that
+                re-writes a fixed, ephemeral output/smoke directory (see below).
+
+        Returns the VERIFIED on-disk checkpoint path.
+
+        ``overwrite`` defaults to False (TASK_876 D32 rescope; was unconditionally True
+        pre-876). With ``overwrite=True`` flax's own pruning removes every checkpoint NEWER
+        than the one just written (``_remove_invalid_ckpts``'s "remove newer checkpoints"
+        branch, gated only on ``overwrite``, ignoring ``keep`` and consulting no never-delete
+        set) — so a resume at a lower step (the exact collapse-recovery case this task exists
+        for) silently mass-deleted every checkpoint above the resume point. That is why the
+        DEFAULT is False and why it must stay False for training.
+
+        It is a parameter rather than a hard-coded constant because ``overwrite=False`` is
+        wrong for the non-training callers: they write a fixed, gitignored, ephemeral
+        directory on purpose (smoke roundtrips, one-shot experiment outputs) where there is
+        no newer-checkpoint mass-delete to protect against, and where re-running the same
+        command must be idempotent. MEASURED: with a hard-coded False,
+        ``eval_vector.py --smoke`` exits 0 on the first run and 1 on the second with an
+        uncaught ``ValueError: Destination .../checkpoint_0 already exists``.
+
+        Failure modes, deliberately distinguishable by the caller (TASK_876 fix-2 B1/M3):
+
+        * ``ValueError`` (or whatever flax raises) — the flax write itself was REFUSED or
+          failed; nothing new is on disk and existing checkpoints are untouched.
+        * :class:`CheckpointVanishedError` — flax returned a path that is NOT on disk. On the
+          Orbax backend (flax 0.10.7 here) a save behind the max step succeeds silently and
+          is then deleted by flax's own keep-N cleanup inside the same call. There is no
+          resume point for this trajectory; never report success.
+        * :class:`CheckpointSidecarError` — the flax checkpoint IS on disk but
+          ``trainer_metadata.json`` / ``popart_state.npz`` failed to write. The checkpoint is
+          real and must still be scored; only its sidecars are missing/stale.
+
+        Callers that save periodically must not let any of these crash the training loop; see
+        ``_attempt_checkpoint_save`` in ``train_jax_fast.py``.
+        """
         import os
         import json
         import numpy as np
         from flax.training import checkpoints
 
-        # Save main state
-        checkpoints.save_checkpoint(
+        # Save main state. flax returns the path it actually wrote
+        # (``<path>/checkpoint_<step_count>``) — returned to the caller so a score can be
+        # recorded against the REAL on-disk name instead of a guessed epoch (TASK_876 B3).
+        written = checkpoints.save_checkpoint(
             ckpt_dir=path,
             target=self.state,
             step=self.state.step_count,
-            keep=3,
-            overwrite=True
+            keep=keep,
+            overwrite=overwrite,
+            keep_every_n_steps=keep_every_n_steps,
         )
 
-        # Save additional trainer metadata (BUG_019 fix + architecture info)
-        metadata = {
-            'entropy_coef': float(self.entropy_coef),
-            'step_count': int(self.state.step_count),
-            # Architecture info for compatibility checking
-            'use_prediction_loss': self.use_prediction_loss,
-            'h_cycles': self.model.H_cycles,
-            'l_cycles': self.model.L_cycles,
-            'state_dim': self.model.state_dim,
-            'use_prediction_head': self.model.use_prediction_head,
-            'physics_only': getattr(self.model, 'physics_only', False),
-        }
-        metadata_path = os.path.join(path, 'trainer_metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f)
+        # TASK_876 fix-2 B1: a save counts as successful ONLY if its artifact is really on
+        # disk. Checked BEFORE the sidecars, so a vanished checkpoint can never leave
+        # `trainer_metadata.json` asserting a step whose checkpoint does not exist.
+        written = _verify_checkpoint_on_disk(written, path, self.state.step_count)
+
+        try:
+            # Save additional trainer metadata (BUG_019 fix + architecture info)
+            metadata = {
+                'entropy_coef': float(self.entropy_coef),
+                'step_count': int(self.state.step_count),
+                # Architecture info for compatibility checking
+                'use_prediction_loss': self.use_prediction_loss,
+                'h_cycles': self.model.H_cycles,
+                'l_cycles': self.model.L_cycles,
+                'state_dim': self.model.state_dim,
+                'use_prediction_head': self.model.use_prediction_head,
+                'physics_only': getattr(self.model, 'physics_only', False),
+            }
+            metadata_path = os.path.join(path, 'trainer_metadata.json')
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f)
+        except Exception as e:
+            raise CheckpointSidecarError(written, 'trainer_metadata.json', e) from e
 
         # Save PopArt state if enabled (critical for curriculum continuity)
         if self.use_popart and self.popart is not None:
-            popart_path = os.path.join(path, 'popart_state.npz')
-            np.savez(
-                popart_path,
-                mean=float(self.popart.state.mean),
-                var=float(self.popart.state.var),
-                count=int(self.popart.state.count),
-                mean_old=float(self.popart.state.mean_old),
-                std_old=float(self.popart.state.std_old),
-            )
+            try:
+                popart_path = os.path.join(path, 'popart_state.npz')
+                np.savez(
+                    popart_path,
+                    mean=float(self.popart.state.mean),
+                    var=float(self.popart.state.var),
+                    count=int(self.popart.state.count),
+                    mean_old=float(self.popart.state.mean_old),
+                    std_old=float(self.popart.state.std_old),
+                )
+            except Exception as e:
+                raise CheckpointSidecarError(written, 'popart_state.npz', e) from e
+
+        return written
 
     def load_checkpoint(self, path: str, step: int = None):
         """Load model checkpoint with additional metadata"""

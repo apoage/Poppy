@@ -291,6 +291,17 @@ class TrainingConfig:
     rollback_patience: int = 50
     rollback_threshold: float = 0.5
 
+    # TASK_876 — checkpoint RETENTION (storage policy only; NEVER affects numerics)
+    # RE-RESCOPED 2026-08-07 (D33): this row ships ZERO deleter surface. 'recency' (flax
+    # keep=3, unchanged from pre-TASK_876) is the ONLY implemented mode. What DOES differ from
+    # pre-876 under 'recency' is only the non-destructive half of this row: scores.jsonl
+    # emission at every save, and overwrite=False on the flax save so a resume at a lower step
+    # cannot mass-delete newer checkpoint dirs. 'score' is accepted as a CHOICE by the CLI
+    # parser but REFUSES at startup (mcts_trader/training/cli.py::parse_args) — it has no
+    # implementation now that the deleter/protection surface is stripped. Score-based
+    # retention ships in TASK_881 (the checkpoint protection model).
+    ckpt_retention: str = 'recency'
+
     # Generalization evaluation
     eval_every: int = 0
     eval_level: int = 4

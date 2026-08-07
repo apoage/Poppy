@@ -663,7 +663,13 @@ def _run_smoke(args):
     ckpt_dir = os.path.abspath(args.smoke_ckpt_dir or os.path.join(EXP_DIR, "smoke_ckpt"))
     os.makedirs(ckpt_dir, exist_ok=True)
     print(f"[smoke] save_checkpoint → {ckpt_dir}")
-    trainer_a.save_checkpoint(ckpt_dir)
+    # TASK_876 fix-2 (M2): same case as eval_vector.run_smoke — `ckpt_dir` is a fixed,
+    # gitignored (experiments/849_leaf_autopsy/.gitignore: `smoke_ckpt*/`) smoke directory,
+    # deliberately reused, always written at step 0 by a fresh-init trainer. Every re-run
+    # therefore collides on exactly `checkpoint_0`, which the D32 default (overwrite=False)
+    # refuses. Safe here because this directory holds only the smoke's own throwaway
+    # checkpoint — there is no newer-checkpoint mass delete for overwrite=False to prevent.
+    trainer_a.save_checkpoint(ckpt_dir, overwrite=True)
     print("[smoke] building second fresh-init trainer (seed 1) + arch-check + load_checkpoint ...")
     model_b, trainer_b = ev.build_model_and_trainer(args, args.n_assets, init_seed=1)
     ev.check_checkpoint_arch(ckpt_dir, args)                      # exercise the arch guard on smoke

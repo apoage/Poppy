@@ -1920,7 +1920,17 @@ def run(args, out_path, tag):
           f"restores it, trainer.py:1719-1720 — verify the "
           f"'Restored entropy_coef: {trainer.entropy_coef}' log line at ExIt launch)")
     ckpt_path = os.path.abspath(args.ckpt_out)
-    trainer.save_checkpoint(ckpt_path)
+    # TASK_876 fix-2 (M2): `overwrite=True` preserves this one-shot runner's re-run
+    # idempotency under the D32 default (trainer.save_checkpoint now defaults to
+    # overwrite=False so the TRAINING loop cannot mass-delete newer checkpoints on a
+    # lower-step resume). Safe HERE SPECIFICALLY: `ckpt_out` is a single-purpose, gitignored
+    # OUTPUT directory (`ckpt_smoke*/` / `ckpt_imprint*/`, see this module's .gitignore) that
+    # holds exactly ONE artifact — the imprint this invocation just produced. It is not a
+    # training run dir, nothing resumes from a previous invocation's copy, and the imprint is
+    # deterministic in its seed/recipe, so re-running the same command must overwrite rather
+    # than abort with `Destination .../checkpoint_<step> already exists`. There is no newer
+    # checkpoint here for overwrite=False to protect.
+    trainer.save_checkpoint(ckpt_path, overwrite=True)
     print(f"[832] imprint checkpoint -> {ckpt_path}")
 
     # ---- imprint-sanity: deterministic policy-argmax replay in-env ----

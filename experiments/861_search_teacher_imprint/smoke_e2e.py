@@ -603,7 +603,15 @@ def mint_teacher_checkpoint():
         vector_weight_max=4.0, vector_rebalance_deadband=-1.0)
     _model, trainer = ev.build_model_and_trainer(ns, 8, init_seed=0)
     os.makedirs(CKPT_SRC, exist_ok=True)
-    trainer.save_checkpoint(os.path.abspath(CKPT_SRC))
+    # TASK_876 fix-2 (M2): `overwrite=True` restores the pre-876 behaviour that this
+    # re-runnable smoke depends on. CKPT_SRC is a fixed, gitignored
+    # (experiments/861_search_teacher_imprint/.gitignore: `ckpt_*/`) mint-a-teacher directory,
+    # rewritten from scratch on every invocation at step 0 of a fresh-init trainer — so the
+    # D32 default (overwrite=False) would make the second invocation die on
+    # `Destination .../checkpoint_0 already exists`. Safe here: no resume point and no newer
+    # checkpoint lives in this directory, so the mass-delete overwrite=False guards against
+    # cannot occur.
+    trainer.save_checkpoint(os.path.abspath(CKPT_SRC), overwrite=True)
     print(f"[861-smoke] minted fresh-init teacher checkpoint -> {CKPT_SRC}")
 
 

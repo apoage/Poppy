@@ -319,6 +319,18 @@ def parse_args() -> TrainingConfig:
     parser.add_argument('--safe-checkpoints', action='store_true')
     parser.add_argument('--snapshot-every', type=int, default=0,
                         help='Save checkpoint snapshot every N epochs (0=disabled)')
+    # TASK_876: checkpoint retention (storage policy only — never affects numerics)
+    # RE-RESCOPED 2026-08-07 (D33): this row ships ZERO deleter surface. 'recency' (the flax
+    # keep=3 behaviour) is the only implemented mode; 'score' is accepted as a CHOICE so it can
+    # be refused with a named message (see the check below) instead of argparse's generic
+    # "invalid choice" — score-based retention ships in TASK_881, the checkpoint protection
+    # model.
+    parser.add_argument('--ckpt-retention', choices=['score', 'recency'], default='recency',
+                        help="'recency' (default, and the only implemented mode): the legacy "
+                             "flax keep=3 behaviour, unchanged from pre-TASK_876. 'score' is "
+                             "NOT implemented in this build and REFUSES at startup — "
+                             "score-based retention ships in TASK_881 (the checkpoint "
+                             "protection model).")
     parser.add_argument('--rollback-patience', type=int, default=50,
                         help='Epochs to wait before considering rollback')
     parser.add_argument('--rollback-threshold', type=float, default=0.5,
@@ -469,7 +481,19 @@ def parse_args() -> TrainingConfig:
     parser.set_defaults(use_jax_env=False)
 
     args = parser.parse_args()
-    
+
+    # TASK_876 (D33): REFUSAL guard, not a normalizer — it fails loudly rather than silently
+    # falling back to 'recency' or no-op'ing. All deleter/protection surface was stripped from
+    # this row (three halts across two factory runs kept landing on that surface), so
+    # '--ckpt-retention score' has no implementation to run. Score-based retention ships in
+    # TASK_881 (the checkpoint protection model); today this flag supports 'recency' only.
+    if args.ckpt_retention == 'score':
+        parser.error(
+            "--ckpt-retention score has NO IMPLEMENTATION in this build: the checkpoint "
+            "protection model ships in TASK_881. --ckpt-retention currently supports "
+            "'recency' only. Refusing at startup rather than silently falling back to "
+            "'recency' or no-op'ing.")
+
     # Create config object from args
     # Filter out args that aren't in TrainingConfig or are None
     config_dict = {k: v for k, v in vars(args).items() if hasattr(TrainingConfig, k) and v is not None}
