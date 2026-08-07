@@ -1,7 +1,50 @@
 # TASK_881 — The checkpoint protection model: explicit, tracked, fail-loud
 
+> **SCOPE ADDITION 2026-08-08 (factory run 28, TASK_876 shipped as `task876-score-emission`).
+> This row now also owns the GC's SCORE READER, and it is a hard gate on TASK_880 that D34
+> did not encode.**
+>
+> TASK_876 now emits `scores.jsonl` at every save — but **the shipped reader cannot resolve
+> those rows for 2 of the 3 checkpoint naming schemes.** Reproduced independently by THREE
+> agents during run 28:
+>
+> * `tools/ckpt_gc.py::_load_scores` builds its dict keyed by **`epoch`**, while `plan()` looks
+>   up `scores.get(_epoch_of(p))` and `_epoch_of` parses the number out of the **directory
+>   basename**. For flax-native `checkpoint_<step_count>` dirs — every periodic and final save
+>   `train_jax_fast.py` writes — that number is the **STEP**, not the epoch, so the lookup
+>   misses and the checkpoint reads UNSCORED forever.
+> * For `SafeCheckpointManager`'s `checkpoint_epoch_<N>` dirs, `_epoch_of` returns `None`
+>   outright (the regex needs digits immediately after `checkpoint_`), and `_is_ckpt_dir` does
+>   not match the name at all.
+> * **Only `snapshot_ep<N>` round-trips correctly.**
+> * Separately, `_is_ckpt_dir`'s fallback treats any directory merely CONTAINING a
+>   `checkpoint_*` entry as one opaque leaf checkpoint. Since `train_jax_fast.py` writes
+>   `checkpoint_<step>` directly under the run dir, pointing the tool at its own default root
+>   collapses the **entire run** into a single unit and never reads its `scores.jsonl` at all —
+>   reproduced live: `1 ckpts, 0 scored` against a run whose `scores.jsonl` held 3 valid rows.
+>
+> **The fix:** resolve by the `path` / `step` fields TASK_876 already writes, not by
+> re-deriving a number from the directory's own name; and stop the fallback matching a
+> directory whose children are themselves real checkpoints.
+>
+> **Failure direction is fail-SAFE today** (unreadable ⇒ UNSCORED ⇒ never score-pruned) and
+> `--apply` remains under the D32/D34 freeze, so nothing is at risk right now. But it is
+> load-bearing for sequencing:
+>
+> **D34's gate for TASK_880 is NECESSARY BUT NOT SUFFICIENT.** D34 un-gates 880 on "876
+> deployed to `gpu-server` AND a run has written real `scores.jsonl` there". That condition
+> can now be satisfied in full while `--unscored drop` *still* reads essentially every
+> checkpoint as unscored — which is precisely the state D34 exists to eliminate. 880
+> additionally requires this row's path-first reader. Seeded as **D35 (OPEN)**.
+>
+> Also inherited from run 28: `stash@{0}` ("TASK_876 rescoped half …") is **deliberately
+> retained** — it still holds the protect-scan hardening this row wants (`_is_protected`
+> descendants, TTL re-scan, failed-`rmtree` audit row, `scan_referenced_paths`
+> `followlinks=False`) plus the disputed `_order_newest_first` finding. Do not drop it.
+
 **Status**: GATED 2026-08-06 — do not start before TASK_876 (rescoped emission half) and
-TASK_880 land. Created by the D32 ruling, opt (a) as the model + opt (d) as the split.
+TASK_880 land. **TASK_876 SHIPPED 2026-08-08.** Created by the D32 ruling, opt (a) as the
+model + opt (d) as the split.
 **Size: M. Risk: HIGH** (it decides what an irreversible deleter may touch).
 Surface: `tools/ckpt_gc.py` (`scan_referenced_paths`, `_is_protected`), the in-run retention
 path from the TASK_876 stash, and a new per-run manifest convention.
