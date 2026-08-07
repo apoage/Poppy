@@ -1,5 +1,40 @@
 # TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
+> **STATUS (2026-08-07): HALTED AGAIN, NOT SHIPPED — second stop on the 3-cycle rule, new wall D33.**
+> Cycle 1 (implement from the stash) → 1 BLOCKER + 3 MAJOR. Cycle 2 (opus fix) → 1 BLOCKER.
+> Cycle 3 (opus fix) → 2 BLOCKERs. Code preserved in `git stash` ("TASK_876 rescoped half —
+> cycles 1-3, HALTED …"); nothing committed, nothing tagged, tree clean at HEAD, selftest 12/12,
+> `trading_data.db` (`1785091652` / `26245337088`) and fixture (`b0f8de8b…`) byte-untouched.
+>
+> **VERIFIED AND EARNED (six independent lenses), waiting in the stash for D33:**
+> `scores.jsonl` emission is unconditional at every save — measured live at the `recency` default,
+> appended across a simulated restart, `score: null` (not a fabricated `0.0`) on a pre-epoch crash.
+> The three mechanical fixes are all mutation-checked red-then-green in BOTH deleters. `flax_keep=3`
+> + `overwrite=False` closes the mass delete — measured on flax 0.10.7/Orbax, `overwrite=True`
+> saving step 25 over 10/20/30/40 deletes 30 AND 40; `overwrite=False` leaves both. `--ckpt-retention`
+> defaults to `recency` at all three leak points, and `_checkpoint_space_gate` makes that default
+> **pre-876-equivalent, verified against a HEAD control worktree**. Collapse case re-derived on real
+> flax saves through the offline tool. Canon safe: the five `experiments/` sites that gained
+> `overwrite=True` are numerics-neutral — the 835 smoke run twice moved only the embedded date.
+>
+> **WHY IT STOPPED — both BLOCKERs are in the protect-scan, which is TASK_881's territory.**
+> (1) `scan_referenced_paths` walks `followlinks=False`, so a SYMLINKED dir under `experiments/` is
+> skipped with no error at all — `onerror` never fires, `ProtectScanIncomplete` never raises, `stale`
+> stays `False`. Reproduced under `--apply`: a `SPEC.md` behind a symlink cited `checkpoint_100` and
+> the tool deleted exactly it, silently. Not live today (`experiments/` has no symlinks) but
+> `jax_ckpt_fast`/`jax_ckpt_easy` are themselves symlinks to `/mnt/scratch`.
+> (2) **DISPUTED, unresolved:** correctness reproduced `_order_newest_first` deleting the freshest
+> dir on disk through `plan()` under `under_floor=True`; fail-closed hand-traced it and could not
+> break it. Executed repro outranks trace, but no third measurement was taken.
+>
+> **ORCHESTRATOR'S ERROR, OWNED:** finding (2) is in a change that was NOT in the rescoped scope —
+> the mtime-tie bug is pre-existing at HEAD and the orchestrator added it to the cycle-3 brief.
+> D32 split this row because two concerns were welded together; cycle 3 welded a fourth onto the
+> last cycle. The rescoped four items were never the problem, and the protect-scan hardening thread
+> was pulled in by successive judge findings pointing at 881's surface.
+>
+> **Prior banner (2026-08-06) below.**
+
 > **RESCOPED 2026-08-06 by the D32 ruling — READY again as the NON-DESTRUCTIVE half only.**
 > The row splits: deletion POLICY moves to [TASK_881](TASK_881_CHECKPOINT_PROTECTION_MODEL.md)
 > (the protection model), the remote archive tool's discovery defect moves to

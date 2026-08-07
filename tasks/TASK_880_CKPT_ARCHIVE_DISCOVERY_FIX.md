@@ -1,6 +1,46 @@
 # TASK_880 — `ckpt_archive.py` carries `ckpt_gc.py`'s discovery defect, on the tool that deletes REMOTELY
 
-**Status**: READY 2026-08-06 (planner, from the factory's run-26 recommendation; D32 ruling).
+> **STATUS (2026-08-07): HALTED, NOT SHIPPED — stopped on the 3-cycle rule, new wall D34.**
+> **THE `--apply` OPERATIONAL FREEZE STANDS AND IS NOT LIFTED.** Gate (v) is explicitly NOT met.
+> Cycle 1 → 4 BLOCKERs + 4 MAJOR (two judges, independently). Cycle 2 (opus) → 1 BLOCKER.
+> Cycle 3 (opus) → 1 BLOCKER. Code preserved in `git stash` ("TASK_880 ckpt_archive discovery fix —
+> cycles 1-3, HALTED …"); nothing committed, tree clean at HEAD, selftest 12/12, `trading_data.db`
+> and fixture byte-untouched, `--apply` never once invoked against the real host.
+>
+> **THE MEASUREMENT THAT JUSTIFIES THE FREEZE RETROACTIVELY.** Real-host dry-run, `--no-keep-newest`:
+> BEFORE this work `ARCHIVE 1 ckpt / 0.09 GB · DROP-WITHOUT-ARCHIVE 27 ckpts / 2.51 GB` — one
+> operator command from deleting 27 of 28 checkpoints on `gpu-server`, including
+> `runs/861_ref/ckpt_ref_s0/checkpoint_2000` at net@21 **0.9914**, the clean-recipe anchor.
+> AFTER: `ARCHIVE 28 / DROP 0`. The planner's freeze was load-bearing, not precautionary.
+>
+> **VERIFIED AND EARNED (in the stash):** 33 tests, all real subprocess/`ca.main()` runs, 20/20
+> mutation red-then-green, re-derived independently by two fresh judges — containment tested BEFORE
+> the basename pattern, `NEVER_DELETE_BASENAMES` ported and enforced, symlinked checkpoints never
+> collapsing a run nor becoming a deletion target, per-line `scores.jsonl` isolation biasing KEEP,
+> non-finite scores rejected as UNSCORED, `_run` fallback gated, ambiguity flagged not silent.
+> Outcome-neutrality on the real host was PROVEN, not asserted (fixed vs reverted probe: DIFF NONE,
+> 21/28 scored both ways).
+>
+> **WHY IT STOPPED:** `sym_below_root()` silently no-ops when a configured root is itself a symlink.
+> `ROOT_ABS` uses `realpath()` (resolves symlinks); every path compared against it comes from
+> `os.walk` on the UNRESOLVED root and only passes `abspath()` (which does not), so nothing
+> prefix-matches and every row under that root goes unguarded. Reproduced: swapping
+> `latest -> checkpoint_2000` moved a 0.9 score across checkpoints and made the genuinely-scored one
+> an unflagged drop candidate, with a completely clean dry-run. The suite tests both halves
+> separately and never in combination.
+>
+> **THE DEEPER FINDING → D34, and it is a QUEUE dependency, not a code defect.** MEASURED: **no
+> `scores.jsonl` or `checkpoints_index.json` exists anywhere on `gpu-server`.** The emitter is real
+> in code (TASK_876) but undeployed, so 100% of this tool's score signal is inference over
+> `results*.json` sanity replays — ad-hoc eval artifacts with no contract on the `checkpoint` field.
+> `--unscored drop` (correctly operator-ruled) then reads "nobody wrote the file" as "measured and
+> worthless". Live instance already present: `runs/832_e5/imprint_full.json` carries net@21
+> **0.8394** but sits outside the probe's filename glob, so `ckpt_imprint_full/checkpoint_2000`
+> reads UNSCORED today and survives only because one LEDGER line cites it. **880 cannot be safe
+> until 876's emission is deployed and running on the host** — the queue lists these as adjacent
+> rows with no such gate. Sanctioned interim (D34 rec (a)): `--unscored archive` only.
+
+**Status**: HALTED 2026-08-07 (was READY 2026-08-06 — planner, from the factory's run-26 recommendation; D32 ruling).
 **Size: S. Risk: HIGH by blast radius** (this tool deletes checkpoints on `gpu-server` after a
 local verify — the failure mode is a whole multi-day run's weights, not a dry-run line).
 Surface: `tools/ckpt_archive.py`, the embedded `REMOTE_PROBE` (~lines 38-80). Author of the
