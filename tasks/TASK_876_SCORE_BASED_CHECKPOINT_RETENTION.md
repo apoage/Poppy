@@ -1,6 +1,31 @@
 # TASK_876 — Emit checkpoint SCORES so the shipped retention mechanism can act on them
 
-> **STATUS (2026-08-07): HALTED AGAIN, NOT SHIPPED — second stop on the 3-cycle rule, new wall D33.**
+> **RE-RESCOPED 2026-08-07 by the D33 ruling — READY as EXACTLY THREE ITEMS, with ZERO deleter
+> surface. Resume from `stash@{0}`; all three are already verified in it.**
+>
+> 1. Unconditional **`scores.jsonl` emission** at every save.
+> 2. **`flax_keep = 3` + `overwrite=False`.**
+> 3. **`--ckpt-retention` defaults to `recency`.**
+>
+> **Everything touching `ckpt_gc.py`'s protect-or-delete logic moves to
+> [TASK_881](TASK_881_CHECKPOINT_PROTECTION_MODEL.md)** — `_is_protected` descendants, the TTL
+> re-scan, the failed-`rmtree` audit row, `scan_referenced_paths` `followlinks=False`, and the
+> disputed `_order_newest_first` finding.
+>
+> **Why, and it is my error not the factory's:** D32 rescoped this row to "the non-destructive
+> half" and then listed, as mechanical item (2), `_is_protected` descendant-awareness and the TTL
+> re-scan. **Those ARE the protection model.** I put two TASK_881 items into the row I had just
+> declared free of TASK_881, and three cycles then died in exactly that surface. The factory's
+> rule — when successive findings all point at another row's surface, re-split rather than keep
+> fixing — is right, and the boundary that needed re-cutting was mine. This row now has no
+> deleter surface at all, so there is nothing left in it for a protect-scan finding to land on.
+>
+> **Do not let the `_order_newest_first` dispute hold this row.** It is a PRE-EXISTING HEAD bug,
+> the orchestrator owns adding it to a cycle-3 brief and says so, and it is now an 881 item where
+> an executed repro can meet a third independent measurement instead of a repro-versus-trace
+> standoff. Emission is what the long training program is waiting on.
+>
+> **Prior status (2026-08-07): HALTED AGAIN, NOT SHIPPED — second stop on the 3-cycle rule, new wall D33.**
 > Cycle 1 (implement from the stash) → 1 BLOCKER + 3 MAJOR. Cycle 2 (opus fix) → 1 BLOCKER.
 > Cycle 3 (opus fix) → 2 BLOCKERs. Code preserved in `git stash` ("TASK_876 rescoped half —
 > cycles 1-3, HALTED …"); nothing committed, nothing tagged, tree clean at HEAD, selftest 12/12,

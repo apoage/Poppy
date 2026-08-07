@@ -3,6 +3,44 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
+**2026-08-07 (planner, post factory run 27) — run 27 RATIFIED, both halts CORRECT, and the
+second one was MY boundary error.** 876 and 880 both halted on the 3-cycle rule with no code
+shipped; D33 and D34 are RULED. **Ready (physically ordered): 1 TASK_876 (re-rescoped to THREE
+items, zero deleter surface) → 2 TASK_882 (NEW — instrument reconciliation) → 3 TASK_873 →
+4 TASK_877 → 5 TASK_874 → 6 TASK_878. GATED: TASK_880 (behind DEPLOYED emission, D34) and
+TASK_881.**
+**D33 — my error, owned:** D32 rescoped 876 to "the non-destructive half" and then listed
+`_is_protected` descendant-awareness and the TTL re-scan as *mechanical* items. Those ARE the
+protection model. I put two 881 items into the row I had just declared free of 881, and three
+cycles died in exactly that surface. 876 is now EXACTLY: (1) unconditional `scores.jsonl`
+emission, (2) `flax_keep = 3` + `overwrite=False`, (3) `--ckpt-retention` defaults to `recency`.
+Everything touching `ckpt_gc.py`'s protect-or-delete logic — including the symlink
+`followlinks=False` BLOCKER and the disputed `_order_newest_first` (a PRE-EXISTING HEAD bug the
+orchestrator owns adding to a cycle-3 brief) — is now TASK_881's.
+**D34 — the queue was missing a hard dependency, also mine:** I ordered 876→880 as adjacent rows
+without encoding that 880's entire safety argument rests on an artifact 876 produces ON THE HOST.
+The gate is "876 DEPLOYED to gpu-server with real `scores.jsonl` written there", not "876
+shipped". **`--unscored archive` (pull, never delete) is AUTHORIZED; the `--apply` freeze STANDS;
+do NOT run the 2.61 GB bulk pull** (162 GB free, server disposable, and store-then-decide is what
+the unscored ruling rejected) — pull only the score-bearing anchors, ~0.4 GB.
+**Run 27's most valuable output is a MEASUREMENT, not a fix:** the real-host dry-run
+`ARCHIVE 1 ckpt / 0.09 GB · DROP-WITHOUT-ARCHIVE 27 ckpts / 2.51 GB` turned the `--apply` freeze
+from precautionary into a demonstrated near-miss on `runs/861_ref/ckpt_ref_s0/checkpoint_2000`
+(net@21 0.9914, the clean-recipe anchor). Root cause is not a bug: **no `scores.jsonl` exists
+anywhere on gpu-server**, so `--unscored drop` reads "nobody wrote the file" as "measured and
+worthless".
+**SCIENCE, planner lane (LEDGER 879/rung3-distill-remeasure + 882/instrument-disagreement):** the
+857/860 distill verdicts are VOID — all six artifacts bankrupt at step 1-27 of ~1670, and both
+headlines (−4.23/−4.02) are just the seeds that survived longest; cause = a weight-native ckpt
+walked through the ORDER env because E-a is FLAG-GATED and the verbatim command omits the flag.
+Re-measured correctly the lane still fails (medians −2.84/−2.73 vs floor +0.5164) and 6/6
+distilled seeds are BELOW the un-distilled baseline. **The control is the bigger result: the
+SEARCH STACK IS SUBTRACTIVE** — argmax −0.564 vs search+v̂-leaf −2.166 on identical weights
+(Δ1.602 > the pre-registered 1.0 bar). **And then the instruments disagreed:** the same ckpt
+reads +0.8394 / PV 299,547 on `imprint.py` sanity and −0.6145 / PV 41,919 on `eval_vector
+policy-argmax`, same window — hence TASK_882 at Ready #2. **No number may be compared across
+those harnesses until it lands.** Factory GREEN.**
+Prior grooming:
 **2026-08-06 (planner, post factory run 26) — run 26 RATIFIED. TASK_872 shipped
 (`task872-live-stream-utc`, `f5a74db`); TASK_876 STOPPED on the halt rule and D32 is now RULED.
 Ready (physically ordered): 1 TASK_876 (RESCOPED — emission half only, resume from the stash) →
@@ -278,8 +316,8 @@ exist. It un-parks automatically the day an ExIt continuation is pre-registered.
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | **M (was mis-sized S — planner error)** | **RESCOPED by the D32 ruling to the NON-DESTRUCTIVE half; resume FROM THE STASH.** In: `scores.jsonl` emission at every save (original scope 0 — the sweep found 0 of 42 checkpoints scored, and an unscored long run produces exactly the garbage weights the operator ruled against keeping); the three mechanical fixes needing no ruling (`_is_protected` descendant-aware · TTL re-scan not a launch snapshot · a failed `rmtree` recorded as a FAILED prune, not a success); **revert `flax_keep = 1_000_000` to the pre-876 bound and set `overwrite=False`** (the run-26 finding that mattered most: that pair is a protection-blind mass delete on any resume at a lower step, and the task had enlarged its own blast radius); `--ckpt-retention` defaults to **`recency`** — the destructive path stays OFF per invariant 1. OUT: the protection model (TASK_881) and the remote archive discovery (TASK_880). Nothing here deletes anything new, so none of it depends on D32's unsettled half. _Original context:_ snapshots are unbounded BY DESIGN (`snapshot_ep{N}` dirs, ~89 MB each — 2000 epochs at snapshot_every=25 ≈ 7 GB/seed, ~21 GB for 3 seeds, srv has 136 GB free), and the main save prunes by RECENCY (flax `keep=3`), which after a late-run collapse evicts the good checkpoints and keeps the broken ones. Keep top-K BY SCORE + always the latest resumable + the current best; score provenance recorded per checkpoint; missing score ⇒ never prunable (fail-safe); auditable `checkpoints_index.json`; disk floor; offline GC for existing leftovers. |
-| 2 | `tasks/TASK_880_CKPT_ARCHIVE_DISCOVERY_FIX.md` | S (risk HIGH by blast radius) | **NEW 2026-08-06 — the factory's recommended row, and the defect is the PLANNER'S own** (`ckpt_archive.py` was planner-shipped in `3e74a1e`, not a factory row). Planner-verified in source before scheduling: `REMOTE_PROBE`'s `is_ck()` returns true for any directory merely CONTAINING a `checkpoint_*` entry, so a run dir is misread as one opaque leaf, the walk is pruned, `ep_of()` finds no epoch in its basename and the run's own `scores.jsonl` is looked up one level too deep — **an entire SCORED run classifies UNSCORED and is then DELETED on `gpu-server`** under the correct, operator-ruled `--unscored drop` default. The default is right; the discovery feeding it is wrong. **OPERATIONAL FREEZE: no `--apply` on that tool until this ships** (dry-run enumeration is how you demonstrate the fix). Port the three landed `ckpt_gc.py` fixes: `_has_ckpt_subdirs()` before the listdir fallback, the full pattern set, path-keyed scores with epoch as fallback (never the reverse). Fail-closed on ambiguity: classifiable both ways ⇒ it is a RUN, never a leaf. |
+| 1 | `tasks/TASK_876_SCORE_BASED_CHECKPOINT_RETENTION.md` | S (finally) | **RE-RESCOPED by D33 to EXACTLY THREE ITEMS with ZERO deleter surface** — (1) unconditional `scores.jsonl` emission at every save, (2) `flax_keep = 3` + `overwrite=False`, (3) `--ckpt-retention` defaults to `recency`. All three are already verified inside `stash@{0}`; resume from it. **Everything touching `ckpt_gc.py`'s protect-or-delete logic moved to TASK_881** (`_is_protected` descendants, TTL re-scan, failed-`rmtree` audit row, `scan_referenced_paths` `followlinks=False`, and the disputed `_order_newest_first`). Run 27 halted this row twice in that surface because D32's split kept two protection items in the "non-destructive half" — **planner error, owned in D33.** With no deleter surface left there is nothing here for a protect-scan finding to land on. Do not let the `_order_newest_first` dispute hold it: pre-existing HEAD bug, now an 881 item. **This row gates the long base-training program AND TASK_880.** |
+| 2 | `tasks/TASK_882_INSTRUMENT_RECONCILIATION.md` | S/M | **NEW 2026-08-07, and it BLOCKS every cross-harness comparison in the program.** Two instruments both claiming to replay per-asset argmax of the SAME checkpoint disagree by **1.6 net@21** and by an order of magnitude in terminal PV: `imprint.py` sanity says +0.8394 / PV 299,547 (3x gain), `eval_vector --operator policy-argmax` says −0.6145 / PV 41,919 (58% loss), identical window, weight env ON, 1673/1673 decisions, no bankruptcy. The window was eliminated as the cause by measurement. **+0.9914 is the program's in-window reference** (LEDGER 861/ref-rebase) and it comes from the first harness, while the 875 WF battery and the 879 corridor come from the second — one family is wrong and both are load-bearing. Lead: `position_size_pct 0.0078125` (1/128) in the imprint artifact vs eval_vector's own weight unit/cap. Mostly artifact reading + a per-decision fixture diff; find the FIRST divergent decision rather than arguing aggregates. |
 | 3 | `tasks/TASK_873_FIXTURE_IDENTITY_PIN.md` | XS/S | Closes the class behind run 25's decision-changing finding: the fixture is GITIGNORED, so the ritual's `git status` gate cannot see it change, and a mid-run regeneration (`b0f8de8b`→`59525bd3`) silently re-based every baseline promoted against it — recovered by luck. Tracked `FIXTURE_IDENTITY.json` pin, verified at suite start, fail-loud on mismatch, atomic promote path for a deliberate re-base, `make_fixture.py` guard. Same shape as 864's promote gate. |
 | 4 | `tasks/TASK_877_XBT_ALIAS_FOLD.md` | XS/S | **Same defect class as D31 (a1), still live — planner-measured 2026-08-05.** The resolver normalizes SLASH-ONLY and deliberately does not fold `XBT`→`BTC`; `XBTCHF` (id 1175) holds **92,639 real rows inside the exact 2025-03-31→2025-10-01 gap** where `BTCCHF` (frame slot 23) has 697, and the 48,780-row overlap agrees to **max rel close diff 0.0**. So one of the 5 "genuine sparse" slots is recoverable data, not market absence: the identity repair is incomplete and the frozen-interior residue is overstated. Explicit alias TABLE (not a blanket replace), same fail-loud agreement gate, re-derive the disclosure numbers. |
 | 5 | `tasks/TASK_874_IMPRINT_EMITS_FRAME_PROVENANCE.md` | XS | `imprint.py` consumes frame provenance but never emits it for the ckpt it writes, so grading a fresh imprint is (correctly) REFUSED and needs a hand-derived file — it cost a round-trip on 2026-08-03 and the planner hand-derived three (`runs/861_ref/frame_provenance_ref_s{0,1,2}.json`, order-exact asserted). Emit on write; refuse to emit on a pinned-run mismatch; verify the three existing files match what the emitter would produce. The 863/865 gate must NOT be weakened. |
@@ -602,6 +640,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 
 | Task | Gate |
 |------|------|
+| `tasks/TASK_880_CKPT_ARCHIVE_DISCOVERY_FIX.md` | **TASK_876 must be SHIPPED *and DEPLOYED to gpu-server*, with a run having written real `scores.jsonl` files there** (D34). Not "876 merged" — the host must actually carry the artifact, because 100% of this tool's score signal is otherwise inference over `results*.json`. Run 27's real-host dry-run measured `ARCHIVE 1 ckpt / 0.09 GB · DROP-WITHOUT-ARCHIVE 27 ckpts / 2.51 GB` — one operator command from deleting 27 of 28 checkpoints including `runs/861_ref/ckpt_ref_s0/checkpoint_2000` at net@21 **0.9914**, the clean-recipe anchor. The `--apply` freeze STANDS; `--unscored archive` (pull, never delete) is the only authorized mode meanwhile. |
 | `tasks/TASK_881_CHECKPOINT_PROTECTION_MODEL.md` | **TASK_876 (rescoped emission half) AND TASK_880 must land first.** Created by the D32 ruling: protection becomes an EXPLICIT tracked per-run manifest, the GC FAILS LOUD on a run dir it cannot resolve one for, and prose citations are advisory-only (measured: only 3 of 7 run dirs get any protection today, and all four under `jax_ckpt_fast/` get zero — including `e5exit2_pq_s{0,1,2}`, which its SPEC cites BY NAME and never by path). The in-run `--ckpt-retention` default flips to `score` in this row's gate (vi), and only with `overwrite=False` and the collapse case re-proven on real flax saves rather than assumed. |
 | ~~`tasks/TASK_843_WEIGHT_INCREMENTAL_NETTING.md`~~ | gate SATISFIED 2026-07-14 → moved to Ready #1 |
 | `tasks/TASK_828_VECTOR_ACTION_MUZERO.md` (Stage 4 eval) | Stages 1–3 shipped ✓ (2026-07-08) + Stage-3 training run's rung verdicts green; SCHEDULED server run, not a factory-loop job |

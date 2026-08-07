@@ -42,6 +42,26 @@ written as one "S" row. They are separated here.
    so the protect set is re-read on a TTL rather than frozen at launch — otherwise the in-run
    deleter and the offline GC disagree about the same checkpoint.
 
+## Absorbed from TASK_876 by the D33 ruling (2026-08-07) — these are THIS row's items now
+
+Run 27 halted 876 twice in this surface. All of it lands here, and `stash@{0}` already carries
+verified implementations of the first three:
+
+- **`_is_protected` descendant-awareness** and the **TTL re-scan** — D32 mis-filed these as
+  "mechanical"; they are the protection model itself (planner error, owned in D33).
+- **Failed `rmtree` → FAILED audit row + non-zero exit** (never a silent successful prune).
+- **`scan_referenced_paths` walks `followlinks=False` — BLOCKER, reproduced under `--apply`:** a
+  `SPEC.md` behind a symlink cited `checkpoint_100` and the tool deleted exactly it, silently.
+  `onerror` never fires, `ProtectScanIncomplete` never raises, `stale` stays `False`. Not live
+  today (`experiments/` has no symlinks) but **`jax_ckpt_fast` and `jax_ckpt_easy` ARE symlinks**
+  to `/mnt/scratch`, so the same class is one directory move away. A protect scan that
+  cannot see a path must FAIL, never silently return "nothing to protect".
+- **DISPUTED: `_order_newest_first` deleting the freshest dir on disk** through `plan()` under
+  `under_floor=True`. Correctness reproduced it by execution; fail-closed hand-traced it and could
+  not break it. It is a **pre-existing HEAD bug**, not from any 876 cycle. Resolve it with a THIRD
+  independent measurement — an executed repro outranks a trace, but two disagreeing reads deserve
+  a tiebreak rather than a winner by seniority.
+
 ## Scope
 
 1. Implement the manifest convention + resolver, with the fail-loud refusal and a clear message

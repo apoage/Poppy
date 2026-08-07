@@ -40,6 +40,24 @@
 > until 876's emission is deployed and running on the host** — the queue lists these as adjacent
 > rows with no such gate. Sanctioned interim (D34 rec (a)): `--unscored archive` only.
 
+> **GATED 2026-08-07 by the D34 ruling — the gate is not "876 shipped" but "876 DEPLOYED to
+> gpu-server AND a run has written real `scores.jsonl` files there".** The factory found a real
+> hole in the queue: I ordered 876→880 as adjacent rows and never encoded that this row's entire
+> safety argument rests on an artifact the other one produces ON THE HOST. Fixing discovery cannot
+> make the tool safe while 100% of its score signal is inference over `results*.json`.
+>
+> **`--unscored archive` is AUTHORIZED as the only permitted non-frozen mode** (pull, never
+> delete). "Unscored" today means "the emitter isn't deployed", not "measured and worthless" —
+> the operator's garbage ruling was about weights carrying no information, and these carry
+> information nobody has written down yet. **The `--apply` freeze STANDS.**
+>
+> **Do NOT run the 2.61 GB bulk pull.** No disk pressure (162 GB free), the server is disposable
+> by operator ruling, and pulling 28 checkpoints to sort out later is the same store-then-decide
+> posture the unscored ruling rejected. **Pull only the score-bearing anchors** —
+> `runs/861_ref/ckpt_ref_s*` (+0.9914) and `runs/832_e5/ckpt_imprint_full` (+0.8394), ~0.4 GB —
+> and revisit the bulk question when disk pressure exists or when emission has run long enough
+> that "unscored" means something again.
+
 **Status**: HALTED 2026-08-07 (was READY 2026-08-06 — planner, from the factory's run-26 recommendation; D32 ruling).
 **Size: S. Risk: HIGH by blast radius** (this tool deletes checkpoints on `gpu-server` after a
 local verify — the failure mode is a whole multi-day run's weights, not a dry-run line).
