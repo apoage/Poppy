@@ -1,5 +1,31 @@
 # TASK_874 — `imprint.py` must emit frame provenance for the checkpoints it produces
 
+> **STATUS (2026-08-08): SHIPPED as `task874-imprint-frame-provenance`.** All four acceptance
+> gates (i)-(iv) met and independently re-verified by a flow-verifier on a fixture copy. 3 cycles,
+> 4-lens panel, **4 BLOCKERs + 3 MAJORs found and closed**, 0 outstanding. Emission is now built
+> pre-training and written LAST, after every refusal the run can raise: a self-refused (863
+> degenerate-replay) run leaves NO provenance and its checkpoint is ungradable; a derived frame
+> carrying duplicate symbols refuses pre-training; an existing DIFFERING provenance refuses without
+> clobbering (`--overwrite-frame-provenance` replaces and stamps `provenance_replaced` +
+> `replaced_provenance_sha256` into the document). Scope 3 landed as a read-only tool: all three
+> `runs/861_ref/frame_provenance_ref_s{0,1,2}.json` agree with the emitter on every substantive
+> field, frame order-exact; only the `source` note differs and `panel_frame_source` is added —
+> reported, not repaired. Canon byte-identical (953/953 leaves), selftest 12/12, 874 smoke 8/8.
+>
+> **Intended behavioral break:** an unpinned run with `--n-assets` above the in-window universe now
+> exits 1 before training (it previously trained on a column-duplicated panel and exited 0).
+>
+> **Incident disclosed:** the first pass wrote-then-deleted the real
+> `runs/861_ref/frame_provenance_ref_s0.json` and reconstructed it; restoration verified
+> independently (order-exact vs the pin and vs s1/s2, same sha256, 1524 B).
+>
+> **Remainders → planner:** (a) provenance is bound to a checkpoint by a PATH STRING only, no
+> content hash — a stale/foreign file at the derived path grades through; ruled out of scope here
+> (863/865 gate semantics), same fail-open class as TASK_883. (b) `runs/861_ref/*` still has no
+> committed copy or checksum sidecar. (c) `env_factory.py:434-444` pad-by-modulo duplicates columns
+> in the TRAINING PANEL itself, not just in provenance. (d) `--write-parity-baseline`'s dirty gate
+> checks only the baseline file, not the tree (pre-existing 864 behavior).
+
 **Status**: READY 2026-08-05 (seeded from the 861 chain: the gap cost a REFUSE round-trip).
 **Size: XS. Risk: low.** Surface: `experiments/832_linear_imprint/imprint.py` (+ its smoke).
 

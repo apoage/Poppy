@@ -716,6 +716,378 @@ def _display_path(p):
 
 
 # =============================================================================
+# TASK_874 — emit the checkpoint's OWN frame provenance
+# =============================================================================
+# ``imprint.py`` CONSUMES a frame provenance (TASK_863 ``--panel-frame-from-checkpoint``) but
+# never EMITTED one for the checkpoint it writes, so every 862-scorecard run over a fresh
+# imprint needed a hand-derived provenance file first (LEDGER-flagged in
+# ``runs/861_ref/frame_provenance_ref_s{0,1,2}.json``'s own ``source`` note). This closes that
+# gap: same schema as ``runs/832_e5/frame_provenance_imprint.json`` (frame_symbols, n_assets,
+# source, train_window, db, checkpoint) plus ``panel_frame_source`` (D28/D29/D31 discipline — a
+# minute-framed run must never be gradable as daily).
+#
+# FIX PASS (verification panel 2026-08-08) — three refusals and a deferred write:
+#   B1  emission CERTIFIES a checkpoint as gradable, so it must not fire before a refusal the run
+#       can still raise. Building the doc is now SPLIT from writing it: built + fully validated
+#       EARLY (pre-training, fail-fast, TASK_864 precedent) and WRITTEN LAST — after the 863
+#       FIX-0 degenerate-replay SystemExit, after the --smoke-assert gate and (through
+#       ``run(provenance_sink=...)``) after --write-parity-baseline's own refusals in main().
+#       A refused run leaves NO provenance file, so its checkpoint stays UNGRADABLE: 835's
+#       preflight cannot open a file that is not there.
+#   B2  the DERIVED (unpinned) branch mirrors env_factory's pad-by-modulo, which DUPLICATES
+#       symbols when the coverage-ranked in-window universe is smaller than --n-assets. A
+#       provenance with a repeated symbol is refused BY CONSTRUCTION by the very gate this task
+#       exists to feed (scorecard.py:788-792, "slot k IS asset k"), so emitting one writes a
+#       valid-looking, permanently ungradable file. Now REFUSED, loudly, naming the duplicated
+#       symbols and the slots they collapse. This guard REFUSES — it does NOT de-duplicate and
+#       it does NOT touch env_factory's padding (pre-existing, out of scope): a guard that
+#       normalizes is not a guard that corrects.
+#   B3  the write is no longer a bare ``open(prov_path, "w")``. An existing target whose full
+#       document is IDENTICAL is a quiet no-op; one that DIFFERS is a REFUSAL naming both paths
+#       and every differing field, leaving the file untouched (the load-bearing
+#       runs/861_ref/frame_provenance_ref_s{0,1,2}.json are gitignored — there is no git copy to
+#       restore from, and one was in fact clobbered during the first implementation pass).
+#       ``--overwrite-frame-provenance`` is the explicit, loudly-stamped opt-in to replace. This
+#       also turns the ``--ckpt-out .../ckpt_foo`` vs ``.../foo`` filename collision (both map to
+#       ``frame_provenance_foo.json``) from a silent clobber into a loud refusal.
+#
+# FINAL FIX PASS (fail-closed judge 2026-08-08) — two items, one invariant each:
+#   I1  "no committed baseline moves". B1's deferral put the emission write AFTER
+#       promote_parity_baseline, so an emission REFUSAL fired only once the git-tracked
+#       results_fixture_smoke.json had already been os.replace'd — a baseline moved by a run that
+#       then disowns itself with exit 1. The DECISION is now re-run (dry) in main() the instant
+#       run() returns, BEFORE the promotion; the WRITE stays last. Validate before mutating, write
+#       after. See main().
+#   I2  a replacement now stamps itself into the DOCUMENT, not just stdout — see
+#       PROVENANCE_REPLACED_FIELD.
+
+def _derived_frame_symbols(asset_aliases, n_assets):
+    """Ordered frame symbols off the UNPINNED ``load_training_panel`` alias disclosure
+    (``asset_aliases``: per-slot ``{"slot": k, "symbol": ...}`` dicts, built by
+    ``create_jax_env_historical`` BEFORE its own pad/truncate-to-n_assets step). Mirrors that
+    step here (env_factory.py:434-444) rather than re-deriving the load: pad-by-modulo when
+    fewer symbols loaded than requested, truncate when more.
+
+    The pad-by-modulo branch is what makes B2 possible and is mirrored FAITHFULLY (it is what
+    the trained panel actually contains); detecting and refusing its duplicate collapse is
+    ``build_frame_provenance``'s job, not this function's.
+
+    KNOWN DUPLICATION (panel MINOR, reported not fixed — TASK_874 final pass): the two branches
+    below re-state env_factory.py:434-444's pad/truncate formula with nothing tying them together,
+    so the two copies can drift silently. Deliberately left as-is: de-duplicating means importing
+    (or re-exporting) a private step of ``create_jax_env_historical``, which is a change to the
+    env module and outside this task. NOTE that only the TRUNCATE half is live end-to-end: any
+    frame the pad branch produces has a repeated symbol and is therefore FATAL at the B2 guard
+    below, so a drifted pad formula can only ever change the wording of a refusal, never the
+    contents of an emitted provenance."""
+    ordered = [None] * len(asset_aliases)
+    for a in asset_aliases:
+        ordered[int(a["slot"])] = a["symbol"]
+    n_loaded = len(ordered)
+    if n_loaded == n_assets:
+        return list(ordered)
+    if n_loaded < n_assets:
+        return [ordered[i % n_loaded] for i in range(n_assets)]
+    return ordered[:n_assets]
+
+
+def _frame_provenance_refusal(*parts):
+    """The 863 REFUSED banner style, one place. Returns a SystemExit for the caller to raise."""
+    return SystemExit("\n" + "=" * 84 + "\n" + "".join(parts) + "=" * 84)
+
+
+def frame_provenance_path_for(ckpt_path):
+    """``frame_provenance_<stem>.json`` beside ``ckpt_path``; ``ckpt_`` stripped off the stem.
+
+    NOTE (panel MINOR, closed by B3): this mapping is not injective — ``ckpt_out=.../ckpt_foo``
+    and ``.../foo`` land on the SAME file. Two runs that collide now hit the differing-document
+    REFUSAL in ``write_frame_provenance`` instead of silently clobbering each other."""
+    base = os.path.basename(ckpt_path.rstrip(os.sep))
+    stem = base[len("ckpt_"):] if base.startswith("ckpt_") else base
+    return os.path.join(os.path.dirname(ckpt_path.rstrip(os.sep)) or ".",
+                        f"frame_provenance_{stem}.json")
+
+
+def build_frame_provenance(ckpt_path, args, frame, asset_aliases):
+    """Build (and VALIDATE) the provenance document for ``ckpt_path``; return (path, doc).
+    Writes nothing — see ``write_frame_provenance``.
+
+    Exactly one of ``frame`` (pinned: the ``load_framed_panel`` block, already order-exact
+    ASSERTED against the pin by that loader — TASK_863) / ``asset_aliases`` (unpinned: the
+    ``load_training_panel`` per-slot alias disclosure) is non-None, mirroring ``run()``'s branch.
+
+    Two refusals, both fail-closed (SystemExit, the 863 FIX-0 precedent — the run dies non-zero
+    and no provenance file exists):
+
+    * scope 2 — on the pinned path the pin file is INDEPENDENTLY re-read here and the order-exact
+      match re-asserted. The run itself already gates this (``load_framed_panel``'s identity
+      MISMATCH refusal); this is a second, standalone check at the point of emission, never a
+      replacement for it and never the weaker of the two.
+    * B2 — a frame carrying a DUPLICATE symbol is refused (see the block header)."""
+    if frame is not None:
+        pin_path = args.panel_frame_from_checkpoint
+        frame_symbols = list(frame["frame_symbols"])
+        try:
+            with open(pin_path) as fh:
+                pin_doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise _frame_provenance_refusal(
+                f"[874] REFUSED — frame provenance emission for {_display_path(ckpt_path)}: "
+                f"could not re-read the pin {pin_path!r} at emission time "
+                f"({type(e).__name__}: {e}).\n"
+                f"  Refusing to emit provenance for a pin this run can no longer verify. No "
+                f"provenance file was written; this checkpoint is NOT gradable.\n")
+        pin_frame = pin_doc.get("frame_symbols", pin_doc.get("symbols")) or []
+        if list(pin_frame) != frame_symbols:
+            raise _frame_provenance_refusal(
+                f"[874] REFUSED — frame provenance emission for {_display_path(ckpt_path)}: the "
+                f"pinned frame this run walked no longer matches a FRESH read of its own pin "
+                f"{pin_path!r} ({len(frame_symbols)} vs {len(pin_frame)} symbols, or a "
+                f"reordering).\n"
+                f"  The run itself already gates this (TASK_863 identity MISMATCH, "
+                f"load_framed_panel) — this is an INDEPENDENT re-assertion at the point of "
+                f"emission and must never be the weaker of the two checks. No provenance file "
+                f"was written; this checkpoint is NOT gradable.\n")
+        source = (f"pinned to {_display_path(pin_path)} (order-exact match against a fresh "
+                  f"re-read ASSERTED at emission, TASK_874)")
+        panel_frame_source = args.panel_frame_source
+    else:
+        aliases = list(asset_aliases or [])
+        if not aliases:
+            # "A claim we cannot check is worse than a refusal" (the 863 FIX 6 lesson): without
+            # the per-slot alias disclosure there is no way to say WHICH asset sits in slot k.
+            raise _frame_provenance_refusal(
+                f"[874] REFUSED — frame provenance emission for {_display_path(ckpt_path)}: the "
+                f"unpinned panel loader disclosed NO per-slot asset aliases, so this run cannot "
+                f"say which symbol occupies which encoder slot.\n"
+                f"  Emitting a guessed frame would scramble asset identity downstream. No "
+                f"provenance file was written; this checkpoint is NOT gradable.\n")
+        frame_symbols = _derived_frame_symbols(aliases, int(args.n_assets))
+        source = ("coverage-ranked at this run's own window/source "
+                  "(create_jax_env_historical, PIN b, minute ohlcv) — DERIVED, not pinned "
+                  "(TASK_874)")
+        panel_frame_source = "minute"          # PIN-b is always the 1-min ohlcv resample path
+
+    # ---- B2: the duplicate-symbol collapse, on EITHER branch ----
+    # The DERIVED branch reaches it through env_factory's pad-by-modulo (the reproduced defect).
+    # The PINNED branch is already gated upstream (eval_vector._load_frame_provenance refuses a
+    # pin with a repeated symbol), so this is defence in depth there — the emitter must never be
+    # the weaker check, and a frame it cannot vouch for is one it must not certify.
+    if len(set(frame_symbols)) != len(frame_symbols):
+        slots_by_symbol = {}
+        for k, s in enumerate(frame_symbols):
+            slots_by_symbol.setdefault(s, []).append(k)
+        dupes = {s: ks for s, ks in slots_by_symbol.items() if len(ks) > 1}
+        n_loaded = len(asset_aliases or [])
+        cause = (
+            f"  CAUSE: the pin {_display_path(args.panel_frame_from_checkpoint)} itself records "
+            f"a repeated symbol (upstream, eval_vector._load_frame_provenance should have "
+            f"refused it first — this emitter refuses independently).\n"
+            if frame is not None else
+            f"  CAUSE: the coverage-ranked in-window universe holds only {n_loaded} "
+            f"symbol(s) but --n-assets {int(args.n_assets)} was requested, and "
+            f"create_jax_env_historical pads the price panel BY MODULO "
+            f"(mcts_trader/training/env_factory.py:434-444), so slot k and slot "
+            f"k+{n_loaded} carry the SAME asset's column. The frame recorded above is "
+            f"a faithful description of the panel that was actually loaded.\n")
+        fix = (
+            "  FIX: repair the pin, or re-run unpinned.\n"
+            if frame is not None else
+            f"  FIX: re-run with --n-assets <= {n_loaded}, or widen --start/--end (or "
+            f"point --db at a source with more in-window coverage) until the universe "
+            f"reaches {int(args.n_assets)} symbols, or pin the frame with "
+            f"--panel-frame-from-checkpoint.\n")
+        raise _frame_provenance_refusal(
+                f"[874] REFUSED — frame provenance emission for {_display_path(ckpt_path)}: the "
+                f"{'PINNED' if frame is not None else 'DERIVED'} frame carries DUPLICATE "
+                f"symbols, so the checkpoint this run would produce is NOT GRADABLE.\n"
+                + "".join(f"    {s!r} occupies slots {ks}\n"
+                          for s, ks in sorted(dupes.items())[:20])
+                + (f"    ... and {len(dupes) - 20} more duplicated symbol(s)\n"
+                   if len(dupes) > 20 else "")
+                + cause
+                + f"  CONSEQUENCE: experiments/835_stage4_eval/scorecard.py's preflight "
+                  f"(scorecard.py:788-792) refuses ANY provenance with a repeated symbol by "
+                  f"construction — \"slot k IS asset k, a repeated symbol collapses two encoder "
+                  f"slots onto one column\" — so a file emitted here could never be graded. "
+                  f"Emitting it would only move the failure downstream and invite a hand-edit, "
+                  f"which is the exact defect TASK_874 exists to remove.\n"
+                  f"  This guard REFUSES. It does NOT de-duplicate the frame and it does NOT "
+                  f"change env_factory's padding (pre-existing, out of scope): a guard that "
+                  f"normalizes is not a guard that corrects, and a de-duplicated frame would "
+                  f"describe a panel this run never trained on.\n"
+                + fix
+                + "  No provenance file was written; nothing this run leaves behind is "
+                  "gradable.\n")
+
+    doc = {
+        "frame_symbols": frame_symbols,
+        "n_assets": int(args.n_assets),
+        "source": source,
+        "train_window": [str(args.start), str(args.end)],
+        "db": _display_path(args.db),
+        "checkpoint": _display_path(ckpt_path),
+        "panel_frame_source": panel_frame_source,
+    }
+    return frame_provenance_path_for(ckpt_path), doc
+
+
+def _doc_field_diff(old, new, max_show=12):
+    """Human-readable per-field diff of two provenance documents (B3's refusal body)."""
+    lines = []
+    for k in sorted(set(old) | set(new)):
+        if k in old and k not in new:
+            lines.append(f"    {k}: on disk {old[k]!r}, absent from this run's document")
+        elif k in new and k not in old:
+            lines.append(f"    {k}: absent on disk, this run's document says {new[k]!r}")
+        elif old[k] != new[k]:
+            if isinstance(old[k], list) and isinstance(new[k], list):
+                first = next((i for i in range(max(len(old[k]), len(new[k])))
+                              if old[k][i:i + 1] != new[k][i:i + 1]), None)
+                lines.append(
+                    f"    {k}: {len(old[k])} entries on disk vs {len(new[k])} here; first "
+                    f"difference at index {first} "
+                    f"({old[k][first:first + 1]} vs {new[k][first:first + 1]})")
+            else:
+                lines.append(f"    {k}: on disk {old[k]!r}, this run {new[k]!r}")
+    return "".join(l + "\n" for l in lines[:max_show]) + (
+        f"    ... and {len(lines) - max_show} more differing field(s)\n"
+        if len(lines) > max_show else "")
+
+
+# ---- TASK_874 FINAL FIX (I2): the replacement leaves its trace IN THE ARTIFACT ----
+# ``--overwrite-frame-provenance`` used to announce itself only on stdout, so a later READER of
+# the JSON could not tell "this document REPLACED a different provenance" from "this was the only
+# provenance this checkpoint ever had". Logs are not the read-of-record; the artifact is. A
+# replacement now stamps itself INTO the document — the TASK_883 ``"universe_pinned": false``
+# pattern, a field present ONLY in the degraded case — together with a sha256 of the RAW BYTES it
+# replaced, so the prior state stays identifiable after the file itself is gone (and even when
+# those bytes were not valid JSON).
+#
+# VERIFIED BEFORE ADDING THE FIELD (the readers tolerate extra keys, they do not whitelist):
+#   * experiments/835_stage4_eval/scorecard.py:1385-1389 — every non-frame key is carried through
+#     verbatim into ``frame_provenance.meta``; its preflight (scorecard.py:774-811) reads only
+#     ``frame_symbols``/``symbols``, ``n_assets`` and ``checkpoint``.
+#   * experiments/835_stage4_eval/eval_vector.py:700-754 — same, and its docstring states it:
+#     "any other keys ... are carried through as provenance for the artifact".
+#
+# The two keys describe the FILE's history, not the checkpoint's frame, so they are STRIPPED
+# before the identical-document comparison below: re-running the same recipe over a
+# previously-replaced provenance stays a quiet no-op instead of degrading into a refusal.
+PROVENANCE_REPLACED_FIELD = "provenance_replaced"
+PROVENANCE_REPLACED_SHA_FIELD = "replaced_provenance_sha256"
+REPLACEMENT_STAMP_FIELDS = (PROVENANCE_REPLACED_FIELD, PROVENANCE_REPLACED_SHA_FIELD)
+
+
+def _without_replacement_stamp(doc):
+    """``doc`` minus the I2 replacement stamp — what the frame-describing content compares as."""
+    return {k: v for k, v in doc.items() if k not in REPLACEMENT_STAMP_FIELDS}
+
+
+def write_frame_provenance(prov_path, doc, args, dry_run=False, stage=""):
+    """Write ``doc`` to ``prov_path`` (B3), or REFUSE. Returns the path (None when refused is
+    impossible — a refusal raises).
+
+    * absent          -> write.
+    * present, IDENTICAL document (parsed, full compare modulo the I2 replacement stamp)
+      -> quiet no-op, file untouched.
+    * present, DIFFERS (or is unreadable/not a JSON object) -> REFUSE, naming both paths and the
+      differing fields, leaving the existing file untouched — unless
+      ``--overwrite-frame-provenance``, which replaces it with a loud stamp, ON STDOUT AND IN THE
+      DOCUMENT (I2: ``provenance_replaced`` + ``replaced_provenance_sha256`` of the raw bytes it
+      replaced).
+
+    ``dry_run`` runs the whole decision WITHOUT writing (``stage`` labels which validation pass is
+    speaking). It is called THREE times per promoting run: once pre-training in run() so the
+    refusal is fail-fast (before ~1min of imprint and before save_checkpoint can clobber a
+    checkpoint dir), once in main() the instant run() returns — BEFORE promote_parity_baseline
+    touches the git-tracked baseline (I1) — and finally once for real."""
+    overwrite = bool(getattr(args, "overwrite_frame_provenance", False))
+    what = "would write" if dry_run else "->"
+    stamp = None
+    if os.path.exists(prov_path):
+        raw = existing = unreadable = None
+        try:
+            with open(prov_path, "rb") as fh:
+                raw = fh.read()
+        except OSError as e:
+            unreadable = f"{type(e).__name__}: {e} (could not be read off disk at all)"
+        if raw is not None:
+            try:
+                existing = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                unreadable = f"{type(e).__name__}: {e}"
+        # The digest is taken over the RAW BYTES, so the replaced state stays identifiable even
+        # when it was not valid JSON (the case where nothing else about it is recordable).
+        prior_sha = hashlib.sha256(raw).hexdigest() if raw is not None else "unreadable"
+        if (unreadable is None and isinstance(existing, dict)
+                and _without_replacement_stamp(existing) == doc):
+            print(f"[874] frame provenance already present and IDENTICAL, left untouched: "
+                  f"{_display_path(prov_path)}"
+                  + (f" (it carries the I2 replacement stamp {PROVENANCE_REPLACED_FIELD}=true; "
+                     f"that records the FILE's history, not this run's frame, so it is not a "
+                     f"difference)" if existing.get(PROVENANCE_REPLACED_FIELD) else ""))
+            return prov_path
+        detail = (f"  the file on disk is UNREADABLE as JSON ({unreadable}), so it cannot be "
+                  f"compared — refusing fail-closed rather than assuming it is stale.\n"
+                  if unreadable is not None else
+                  ("  differing field(s):\n" + _doc_field_diff(
+                      _without_replacement_stamp(existing) if isinstance(existing, dict)
+                      else {"<document>": existing}, doc)))
+        detail += f"  sha256 of the bytes on disk: {prior_sha}\n"
+        if not overwrite:
+            raise _frame_provenance_refusal(
+                f"[874] REFUSED — a DIFFERENT frame provenance already exists at that path.\n"
+                f"  existing: {_display_path(prov_path)}\n"
+                f"  this run: checkpoint {doc['checkpoint']}, window {doc['train_window']}, "
+                f"{doc['n_assets']} slots, panel_frame_source {doc['panel_frame_source']}\n"
+                + detail
+                + f"  The existing file is UNTOUCHED. Provenance files are per-run outputs and "
+                  f"several load-bearing ones (runs/861_ref/frame_provenance_ref_s*.json) are "
+                  f"gitignored — there is no committed copy to restore from, so an unconditional "
+                  f"overwrite would destroy a reference the program's numbers depend on.\n"
+                  f"  If replacing it IS the intent, re-run with --overwrite-frame-provenance "
+                  f"(the replacement is stamped loudly). Otherwise point --ckpt-out at a "
+                  f"different name — note that `.../ckpt_foo` and `.../foo` both map to "
+                  f"`frame_provenance_foo.json`.\n")
+        stamp = {PROVENANCE_REPLACED_FIELD: True, PROVENANCE_REPLACED_SHA_FIELD: prior_sha}
+        if dry_run:
+            print(f"[874] --overwrite-frame-provenance: WOULD REPLACE the existing, DIFFERENT "
+                  f"provenance at {_display_path(prov_path)} (sha256 {prior_sha})")
+        else:
+            print("!" * 84)
+            print(f"!!! [874] --overwrite-frame-provenance: REPLACING an existing, DIFFERENT frame "
+                  f"provenance")
+            print(f"!!! {_display_path(prov_path)}")
+            print(detail.rstrip("\n"))
+            print(f"!!! the replacement document RECORDS this: {PROVENANCE_REPLACED_FIELD}=true, "
+                  f"{PROVENANCE_REPLACED_SHA_FIELD}={prior_sha}. A later reader of the JSON can "
+                  f"tell it replaced a different provenance without having this log (I2).")
+            print("!" * 84)
+    if dry_run:
+        print(f"[874] frame provenance {what} {_display_path(prov_path)} "
+              f"({len(doc['frame_symbols'])} slots, {doc['panel_frame_source']}-sourced) — "
+              f"deferred to the end of the run, after every fail-closed gate"
+              + (f" [{stage}]" if stage else ""))
+        return prov_path
+    out_doc = dict(doc) if stamp is None else {**doc, **stamp}
+    with open(prov_path, "w") as fh:
+        json.dump(out_doc, fh, indent=1)
+    print(f"[874] frame provenance {what} {prov_path}"
+          + (f"  ({PROVENANCE_REPLACED_FIELD}=true, replaced sha256 "
+             f"{stamp[PROVENANCE_REPLACED_SHA_FIELD]})" if stamp else ""))
+    return prov_path
+
+
+def emit_frame_provenance(ckpt_path, args, frame, asset_aliases, dry_run=False, stage=""):
+    """build + write, for callers that want the whole emission in one step (the 874 smoke, and
+    any direct in-process user). ``run()`` deliberately splits the two so the write lands after
+    every refusal the run can raise (B1)."""
+    prov_path, doc = build_frame_provenance(ckpt_path, args, frame, asset_aliases)
+    return write_frame_provenance(prov_path, doc, args, dry_run=dry_run, stage=stage)
+
+
+# =============================================================================
 # in-env walks (teacher replay / imprinted-policy sanity replay)
 # =============================================================================
 
@@ -1675,7 +2047,11 @@ def _loss_summary(history, key, head=5):
 # driver
 # =============================================================================
 
-def run(args, out_path, tag):
+def run(args, out_path, tag, provenance_sink=None):
+    """``provenance_sink``: TASK_874 fix pass (B1). When given, the built frame-provenance
+    document is handed to this callable instead of being written here, so main() can defer the
+    write past --write-parity-baseline's own refusals — the last fail-closed gates before normal
+    exit. Default None => run() writes it itself at the end, after every refusal IT can raise."""
     corridor = _load_corridor()
 
     # ---- panel (TRAINING path, PIN b) + book signs on THAT panel ----
@@ -1721,6 +2097,17 @@ def run(args, out_path, tag):
         # to an unpinned reference — hence the active-cells-only companions and this fraction.
         frame["panel_frame"]["masked_cell_fraction"] = (
             float(n_hold_cells) / float(max(N * A, 1)))
+
+    # ---- TASK_874 fix pass (B1/B2/B3): VALIDATE the emission now, WRITE it last ----
+    # Everything the provenance document is made of (the frame, the window, n_assets, the pin) is
+    # known here, before a single training step — so every emission refusal (duplicate-collapse
+    # frame, a pin that no longer verifies, an existing-but-DIFFERENT provenance file) is raised
+    # fail-fast, costing no compute and, crucially, before save_checkpoint can overwrite a
+    # checkpoint directory for a run whose provenance we were always going to refuse (the
+    # TASK_864 "refused promotion costs nothing" precedent). The document is rebuilt and written
+    # at the very END of the run, after every fail-closed gate.
+    emit_frame_provenance(os.path.abspath(args.ckpt_out), args, frame, asset_aliases,
+                          dry_run=True, stage="pre-training fail-fast")
 
     # ---- teacher walks, one per cost tier (same mapping; costs differ) ----
     def teacher_fn(k, state):
@@ -1932,6 +2319,14 @@ def run(args, out_path, tag):
     # checkpoint here for overwrite=False to protect.
     trainer.save_checkpoint(ckpt_path, overwrite=True)
     print(f"[832] imprint checkpoint -> {ckpt_path}")
+    # TASK_874 fix pass (B1): the frame provenance is NOT emitted here. Writing it beside the
+    # checkpoint at this point CERTIFIES the checkpoint as gradable while the run can still
+    # REFUSE itself further down (the 863 FIX-0 degenerate-replay SystemExit, the --smoke-assert
+    # gate, and --write-parity-baseline's gates in main()) — a judge reproduced exactly that: a
+    # degenerate pinned run exited 1 and still left a valid provenance file, which scorecard.py
+    # then graded to "1 OK / 0 FAILED". The emission was validated pre-training (above) and is
+    # written at the very end of this function / of main(). A refused run leaves NO provenance
+    # file, so its checkpoint is UNGRADABLE.
 
     # ---- imprint-sanity: deterministic policy-argmax replay in-env ----
     pol_actions = policy_argmax_actions(model, trainer.state.params, obs, A)
@@ -2402,6 +2797,20 @@ def run(args, out_path, tag):
               "schema" + (", expressibility gate reported (both mappings)" if gate is not None
                           else ", 861 teacher-vector legs (provenance + operator pin + payload "
                                "digest + replay integrity + falsification)"))
+
+    # ---- TASK_874 fix pass (B1): the frame provenance is emitted HERE, and only here ----
+    # Every fail-closed refusal this function can raise now sits ABOVE this line: the 863 FIX-0
+    # degenerate-replay SystemExit and the whole --smoke-assert block. Emitting a provenance file
+    # is what makes a checkpoint gradable by 835's scorecard, so it must be the LAST thing a run
+    # does — an artifact the run itself rejects must never be certified. The document is REBUILT
+    # (not carried from the pre-training dry run) so the pin is re-read and re-asserted at the
+    # true moment of emission (scope 2). ``provenance_sink`` defers the write one final step, to
+    # main(), past --write-parity-baseline's refusals.
+    _prov_path, _prov_doc = build_frame_provenance(ckpt_path, args, frame, asset_aliases)
+    if provenance_sink is None:
+        write_frame_provenance(_prov_path, _prov_doc, args)
+    else:
+        provenance_sink(_prov_path, _prov_doc)
     return result
 
 
@@ -2916,6 +3325,16 @@ def main():
                          f"The baseline recipe is the weight-ON / order-code deliverable "
                          f"(SPEC.md 'Committed fixture artifact'), NOT the flagless default: "
                          f"`imprint.py --vector-weight-rebalance --write-parity-baseline`")
+    ap.add_argument("--overwrite-frame-provenance", dest="overwrite_frame_provenance",
+                    action="store_true", default=False,
+                    help="TASK_874 (B3) opt-in: REPLACE an existing frame_provenance_<ckpt>.json "
+                         "whose content differs from what this run emits. Default OFF => a "
+                         "differing file is a loud REFUSAL and is left untouched (an identical "
+                         "one is a quiet no-op either way). These files are gitignored per-run "
+                         "outputs with no committed copy, and several "
+                         "(runs/861_ref/frame_provenance_ref_s*.json) carry reference numbers "
+                         "the program depends on — an unconditional overwrite destroys them "
+                         "silently. The replacement is stamped loudly on stdout")
     ap.add_argument("--smoke-assert", action="store_true", default=None,
                     help="assert finite + decreasing CE + schema (default ON for fixture db)")
     ap.add_argument("--no-smoke-assert", dest="smoke_assert", action="store_false")
@@ -2992,12 +3411,38 @@ def main():
         # the bytes written are identical to what the pre-864 default produced.
         out = (os.path.join(exp_dir, f"results_fixture_smoke{tv_suffix}.json") if tv_suffix
                else os.path.join(exp_dir, PARITY_LOCAL_NAME))
-    result = run(args, out, tag)
+    # TASK_874 fix pass (B1): run() hands its frame-provenance document over instead of writing
+    # it, so the write lands AFTER the last fail-closed gates in this process —
+    # --write-parity-baseline's recipe / result-validity / git-dirty refusals all raise below and
+    # must not be preceded by a file that certifies this checkpoint as gradable.
+    pending_provenance = []
+    result = run(args, out, tag,
+                 provenance_sink=lambda p, d: pending_provenance.append((p, d)))
+    # TASK_874 FINAL FIX (I1): VALIDATE the deferred emission HERE — after run() returns and
+    # BEFORE promote_parity_baseline, the first thing in this process that mutates a GIT-TRACKED
+    # file (os.replace onto results_fixture_smoke.json). The write itself deliberately stays
+    # where it is, LAST, behind promotion's own _assert_result_promotable /
+    # _assert_baseline_promotable refusals (B1's ordering: an artifact the run rejects must never
+    # be certified as gradable).
+    #
+    # The defect this closes: every emission refusal used to fire for the first time in that final
+    # write, i.e. AFTER the baseline had already moved — a run that disowns itself, exits 1, and
+    # still leaves the checked-in canon oracle replaced (the invariant "no committed baseline
+    # moves", burned once already by the 864 incident). run()'s pre-training dry run catches the
+    # ordinary case, but only the pre-training state: anything that changes the target between
+    # then and now (a concurrent run, an operator dropping a file next to the checkpoint) lands
+    # exactly in the window promotion sits inside. Validating immediately before the mutation
+    # closes the window: any refusal below leaves NOTHING mutated.
+    for _p, _d in pending_provenance:
+        write_frame_provenance(_p, _d, args, dry_run=True,
+                               stage="pre-promotion revalidation, nothing mutated yet")
     if args.write_parity_baseline:
         # FIX 3: promote THIS run's in-memory result, not a re-read of `out` (which is now the
         # single shared destination of every unsuffixed fixture run, so a concurrent default
         # run's bytes could otherwise be promoted).
         promote_parity_baseline(result, baseline_path, os.path.relpath(out, _REPO), args)
+    for _p, _d in pending_provenance:
+        write_frame_provenance(_p, _d, args)
 
 
 if __name__ == "__main__":

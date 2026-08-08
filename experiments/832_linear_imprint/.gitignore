@@ -14,3 +14,7 @@ results_fixture_smoke*_frame_pin.json
 # run lands here, and only an explicit --write-parity-baseline promotes onto the checked-in
 # results_fixture_smoke.json (which stays tracked, and is the weight-ON artifact per SPEC.md).
 results_fixture_smoke_local.json
+# TASK_874: frame provenance is emitted alongside EVERY checkpoint this runner writes (named
+# frame_provenance_<ckpt-dir-with-its-'ckpt_'-prefix-stripped>.json) — a per-run output
+# artifact (regenerable from that run), never committed source, same as the ckpt_* dirs above.
+frame_provenance_*.json

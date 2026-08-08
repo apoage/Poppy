@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# Per-leg run artifacts, logs, generated checkpoints/provenance/manifests from
+# smoke_frame_provenance.py (the committed evidence is the script itself + the report it prints).
+smoke_runs/
