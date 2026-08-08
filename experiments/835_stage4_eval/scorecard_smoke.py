@@ -70,6 +70,7 @@ if _REPO not in sys.path:
 
 sys.path.insert(0, _HERE)
 import scorecard as sc_mod                                        # noqa: E402
+import fixtures.fixture_identity as fixture_identity              # noqa: E402  (TASK_873)
 
 EVAL_VECTOR = os.path.join(_HERE, "eval_vector.py")
 SCORECARD = os.path.join(_HERE, "scorecard.py")
@@ -821,6 +822,11 @@ def main():
     ap.add_argument("--fresh", action="store_true",
                     help="delete the work dir first (forces a fresh checkpoint build)")
     args = ap.parse_args()
+
+    # TASK_873: verify the live fixture against fixtures/FIXTURE_IDENTITY.json BEFORE any work
+    # — literally first, ahead of even creating the work dir, so "before any work" is true as
+    # written. A missing fixture is unchanged behavior: falls through to the existing raise.
+    fixture_identity.verify_or_die(os.path.join(_REPO, FIXTURE_DB_REL), label="[835 fixture-identity]")
 
     work = os.path.abspath(args.work_dir)
     if args.fresh and os.path.isdir(work):

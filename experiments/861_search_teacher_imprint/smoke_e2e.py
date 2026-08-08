@@ -83,6 +83,10 @@ import time
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(EXP_DIR))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+import fixtures.fixture_identity as fixture_identity          # noqa: E402  (TASK_873)
+
 RUN_DIR = os.path.join(EXP_DIR, "smoke_runs")
 EVAL_PY = os.path.join(_REPO, "experiments", "835_stage4_eval", "eval_vector.py")
 IMPRINT_PY = os.path.join(_REPO, "experiments", "832_linear_imprint", "imprint.py")
@@ -684,6 +688,10 @@ def main():
                          "dirty-refusing, per-field diff printed. Canon recipe: "
                          + CANON_PROMOTE_RECIPE)
     args = ap.parse_args()
+    # TASK_873: fixture identity check BEFORE anything else — a live fixture that doesn't
+    # match fixtures/FIXTURE_IDENTITY.json means every baseline below was promoted against a
+    # DIFFERENT fixture (the run-25 incident); refuse loud rather than quietly re-basing them.
+    fixture_identity.verify_or_die(FIXTURE_DB, label="[861 fixture-identity]")
     # TASK_867: the canon promoting recipe, re-derived from this module's own argparse defaults
     # (no second hardcoded copy of any default).
     canon_args = ap.parse_args([])

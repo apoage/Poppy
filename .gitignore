@@ -7,6 +7,11 @@ __pycache__/
 trading_data.db
 *.db
 *.sqlite
+# TASK_873: --promote-fixture-identity stages both files under .tmp before os.replace().
+# `*.db` does NOT cover `.db.tmp`, so a crash mid-promote used to leave an untracked ~79MB
+# blob that a careless `git add -A` could sweep into the repo. Ignore both staging paths.
+fixtures/trading_fixture.db.tmp
+fixtures/FIXTURE_IDENTITY.json.tmp
 
 # Logs and Experiments
 default_experiment_*/

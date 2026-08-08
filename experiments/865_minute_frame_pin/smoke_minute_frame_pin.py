@@ -47,6 +47,10 @@ import time
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(EXP_DIR))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+import fixtures.fixture_identity as fixture_identity          # noqa: E402  (TASK_873)
+
 RUN_DIR = os.path.join(EXP_DIR, "smoke_runs")
 EVAL_PY = os.path.join(_REPO, "experiments", "835_stage4_eval", "eval_vector.py")
 IMPRINT_PY = os.path.join(_REPO, "experiments", "832_linear_imprint", "imprint.py")
@@ -2693,6 +2697,10 @@ def main():
         r = leg_pv_conservation(lambda *p: os.path.join(RUN_DIR, *p), _imprint_module())
         print(json.dumps(r, indent=1, default=float))
         raise SystemExit(0 if r["passed"] else 1)
+    # TASK_873: every remaining leg below builds panels on the fixture DB — verify its identity
+    # against fixtures/FIXTURE_IDENTITY.json BEFORE any of that work (the two branches above
+    # need no fixture DB at all, so they run before this check, unaffected).
+    fixture_identity.verify_or_die(FIXTURE_DB, label="[865 fixture-identity]")
     if not args.keep and os.path.isdir(RUN_DIR):
         shutil.rmtree(RUN_DIR)
     os.makedirs(RUN_DIR, exist_ok=True)

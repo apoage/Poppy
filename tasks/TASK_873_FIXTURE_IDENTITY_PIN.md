@@ -1,5 +1,37 @@
 # TASK_873 — Pin the fixture's identity: close the "gitignored baseline" class the run-25 incident exposed
 
+> **STATUS (2026-08-08): SHIPPED as `task873-fixture-identity-pin`.** All four gates closed;
+> 0 BLOCKER / 0 MAJOR outstanding after a 3-lens panel + a fresh fail-closed re-verify.
+> 2 cycles (implement=sonnet, fix=opus, panel=sonnet).
+>
+> **Pinned sha256: `b0f8de8b108b50521f301df1d0856aed72bc760c57b67a842fa62fa918206cf9`**
+> (79310848 bytes) — the generation every committed baseline was promoted against. **The
+> fixture was never regenerated or mutated at any point**; all tamper tests ran on scratch
+> copies, identity confirmed byte-identical by the implementer at four checkpoints and
+> independently by all four judges.
+>
+> **1 BLOCKER, reproduced independently by all three lenses:** the first write guard FAILED
+> OPEN — `existing_matches_pin` stayed `False` (and control fell through to `os.remove` +
+> rebuild, silently, exit 0) when the pin was missing, corrupt, **or the fixture already
+> mismatched the pin**. That last case is the post-incident recovery state, so once mismatched
+> every later bare invocation would silently rebuild forever. Reproduced by deleting one file.
+> Fixed by deleting the flag: **if `DST` exists and `--promote-fixture-identity` was not
+> passed, the run refuses unconditionally**; the pin is now consulted only to NAME the reason.
+> **1 MAJOR:** a corrupt fixture raised `sqlite3.DatabaseError` (a sibling, not a subclass of
+> `OperationalError`) and escaped as a raw traceback instead of the named refusal — now caught.
+>
+> **Over-refusal was checked, both must-work paths hold:** missing fixture ⇒ generates normally
+> (a fresh clone is not bricked); promote ⇒ rebuilds, prints the per-field diff, replaces
+> atomically, leaves no `.tmp`, refuses on a dirty tree.
+>
+> **Intended behavioral break:** a bare `python fixtures/make_fixture.py` against an existing
+> fixture now ALWAYS refuses — use `--promote-fixture-identity` for a deliberate re-base. No
+> caller exists in the repo today; only documentation references.
+>
+> **Disclosed NIT:** the five touched files rely on `fixtures/` resolving as a PEP 420
+> namespace package; installing the PyPI package named `fixtures` would break all five. Not
+> installed today, documented not restructured. Full detail in the CHANGELOG entry.
+
 **Status**: READY 2026-08-05 (seeded from the run-25 wrap's decision-changing finding; the wrap
 itself asked for a standing rule — this is the mechanical half of it).
 **Size: XS/S. Risk: low.** Surface: `fixtures/` + the suites' start-up checks.

@@ -1,0 +1,13 @@
+{
+  "sha256": "b0f8de8b108b50521f301df1d0856aed72bc760c57b67a842fa62fa918206cf9",
+  "size_bytes": 79310848,
+  "row_counts": {
+    "assets": 1205,
+    "ohlcv_daily": 499430,
+    "fetch_log": 81,
+    "ohlcv": 474343
+  },
+  "make_fixture_git_rev": "3e0baa95ceacf43b326f1e7b246cfc762b722970",
+  "make_fixture_sha256": "76fd947cbb8f1082ef0f0025352999a0a9d45762d1fdbe6cdc09d7e32549d030",
+  "note": "TASK_873: pins the fixture generation the committed 861/863/865/835 baselines were promoted against (the b0f8de8b fixture, cut by TASK_868/869's regen — D31 (a3) UTC rebase, make_fixture_git_rev 3e0baa9). This is the SAME fixture the run-25 incident's clean-tree gate could not see move (b0f8de8b -> 59525bd3); this pin exists so the next regeneration is loud instead of lucky. Regenerate + re-pin ONLY via `python fixtures/make_fixture.py --promote-fixture-identity` (atomic, diff-printed, dirty-tree-refusing) — never a bare re-run."
+}

@@ -68,6 +68,10 @@ import time
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(EXP_DIR))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+import fixtures.fixture_identity as fixture_identity          # noqa: E402  (TASK_873)
+
 RUN_DIR = os.path.join(EXP_DIR, "smoke_runs")
 EVAL_PY = os.path.join(_REPO, "experiments", "835_stage4_eval", "eval_vector.py")
 IMPRINT_PY = os.path.join(_REPO, "experiments", "832_linear_imprint", "imprint.py")
@@ -497,6 +501,9 @@ def main():
     ap = argparse.ArgumentParser(description="TASK_863 frame-pin fixture smoke")
     ap.add_argument("--keep", action="store_true", help="keep a previous run dir's artifacts")
     args = ap.parse_args()
+    # TASK_873: verify the live fixture against fixtures/FIXTURE_IDENTITY.json BEFORE any work
+    # — a re-based fixture would otherwise silently move every gate below.
+    fixture_identity.verify_or_die(FIXTURE_DB, label="[863 fixture-identity]")
     if not args.keep and os.path.isdir(RUN_DIR):
         shutil.rmtree(RUN_DIR)
     os.makedirs(RUN_DIR, exist_ok=True)
