@@ -19,11 +19,31 @@
 > disagreement is UNRESOLVED**, and this row does **not** close `861/ref-oos-rebase`; its
 > four-candidate list stands, "frame pin/source" included.
 >
-> **PLANNER ACTION — the decisive measurement is pre-registered and NOT run** (§6): eval-only,
-> `ckpt_ref_s{0,1,2}` pinned over the continuous 2021-01-01..2025-10-04 vs imprint.py's own
-> sanity number, bands fixed in advance. **Blocker to scheduling it:**
-> `runs/861_ref/frame_provenance_ref_s{0,1,2}.json` are cited by shipped artifacts but are
-> **absent locally** — recover them first.
+> **PLANNER — LEG A IS RUN, AND IT PASSES IN THE TOP BAND (2026-08-08).** LEDGER
+> `882/decisive-legA`. The scheduling blocker dissolved: `frame_provenance_ref_s{0,1,2}.json`
+> were never lost, only never pulled — they were on gpu-server (derived there 2026-08-03) and
+> are now on the workstation, **independently VERIFIED order-exact** against
+> `runs/832_e5/frame_provenance_imprint.json` (which upgrades TASK_874's "ASSERTED at
+> derivation" to measured).
+>
+> **Result: the two instruments AGREE to 2.1e-4.** Pinned `eval_vector --operator policy-argmax`
+> on `ckpt_ref_s0` reads **+0.9915919** against imprint.py's **+0.9913783** — Δ **0.000214**,
+> ~470× inside the pre-registered 0.1 agreement band; terminal PV 465,824 vs 465,545 (**0.060%**);
+> tier-0 Δ 0.00042; in-env floor Δ 3.0e-6. **The entire residual is 3 decision cells out of
+> 107,072** (`avg_long` −0.001793186 and `avg_short` +0.001793186, each × 1673 steps = exactly
+> 3.000) — argmax tie-breaks under float32, not semantics. Three seeds, 1673/1673 decisions,
+> `partial: false`, `bankrupt_at −1`, 64/64 slots active: **+0.99159 / +0.99355 / +0.95212**.
+>
+> **So the narrow ruling above is now superseded on exactly one point, and only that one:**
+> **`+0.9914` is RESTORED**, and it is now instrument-independent and 3-seed. The 882
+> disagreement was 100% the missing pin. Everything else in the narrow ruling STANDS —
+> `+0.8394` is still not restored, imprint.py is still not vindicated in general, and **the OLD
+> checkpoint's disagreement remains UNRESOLVED**; `861/ref-oos-rebase` is NOT closed. That the
+> first-round ruling was rewritten to "corroborated, not restored" was correct discipline: the
+> stronger claim happened to come true, but it was not evidenced at the time.
+>
+> **Cross-harness comparison is UNBLOCKED — conditional on the pin.** That condition is the whole
+> content of **TASK_883**, which makes the pin mandatory instead of optional.
 >
 > **Determinism hazard for the whole program:** the same probe reads net@21 **−4.9678** on GPU
 > vs **−4.9876** on CPU — 0.4%, enough to break this suite's own 1e-4 tolerance. Production

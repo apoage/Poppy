@@ -1,0 +1,20 @@
+# 882/decisive — Leg A, the identity check. PRE-REGISTERED in tasks/TASK_882_INSTRUMENT_RECONCILIATION.md §6
+# (bands fixed BEFORE launch: |Δ| ≤ 0.1 ⇒ the instruments AGREE once pinned · ≤ 0.5 ⇒ residual, named but not
+# disqualifying · > 0.5 or a SIGN FLIP ⇒ a second, pin-independent defect and the +0.9914 corroboration is WITHDRAWN).
+#
+# EVAL-ONLY, no training. Grades the clean-trained reference checkpoints on the SAME continuous window their
+# imprint.py sanity replay used (2021-01-01..2025-10-04), CORRECTLY PINNED to the frame the 861 legs trained on.
+#
+# FRAMEWORK-EPOCH DIFF (the 879 doctrine check — run BEFORE launch, recorded here):
+#   srv was at deploy b695487 (2026-08-03); redeployed to 60f77f7 for this leg. Content delta on the eval path:
+#   eval_vector.py -54/+? = TASK_870's _ro_connect move to mcts_trader/utils/db.py + a --smoke-only overwrite=True.
+#   imprint.py 12 lines (same _ro_connect move). NEITHER changes measurement semantics on this path.
+#   FLAG CHECK (E-a is flag-gated, this is what voided 879 leg 1): --vector-weight-rebalance is PRESENT on every
+#   line below. --panel-frame-from-checkpoint is PRESENT on every line — its ABSENCE is the 882 defect itself.
+#
+# Frame files recovered from gpu-server 2026-08-08 (they were never lost, only never pulled to the workstation)
+# and INDEPENDENTLY VERIFIED order-exact against runs/832_e5/frame_provenance_imprint.json for all three seeds —
+# upgrading TASK_874's "order-exact ASSERTED at derivation" to measured.
+882d_s0  gpu 32G trader_env/bin/python experiments/835_stage4_eval/eval_vector.py --db trading_data.db --start 2021-01-01 --end 2025-10-04 --bar-minutes 1440 --n-assets 64 --panel-frame-from-checkpoint runs/861_ref/frame_provenance_ref_s0.json --panel-frame-source minute --operator policy-argmax --checkpoint runs/861_ref/ckpt_ref_s0 --vector-weight-rebalance --teacher-floor --tag 882decisive_s0 --out-dir runs/882_decisive
+882d_s1  gpu 32G trader_env/bin/python experiments/835_stage4_eval/eval_vector.py --db trading_data.db --start 2021-01-01 --end 2025-10-04 --bar-minutes 1440 --n-assets 64 --panel-frame-from-checkpoint runs/861_ref/frame_provenance_ref_s1.json --panel-frame-source minute --operator policy-argmax --checkpoint runs/861_ref/ckpt_ref_s1 --vector-weight-rebalance --teacher-floor --tag 882decisive_s1 --out-dir runs/882_decisive
+882d_s2  gpu 32G trader_env/bin/python experiments/835_stage4_eval/eval_vector.py --db trading_data.db --start 2021-01-01 --end 2025-10-04 --bar-minutes 1440 --n-assets 64 --panel-frame-from-checkpoint runs/861_ref/frame_provenance_ref_s2.json --panel-frame-source minute --operator policy-argmax --checkpoint runs/861_ref/ckpt_ref_s2 --vector-weight-rebalance --teacher-floor --tag 882decisive_s2 --out-dir runs/882_decisive
