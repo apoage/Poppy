@@ -1,0 +1,18 @@
+# 884/rung1 3-SEED BATTERY — 2000 epochs, seeds 0/1/2, GPUs 1/2/3. Pre-registered in SPEC_rung1_LAUNCH.md.
+# LAUNCH ONLY AFTER the 40-epoch smoke passes S1-S3 and its measured epoch wall-time makes a
+# 2000-epoch run a defensible use of three GPUs. Disk: 20 snapshots/seed ~= 1.8 GB, 5.4 GB total.
+#
+# DEVIATIONS from experiments/828_stage3_train/jobs_phase1c.manifest, both pre-registered:
+#   1. trader_env/bin/python  (bare `python` on gpu-server is python2 — cost two 879 launches)
+#   2. --periods-file experiments/884_rung1/period_884_train.json  (end 2025-12-01 -> 2025-10-04,
+#      so held-out = 2025-10-05..2026-03-31, identical to the imprint lane's OOS window)
+#      sha256 68d2d7fdb416f7c235b380b0446b4b157e7a227c6907d63651a9516d0eb8fa44
+#
+# FLAG CHECK (the 879 doctrine — E-a is flag-gated and omitting it is what voided rung 3):
+#   --vector-weight-rebalance PRESENT below. Asserted, not assumed.
+# PREFLIGHT (SPEC §2 STOP condition): setup.py:429 pads a short matrix by DUPLICATING columns,
+#   silently re-mapping slot->asset. scratchpad/rung1_preflight_frame.py must report
+#   shape[1]==64 and order-exact symbols on THIS periods file before this manifest runs.
+884r1_cost0_s0 gpu 32G trader_env/bin/python -u train_jax_fast.py --jax-env --db-path trading_data.db --periods-file experiments/884_rung1/period_884_train.json --bar-minutes 1440 --vector-action --vector-proposal-scheme dithered-book --vector-k 16 --vector-hold-bias 0.0 --vector-dither-scale 1.0 --reward-hybrid --reward-attributable --model-size small --sims 32 --batch-size 256 --parallel-envs 4 --steps 256 --fee 0 --slippage 0 --epochs 2000 --seed 0 --snapshot-every 100 --vector-weight-rebalance --name 884r1_cost0_s0
+884r1_cost0_s1 gpu 32G trader_env/bin/python -u train_jax_fast.py --jax-env --db-path trading_data.db --periods-file experiments/884_rung1/period_884_train.json --bar-minutes 1440 --vector-action --vector-proposal-scheme dithered-book --vector-k 16 --vector-hold-bias 0.0 --vector-dither-scale 1.0 --reward-hybrid --reward-attributable --model-size small --sims 32 --batch-size 256 --parallel-envs 4 --steps 256 --fee 0 --slippage 0 --epochs 2000 --seed 1 --snapshot-every 100 --vector-weight-rebalance --name 884r1_cost0_s1
+884r1_cost0_s2 gpu 32G trader_env/bin/python -u train_jax_fast.py --jax-env --db-path trading_data.db --periods-file experiments/884_rung1/period_884_train.json --bar-minutes 1440 --vector-action --vector-proposal-scheme dithered-book --vector-k 16 --vector-hold-bias 0.0 --vector-dither-scale 1.0 --reward-hybrid --reward-attributable --model-size small --sims 32 --batch-size 256 --parallel-envs 4 --steps 256 --fee 0 --slippage 0 --epochs 2000 --seed 2 --snapshot-every 100 --vector-weight-rebalance --name 884r1_cost0_s2
