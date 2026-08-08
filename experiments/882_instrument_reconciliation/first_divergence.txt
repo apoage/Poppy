@@ -1,0 +1,40 @@
+TASK_882 gate (ii) — first divergent decision, both instruments side by side
+========================================================================================
+fixture      : /home/lukas/Trader/fixtures/trading_fixture.db
+window       : 2025-09-14 .. 2025-12-12   bar_minutes=240  n_assets=8
+frame A      : ['XBT/USD', 'ETH/USD', 'LTC/USD', 'XMR/USD', 'ZEC/USD', 'ETC/USD', 'DASH/USD', 'REP/USD']
+frame B      : ['REP/USD', 'DASH/USD', 'ETC/USD', 'ZEC/USD', 'XMR/USD', 'LTC/USD', 'ETH/USD', 'XBT/USD']   (same set, reversed slot order)
+variable     : --panel-frame-from-checkpoint ONLY; everything else identical
+
+imprint.py sanity replay (frame A)      : net@21 -4.9876119298103765  PV 77559.4140625
+eval_vector policy-argmax, frame A      : net@21 -4.987614330179929  PV 77559.4140625
+eval_vector policy-argmax, frame B      : net@21 -0.6440382361256386  PV 96149.4609375
+
+decisions compared                      : 471
+raw  (pre-mask argmax) differing        : 465/471
+exec (post-mask, executed) differing    : 471/471
+first divergent decision, raw stream    : 0
+first divergent decision, exec stream   : 0
+first divergent realized book (pos_side): 0
+
+--- decision 0 state, side by side ---------------------------------------------
+  [matched]
+    raw argmax   : [2, 0, 0, 0, 2, 1, 1, 0]
+    executed     : [2, 0, 0, 0, 2, 1, 1, 1]
+    pos_side     : [1, 2, 2, 2, 1, 0, 0, 0]
+    pos_size     : [0.111401, 3.001194, 117.791176, 42.675224, 226.878967, 0.0, 0.0, 0.0]
+    cash         : 37440.0
+    pv           : 99730.4453125
+  [mismatched]
+    raw argmax   : [2, 0, 0, 2, 1, 1, 1, 1]
+    executed     : [1, 0, 0, 2, 1, 1, 1, 1]
+    pos_side     : [0, 2, 2, 1, 0, 0, 0, 0]
+    pos_size     : [0.0, 589.539246, 664.504761, 226.878967, 0.0, 0.0, 0.0, 0.0]
+    cash         : 62460.0
+    pv           : 99829.03125
+
+Reading: the observation window at decision 0 is already built from the wrong
+slot-to-asset mapping under frame B, so the divergence is present from the very
+first decision — there is no 'drift' phase. Slot k IS asset k positionally in the
+encoder; permuting the frame feeds every slot's learned weights another asset's
+price history.

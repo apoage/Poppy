@@ -1,0 +1,141 @@
+{
+  "schema": "882/first-divergence/v1",
+  "produced_by": "experiments/882_instrument_reconciliation/dump_first_divergence.py",
+  "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
+  "window": [
+    "2025-09-14",
+    "2025-12-12"
+  ],
+  "bar_minutes": 240,
+  "n_assets": 8,
+  "frame_A_symbols": [
+    "XBT/USD",
+    "ETH/USD",
+    "LTC/USD",
+    "XMR/USD",
+    "ZEC/USD",
+    "ETC/USD",
+    "DASH/USD",
+    "REP/USD"
+  ],
+  "frame_B_symbols": [
+    "REP/USD",
+    "DASH/USD",
+    "ETC/USD",
+    "ZEC/USD",
+    "XMR/USD",
+    "LTC/USD",
+    "ETH/USD",
+    "XBT/USD"
+  ],
+  "variable_changed": "--panel-frame-from-checkpoint ONLY (frame_A vs frame_B)",
+  "imprint_sanity_net21": -4.9876119298103765,
+  "imprint_sanity_final_pv": 77559.4140625,
+  "eval_matched_net21": -4.987614330179929,
+  "eval_matched_final_pv": 77559.4140625,
+  "eval_mismatched_net21": -0.6440382361256386,
+  "eval_mismatched_final_pv": 96149.4609375,
+  "n_decisions_compared": 471,
+  "n_decisions_leg_matched": 471,
+  "n_decisions_leg_mismatched": 471,
+  "counts": {
+    "raw_stream_differing": 465,
+    "exec_stream_differing": 471,
+    "denominator": 471,
+    "definition": "raw_stream = the pre-mask per-asset argmax straight out of policy_decision_actions; exec_stream = the vector rollout actually executed, i.e. raw with the TASK_853 price-validity HOLD and the TASK_868 causal open-gate HOLD applied. The two counts differ because the masks themselves are frame-dependent: reversing the slot order moves which (decision, slot) cells are invalid/frozen, so the executed streams can differ at a decision where the raw argmax vectors agree. Quote the count WITH its definition; they are not interchangeable."
+  },
+  "first_divergent_decision_raw": 0,
+  "first_divergent_decision_exec": 0,
+  "first_divergent_decision_realized_book": 0,
+  "side_by_side": {
+    "decision": 0,
+    "matched": {
+      "raw_action": [
+        2,
+        0,
+        0,
+        0,
+        2,
+        1,
+        1,
+        0
+      ],
+      "exec_action": [
+        2,
+        0,
+        0,
+        0,
+        2,
+        1,
+        1,
+        1
+      ],
+      "pos_side_after": [
+        1,
+        2,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0
+      ],
+      "pos_size_after": [
+        0.11140111088752747,
+        3.0011935234069824,
+        117.79117584228516,
+        42.67522430419922,
+        226.87896728515625,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cash_after": 37440.0,
+      "pv_after": 99730.4453125
+    },
+    "mismatched": {
+      "raw_action": [
+        2,
+        0,
+        0,
+        2,
+        1,
+        1,
+        1,
+        1
+      ],
+      "exec_action": [
+        1,
+        0,
+        0,
+        2,
+        1,
+        1,
+        1,
+        1
+      ],
+      "pos_side_after": [
+        0,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "pos_size_after": [
+        0.0,
+        589.5392456054688,
+        664.5047607421875,
+        226.87896728515625,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cash_after": 62460.0,
+      "pv_after": 99829.03125
+    }
+  }
+}

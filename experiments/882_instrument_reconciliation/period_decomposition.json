@@ -1,0 +1,442 @@
+{
+  "schema": "882/period-decomposition/v1",
+  "checkpoints": [
+    {
+      "checkpoint": "ckpt_imprint_full (OLD, trained 2026-07-17, pre-D31 semantics)",
+      "imprint_sanity": {
+        "artifact": "runs/832_e5/imprint_full.json",
+        "window": [
+          "2021-01-01",
+          "2025-09-01"
+        ],
+        "years": 4.665,
+        "net21": 0.8393997345535864,
+        "final_pv": 299547.28125,
+        "pv_multiple": 2.9955,
+        "cagr_pct": 26.51
+      },
+      "windows": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "years": 1.084,
+          "net21": -0.8805531095423277,
+          "final_pv": 71355.828125,
+          "pv_multiple": 0.7136,
+          "cagr_pct": -26.75,
+          "in_training_window": true
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "years": 1.084,
+          "net21": -1.388293260512797,
+          "final_pv": 68935.5859375,
+          "pv_multiple": 0.6894,
+          "cagr_pct": -29.04,
+          "in_training_window": true
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "years": 1.002,
+          "net21": -0.41020127947183005,
+          "final_pv": 84677.8046875,
+          "pv_multiple": 0.8468,
+          "cagr_pct": -15.29,
+          "in_training_window": true
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "years": 1.251,
+          "net21": -0.16965932364218012,
+          "final_pv": 87967.0546875,
+          "pv_multiple": 0.8797,
+          "cagr_pct": -9.74,
+          "in_training_window": true
+        },
+        "oos_full": {
+          "window": [
+            "2025-10-05",
+            "2026-03-31"
+          ],
+          "years": 0.485,
+          "net21": 0.1643432834133916,
+          "final_pv": 100249.640625,
+          "pv_multiple": 1.0025,
+          "cagr_pct": 0.52,
+          "in_training_window": false
+        },
+        "wf_q4": {
+          "window": [
+            "2025-08-06",
+            "2025-12-31"
+          ],
+          "years": 0.402,
+          "net21": -1.8275337843680133,
+          "final_pv": 86836.921875,
+          "pv_multiple": 0.8684,
+          "cagr_pct": -29.58,
+          "in_training_window": false
+        },
+        "wf_q1": {
+          "window": [
+            "2025-11-02",
+            "2026-03-31"
+          ],
+          "years": 0.408,
+          "net21": -0.844000920358353,
+          "final_pv": 92780.859375,
+          "pv_multiple": 0.9278,
+          "cagr_pct": -16.78,
+          "in_training_window": false
+        }
+      },
+      "cagr_band_in_window": [
+        -29.04,
+        -9.74
+      ],
+      "full_window_cagr_inside_band": false,
+      "verdict": "outside band; stub magnitude required but untestable",
+      "excluded_stub": {
+        "span": [
+          "2021-01-01",
+          "2021-12-15"
+        ],
+        "years": 0.953,
+        "required_multiple": 6.925,
+        "assumed_rest_cagr_pct": -20.21
+      }
+    },
+    {
+      "checkpoint": "ckpt_ref_s0 (clean-trained 2026-08-03, post-D31)",
+      "imprint_sanity": {
+        "artifact": "runs/861_ref/results_s0.json",
+        "window": [
+          "2021-01-01",
+          "2025-10-04"
+        ],
+        "years": 4.756,
+        "net21": 0.9913782688863609,
+        "final_pv": 465545.125,
+        "pv_multiple": 4.6555,
+        "cagr_pct": 38.18
+      },
+      "windows": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "years": 1.084,
+          "net21": 0.9847307894712436,
+          "final_pv": 133685.140625,
+          "pv_multiple": 1.3369,
+          "cagr_pct": 30.7,
+          "in_training_window": true
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "years": 1.084,
+          "net21": 0.9027045214592757,
+          "final_pv": 124418.921875,
+          "pv_multiple": 1.2442,
+          "cagr_pct": 22.33,
+          "in_training_window": true
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "years": 1.002,
+          "net21": 1.3869801341892911,
+          "final_pv": 152969.671875,
+          "pv_multiple": 1.5297,
+          "cagr_pct": 52.84,
+          "in_training_window": true
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "years": 1.251,
+          "net21": 1.018980996738476,
+          "final_pv": 146955.09375,
+          "pv_multiple": 1.4696,
+          "cagr_pct": 36.02,
+          "in_training_window": true
+        },
+        "oos_full": {
+          "window": [
+            "2025-10-05",
+            "2026-03-31"
+          ],
+          "years": 0.485,
+          "net21": 0.10675575510268692,
+          "final_pv": 99207.21875,
+          "pv_multiple": 0.9921,
+          "cagr_pct": -1.63,
+          "in_training_window": false
+        },
+        "wf_q4": {
+          "window": [
+            "2025-08-06",
+            "2025-12-31"
+          ],
+          "years": 0.402,
+          "net21": -1.7671067364779673,
+          "final_pv": 82257.546875,
+          "pv_multiple": 0.8226,
+          "cagr_pct": -38.45,
+          "in_training_window": false
+        },
+        "wf_q1": {
+          "window": [
+            "2025-11-02",
+            "2026-03-31"
+          ],
+          "years": 0.408,
+          "net21": -1.0408014395582517,
+          "final_pv": 89179.2890625,
+          "pv_multiple": 0.8918,
+          "cagr_pct": -24.48,
+          "in_training_window": false
+        }
+      },
+      "cagr_band_in_window": [
+        22.33,
+        52.84
+      ],
+      "full_window_cagr_inside_band": true,
+      "verdict": "no 2021 concentration; instruments agree"
+    },
+    {
+      "checkpoint": "ckpt_ref_s1 (clean-trained 2026-08-03, post-D31)",
+      "imprint_sanity": {
+        "artifact": "runs/861_ref/results_s1.json",
+        "window": [
+          "2021-01-01",
+          "2025-10-04"
+        ],
+        "years": 4.756,
+        "net21": 0.9940931884405216,
+        "final_pv": 466883.3125,
+        "pv_multiple": 4.6688,
+        "cagr_pct": 38.27
+      },
+      "windows": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "years": 1.084,
+          "net21": 0.8083858838847396,
+          "final_pv": 126024.21875,
+          "pv_multiple": 1.2602,
+          "cagr_pct": 23.78,
+          "in_training_window": true
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "years": 1.084,
+          "net21": 1.058332857079082,
+          "final_pv": 130648.9140625,
+          "pv_multiple": 1.3065,
+          "cagr_pct": 27.96,
+          "in_training_window": true
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "years": 1.002,
+          "net21": 1.5884807306917013,
+          "final_pv": 165321.390625,
+          "pv_multiple": 1.6532,
+          "cagr_pct": 65.15,
+          "in_training_window": true
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "years": 1.251,
+          "net21": 1.2071384866962416,
+          "final_pv": 161733.671875,
+          "pv_multiple": 1.6173,
+          "cagr_pct": 46.85,
+          "in_training_window": true
+        },
+        "oos_full": {
+          "window": [
+            "2025-10-05",
+            "2026-03-31"
+          ],
+          "years": 0.485,
+          "net21": -0.8331917532172838,
+          "final_pv": 87606.71875,
+          "pv_multiple": 0.8761,
+          "cagr_pct": -23.89,
+          "in_training_window": false
+        },
+        "wf_q4": {
+          "window": [
+            "2025-08-06",
+            "2025-12-31"
+          ],
+          "years": 0.402,
+          "net21": 2.2533659341289343,
+          "final_pv": 121606.8671875,
+          "pv_multiple": 1.2161,
+          "cagr_pct": 62.59,
+          "in_training_window": false
+        },
+        "wf_q1": {
+          "window": [
+            "2025-11-02",
+            "2026-03-31"
+          ],
+          "years": 0.408,
+          "net21": -1.5632979302538141,
+          "final_pv": 82695.6015625,
+          "pv_multiple": 0.827,
+          "cagr_pct": -37.23,
+          "in_training_window": false
+        }
+      },
+      "cagr_band_in_window": [
+        23.78,
+        65.15
+      ],
+      "full_window_cagr_inside_band": true,
+      "verdict": "no 2021 concentration; instruments agree"
+    },
+    {
+      "checkpoint": "ckpt_ref_s2 (clean-trained 2026-08-03, post-D31)",
+      "imprint_sanity": {
+        "artifact": "runs/861_ref/results_s2.json",
+        "window": [
+          "2021-01-01",
+          "2025-10-04"
+        ],
+        "years": 4.756,
+        "net21": 0.9533480474167577,
+        "final_pv": 432664.28125,
+        "pv_multiple": 4.3266,
+        "cagr_pct": 36.07
+      },
+      "windows": {
+        "bear22w": {
+          "window": [
+            "2021-12-15",
+            "2023-01-15"
+          ],
+          "years": 1.084,
+          "net21": 0.5913237600901681,
+          "final_pv": 115735.359375,
+          "pv_multiple": 1.1574,
+          "cagr_pct": 14.43,
+          "in_training_window": true
+        },
+        "bull23w": {
+          "window": [
+            "2022-12-15",
+            "2024-01-15"
+          ],
+          "years": 1.084,
+          "net21": 0.9039034419131552,
+          "final_pv": 124681.6484375,
+          "pv_multiple": 1.2468,
+          "cagr_pct": 22.56,
+          "in_training_window": true
+        },
+        "y2024": {
+          "window": [
+            "2024-01-01",
+            "2025-01-01"
+          ],
+          "years": 1.002,
+          "net21": 1.3740657740494553,
+          "final_pv": 152342.828125,
+          "pv_multiple": 1.5234,
+          "cagr_pct": 52.21,
+          "in_training_window": true
+        },
+        "recent": {
+          "window": [
+            "2024-06-01",
+            "2025-09-01"
+          ],
+          "years": 1.251,
+          "net21": 1.1212759170458395,
+          "final_pv": 153708.328125,
+          "pv_multiple": 1.5371,
+          "cagr_pct": 41.0,
+          "in_training_window": true
+        },
+        "oos_full": {
+          "window": [
+            "2025-10-05",
+            "2026-03-31"
+          ],
+          "years": 0.485,
+          "net21": 0.06367576637929323,
+          "final_pv": 98679.078125,
+          "pv_multiple": 0.9868,
+          "cagr_pct": -2.71,
+          "in_training_window": false
+        },
+        "wf_q4": {
+          "window": [
+            "2025-08-06",
+            "2025-12-31"
+          ],
+          "years": 0.402,
+          "net21": -2.365086082702282,
+          "final_pv": 81326.0703125,
+          "pv_multiple": 0.8133,
+          "cagr_pct": -40.17,
+          "in_training_window": false
+        },
+        "wf_q1": {
+          "window": [
+            "2025-11-02",
+            "2026-03-31"
+          ],
+          "years": 0.408,
+          "net21": -0.19343181581404723,
+          "final_pv": 96851.0078125,
+          "pv_multiple": 0.9685,
+          "cagr_pct": -7.54,
+          "in_training_window": false
+        }
+      },
+      "cagr_band_in_window": [
+        14.43,
+        52.21
+      ],
+      "full_window_cagr_inside_band": true,
+      "verdict": "no 2021 concentration; instruments agree"
+    }
+  ]
+}

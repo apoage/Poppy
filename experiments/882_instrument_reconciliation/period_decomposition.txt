@@ -1,0 +1,94 @@
+TASK_882 FIX 1 — period decomposition of the imprint lane's in-window PnL
+====================================================================================================
+Source: RETAINED artifacts only (no DB read, no eval run). PV multiple = final_pv /
+        100,000 initial cash; CAGR = mult**(1/years) - 1.
+        Every scorecard window restarts the book at initial cash, so PV multiples are
+        NOT chainable across windows — CAGR is what places them on one axis.
+
+----------------------------------------------------------------------------------------------------
+ckpt_imprint_full (OLD, trained 2026-07-17, pre-D31 semantics)
+  imprint.py sanity replay   2021-01-01..2025-09-01  (4.67y)
+      net@21 +0.8394   final_pv      299,547   x2.995   CAGR +26.5%/yr
+  eval_vector policy-argmax, frame-pinned (862 scorecard, runs/861_ref_scorecard/old_ckpt_clean/windows):
+      bear22w   2021-12-15..2023-01-15 (1.08y) IN-WINDOW  net@21 -0.8806   final_pv     71,356   x0.714   CAGR -26.7%/yr
+      bull23w   2022-12-15..2024-01-15 (1.08y) IN-WINDOW  net@21 -1.3883   final_pv     68,936   x0.689   CAGR -29.0%/yr
+      y2024     2024-01-01..2025-01-01 (1.00y) IN-WINDOW  net@21 -0.4102   final_pv     84,678   x0.847   CAGR -15.3%/yr
+      recent    2024-06-01..2025-09-01 (1.25y) IN-WINDOW  net@21 -0.1697   final_pv     87,967   x0.880   CAGR -9.7%/yr
+      oos_full  2025-10-05..2026-03-31 (0.48y) oos        net@21 +0.1643   final_pv    100,250   x1.002   CAGR +0.5%/yr
+      wf_q4     2025-08-06..2025-12-31 (0.40y) oos        net@21 -1.8275   final_pv     86,837   x0.868   CAGR -29.6%/yr
+      wf_q1     2025-11-02..2026-03-31 (0.41y) oos        net@21 -0.8440   final_pv     92,781   x0.928   CAGR -16.8%/yr
+
+      IN-WINDOW sub-window CAGR band : [-29.0%/yr, -9.7%/yr]
+      continuous full-window CAGR    :  +26.5%/yr   -> OUTSIDE the band
+      VERDICT: the continuous number is OUTSIDE the sub-window band, so on this
+               arithmetic the excluded head of the window would have to carry it.
+               Excluded stub 2021-01-01..2021-12-15 (0.95y);
+               covered stretch at the mean sub-window rate -20.2%/yr
+               over 3.71y => x0.433; the stub would then need
+               x6.92 in 11.4 months to reach x2.995.
+               NOT TESTABLE from retained artifacts: imprint.py's sanity block
+               records only aggregate net@21 / final_pv — no PV path, no
+               per-period breakdown, no equity curve. See the RESOLUTION for
+               the competing (and better-supported) EPOCH explanation.
+
+----------------------------------------------------------------------------------------------------
+ckpt_ref_s0 (clean-trained 2026-08-03, post-D31)
+  imprint.py sanity replay   2021-01-01..2025-10-04  (4.76y)
+      net@21 +0.9914   final_pv      465,545   x4.655   CAGR +38.2%/yr
+  eval_vector policy-argmax, frame-pinned (862 scorecard, runs/861_ref_scorecard/s0/windows):
+      bear22w   2021-12-15..2023-01-15 (1.08y) IN-WINDOW  net@21 +0.9847   final_pv    133,685   x1.337   CAGR +30.7%/yr
+      bull23w   2022-12-15..2024-01-15 (1.08y) IN-WINDOW  net@21 +0.9027   final_pv    124,419   x1.244   CAGR +22.3%/yr
+      y2024     2024-01-01..2025-01-01 (1.00y) IN-WINDOW  net@21 +1.3870   final_pv    152,970   x1.530   CAGR +52.8%/yr
+      recent    2024-06-01..2025-09-01 (1.25y) IN-WINDOW  net@21 +1.0190   final_pv    146,955   x1.470   CAGR +36.0%/yr
+      oos_full  2025-10-05..2026-03-31 (0.48y) oos        net@21 +0.1068   final_pv     99,207   x0.992   CAGR -1.6%/yr
+      wf_q4     2025-08-06..2025-12-31 (0.40y) oos        net@21 -1.7671   final_pv     82,258   x0.823   CAGR -38.4%/yr
+      wf_q1     2025-11-02..2026-03-31 (0.41y) oos        net@21 -1.0408   final_pv     89,179   x0.892   CAGR -24.5%/yr
+
+      IN-WINDOW sub-window CAGR band : [+22.3%/yr, +52.8%/yr]
+      continuous full-window CAGR    :  +38.2%/yr   -> INSIDE the band
+      VERDICT: growth is spread across the window. The full-window number is
+               NOT carried by the excluded 2021 stub — 2021-concentration is
+               REFUTED for this checkpoint, and the two instruments agree in
+               sign and magnitude band.
+
+----------------------------------------------------------------------------------------------------
+ckpt_ref_s1 (clean-trained 2026-08-03, post-D31)
+  imprint.py sanity replay   2021-01-01..2025-10-04  (4.76y)
+      net@21 +0.9941   final_pv      466,883   x4.669   CAGR +38.3%/yr
+  eval_vector policy-argmax, frame-pinned (862 scorecard, runs/861_ref_scorecard/s1/windows):
+      bear22w   2021-12-15..2023-01-15 (1.08y) IN-WINDOW  net@21 +0.8084   final_pv    126,024   x1.260   CAGR +23.8%/yr
+      bull23w   2022-12-15..2024-01-15 (1.08y) IN-WINDOW  net@21 +1.0583   final_pv    130,649   x1.306   CAGR +28.0%/yr
+      y2024     2024-01-01..2025-01-01 (1.00y) IN-WINDOW  net@21 +1.5885   final_pv    165,321   x1.653   CAGR +65.1%/yr
+      recent    2024-06-01..2025-09-01 (1.25y) IN-WINDOW  net@21 +1.2071   final_pv    161,734   x1.617   CAGR +46.9%/yr
+      oos_full  2025-10-05..2026-03-31 (0.48y) oos        net@21 -0.8332   final_pv     87,607   x0.876   CAGR -23.9%/yr
+      wf_q4     2025-08-06..2025-12-31 (0.40y) oos        net@21 +2.2534   final_pv    121,607   x1.216   CAGR +62.6%/yr
+      wf_q1     2025-11-02..2026-03-31 (0.41y) oos        net@21 -1.5633   final_pv     82,696   x0.827   CAGR -37.2%/yr
+
+      IN-WINDOW sub-window CAGR band : [+23.8%/yr, +65.1%/yr]
+      continuous full-window CAGR    :  +38.3%/yr   -> INSIDE the band
+      VERDICT: growth is spread across the window. The full-window number is
+               NOT carried by the excluded 2021 stub — 2021-concentration is
+               REFUTED for this checkpoint, and the two instruments agree in
+               sign and magnitude band.
+
+----------------------------------------------------------------------------------------------------
+ckpt_ref_s2 (clean-trained 2026-08-03, post-D31)
+  imprint.py sanity replay   2021-01-01..2025-10-04  (4.76y)
+      net@21 +0.9533   final_pv      432,664   x4.327   CAGR +36.1%/yr
+  eval_vector policy-argmax, frame-pinned (862 scorecard, runs/861_ref_scorecard/s2/windows):
+      bear22w   2021-12-15..2023-01-15 (1.08y) IN-WINDOW  net@21 +0.5913   final_pv    115,735   x1.157   CAGR +14.4%/yr
+      bull23w   2022-12-15..2024-01-15 (1.08y) IN-WINDOW  net@21 +0.9039   final_pv    124,682   x1.247   CAGR +22.6%/yr
+      y2024     2024-01-01..2025-01-01 (1.00y) IN-WINDOW  net@21 +1.3741   final_pv    152,343   x1.523   CAGR +52.2%/yr
+      recent    2024-06-01..2025-09-01 (1.25y) IN-WINDOW  net@21 +1.1213   final_pv    153,708   x1.537   CAGR +41.0%/yr
+      oos_full  2025-10-05..2026-03-31 (0.48y) oos        net@21 +0.0637   final_pv     98,679   x0.987   CAGR -2.7%/yr
+      wf_q4     2025-08-06..2025-12-31 (0.40y) oos        net@21 -2.3651   final_pv     81,326   x0.813   CAGR -40.2%/yr
+      wf_q1     2025-11-02..2026-03-31 (0.41y) oos        net@21 -0.1934   final_pv     96,851   x0.969   CAGR -7.5%/yr
+
+      IN-WINDOW sub-window CAGR band : [+14.4%/yr, +52.2%/yr]
+      continuous full-window CAGR    :  +36.1%/yr   -> INSIDE the band
+      VERDICT: growth is spread across the window. The full-window number is
+               NOT carried by the excluded 2021 stub — 2021-concentration is
+               REFUTED for this checkpoint, and the two instruments agree in
+               sign and magnitude band.
+
+====================================================================================================
