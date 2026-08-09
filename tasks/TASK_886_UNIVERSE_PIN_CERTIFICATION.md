@@ -27,6 +27,29 @@ remaining gap: making a POSITIVE claim that is bound to reality rather than to i
 
 ## Scope
 
+**0. (D37, RULED 2026-08-09 — do this FIRST.) Refuse a checkpoint that cannot be LOADED, and record
+the evidence that it was.** At HEAD a nonexistent `--checkpoint` dir grades to **exit 0 on
+random-init weights with a paste-ready LEDGER row** (`check_checkpoint_arch` only WARNs;
+`load_checkpoint_into` "starts fresh"). This is the degenerate case of this row's own thesis and it
+is ordered first because it is the cheapest and highest-severity item here.
+
+Refusing is only half. **The artifact must record load evidence**: the RESOLVED checkpoint path,
+the step, and a fingerprint of the loaded parameters. The planner audit that produced this ruling
+found 367 results JSONs carrying a `checkpoint` field and **not one** carrying any load/step/
+param/hash key — so the 48 whose path is absent today cannot be classified (checkpoints are
+legitimately deleted after grading), and **no historical number in this program can be exonerated
+of D37**. Unfalsifiable is worse than common. Without a fingerprint we fix the bug and remain
+unable to answer this question about any *future* number either.
+
+*One number is already clean and it is the load-bearing one:* `+0.9914` is exonerated by
+`882/decisive-legA` — two independently-written harnesses agreeing to **2.1e-4** on the same
+weights, which random-init cannot do.
+
+Same family, folded in: `make_ledger_row` keys the fixture caveat on `tag.startswith("fixture")`,
+so a custom `--tag` on fixture data ships "Scheduled-run numbers" wording. A label derived from
+argv rather than from what happened — which is this row's whole subject.
+
+
 1. **Resolve the checkpoint, then look for provenance.** Locate provenance relative to the
    RESOLVED checkpoint directory — walking up from an orbax step subdir to its run dir — not
    relative to the argv string. Every spelling of the same checkpoint must reach the same verdict.
@@ -55,6 +78,11 @@ make the mechanisms agree — it makes the difference legible.
 
 ## Acceptance (gates)
 
+- (0a) A nonexistent / unloadable `--checkpoint` REFUSES before any panel is built, naming the path.
+- (0b) Every emitted artifact carries resolved checkpoint path + step + parameter fingerprint, and two
+  runs of the same checkpoint produce the same fingerprint while a different checkpoint produces a different
+  one (proven, not asserted).
+- (0c) The fixture caveat in `ledger_row` is keyed on the DB actually opened, not on the `--tag` string.
 - (i) Both committed `--checkpoint` spellings of the same checkpoint produce identical
   `universe_pin` output, and a reversed pin REFUSES under both.
 - (ii) A `--symbols` list containing a DB-absent symbol REFUSES, naming the dropped symbol and the
