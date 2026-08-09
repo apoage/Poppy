@@ -8,6 +8,7 @@ scattering open questions across task files. Answered rows move to DECIDED with 
 
 | # | Decision | Recommendation | Context |
 |---|----------|----------------|---------|
+| D37 | A **nonexistent `--checkpoint` dir grades to exit 0 with a paste-ready LEDGER row** — `check_checkpoint_arch` only WARNs and `load_checkpoint_into` "starts fresh" on random init (found by the 883R cycle-2 re-verify judge; verbatim at HEAD, NOT introduced by 883R). **Recommendation: refuse** — a checkpoint-grading run whose checkpoint cannot be loaded is absence-read-as-a-result, the 883 thesis one level down; fold into TASK_886 (it owns the "bound to the checkpoint actually LOADED" claim) or take as its own XS row. | Refuse (fold into 886) | `experiments/835_stage4_eval/eval_vector.py`, pre-existing; 883R's guard refuses unpinned/mismatched/collapsed runs but a pinned run against a typo'd checkpoint path still grades random-init weights. Adjacent: `make_ledger_row` keys the fixture caveat on `tag.startswith("fixture")`, so a custom `--tag` on a fixture run ships the "Scheduled-run numbers" wording (also pre-existing). |
 
 ## DECIDED (planner rulings — operator may override)
 
