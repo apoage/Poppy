@@ -1,5 +1,14 @@
 # TASK_883 — `eval_vector.py` fails OPEN on universe identity; make it refuse like `imprint.py` does
 
+> **STATUS (2026-08-09): SHIPPED as `task883r-universe-identity-fail-loud`** — the D36 re-cut
+> (883R: refuse/disclaim only; `universe_pinned: true` does not exist; realized-panel equality
+> assertion; caveat inline in `ledger_row`). 3 cycles, 2 MAJORs + 5 MINORs found and closed
+> (duplicate-symbol escape; then exact-string vs `normalize_symbol_key` distinctness, both pin
+> sentinels). Suites green; byte-identity A/B PASS on both pin paths, 3 independent runs.
+> Remainders: nonexistent-`--checkpoint` fail-open (pre-existing, seeded to DECISIONS);
+> fixture-caveat keyed on `tag.startswith("fixture")` (pre-existing); hole-1 root fix = TASK_886.
+> Run-29 halt banner below kept for history.
+>
 > **STATUS (2026-08-08): HALTED on the 3-cycle rule — NOT shipped. See D36 (OPEN).**
 > Work retained in `git stash` (find it by MESSAGE, not index — this push shifted TASK_881's
 > resume stash to `stash@{1}` and TASK_880's to `stash@{2}`, while D35 still says `stash@{0}`).

@@ -619,10 +619,28 @@ def mint_teacher_checkpoint():
     print(f"[861-smoke] minted fresh-init teacher checkpoint -> {CKPT_SRC}")
 
 
-def eval_cmd(out_dir, collect=None, collect_raw=None):
+def eval_cmd(out_dir, collect=None, collect_raw=None, pinned=False):
+    """TASK_883: eval_vector.py now REFUSES a checkpoint-grading run whose universe is neither
+    pinned by --panel-frame-from-checkpoint nor named order-exactly by --symbols/--periods-file
+    assets. Every leg here grades CKPT_SRC, which `mint_teacher_checkpoint` writes at step 0 of
+    a FRESH-INIT trainer: it was never trained, so it has NO training universe, no recorded
+    frame and no TASK_874 provenance sibling — there is no pin that could state a truth about
+    it. `--allow-unpinned-universe` is therefore the honest flag, not `--symbols`: naming an
+    explicit universe would assert "this is the universe the checkpoint was trained on", which
+    for a fresh-init teacher is a claim about something that does not exist (and would also
+    re-resolve the panel away from the coverage-ranked universe the tracked
+    chosen_vectors_fixture.json baseline was collected on — leg (vii) compares those bytes).
+    The axis leg (ii) tests — --collect-chosen-vectors is a byte-identical no-op — is
+    orthogonal to universe identity, and the hatch keeps it that way: the only difference it
+    makes to the artifact is the honest `"universe_pinned": false` stamp, present in BOTH the
+    ON and OFF runs it compares.
+    `pinned=True` for leg (vi), which supplies its own --panel-frame-from-checkpoint minute
+    frame — passing the hatch there too would be contradictory (and inert)."""
     cmd = [sys.executable, EVAL_PY, "--db", FIXTURE_DB, *PANEL,
            "--position-size-pct", str(COLLECT_POSITION_SIZE_PCT), *TEACHER_OPERATOR,
            "--checkpoint", CKPT_SRC, "--out-dir", out_dir, "--tag", "861fx"]
+    if not pinned:
+        cmd += ["--allow-unpinned-universe"]
     if collect is not None:
         cmd += ["--collect-chosen-vectors", collect]
     if collect_raw is not None:                       # empty-string / bad-path legs
@@ -1120,7 +1138,8 @@ def main():
     m_coll = os.path.join(RUN_DIR, "chosen_vectors_minute_pin.json")
     m_pin = ["--panel-frame-from-checkpoint", mf, "--panel-frame-source", "minute",
              *MINUTE_FRAME_REQUIRE_ACTIVE]
-    sh(eval_cmd(m_dir, collect=m_coll) + m_pin, os.path.join(RUN_DIR, "walk_minute_pin.log"))
+    sh(eval_cmd(m_dir, collect=m_coll, pinned=True) + m_pin,
+       os.path.join(RUN_DIR, "walk_minute_pin.log"))
     m_out = os.path.join(RUN_DIR, "imprint_minute_pin.json")
     # TASK_869: the pinned grid's total-HOLD collapse band moved with the UTC shift — the
     # imprint_cmd default (250) is the measured healthy point on BOTH grids (seed 0; 150

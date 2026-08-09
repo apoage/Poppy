@@ -79,6 +79,7 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import stat
 import sys
 from datetime import datetime, date, timezone
 
@@ -697,6 +698,35 @@ def create_daily_panel(args):
 # the replayed vector (evaluate_checkpoint) — an application of the SAME price_valid rule.
 # FLAG-GATED (--panel-frame-from-checkpoint), default OFF; the minute/daily paths are untouched.
 
+def _normalized_dupe_slots(symbols):
+    """Slot-collapse detection on the LOADERS' identity function (883R cycle 3, fail-closed
+    MAJOR). ``mcts_trader.data.asset_aliases.normalize_symbol_key`` (``symbol.upper().replace(
+    "/","")``) is what ``resolve_requested_symbols`` groups by, and every panel-building
+    loader — the canon ``vectorbt_env.py:611`` path AND this module's framed loaders — goes
+    through it: ``XBT/USD``, ``xbt/usd`` and ``XBTUSD`` all load the SAME asset. Distinctness
+    judged by exact string is therefore blind to the exact slot collapse the duplicate rules
+    exist to prevent (measured by the cycle-3 judge: slots 0/1 both loaded asset_id 1091 under
+    a case-variant pair, graded to exit 0). Imported from the loaders' own module, NEVER
+    re-implemented here — two copies drift, and that drift is this bug's parent.
+
+    Returns ``{normalized_key: [(slot, spelling_as_given), ...]}`` for keys with >1 slot
+    (exact duplicates included — they are a subset). Empty dict = distinct under the identity
+    the loaders will actually apply."""
+    from mcts_trader.data.asset_aliases import normalize_symbol_key
+    groups = {}
+    for i, s in enumerate(symbols):
+        groups.setdefault(normalize_symbol_key(s), []).append((i, s))
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+def _format_dupe_slots(dupe_groups):
+    """Human-readable ``spellings -> slots`` for a ``_normalized_dupe_slots`` result: every
+    spelling variant given (sorted) and every slot the collapsed identity occupies."""
+    return "; ".join(
+        f"{sorted(set(spell for _, spell in occ))} -> slots {[i for i, _ in occ]}"
+        for occ in dupe_groups.values())
+
+
 def _load_frame_provenance(path, n_assets, cli_symbols):
     """Read the checkpoint's recorded training symbol FRAME (one column per positional slot)
     from a provenance JSON. Fail-loud (task scope 4): file/key absent, frame length !=
@@ -731,14 +761,16 @@ def _load_frame_provenance(path, n_assets, cli_symbols):
             f"--panel-frame-from-checkpoint: provenance {path} has no non-empty ordered symbol "
             f"list under 'frame_symbols' (or 'symbols'). The recorded training frame is ABSENT — "
             f"refusing to guess it (task scope 4 fail-loud).")
-    if len(set(frame)) != len(frame):
-        from collections import Counter
-        dupes = sorted(s for s, n in Counter(frame).items() if n > 1)
+    dupe_groups = _normalized_dupe_slots(frame)
+    if dupe_groups:
         raise RuntimeError(
             f"--panel-frame-from-checkpoint: provenance {path} has DUPLICATE symbol(s) in the "
-            f"frame: {dupes}. Each positional slot must be a DISTINCT asset (slot k IS asset k); "
-            f"a repeated symbol silently collapses two slots onto one column and scrambles slot "
-            f"identity — the exact failure this fixed-frame loader exists to prevent (scope 4).")
+            f"frame under the loaders' identity function (normalize_symbol_key — case- and "
+            f"slash-variant spellings load the SAME asset): "
+            f"{_format_dupe_slots(dupe_groups)}. Each positional slot must be a DISTINCT "
+            f"asset (slot k IS asset k); a repeated or variant-spelled symbol silently "
+            f"collapses two slots onto one column and scrambles slot identity — the exact "
+            f"failure this fixed-frame loader exists to prevent (scope 4).")
     if len(frame) != n_assets:
         raise RuntimeError(
             f"--panel-frame-from-checkpoint: recorded frame has {len(frame)} symbols but "
@@ -2874,7 +2906,8 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
     return floor, int(book_warm)
 
 
-def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor, ext_windows):
+def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor, ext_windows,
+                        universe_pin=None):
     prices, env_cfg0, state_init, row_ts, col_symbols, panel_info = panel
     warm = int(env_cfg0.window_size)
     n_decisions = panel_info["n_decisions"]
@@ -3114,6 +3147,25 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # Every inactive span lands in the JSON here AND on stdout at build time (task scope 2).
     if panel_info.get("panel_frame") is not None:
         result["panel_frame"] = panel_info["panel_frame"]
+    # TASK_883 scope 3/4: the universe-pin record, UNCONDITIONAL on every checkpoint-grading row
+    # (an ADDITIVE provenance key, the same 856-scope-2 convention as `net_dependent` above —
+    # scored keys + action arrays stay byte-identical vs HEAD; only `--smoke`, which never
+    # passes `universe_pin`, is untouched by this block entirely, gate (iv)/scope 1). Path,
+    # sha256 and n_frame_symbols of the PIN, plus the order-exactness verdict against this
+    # checkpoint's OWN provenance (None when that file doesn't exist to compare against), so a
+    # future reader never has to infer any of this from the command line (the 882 investigation
+    # only closed because results_s*.json happened to embed panel_frame; this makes it a
+    # guarantee).
+    # TASK_883R (D36 — the binding re-cut): ``universe_pinned: true`` MUST NOT EXIST. The guard
+    # reasons about argv, not about the checkpoint actually LOADED or the panel actually
+    # RETURNED (run-29 holes 1/2), so under 883R NO run may carry the positive label — every
+    # grading artifact stamps ``false`` and the record carries ``certified: false`` whatever
+    # was supplied. 883R may only REFUSE or DISCLAIM, never BLESS; the earned positive claim
+    # (a mechanism-typed record bound to the loaded checkpoint + realized panel) is TASK_886's.
+    # Nothing consumes the field yet, so the cost is zero and the honesty is total.
+    if universe_pin is not None:
+        result["universe_pinned"] = False
+        result["universe_pin"] = universe_pin
     # TASK_856 scope 1: decision-rule provenance. Flag-gated (default 'argmax' adds NOTHING =>
     # byte-identical to HEAD); a non-default rule records its knobs and rewrites the operator
     # selection string so the artifact is self-describing.
@@ -3191,6 +3243,23 @@ def make_ledger_row(r):
     smoke_note = (" FIXTURE-SMOKE — plumbing proof, untrained near-noise, no threshold applied;"
                   " real Stage-4 numbers come from the scheduled run." if r["tag"].startswith("fixture")
                   else " Scheduled-run numbers; PASS verdict applied by the planner (gate ladder).")
+    # TASK_883R (D36, Q2 — RULED: the caveat goes INLINE, naming the mechanism). ledger_row is
+    # the field a human copy-pastes into the LEDGER, and the 882 postmortem's complaint was
+    # verbatim "prints a paste-ready LEDGER row with no warning" — a caveat that does not
+    # travel with the pasted text is not a caveat. Under 883R universe_pinned is ALWAYS false
+    # (the positive claim does not exist until TASK_886), so EVERY checkpoint-grading row
+    # carries this. Smoke rows never carry a universe_pin record and are untouched
+    # (byte-identical to HEAD). Noisy in the LEDGER by design — it is accurate, and it puts
+    # real pressure on 886.
+    universe_caveat = ""
+    _up = r.get("universe_pin")
+    if _up is not None:
+        _mech = _up.get("pin_source") or "none (--allow-unpinned-universe)"
+        universe_caveat = (
+            f" UNIVERSE UNVERIFIED (TASK_883R): graded under universe-pinning mechanism "
+            f"'{_mech}', but slot identity is NOT certified — \"universe_pinned\": false; "
+            f"the positive claim does not exist until TASK_886. Do NOT compare this net@21 "
+            f"against any pinned read.")
     return (
         f"| 835/S4 | {date.today().isoformat()} | H1 (learned) | "
         f"Stage-4 eval {r['checkpoint_label']}: deterministic full-timeline vector rollout "
@@ -3199,7 +3268,7 @@ def make_ledger_row(r):
         f"{partial_note}"
         f"net@21 {_fmt(net['sharpe_full'])} · gross {_fmt(gross['sharpe_full'])}; "
         f"final PV {net['final_pv']:.0f}; avgL {net['avg_long']:.1f} avgS {net['avg_short']:.1f}; "
-        f"{collapse}; regimes net@21: {regimes}.{smoke_note} | "
+        f"{collapse}; regimes net@21: {regimes}.{smoke_note}{universe_caveat} | "
         f"agent {_fmt(cor['agent_net21'])} in [{_fmt(cor['floor_net21'])}, "
         f"{_fmt(cor['ceiling_net21'])}] net@21 (ref {_fmt(cor['reference_net21'])}) | "
         f"{r['out_pointer']} |"
@@ -3745,6 +3814,490 @@ def run_smoke(args, corridor, ext_windows):
     return result
 
 
+# =============================================================================
+# TASK_883 — refuse an unpinned/mismatched checkpoint-grading run (universe identity)
+# =============================================================================
+# TASK_882 measured what a missing ``--panel-frame-from-checkpoint`` costs: 63/64 positions
+# differ, 24 symbols absent entirely, first divergence at decision 0 (the very first
+# observation window). The encoder is positionally universe-locked (slot k IS asset k), so an
+# unpinned checkpoint-grading run silently builds the panel from TODAY's coverage-ranked
+# universe and prints a paste-ready LEDGER row for a scrambled slot->asset mapping, with no
+# warning anywhere in the output. ``imprint.py`` already refuses this class of run
+# (imprint.py:1234, provenance refusal at :1487); this closes the same hole here.
+#
+# Scope, precisely: this guard fires ONCE, in ``main()``, on the checkpoint-grading loop only
+# (right after ``ckpts`` is validated non-empty, before ``build_panel`` runs). ``--smoke``
+# never reaches it (it returns out of ``run_smoke`` before ``ckpts`` is even inspected) and its
+# committed artifact is untouched. Corridor/floor construction and any other path that never
+# loads a ``--checkpoint`` are likewise never on this call path.
+#
+# GUARD KIND (repo convention: a normalizer looks identical to a corrector — state which this
+# is). Both guards below are CORRECTORS: they never reorder, densify, or repair a frame. They
+# either refuse (fail-closed) with the operator's inputs untouched, or — for the unpinned case
+# only — require the operator to say out loud that the universe is unpinned
+# (``--allow-unpinned-universe``) before proceeding on exactly the inputs given.
+
+def _own_provenance_path_for(ckpt_path):
+    """``frame_provenance_<stem>.json`` beside ``ckpt_path`` (``ckpt_`` stripped off the
+    basename) — the sibling file TASK_874's ``imprint.py`` writes next to every checkpoint it
+    emits (``imprint.frame_provenance_path_for``, imprint.py:799-808).
+
+    Re-implemented here, not imported: ``imprint.py`` already imports FROM this module
+    (TASK_863's validator/framed-panel-loader reuse), so importing ``imprint`` here would be
+    circular. Mirrors imprint.py's helper exactly, including its documented caveat — the
+    mapping is not injective (``.../ckpt_foo`` and ``.../foo`` land on the same file) — which is
+    inert here: this module only ever READS the file, never writes it."""
+    base = os.path.basename(ckpt_path.rstrip(os.sep))
+    stem = base[len("ckpt_"):] if base.startswith("ckpt_") else base
+    return os.path.join(os.path.dirname(ckpt_path.rstrip(os.sep)) or ".",
+                        f"frame_provenance_{stem}.json")
+
+
+# 883R cycle 2 (security MINOR): provenance documents are ~KB; anything larger at the
+# auto-derived sibling path is not a provenance document and is refused before any read.
+_PROVENANCE_MAX_BYTES = 1_000_000
+
+
+def _provenance_frame_defect(path):
+    """Read a provenance JSON's ordered symbol frame off disk WITHOUT deciding anything about
+    absence. Returns ``(frame, defect)``: exactly one is non-``None`` unless the file is
+    genuinely absent, in which case both are ``None``.
+
+    Presence is ``lexists``, not ``exists``: a DANGLING SYMLINK is a file that is *there* and
+    cannot be read, which is the present-but-unreadable state, not the absent one.
+
+    A returned frame is a non-empty ordered list of non-empty strings — the only shape the
+    order-exact comparison can mean anything against. Everything else yields a human-readable
+    ``defect`` phrase for the caller's refusal. DUPLICATES are deliberately NOT a defect here:
+    a repeated symbol is still a well-formed ordered list, it just cannot agree with any
+    duplicate-free pin — so it surfaces as the normal order-exact MISMATCH refusal, and a pin
+    that carries the same duplicates is refused by ``_load_frame_provenance`` (:734-741), which
+    owns frame legality. This helper owns READABILITY only.
+
+    READ SAFETY (883R cycle 2, security MINOR): the path here is AUTO-DERIVED from the
+    ``--checkpoint`` string (a sibling lookup), so whatever sits there gets opened. ``stat``
+    before ``open``: anything that is not a regular file (a FIFO would block ``open``/``read``
+    FOREVER — reproduced: a FIFO at this path hung a grading run 45s until killed; a socket or
+    device is the same class, a directory the present-but-unusable one) and anything over
+    ``_PROVENANCE_MAX_BYTES`` (provenance documents are ~KB) is a present-but-unusable
+    defect, never a hang and never an unbounded slurp under the cgroup RAM cap. Defect
+    phrases name COUNTS and slot INDICES only — never key names or entry values: this path
+    resolves next to an operator-supplied checkpoint string, and a refusal that echoes file
+    content leaks whatever a hostile/accidental file put there."""
+    if not os.path.lexists(path):
+        return None, None
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        return None, f"it is present but cannot be stat'ed ({type(e).__name__}: {e})"
+    if not stat.S_ISREG(st.st_mode):
+        return None, ("it is present but NOT a regular file (FIFO/socket/device/directory) — "
+                      "refusing to open it: a FIFO or device here blocks the reader forever, "
+                      "which is a hang, not a verdict")
+    if st.st_size > _PROVENANCE_MAX_BYTES:
+        return None, (f"it is {st.st_size} bytes — a provenance document is ~KB; refusing to "
+                      f"read anything over {_PROVENANCE_MAX_BYTES} bytes into memory")
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return None, f"it could not be read as JSON ({type(e).__name__}: {e})"
+    if not isinstance(doc, dict):
+        return None, (f"it is valid JSON but NOT a JSON object (got "
+                      f"{type(doc).__name__}) — a provenance document is an object carrying "
+                      f"'frame_symbols'")
+    if "frame_symbols" not in doc and "symbols" not in doc:
+        return None, ("it is a JSON object with NEITHER a 'frame_symbols' nor a 'symbols' key "
+                      f"({len(doc)} top-level keys present — key names not echoed)")
+    frame = doc.get("frame_symbols", doc.get("symbols"))
+    if not isinstance(frame, list):
+        return None, (f"its recorded frame is a {type(frame).__name__}, not a list of symbols "
+                      f"(an ordered list is the whole point — slot k IS asset k)")
+    if not frame:
+        return None, "its recorded frame is an EMPTY list — there is no slot order to compare"
+    bad = [i for i, s in enumerate(frame) if not (isinstance(s, str) and s)]
+    if bad:
+        return None, (f"its recorded frame has non-string/empty entries at slot(s) "
+                      f"{bad[:8]} (entry values not echoed)")
+    return list(frame), None
+
+
+def _read_provenance_frame(path, ckpt):
+    """The checkpoint's OWN recorded frame (TASK_874's ``frame_provenance_<stem>.json`` sibling)
+    for the scope-2 agreement check, or ``None`` when that file is genuinely ABSENT — and a
+    REFUSAL for every state in between.
+
+    * **absent** -> ``None``. A real and meaningful state, not "no pin requested": a checkpoint
+      predating TASK_853 legitimately has no recorded frame, and a run can deliberately emit
+      none (the 863 degenerate-replay gate). The pin is then the only source of truth and the
+      artifact records ``checkpoint_provenance_found: false`` honestly. Unchanged behaviour.
+    * **present but unreadable / unparseable / not a JSON object / no 'frame_symbols' /
+      'frame_symbols' empty or of the wrong type** -> ``RuntimeError`` (this module's refusal
+      convention), naming the checkpoint, the provenance path and the defect.
+
+    The fix pass exists because conflating those two was THIS TASK'S OWN THESIS turned on
+    itself: absence read as permission. Returning ``None`` for a malformed-but-present file made
+    gate (ii) a silent no-op — reproduced end-to-end by truncating a real provenance to 40 bytes,
+    after which a pin that genuinely swapped slots 0/1 graded to exit 0 and a paste-ready LEDGER
+    row stamped ``"universe_pinned": true``. The intact file refuses the identical command. A
+    guard whose only defence is that its evidence file happens to be readable is not a guard.
+    ``imprint.py``'s own ``write_frame_provenance`` (:987-1026) already refuses a
+    present-but-unreadable provenance rather than treating it as absent; this matches it."""
+    frame, defect = _provenance_frame_defect(path)
+    if defect is not None:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: REFUSING a checkpoint whose OWN frame provenance "
+            f"is PRESENT but UNUSABLE.\n"
+            f"  checkpoint: {_display_path(ckpt)}\n"
+            f"  its provenance: {_display_path(path)}\n"
+            f"  what is wrong: {defect}\n"
+            f"  This file is the ONLY independent record of the universe this checkpoint was "
+            f"trained on, and the pin-vs-checkpoint agreement check (TASK_883 gate (ii)) is the "
+            f"only thing standing between a wrong pin and a paste-ready LEDGER row. Treating an "
+            f"unreadable file as an absent one would silently downgrade that gate to a no-op "
+            f"while the artifact looked pinned — absence read as "
+            f"permission, the exact defect class this guard exists to close.\n"
+            f"  FIX: restore/repair the provenance (imprint.py emits it beside every checkpoint "
+            f"it writes — TASK_874). If this checkpoint genuinely predates TASK_853 and has no "
+            f"recorded frame, REMOVE the unusable file so the absent-provenance path applies — "
+            f"the artifact then records \"checkpoint_provenance_found\": false, which is an "
+            f"honest statement; a corrupt file is not.")
+    return frame
+
+
+def _first_frame_mismatch(a, b):
+    """First order-exact divergence between two ordered symbol lists: ``(index, sym_a, sym_b)``,
+    or ``None`` if identical (same length, same symbols, same order). A length difference
+    itself surfaces as a mismatch at the shorter list's end (the exhausted side reads ``None``)."""
+    for i in range(max(len(a), len(b))):
+        sa = a[i] if i < len(a) else None
+        sb = b[i] if i < len(b) else None
+        if sa != sb:
+            return i, sa, sb
+    return None
+
+
+def _sha256_file(path):
+    """sha256 of a file's raw bytes — the pin file identity recorded in the artifact (scope 4)."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _cross_check_own_provenance(ckpt, frame, flag, given_label, given_line, fix_line):
+    """Order-exact cross-check of the universe THIS RUN will build (``frame``) against the
+    checkpoint's OWN recorded training frame (TASK_874's ``frame_provenance_<stem>.json``
+    sibling). Returns ``(own_path, own_found, order_exact)``; REFUSES on disagreement.
+
+    Shared by BOTH pin sources (fix pass, BLOCKER 1) — a ``--panel-frame-from-checkpoint``
+    file and an explicit ``--symbols``/``--periods-file`` assets order are two spellings of
+    the same claim ("this is the universe this checkpoint was trained on"), so they earn the
+    same cross-check. ``flag``/``given_label``/``given_line``/``fix_line`` only spell WHICH
+    mechanism made the claim, so each refusal names the operator's own flag."""
+    own_path = _own_provenance_path_for(ckpt)
+    own_frame = _read_provenance_frame(own_path, ckpt)
+    if own_frame is None:
+        return own_path, False, None
+    mismatch = _first_frame_mismatch(frame, own_frame)
+    if mismatch is None:
+        return own_path, True, True
+    idx, sym_given, sym_own = mismatch
+    raise RuntimeError(
+        f"{flag}: REFUSING a pin/checkpoint universe MISMATCH.\n"
+        f"  checkpoint: {_display_path(ckpt)}\n"
+        f"  {given_line}\n"
+        f"  checkpoint's own provenance: {_display_path(own_path)}\n"
+        f"  first differing slot: {idx} ({given_label}={sym_given!r} vs "
+        f"checkpoint={sym_own!r})\n"
+        f"  This checkpoint carries its OWN recorded training frame (TASK_874) and "
+        f"it does NOT order-exact match the universe given to this run. Grading it "
+        f"anyway would be WORSE than an absent pin: the artifact would look "
+        f"correctly-pinned while scoring the wrong slot->asset mapping.\n"
+        f"  {fix_line}")
+
+
+def enforce_universe_pin(ckpts, args):
+    """TASK_883 gates (i)+(ii). Called ONCE, before ``build_panel``, so a refusal fires before
+    any panel is built. Returns ``(pin_info, requested)``: ``pin_info`` is
+    ``{ckpt_path: record}`` (scope 4's per-checkpoint artifact record — see the
+    ``universe_pin``/``universe_pinned`` keys stamped in ``evaluate_checkpoint``) and
+    ``requested`` is ``(mechanism_label, symbols)`` — the ORDERED universe this run asked for
+    (the pin's frame, or the explicit ``--symbols``/``--periods-file`` assets list) — or
+    ``None`` for an unpinned run, which requests no universe. ``main()`` feeds ``requested``
+    to the realized-panel equality assertion (``_assert_realized_panel_universe``, the D36
+    addition) once ``build_panel`` returns. Raises ``RuntimeError`` (this module's uniform
+    refusal type) on any refused state.
+
+    THREE honest, distinguishable pin states (``pin_source`` in the artifact) — fix pass,
+    BLOCKER 1. The original guard knew only about ``--panel-frame-from-checkpoint`` and so
+    refused the ACTIVE BUILD's canonical eval path: ``build_panel`` also accepts an explicit,
+    ORDER-PRESERVING ``specific_symbols=args.symbols`` (:3311), which ``main()`` populates
+    from ``--symbols`` or from ``--periods-file``'s ``"assets"`` list (:4235-4243) — and that
+    is the mechanism ``experiments/837_walkforward/walkforward.py`` uses for EVERY eval job it
+    generates (``ARM["eval_flags"]``, :167; it asserts the order matches the training universe
+    itself at :604/:611), as do the committed ``runs/828s3p1_instruments/jobs_instruments.
+    manifest`` and ``experiments/837_walkforward/folds/real/eval_jobs.manifest``. Those
+    checkpoints come from ``train_jax_fast.py``, which emits no ``frame_provenance_*.json``
+    sibling (that is an imprint.py/TASK_874 artifact), so they have NO pin file they could
+    ever supply. An explicitly-specified universe is a KNOWN universe request — but under
+    TASK_883R (D36) "requested" is ALL it is: no state, however supplied, may stamp
+    ``universe_pinned: true``. The record says which mechanism asked (``pin_source``) and
+    whether anything independent confirmed it (``verified_against_checkpoint_provenance``),
+    and always carries ``certified: false`` — 883R ships only what can REFUSE or DISCLAIM;
+    the earned positive claim is TASK_886's:
+
+    * ``checkpoint-provenance`` — a pin FILE, verified against the checkpoint's own
+      provenance when it has one (``order_exact: true`` records that comparison's outcome;
+      it is NOT a certification — hole 1, the orbax-step-subdir spelling, is unresolved
+      until 886 resolves provenance from the RESOLVED checkpoint dir).
+    * ``explicit-symbols`` — ``--symbols``/``--periods-file`` assets. The run PROCEEDS,
+      disclaimed: ``verified_against_checkpoint_provenance`` records whether anything
+      independent confirmed it (false when the checkpoint carries no provenance of its own,
+      which is the ordinary train_jax_fast case), and the realized-panel equality assertion
+      refuses if ``build_panel`` returns anything other than exactly this list.
+    * neither — REFUSE, or ``--allow-unpinned-universe`` => proceed fully disclaimed.
+
+    (i) no pin of EITHER kind and no ``--allow-unpinned-universe`` -> REFUSE, naming the
+        checkpoint(s) and the missing flag.
+    (ii) a universe IS claimed (pin file OR explicit symbols), and a checkpoint carries its
+        OWN provenance (TASK_874's ``frame_provenance_<name>.json`` sibling) that DISAGREES
+        with it (order-exact) -> REFUSE, naming the first differing slot and both symbols. A
+        checkpoint with no own provenance (pre-853, or a run that itself refused to emit one)
+        has nothing to disagree with — unaffected, byte-identical (scope 1). A checkpoint
+        whose own provenance is PRESENT but unusable is a third state and REFUSES by name
+        (``_read_provenance_frame``): reading it as absent would downgrade this gate to a
+        silent no-op while the artifact looked pinned.
+
+    GUARD KIND: CORRECTOR, not normalizer, on every path — no symbol list is ever reordered,
+    padded, de-duplicated or repaired here. The guard either refuses with the operator's
+    inputs untouched, or hands them to ``build_panel`` exactly as given."""
+    pin_path = args.panel_frame_from_checkpoint
+    explicit = list(args.symbols) if getattr(args, "symbols", None) else None
+    # 883R cycle 2 (fail-closed MINOR): an EMPTY string is the flag GIVEN, not the flag
+    # missing — report it as given-but-unusable (the same refusal build_panel would emit at
+    # :3290; it must fire here, before the "missing flag" refusal below can mis-report it).
+    if pin_path is not None and not str(pin_path).strip():
+        raise RuntimeError(
+            "--panel-frame-from-checkpoint was given an EMPTY path; refusing to silently fall "
+            "back to the minute/daily universe (that would score a DIFFERENT universe under "
+            "the fixed-frame flag). Pass the provenance JSON path, or omit the flag entirely.")
+    if not pin_path and explicit:
+        # PIN SOURCE 2 — the explicit, order-preserving universe. build_panel passes this list
+        # straight through as `specific_symbols` (no coverage re-ranking), so slot k IS MEANT
+        # to be the k-th symbol the operator named: a KNOWN universe request. What it is NOT
+        # is INDEPENDENTLY verified — nothing outside this command line asserts the order is
+        # the one the checkpoint trained on — and under TASK_883R (D36) it therefore CANNOT
+        # earn the positive label: the artifact records the mechanism and stamps
+        # universe_pinned: false / certified: false. Any checkpoint that DOES carry its own
+        # provenance is still cross-checked order-exact (and refuses on disagreement), and
+        # the realized-panel equality assertion in main() refuses if build_panel returns
+        # anything other than exactly this list (run-29 hole 2: a DB-absent symbol silently
+        # dropped, every later slot shifted, graded under a true label).
+        #
+        # 883R cycle 2 (fail-closed MAJOR), cycle 3 (fail-closed MAJOR): DISTINCTNESS is
+        # checked FIRST, before any cross-check, and judged by the LOADERS' identity
+        # function (normalize_symbol_key — `_normalized_dupe_slots`), not by exact string.
+        # A duplicated explicit symbol realizes FAITHFULLY (slots 0/1 both XBT/USD), so the
+        # realized-panel assertion cannot see it — the run would grade a slot-collapsed
+        # panel to exit 0 while the IDENTICAL frame via --panel-frame-from-checkpoint
+        # refuses at _load_frame_provenance. Cycle-3 sharpening: exact-string distinctness
+        # was still blind to case/slash VARIANTS (XBT/USD vs xbt/usd vs XBTUSD all load the
+        # same asset — judge-measured: both slots carried asset_id 1091 under a "passing"
+        # run). Same rule, same refusal, same CORRECTOR kind — and it must fire even when
+        # the checkpoint carries a COLLUDING provenance (the same duplicates/variants),
+        # where the order-exact cross-check alone would pass. `--periods-file` "assets"
+        # lands in this same list (main():4431-4437), so both spellings are covered.
+        dupe_groups = _normalized_dupe_slots(explicit)
+        if dupe_groups:
+            raise RuntimeError(
+                f"--symbols/--periods-file assets: REFUSING a DUPLICATE symbol in the "
+                f"explicit universe (judged by the loaders' identity function, "
+                f"normalize_symbol_key — case/slash variants load the SAME asset).\n"
+                f"  duplicated identitie(s), spellings as given -> slots they occupy: "
+                f"{_format_dupe_slots(dupe_groups)}\n"
+                f"  Each positional slot must be a DISTINCT asset (slot k IS asset k): a "
+                f"repeated or variant-spelled symbol silently collapses two slots onto one "
+                f"column and scrambles slot identity — the identical frame passed via "
+                f"--panel-frame-from-checkpoint is refused by _load_frame_provenance for "
+                f"exactly this reason, and the realized-panel equality assertion cannot see "
+                f"the collapse because a duplicated request realizes faithfully (both slots "
+                f"load the same asset under the requested spellings).\n"
+                f"  FIX: remove the duplicate(s)/variant(s) so every slot names a distinct "
+                f"asset.")
+        info = {}
+        for c in ckpts:
+            own_path, own_found, order_exact = _cross_check_own_provenance(
+                c, explicit, "--symbols/--periods-file assets", "explicit",
+                f"universe given: EXPLICIT {len(explicit)}-symbol order from "
+                f"--symbols/--periods-file assets",
+                f"FIX: make the explicit symbol order match the checkpoint's recorded frame "
+                f"exactly (order-exact — slot k IS asset k), or drop the explicit list and "
+                f"pass the checkpoint's own provenance as --panel-frame-from-checkpoint, or "
+                f"point --checkpoint at the checkpoint this universe actually describes.")
+            info[c] = {
+                "pin_source": "explicit-symbols",
+                "pin_path": None, "pin_sha256": None,
+                "n_frame_symbols": len(explicit),
+                "explicit_symbols": list(explicit),
+                "checkpoint_provenance_path": _display_path(own_path) if own_found else None,
+                "checkpoint_provenance_found": own_found,
+                "verified_against_checkpoint_provenance": own_found,
+                "order_exact": order_exact,
+                "certified": False,
+            }
+        # `--allow-unpinned-universe` is INERT here by design: it is the hatch for "no pin at
+        # all", and a named order-exact universe IS a pin request. The artifact records what
+        # is true (the mechanism, the cross-check outcome), never what the flag combination
+        # asked for — and under 883R never a positive label.
+        _ver = sum(1 for i in info.values() if i["verified_against_checkpoint_provenance"])
+        print(f"[883R] universe pin source: EXPLICIT --symbols/--periods-file assets "
+              f"({len(explicit)} symbols, order-preserving) — a REQUESTED universe, NOT a "
+              f"certified one (D36: \"universe_pinned\": false / \"certified\": false until "
+              f"TASK_886). Cross-checked order-exact against the checkpoint's OWN provenance "
+              f"for {_ver}/{len(ckpts)} checkpoint(s); the rest carry none "
+              f"(train_jax_fast.py emits no frame_provenance sibling), and record "
+              f"\"verified_against_checkpoint_provenance\": false.")
+        return info, ("--symbols/--periods-file assets", explicit)
+    if not pin_path:
+        if not args.allow_unpinned_universe:
+            raise RuntimeError(
+                f"--panel-frame-from-checkpoint: REFUSING an unpinned checkpoint-grading run.\n"
+                f"  checkpoint(s): {', '.join(ckpts)}\n"
+                f"  missing flag: --panel-frame-from-checkpoint\n"
+                f"  The encoder is positionally universe-locked (slot k IS asset k). Without "
+                f"the pin this run would build the panel from TODAY's coverage-ranked "
+                f"universe, not the checkpoint's training universe — TASK_882 measured 63/64 "
+                f"positions wrong and 24 symbols absent this way, first divergence at decision "
+                f"0 — and print a paste-ready LEDGER row for it with no warning.\n"
+                f"  FIX: pass --panel-frame-from-checkpoint <this checkpoint's provenance "
+                f"JSON>, or name the universe explicitly and order-exactly with --symbols / a "
+                f"--periods-file carrying an \"assets\" list (both are accepted pins). If the "
+                f"checkpoint genuinely predates TASK_853 and has no recorded frame, pass "
+                f"--allow-unpinned-universe (loud, explicit, stamps the artifact "
+                f"\"universe_pinned\": false).")
+        print("!" * 84)
+        print("!!! [883] --allow-unpinned-universe: grading WITHOUT a universe pin. The panel "
+              "is built from")
+        print("!!! TODAY's coverage-ranked universe, not this checkpoint's training universe. "
+              "If the")
+        print("!!! encoder is positionally universe-locked (trained after TASK_853) this "
+              "SCRAMBLES slot")
+        print("!!! identity (TASK_882: 63/64 positions wrong, 24 symbols absent, first "
+              "divergence at")
+        print("!!! decision 0) and the resulting number is not comparable to any pinned read. "
+              "The emitted")
+        print("!!! JSON is stamped \"universe_pinned\": false so this caveat survives the run.")
+        print(f"!!! checkpoint(s): {', '.join(ckpts)}")
+        print("!" * 84)
+        return ({c: {"pin_source": None, "pin_path": None,
+                     "pin_sha256": None, "n_frame_symbols": None, "explicit_symbols": None,
+                     "checkpoint_provenance_path": None,
+                     "checkpoint_provenance_found": False,
+                     "verified_against_checkpoint_provenance": False, "order_exact": None,
+                     "certified": False}
+                 for c in ckpts},
+                None)
+
+    # The PIN is read through the same reader so a malformed pin is refused BY NAME here rather
+    # than crashing with a bare AttributeError/OSError before `_load_frame_provenance` (:700) —
+    # which owns the pin's full legality (length vs --n-assets, duplicates, --symbols
+    # agreement) — ever gets to speak in build_panel. Readability only; nothing else about the
+    # pin is re-decided here, so a well-formed pin reaches build_panel exactly as before.
+    pin_frame, pin_defect = _provenance_frame_defect(pin_path)
+    if pin_frame is None:
+        raise RuntimeError(
+            f"--panel-frame-from-checkpoint: REFUSING an UNUSABLE pin.\n"
+            f"  pin given: {_display_path(pin_path)}\n"
+            f"  what is wrong: "
+            + (pin_defect if pin_defect is not None else
+               "the file does not exist. The fixed-frame panel needs the checkpoint's RECORDED "
+               "training symbol order (one column per encoder slot); it cannot be inferred from "
+               "an OOS window") + ".\n"
+            f"  checkpoint(s) this run would have graded: {', '.join(ckpts)}\n"
+            f"  FIX: point --panel-frame-from-checkpoint at the JSON recording this "
+            f"checkpoint's ordered training frame (imprint.py writes one beside every "
+            f"checkpoint it emits — TASK_874).")
+    pin_sha = _sha256_file(pin_path)
+    info = {}
+    for c in ckpts:
+        own_path, own_found, order_exact = _cross_check_own_provenance(
+            c, pin_frame, "--panel-frame-from-checkpoint", "pin",
+            f"pin given: {_display_path(pin_path)}",
+            f"FIX: pass the checkpoint's own provenance "
+            f"({_display_path(_own_provenance_path_for(c))}) as "
+            f"--panel-frame-from-checkpoint, or point --checkpoint at the checkpoint the "
+            f"given pin actually describes.")
+        info[c] = {
+            "pin_source": "checkpoint-provenance",
+            "pin_path": _display_path(pin_path), "pin_sha256": pin_sha,
+            "n_frame_symbols": len(pin_frame),
+            "explicit_symbols": None,
+            "checkpoint_provenance_path": _display_path(own_path) if own_found else None,
+            "checkpoint_provenance_found": own_found,
+            "verified_against_checkpoint_provenance": own_found,
+            "order_exact": order_exact,
+            "certified": False,
+        }
+    return info, ("--panel-frame-from-checkpoint", pin_frame)
+
+
+def _assert_realized_panel_universe(requested, panel):
+    """TASK_883R (D36) — the REALIZED-PANEL EQUALITY ASSERTION, the mechanism behind the
+    run-29 hole-2 fix. Called in ``main()`` immediately AFTER ``build_panel`` returns:
+    REFUSE unless the panel's realized slot->symbol list equals the universe this run
+    REQUESTED, order-exact.
+
+    Why this exists: the pin/cross-check guards above reason about the COMMAND LINE. But
+    ``build_panel``'s explicit-symbols path (``create_jax_env_historical(
+    specific_symbols=...)`` / ``load_row_timestamps``) SILENTLY DROPS a requested symbol that
+    has no DB coverage in the window — every later slot then shifts down one and the missing
+    tail slots are filled with duplicate ``#pad`` columns. Run 29 measured the result: an
+    8-symbol request with one DB-absent symbol graded to a paste-ready LEDGER row with 6/8
+    slots wrong (net@21 −3.953), and ``n_symbols < --n-assets`` shipped duplicate pad slots —
+    both under a ``universe_pinned: true`` label. No caveat rescues a wrong panel: under D36
+    this run may only REFUSE. (The framed pin path cannot hit this: its loaders keep
+    zero-coverage slots INACTIVE in place — the 853 mechanic — so the realized list there is
+    the frame by construction; the assertion is the explicit-symbols path's seatbelt and a
+    defence-in-depth check on every other path.)
+
+    CONTAINMENT BOUNDARY (883R cycle 2, fail-closed MINOR — stated so no reader overclaims):
+    this assertion says NOTHING about run-29 hole 1 (the orbax-step-subdir ``--checkpoint``
+    spelling resolving provenance to the wrong sibling). On the framed path the realized list
+    IS the pin frame by construction, so the assertion is INERT there — it cannot catch a
+    provenance lookup that never happened. Hole 1 is contained ONLY by the absence of the
+    positive label (every artifact carries ``universe_pinned: false`` / ``certified: false``);
+    resolving provenance from the RESOLVED checkpoint dir is TASK_886's.
+
+    ``requested`` is ``(mechanism_label, symbols)`` from ``enforce_universe_pin``, or ``None``
+    for an unpinned run (which requests no universe — today's coverage-ranked universe IS the
+    request, and the run is fully disclaimed by the hatch).
+
+    GUARD KIND: CORRECTOR, not normalizer — it never reorders, pads or repairs; it refuses
+    with the operator's inputs untouched, naming the first differing slot and both symbols."""
+    if requested is None:
+        return
+    mechanism, requested_symbols = requested
+    realized = list(panel[4])                     # col_symbols — slot k's symbol as LOADED
+    mismatch = _first_frame_mismatch(requested_symbols, realized)
+    if mismatch is None:
+        return
+    idx, sym_req, sym_real = mismatch
+    raise RuntimeError(
+        f"{mechanism}: REFUSING — the REALIZED panel's universe does not equal the "
+        f"requested one (order-exact).\n"
+        f"  first differing slot: {idx} (requested={sym_req!r} vs realized={sym_real!r})\n"
+        f"  requested ({len(requested_symbols)}): {requested_symbols}\n"
+        f"  realized  ({len(realized)}): {realized}\n"
+        f"  build_panel silently DROPPED or re-slotted symbol(s) — a requested symbol with "
+        f"no DB coverage in this window vanishes and every later slot shifts (run-29 hole 2: "
+        f"6/8 slots wrong, graded under a pinned-looking artifact), or missing slots were "
+        f"padded with duplicate columns. Slot k IS asset k: grading this panel would score a "
+        f"DIFFERENT slot->asset mapping than the one requested.\n"
+        f"  FIX: remove the symbol(s) with no coverage in [start..end] from the request, or "
+        f"match --n-assets to the request length — or pin via "
+        f"--panel-frame-from-checkpoint, whose framed loader keeps zero-coverage slots "
+        f"INACTIVE in place (flat-zero, HOLD-only) instead of dropping them.")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Stage-4 faithful vector eval harness (TASK_835)")
@@ -3802,6 +4355,17 @@ def main():
                          f"the 8-slot fixture frame is 6/8 by design (refuses; the fixture smoke "
                          f"passes 0). Without this, a half-dead panel exits 0 with a publishable "
                          f"net@21 — the 64->33 breadth confound D29 exists to prevent")
+    ap.add_argument("--allow-unpinned-universe", action="store_true", default=False,
+                    dest="allow_unpinned_universe",
+                    help="TASK_883: EXPLICIT escape hatch for a checkpoint-grading run with no "
+                         "--panel-frame-from-checkpoint pin (a legitimately frameless checkpoint "
+                         "trained before TASK_853 has no recorded frame to pin against). Without "
+                         "this flag an unpinned --checkpoint run REFUSES before any panel is "
+                         "built (TASK_882: an unpinned run silently grades on TODAY's "
+                         "coverage-ranked universe, not the checkpoint's training universe — "
+                         "63/64 positions wrong, 24 symbols absent, first divergence at decision "
+                         "0). Prints a loud multi-line warning and stamps the emitted JSON "
+                         "\"universe_pinned\": false so the number carries the caveat forever")
     ap.add_argument("--n-assets", type=int, default=64)
     ap.add_argument("--checkpoint", action="append", default=[],
                     help="checkpoint dir (repeatable; jax_ckpt_fast/<name>/snapshot_ep<N>/ or final)")
@@ -4064,6 +4628,18 @@ def main():
             f"--collect-chosen-vectors takes a single walk but {len(ckpts)} checkpoints were "
             f"given; each would overwrite the same file. Run one checkpoint per collection "
             f"(the teacher pass is one deterministic walk).")
+    # TASK_883 gates (i)/(ii): refuse an unpinned or pin/checkpoint-mismatched run BEFORE any
+    # panel is built. `--smoke` never reaches here (it returns out of run_smoke earlier).
+    # TASK_883R (D36): the guard also hands over the REQUESTED universe, and the moment
+    # build_panel returns the realized-panel equality assertion refuses unless the panel's
+    # realized slot->symbol list equals that request order-exact (run-29 hole 2: a DB-absent
+    # symbol silently dropped, every later slot shifted, graded under a true label).
+    # 883R cycle 2 (fail-closed MINOR): this guard now also runs BEFORE the 861 collection
+    # preflight below — a gate-(i) refusal must fire before even a probe-file write, so the
+    # refusal path does zero I/O of any kind (the preflight's ap.error argument checks are
+    # usage errors; they still fire ahead of the walk for every run the guard lets through).
+    universe_pin_info, requested_universe = enforce_universe_pin(ckpts, args)
+
     # FIX 3 (fix pass): the flag must FAIL CLOSED. `--collect-chosen-vectors ""` used to run the
     # whole walk, write nothing and exit 0 — on the pre-registered real leg 1 an unset
     # $TEACHER_OUT would silently discard a multi-hour true-env-leaf teacher pass. Validate the
@@ -4086,6 +4662,7 @@ def main():
               f"{_display_path(_pre)}")
 
     panel = build_panel(args)
+    _assert_realized_panel_universe(requested_universe, panel)
     results = []
     for path in ckpts:
         label = _ckpt_label(path)
@@ -4095,7 +4672,8 @@ def main():
         load_checkpoint_into(trainer, path)
         search_obj = build_search(model, args, args.n_assets) if args.operator == "search" else None
         result = evaluate_checkpoint(label, model, trainer.state.params, search_obj,
-                                     panel, args, corridor, ext_windows)
+                                     panel, args, corridor, ext_windows,
+                                     universe_pin=universe_pin_info[path])
         out_name = f"results_{args.tag}_{label['name'].replace('/', '__')}.json"
         result["out_name"] = out_name
         # LEDGER pointer from the ACTUAL out_dir (scheduled runs write runs/835_stage4/).
