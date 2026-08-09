@@ -1,5 +1,40 @@
 # TASK_883 — `eval_vector.py` fails OPEN on universe identity; make it refuse like `imprint.py` does
 
+> **STATUS (2026-08-08): HALTED on the 3-cycle rule — NOT shipped. See D36 (OPEN).**
+> Work retained in `git stash` (find it by MESSAGE, not index — this push shifted TASK_881's
+> resume stash to `stash@{1}` and TASK_880's to `stash@{2}`, while D35 still says `stash@{0}`).
+>
+> **Verified and worth keeping** (independently re-proven by a flow-verifier on a fixture copy):
+> gate (i) refuses before any panel is built (`strace`: 0 DB opens, 0 checkpoint opens); gate (ii)
+> is ORDER-exact — a pure permutation of the same symbols refuses, naming the slot and both
+> symbols; gate (iii) stamps `universe_pinned: false`; a 12-row present-but-unusable provenance
+> state table all refuse with no artifact, while genuinely-absent provenance still proceeds; and
+> **byte-identity holds for BOTH pin paths** (only `universe_pinned`/`universe_pin` added, every
+> scored block bit-identical, key order preserved).
+>
+> **Two fail-open holes remain, and both were introduced by the fixes:**
+> 1. **Argv spelling bypasses gate (ii).** Provenance is located as a path-SIBLING of the
+>    `--checkpoint` string, so pointing at the orbax step subdir makes the guard report the
+>    checkpoint provenance-less — and a **fully reversed** pin then grades to **exit 0 with
+>    `universe_pinned: true`**. Both spellings appear in committed manifests
+>    (`jax_ckpt_fast/828s3p1_cost0_s1/snapshot_ep2000` and `jax_ckpt_fast/837_fold1_cost0_s0`).
+> 2. **`explicit-symbols` stamps the label from argv, not from the realized panel.** A DB-absent
+>    symbol is silently dropped and every later slot shifts — measured 6/8 slots wrong,
+>    `padded: true`, `universe_pinned: true`, paste-ready LEDGER row at net@21 −3.953. Same for
+>    `n_symbols < --n-assets`. The pin-FILE path refuses both.
+>
+> **Root cause of both: the guard reasons about the COMMAND LINE, never about the checkpoint that
+> was loaded or the panel `build_panel` actually returned.** That is why patching them separately
+> kept failing. The `explicit-symbols` state exists because cycle 2's guard refused the active
+> 828/837 eval path outright (`train_jax_fast.py` emits no provenance) — that correction was right,
+> but it should not have been allowed to claim the same green label. **The declared size (XS/S,
+> "arg validation") was wrong: this is a universe-identity CONTRACT spanning two pinning
+> mechanisms and three checkpoint producers.**
+>
+> Also unpredicted: `universe_pinned: true` is not a comparability key (same checkpoint, same
+> order, −1.796 via pin-file vs −1.866 via `--symbols` — the frozen-cell mask), and the caveat
+> reaches the JSON but **not `ledger_row`**, the field actually pasted into the LEDGER.
+
 **Status**: READY 2026-08-08 (planner; proposed by the run-28 orchestrator, adopted verbatim).
 **Size: XS/S. Risk: low to build, HIGH in value.** Surface:
 `experiments/835_stage4_eval/eval_vector.py` (arg validation + the checkpoint-grading entry path).
