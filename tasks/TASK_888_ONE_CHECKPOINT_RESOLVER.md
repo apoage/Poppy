@@ -1,5 +1,42 @@
 # TASK_888 — one checkpoint resolver, and a loader that refuses
 
+> **STATUS (2026-08-12): HALTED on the 3-cycle rule (factory run 32) — nothing shipped, code preserved in
+> `git stash` ("TASK_888 … HALTED on the 3-cycle rule (D39)"). Decision seeded: D39 OPEN.**
+>
+> **The row welded two layers and only one ever failed — the third time this lane has produced that finding
+> (D33, D36, D38).** The **PATH-IDENTITY + REFUSAL** layer was attacked by 8 lens-runs across 3 rounds,
+> including two final `opus` panels, and held every time: ONE resolution function feeds both guard and loader
+> (**9 honest spellings** → same leaf and same fingerprint; **3 escapes** refused by both), the loader REFUSES
+> via object identity, the hang guard covers the parameter payload *and* the run-dir sidecars, load evidence
+> is emitted, refusal echoes are clipped 1.6M→<4k with the path still named, byte-identity vs a HEAD worktree
+> holds on every SCORED field across 2 real checkpoints, and the 861 legs `i_canon_835` + `results_pin` were
+> restored to green. 105 checks across 6 new suites; selftest 12/12, 883R, 882, scorecard_smoke, 863 13/13,
+> 865 30/30, 874 8/8.
+>
+> **Worse than this file recorded, and fixed:** `real_trade_jax.py` discarded `trainer.load_checkpoint`'s
+> return value, and `load_checkpoint` never assigns `self.state` — so the live path inferred with fresh-init
+> `PRNGKey(0)` weights on **every** path, not merely a bad one.
+>
+> **WHAT HALTED IT — one unscoped layer: ARCHITECTURE BINDING between target model and checkpoint.**
+> Reproduced first-hand with `config/real_trade_config.py` **exactly as shipped**: `USE_PREDICTION_HEAD=True`
+> against every checkpoint's recorded `use_prediction_head: false` gives **NO REFUSAL**, an evidence
+> fingerprint of `594538e970c9…` against the checkpoint's own recorded `83b8c96126fa…`, and **52 of 253
+> leaves left at random init**. The contradicting value sits in the `trainer_metadata.json` the loader opened
+> three lines earlier and that this task populated; `load_checkpoint_into` never compares it, and the
+> mismatch is detected at `trainer.py:1908` then downgraded to a stdout `print` while the success goes to the
+> log file — **D37's shape, re-created by the row built to close it.** Also: the backfill hardcodes
+> `vector_action=True` (wrong fingerprint for scalar checkpoints, written into the document 886 certifies
+> against) and silently overwrites a disagreeing recorded fingerprint instead of refusing; `distill.py` still
+> hand-builds its target. **All three share one root and one fix** — record the architecture at SAVE time and
+> REFUSE on recorded-vs-loaded fingerprint disagreement.
+>
+> **This file's consequence ranking is factually wrong and D39 corrects it:** `real_trade_jax.py`
+> self-declares BROKEN/LEGACY (2026-07-05) and depends on `RealPortfolioManager`, absent from the tree — the
+> live-trading class **cannot be instantiated**. 888 still ranks first, on `train_jax_fast.py:544`.
+>
+> **Found, not caused by this row:** `861/smoke_e2e.py` has been RED since TASK_877 shipped (run 31) on the
+> single leaf `/provenance/alias_union_rule`; needs a planner-gated `--promote-baselines`.
+
 **Status**: READY 2026-08-11 (planner; created by the D38 ruling out of TASK_886's halt).
 **Size: S/M. Risk: HIGHEST CONSEQUENCE IN THE QUEUE** — one of the four sites is live trading.
 **RANKED FIRST, ahead of TASK_878.**
