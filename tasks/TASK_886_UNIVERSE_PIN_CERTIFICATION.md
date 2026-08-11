@@ -1,5 +1,36 @@
 # TASK_886 — bind the universe claim to what was LOADED and what was RETURNED
 
+> **STATUS (2026-08-11): HALTED on the 3-cycle rule (factory run 31) — nothing shipped, code preserved in
+> `git stash` ("TASK_886 … HALTED on the 3-cycle rule (D38)"). Decision seeded: D38 OPEN.**
+>
+> **The row welded two concerns and only one ever failed.** (A) the CERTIFICATION CONTRACT — built, and
+> verified harder than anything this program has shipped: `verified: true` binds to the LOADED parameter
+> fingerprint AND the provenance's own recorded checkpoint path AND the realized panel AND `n_padded == 0`;
+> **two independent opus fail-closed panels could not forge it**, both cycle-1 reproductions now REFUSE with
+> no artifact, and the predicate is proven non-vacuous. Also built: D37's load detector via OBJECT IDENTITY
+> (0/204 leaves aliased across 4 real checkpoints; 15 real checkpoints, zero false refusals), hole-1
+> resolution (all three spellings → identical `universe_pin`), the mechanism-typed record, gate 0c, a named
+> `n_assets` refusal (17/204 leaves) replacing a bare `ScopeParamShapeError`, and one coherent `UNIVERSE …`
+> sentence in `ledger_row`. Byte-identity proven on 12 A/B pairs; all six suites exit 0.
+>
+> **(B) hardening the checkpoint LOAD PATH (D37's folded-in item 0) is where all three cycles died**, each
+> fix containing the next defect: (c1) numeric param equality as the load detector false-positived on an
+> honestly-saved fresh-init checkpoint and broke `861/smoke_e2e` + `835/scorecard_smoke`; (c2) the hang guard
+> stat'd 5 named files while the loader opened the payload — three strace-proven infinite hangs; (c3)
+> **`realpath` guard vs `abspath` loader** — a `--checkpoint` crossing a symlink then `..` has the guard bless
+> directory A while `trainer.load_checkpoint` opens directory B (proven hang exit 125; arch check reading the
+> wrong checkpoint's metadata). This repo ships exactly those symlinks. That is this row's own thesis, one
+> layer down: a guard verdict about checkpoint A stamped on a run that graded checkpoint B.
+>
+> **Load-bearing consequence of the verified contract: `verified: true` is UNREACHABLE for every checkpoint
+> that exists today** — no emitter writes a `param_fingerprint` into provenance. Fail-closed and consistent
+> with D36/D37, but it means the positive claim stays unearnable until an emitter row lands.
+>
+> **Found and NOT fixed (out of surface, seeded in D38):** the D37 fail-open also lives in
+> `train_jax_fast.py:544`, `experiments/857_vhat_distill/distill.py:632` and **`real_trade_jax.py:145`
+> (live)** — a multi-hour resume can silently discard its checkpoint; and `_is_fixture_db` keys the LEDGER
+> caveat on a PATH, so a byte-identical fixture COPY ships "Scheduled-run numbers" — strictly worse than HEAD.
+
 **Status**: READY 2026-08-09 (planner; created by the D36 ruling out of TASK_883's halt).
 **Size: M. Risk: HIGH in consequence** — this row decides when the program is allowed to say a
 number was measured on a known universe. Surface: `experiments/835_stage4_eval/eval_vector.py`
