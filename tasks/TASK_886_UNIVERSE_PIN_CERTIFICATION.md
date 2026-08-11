@@ -32,10 +32,10 @@
 > caveat on a PATH, so a byte-identical fixture COPY ships "Scheduled-run numbers" — strictly worse than HEAD.
 
 **Status**: READY 2026-08-09 (planner; created by the D36 ruling out of TASK_883's halt).
-**Size: M. Risk: HIGH in consequence** — this row decides when the program is allowed to say a
+**Size: S (was M — the load path moved to TASK_888 by D38). Risk: HIGH in consequence** — this row decides when the program is allowed to say a
 number was measured on a known universe. Surface: `experiments/835_stage4_eval/eval_vector.py`
 (checkpoint resolution + the panel return path + artifact emission).
-**Sequenced AFTER TASK_883R.** 883R makes the tool unable to lie; this row makes it able to
+**Sequenced AFTER TASK_883R AND AFTER TASK_888.** 883R makes the tool unable to lie; this row makes it able to
 certify.
 
 ## Thesis (D36 option (a))
@@ -58,28 +58,16 @@ remaining gap: making a POSITIVE claim that is bound to reality rather than to i
 
 ## Scope
 
-**0. (D37, RULED 2026-08-09 — do this FIRST.) Refuse a checkpoint that cannot be LOADED, and record
-the evidence that it was.** At HEAD a nonexistent `--checkpoint` dir grades to **exit 0 on
-random-init weights with a paste-ready LEDGER row** (`check_checkpoint_arch` only WARNs;
-`load_checkpoint_into` "starts fresh"). This is the degenerate case of this row's own thesis and it
-is ordered first because it is the cheapest and highest-severity item here.
+**RE-SCOPED BY D38 (2026-08-11) — THE LOAD PATH IS NOT THIS ROW.** D37's folded-in item 0 (refuse an
+unloadable checkpoint; record load evidence; the fingerprint emitter and backfill) has MOVED IN FULL to
+**`tasks/TASK_888_ONE_CHECKPOINT_RESOLVER.md`**, together with the path-identity defect that halted this row.
+Do NOT build any of it here. All three of this row's cycle deaths were in the load path, each inside the
+previous cycle's own fix; the certification CONTRACT below was attacked by two independent opus fail-closed
+panels and HELD. **888 is sequenced BEFORE this row**, so by the time this is built the resolver is one
+function and the loader already refuses.
 
-Refusing is only half. **The artifact must record load evidence**: the RESOLVED checkpoint path,
-the step, and a fingerprint of the loaded parameters. The planner audit that produced this ruling
-found 367 results JSONs carrying a `checkpoint` field and **not one** carrying any load/step/
-param/hash key — so the 48 whose path is absent today cannot be classified (checkpoints are
-legitimately deleted after grading), and **no historical number in this program can be exonerated
-of D37**. Unfalsifiable is worse than common. Without a fingerprint we fix the bug and remain
-unable to answer this question about any *future* number either.
-
-*One number is already clean and it is the load-bearing one:* `+0.9914` is exonerated by
-`882/decisive-legA` — two independently-written harnesses agreeing to **2.1e-4** on the same
-weights, which random-init cannot do.
-
-Same family, folded in: `make_ledger_row` keys the fixture caveat on `tag.startswith("fixture")`,
-so a custom `--tag` on fixture data ships "Scheduled-run numbers" wording. A label derived from
-argv rather than from what happened — which is this row's whole subject.
-
+**What this row is, and all it is: the CERTIFICATION CONTRACT.** Given a checkpoint that is known to have
+loaded, decide whether the universe claim may be asserted, and say so in a mechanism-typed record.
 
 1. **Resolve the checkpoint, then look for provenance.** Locate provenance relative to the
    RESOLVED checkpoint directory — walking up from an orbax step subdir to its run dir — not
@@ -109,11 +97,8 @@ make the mechanisms agree — it makes the difference legible.
 
 ## Acceptance (gates)
 
-- (0a) A nonexistent / unloadable `--checkpoint` REFUSES before any panel is built, naming the path.
-- (0b) Every emitted artifact carries resolved checkpoint path + step + parameter fingerprint, and two
-  runs of the same checkpoint produce the same fingerprint while a different checkpoint produces a different
-  one (proven, not asserted).
 - (0c) The fixture caveat in `ledger_row` is keyed on the DB actually opened, not on the `--tag` string.
+  (Kept HERE, not moved to 888: it is a LABEL earned from what happened, which is this row's subject.)
 - (i) Both committed `--checkpoint` spellings of the same checkpoint produce identical
   `universe_pin` output, and a reversed pin REFUSES under both.
 - (ii) A `--symbols` list containing a DB-absent symbol REFUSES, naming the dropped symbol and the
@@ -124,6 +109,11 @@ make the mechanisms agree — it makes the difference legible.
 - (vi) Regression tests for (i)–(v) against the fixture, with the mutations independently rebuilt.
 
 ## Out of scope
+
+**The entire checkpoint load and resolution path — that is TASK_888.** Refusing an unloadable
+checkpoint, the single resolution function shared by guard and loader, the parameter fingerprint at load and at
+save time, and the backfill over surviving checkpoints. If a BLOCKER here lands in that surface, it belongs to
+888 and this row waits.
 
 Making the two pinning mechanisms produce the same number — they don't, and this row's job is to
 say so, not to fix it. Re-grading historical LEDGER rows.
