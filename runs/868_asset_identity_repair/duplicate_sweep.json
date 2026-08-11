@@ -1,8 +1,8 @@
 {
  "db": "trading_data.db",
- "normalization": "upper().replace('/', '') \u2014 slash-only, NOT XBT-folding (BTCCHF/XBTCHF are different feeds)",
+ "normalization": "upper() + slash-stripped + known Kraken ticker-alias fold (TASK_877: XBT->BTC, XDG->DOGE; token-exact \u2014 see asset_aliases.normalize_symbol_key)",
  "n_assets_rows": 1202,
- "n_duplicate_groups": 55,
+ "n_duplicate_groups": 56,
  "groups": [
   {
    "normalized_key": "AAVEUSD",
@@ -599,6 +599,168 @@
    "classification": "empty_stub_pair"
   },
   {
+   "normalized_key": "BTCCHF",
+   "members": [
+    {
+     "asset_id": 1085,
+     "symbol": "BTCCHF",
+     "ohlcv": {
+      "rows": 979758,
+      "first_ts": 1575649980,
+      "last_ts": 1775001240
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1175,
+     "symbol": "XBTCHF",
+     "ohlcv": {
+      "rows": 140750,
+      "first_ts": 1735689600,
+      "last_ts": 1759276560
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1085,
+      1175
+     ],
+     "shared_ts": 48780,
+     "max_rel_diff": 0.0
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1085,
+      1175
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "live_twin_pair"
+  },
+  {
+   "normalized_key": "BTCUSDC",
+   "members": [
+    {
+     "asset_id": 1092,
+     "symbol": "XBT/USDC",
+     "ohlcv": {
+      "rows": 1335580,
+      "first_ts": 1578497340,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1146,
+     "symbol": "XBTUSDC",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1092,
+      1146
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1092,
+      1146
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "BTCUSDT",
+   "members": [
+    {
+     "asset_id": 1095,
+     "symbol": "XBT/USDT",
+     "ohlcv": {
+      "rows": 1923305,
+      "first_ts": 1576778760,
+      "last_ts": 1775001540
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    },
+    {
+     "asset_id": 1154,
+     "symbol": "XBTUSDT",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1095,
+      1154
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1095,
+      1154
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
    "normalized_key": "BTTUSD",
    "members": [
     {
@@ -699,6 +861,60 @@
      "pair": [
       722,
       1199
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    }
+   ],
+   "classification": "empty_stub_pair"
+  },
+  {
+   "normalized_key": "DOGEUSD",
+   "members": [
+    {
+     "asset_id": 1102,
+     "symbol": "XDG/USD",
+     "ohlcv": {
+      "rows": 1964227,
+      "first_ts": 1576779600,
+      "last_ts": 1775001480
+     },
+     "ohlcv_daily": {
+      "rows": 2391,
+      "first_ts": 1576713600,
+      "last_ts": 1783209600
+     }
+    },
+    {
+     "asset_id": 1165,
+     "symbol": "XDGUSD",
+     "ohlcv": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     },
+     "ohlcv_daily": {
+      "rows": 0,
+      "first_ts": null,
+      "last_ts": null
+     }
+    }
+   ],
+   "overlaps": [
+    {
+     "table": "ohlcv",
+     "pair": [
+      1102,
+      1165
+     ],
+     "shared_ts": 0,
+     "max_rel_diff": null
+    },
+    {
+     "table": "ohlcv_daily",
+     "pair": [
+      1102,
+      1165
      ],
      "shared_ts": 0,
      "max_rel_diff": null
@@ -2705,168 +2921,6 @@
    "classification": "live_twin_pair"
   },
   {
-   "normalized_key": "XBTUSDC",
-   "members": [
-    {
-     "asset_id": 1092,
-     "symbol": "XBT/USDC",
-     "ohlcv": {
-      "rows": 1335580,
-      "first_ts": 1578497340,
-      "last_ts": 1775001540
-     },
-     "ohlcv_daily": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     }
-    },
-    {
-     "asset_id": 1146,
-     "symbol": "XBTUSDC",
-     "ohlcv": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     },
-     "ohlcv_daily": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     }
-    }
-   ],
-   "overlaps": [
-    {
-     "table": "ohlcv",
-     "pair": [
-      1092,
-      1146
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    },
-    {
-     "table": "ohlcv_daily",
-     "pair": [
-      1092,
-      1146
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    }
-   ],
-   "classification": "empty_stub_pair"
-  },
-  {
-   "normalized_key": "XBTUSDT",
-   "members": [
-    {
-     "asset_id": 1095,
-     "symbol": "XBT/USDT",
-     "ohlcv": {
-      "rows": 1923305,
-      "first_ts": 1576778760,
-      "last_ts": 1775001540
-     },
-     "ohlcv_daily": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     }
-    },
-    {
-     "asset_id": 1154,
-     "symbol": "XBTUSDT",
-     "ohlcv": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     },
-     "ohlcv_daily": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     }
-    }
-   ],
-   "overlaps": [
-    {
-     "table": "ohlcv",
-     "pair": [
-      1095,
-      1154
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    },
-    {
-     "table": "ohlcv_daily",
-     "pair": [
-      1095,
-      1154
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    }
-   ],
-   "classification": "empty_stub_pair"
-  },
-  {
-   "normalized_key": "XDGUSD",
-   "members": [
-    {
-     "asset_id": 1102,
-     "symbol": "XDG/USD",
-     "ohlcv": {
-      "rows": 1964227,
-      "first_ts": 1576779600,
-      "last_ts": 1775001480
-     },
-     "ohlcv_daily": {
-      "rows": 2391,
-      "first_ts": 1576713600,
-      "last_ts": 1783209600
-     }
-    },
-    {
-     "asset_id": 1165,
-     "symbol": "XDGUSD",
-     "ohlcv": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     },
-     "ohlcv_daily": {
-      "rows": 0,
-      "first_ts": null,
-      "last_ts": null
-     }
-    }
-   ],
-   "overlaps": [
-    {
-     "table": "ohlcv",
-     "pair": [
-      1102,
-      1165
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    },
-    {
-     "table": "ohlcv_daily",
-     "pair": [
-      1102,
-      1165
-     ],
-     "shared_ts": 0,
-     "max_rel_diff": null
-    }
-   ],
-   "classification": "empty_stub_pair"
-  },
-  {
    "normalized_key": "XMRUSDT",
    "members": [
     {
@@ -2975,6 +3029,6 @@
    "classification": "empty_stub_pair"
   }
  ],
- "task": "TASK_868 (D31 scope 3) \u2014 table-wide normalized-duplicate sweep, read-only, report-only",
- "elapsed_s": 25.6
+ "task": "TASK_868 (D31 scope 3) \u2014 table-wide normalized-duplicate sweep, read-only, report-only; REGENERATED by TASK_877 (fix pass) under the ticker-alias normalization it ships \u2014 python -c \"from mcts_trader.data.asset_aliases import duplicate_sweep; duplicate_sweep('trading_data.db')\". This file IS TASK_877's scope-2 output: every `assets` collision that is a collision only under a ticker-alias mapping. Delta vs the 868 revision: 55 -> 56 groups, the one new group being BTCCHF (ids 1085 + 1175), the only new merge with rows on BOTH sides; XDG/USD+XDGUSD keeps its pair and is only re-keyed XDGUSD -> DOGEUSD.",
+ "elapsed_s": 21.1
 }

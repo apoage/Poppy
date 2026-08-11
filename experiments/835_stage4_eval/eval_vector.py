@@ -700,12 +700,18 @@ def create_daily_panel(args):
 
 def _normalized_dupe_slots(symbols):
     """Slot-collapse detection on the LOADERS' identity function (883R cycle 3, fail-closed
-    MAJOR). ``mcts_trader.data.asset_aliases.normalize_symbol_key`` (``symbol.upper().replace(
-    "/","")``) is what ``resolve_requested_symbols`` groups by, and every panel-building
-    loader — the canon ``vectorbt_env.py:611`` path AND this module's framed loaders — goes
-    through it: ``XBT/USD``, ``xbt/usd`` and ``XBTUSD`` all load the SAME asset. Distinctness
-    judged by exact string is therefore blind to the exact slot collapse the duplicate rules
-    exist to prevent (measured by the cycle-3 judge: slots 0/1 both loaded asset_id 1091 under
+    MAJOR). ``mcts_trader.data.asset_aliases.normalize_symbol_key`` (upper-cased, slash-stripped,
+    plus the TASK_877 Kraken ticker-alias fold XBT->BTC / XDG->DOGE — token-exact; it was
+    slash-only when this docstring was written) is what ``resolve_requested_symbols`` groups by,
+    and every MINUTE panel-building loader — the canon ``vectorbt_env.py:611`` path AND this
+    module's framed MINUTE loader — goes through it: ``XBT/USD``, ``xbt/usd``, ``XBTUSD`` and
+    (since 877) ``BTC/USD`` all load the SAME asset. (The DAILY loaders do NOT: they resolve
+    symbols by EXACT ``assets.symbol`` match — see ``asset_aliases``' "NOT APPLIED BY THE DAILY
+    LOADERS" paragraph. This detector still runs ahead of BOTH sources, which is fail-CLOSED on
+    the daily one: it can only refuse a universe the daily loader would have read as distinct
+    slots, never bless a collapsed one.) Distinctness judged by exact string is therefore blind
+    to the exact slot collapse the duplicate rules exist to prevent (measured by the cycle-3
+    judge: slots 0/1 both loaded asset_id 1091 under
     a case-variant pair, graded to exit 0). Imported from the loaders' own module, NEVER
     re-implemented here — two copies drift, and that drift is this bug's parent.
 
@@ -901,16 +907,30 @@ STALE_TAIL_RULE = (
     "forward-fill stands and stays PV-exact. The DAILY pin is NOT masked (gate (v): daily paths "
     "bit-identical) — there these rows remain tradeable on the constant series, as ruled in D30.")
 
-# TASK_868 (D31 opt (a1)) — the alias-union contract, emitted into artifacts.
+# TASK_868 (D31 opt (a1)) — the alias-union contract, emitted into artifacts. TASK_877 changes it
+# in two places: the NORMALIZATION gains the Kraken ticker-alias table
+# (mcts_trader.data.asset_aliases.TICKER_ALIASES), and the gate gains an EVIDENCE FLOOR
+# (MIN_ALIAS_OVERLAP_TS) — a second, fail-CLOSED way for a load to refuse. Union semantics and the
+# disclosure keys are otherwise unchanged.
 ALIAS_UNION_RULE = (
-    "ALIAS UNION (DECISIONS D31 opt (a1)): each requested/recorded symbol resolves to EVERY "
-    "assets row whose NORMALIZED spelling matches (symbol.upper().replace('/', '') — slash-only, "
-    "deliberately NOT XBT->BTC folding), and the group's ohlcv rows are unioned into the slot's "
-    "single series at load time (NO DB writes — the ingest identity split is repaired at the "
-    "loader). Where aliased series overlap in time the closes must AGREE (rel <= 1e-12) or the "
-    "load REFUSES, naming both asset_ids and the first disagreeing timestamp — never average, "
-    "never prefer silently; agreeing duplicate timestamps dedupe. Per-slot usage is disclosed "
-    "(asset_ids / db_symbols / per_id_rows / overlap_agreement).")
+    "ALIAS UNION (DECISIONS D31 opt (a1) + TASK_877): each requested/recorded symbol resolves "
+    "to EVERY assets row whose NORMALIZED spelling matches (slash-stripped, upper-cased, plus "
+    "the known Kraken ticker-alias fold XBT->BTC / XDG->DOGE — see "
+    "mcts_trader.data.asset_aliases.normalize_symbol_key; token-exact, never a blanket "
+    "substring replace), and the group's ohlcv rows are unioned into the slot's single series "
+    "at load time (NO DB writes — the ingest identity split is repaired at the loader). Where "
+    "aliased series overlap in time the closes must AGREE (rel <= 1e-12) or the load REFUSES, "
+    "naming both asset_ids and the first disagreeing timestamp — never average, never prefer "
+    "silently; agreeing duplicate timestamps dedupe. EVIDENCE FLOOR (TASK_877, fail-CLOSED): "
+    "agreement over an EMPTY overlap is silence, not evidence, so a pair that really blends two "
+    "feeds (both ids carry rows) and cannot show at least "
+    "asset_aliases.MIN_ALIAS_OVERLAP_TS = 64 agreeing shared timestamps — in this window or "
+    "across its whole history — REFUSES too (AliasInsufficientOverlapError, naming both ids and "
+    "the count) instead of unioning on an untested identity; an empty-stub pair (one id with no "
+    "rows at all) is a pure relabel and is exempt. A PASS means 'no contradiction found', never "
+    "'proven the same instrument' — agreement is necessary, not sufficient. Per-slot usage is "
+    "disclosed (asset_ids / db_symbols / per_id_rows / overlap_agreement, the last now carrying "
+    "the per-pair evidence basis).")
 
 # TASK_868 (D31 opt (a2)) — the causal open-gate contract, emitted into artifacts.
 OPEN_GATE_RULE = (

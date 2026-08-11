@@ -73,6 +73,11 @@ runs/869_rebase_wave_semantics/*
 runs/869_rebase_wave_semantics/tz_demo/*
 !runs/869_rebase_wave_semantics/tz_demo/results_fixture_smoke.TZ-UTC.json
 !runs/869_rebase_wave_semantics/tz_demo/results_fixture_smoke.TZ-Europe-Prague.json
+# TASK_877: the XBT/XDG ticker-alias-fold gate (ii)/(iii) test + full-table sweep guard is a
+# COMMITTED runs/-side deliverable (same named-file-only pattern as 868/869 above).
+!runs/877_xbt_alias_fold/
+runs/877_xbt_alias_fold/*
+!runs/877_xbt_alias_fold/test_xbt_alias_fold.py
 wandb/
 output/
 

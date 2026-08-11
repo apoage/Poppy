@@ -320,26 +320,72 @@ REAL_BAR_MINUTES = 1440                  # the leg-1 stride (TASK_865 "Real leg"
 # The interior term is now the D31-predicted ~1% residue: the 5 genuine sparse crosses
 # (ETHBTC 183, BTCGBP/BTCCHF/BTCCAD/XRPBTC 182 = 911) + /USDC/USD 90 (its twin's own span has
 # sub-gaps — the one split slot NOT fully repaired) + STX/USD 8 + BCH/USD 1 + XRP/USD 1.
+# TASK_877 RE-REGISTRATION (gate (i)). READ THE CONVENTION NOTE FIRST — it is why the post-868
+# numbers just above do not add up against the ones below.
+#
+# CONVENTION (TASK_877 fix pass, 2026-08-11). Every number in THIS block is measured by running
+# THIS leg (`--only-real-db-coverage`), whose window is resolved at UTC midnight — the loaders'
+# own rule since TASK_869 / D31 (a3). The post-868 block above was instead harvested with
+# runs/868_asset_identity_repair/harvest_gate_i.py, which resolved the same dates with a naive
+# `datetime.strptime(...).timestamp()` = LOCAL time: the last never-migrated instance of exactly
+# the D31 (a3) defect (TASK_877 migrated it; it now agrees with this leg). The two conventions
+# differ by ONE decision cell, which moves between INERT and INTERIOR-FROZEN:
+#     local (as registered by 868):  INERT 9,047   FROZEN 1,381 = 1,011 INTERIOR + 370 trailing
+#     UTC   (this leg, authoritative): INERT 9,046   FROZEN 1,382 = 1,012 INTERIOR + 370 trailing
+#   NOT REAL is 10,428 = 9.7334% under BOTH (the cell only changes category, not realness).
+# So the TRUE pre-877 UTC interior count is 1,012, not the 1,011 carried since 868. That drift
+# PREDATES this task and is stated here rather than silently restated; it moves no gate (all four
+# EXPECT_* bands below are far wider than one cell) and it does not touch the -182 fold delta,
+# which is exactly the same under both conventions.
+#
+# THE FOLD. TASK_877 extends the normalized-alias resolution with an explicit Kraken ticker-alias
+# fold (XBT->BTC, XDG->DOGE). `BTCCHF` (frame slot 23, id 1085) was NOT one of the 868 twins
+# (868's slash-only normalization never grouped it with anything) — it was one of the "5 genuine
+# sparse crosses" above. Measured: BTCCHF/XBTCHF (id 1175) agree over 48,780 shared timestamps,
+# max relative close diff 0.0 — the identical D31 signature — so it is the SAME identity split,
+# just spelled with Kraken's legacy ticker instead of a slash variant. 18/64 frame slots now
+# resolve to alias groups (17 -> 18); the new pair's overlap gates clean (ids [1085, 1175],
+# shared_ts 48,780, max_rel_diff 0.0). Post-877, UTC, this leg's own output:
+#   INERT     9,046  =  8.4435%   (heads are pre-listing — unchanged by the fold, as expected)
+#   FROZEN    1,200  =  1.1201%   (830 = 0.7747% INTERIOR + 370 = 0.3454% trailing, unchanged)
+#   NOT REAL 10,246  =  9.5635%   LIVE 96,890 = 90.4365%
+# The interior term drops by EXACTLY 182 cells (UTC 1,012 -> 830; local 1,011 -> 829 — the same
+# -182) — BTCCHF's whole pre-877 interior count, to a residual of exactly 0 (no sub-gap residue,
+# unlike /USDC/USD's 90). The genuine sparse-cross set shrinks from 5 to 4, and the 830 is fully
+# itemized by this leg: ETHBTC 184 + BTCGBP 182 + BTCCAD 182 + XRPBTC 182 (= 730) + /USDC/USD 90
+# + STX/USD 8 + BCH/USD 1 + XRP/USD 1. (ETHBTC is 184 under UTC, not the 183 the pre-877 prose
+# carried — same one-cell convention drift, disclosed for the same reason.)
 EXPECT_INERT_DECISION_CELL_PCT = 8.44
 EXPECT_INERT_PCT_TOLERANCE = 1.0
-EXPECT_FROZEN_DECISION_CELL_PCT = 1.29        # its OWN axis, TIGHT band (RE-REGISTERED post-868)
+EXPECT_FROZEN_DECISION_CELL_PCT = 1.12        # its OWN axis, TIGHT band (RE-REGISTERED post-877)
 EXPECT_FROZEN_PCT_TOLERANCE = 0.30            # one extra 186-row delisting = +0.17pp => visible
-EXPECT_NOT_REAL_DECISION_CELL_PCT = 9.73
+EXPECT_NOT_REAL_DECISION_CELL_PCT = 9.56
 EXPECT_NOT_REAL_PCT_TOLERANCE = 1.0
-EXPECT_REAL_INTERIOR_FROZEN_PCT = 0.94        # the term D31 (a1) shrinks 2,013 -> ~1k cells
+EXPECT_REAL_INTERIOR_FROZEN_PCT = 0.77        # TASK_877 shrinks 1,011 -> 829 cells (-182, BTCCHF)
 EXPECT_REAL_INTERIOR_PCT_TOLERANCE = 0.30
 # The 6 ingest-split slots D31 (a1) repairs, with the twin ids the union must name. Post-union
 # they read as REAL data: 5 of 6 to 0 interior cells; /USDC/USD keeps a 90-cell residue (its
 # twin id 1145's own 2025-01-01..2025-10-01 span has sub-gaps) — the residual is NAMED, with a
 # small band so the gate stays a STOP on a coverage regression without wobbling on boundary rows.
+# (BTCCHF/XBTCHF — the TASK_877 pair — is a SEPARATE, later-discovered split; it is checked
+# below via EXPECT_INTERIOR_FROZEN_SYMBOLS / the aliased-slot count instead of being folded into
+# this dict, so TASK_868's own six-way claim stays exactly what TASK_868 measured.)
 EXPECT_SPLIT_SYMBOLS = {"/USDTEUR": [1016, 1144], "/USDTCHF": [1015, 1172],
                         "/USDC/USD": [996, 1145], "/USDCGBP": [128, 1160],
                         "/USDC/USDT": [997, 1153], "/USDTAUD": [1013, 1176]}
 EXPECT_SPLIT_RESIDUAL_CELLS = {"/USDC/USD": 90}
-# The residual interior-frozen slots post-union (>= ~167 cells each): exactly the 5 genuine
-# sparse crosses D31 kept. A change in THIS list is a data-coverage event, not a rounding wobble.
-EXPECT_INTERIOR_FROZEN_SYMBOLS = ["BTCCAD", "BTCCHF", "BTCGBP", "ETHBTC", "XRPBTC"]
-EXPECT_INTERIOR_FROZEN_CELLS_EACH = 182       # each of the 5, measured
+# TASK_877's own split pair, checked with the same rigor as the 868 six above: the twin ids the
+# union must name, zero interior residue (unlike /USDC/USD, BTCCHF's own span has no sub-gaps),
+# and a ZERO-diff overlap over the full measured overlap (48,780 shared timestamps).
+EXPECT_877_SPLIT_SYMBOLS = {"BTCCHF": [1085, 1175]}
+EXPECT_877_SPLIT_RESIDUAL_CELLS = {}
+# The residual interior-frozen slots post-union (>= ~167 cells each): exactly the 4 genuine
+# sparse crosses D31/877 keep. A change in THIS list is a data-coverage event, not a rounding
+# wobble. (BTCCHF dropped out of this list under TASK_877 — see the RE-REGISTRATION above.)
+EXPECT_INTERIOR_FROZEN_SYMBOLS = ["BTCCAD", "BTCGBP", "ETHBTC", "XRPBTC"]
+# Measured (UTC): ETHBTC 184, the other three 182 each. Used ONLY as the `>= this - 15` band that
+# separates the four big residues from the small named terms (90 / 8 / 1 / 1) — never as equality.
+EXPECT_INTERIOR_FROZEN_CELLS_EACH = 182
 # Row counts under the LOADER's own window convention: eval_vector._to_epoch(end) is MIDNIGHT of the
 # end date, so 2025-10-04's intraday minutes are OUTSIDE the window -> 2,495,590 distinct minutes ->
 # 1734 panel rows -> 1674 decision rows. An end-of-day convention adds ~1499 minutes = one more
@@ -2029,12 +2075,20 @@ def leg_real_db_coverage():
     11,430 (10.6687%). The interior term sat on 13 slots — 11 near-empty ones, of which 6
     were the INGEST IDENTITY SPLIT D31 repaired (twins agreeing to max rel diff 0.00).
 
-    MEASURED post-868 (re-registered below, this run): the 6 split slots read as REAL data —
-    5 of 6 fully (/USDTEUR, /USDTCHF, /USDCGBP, /USDC/USDT, /USDTAUD: 0 interior cells),
-    /USDC/USD with a 90-cell residue (its twin's own span has sub-gaps) — and the frozen-
-    interior count drops 2,013 -> 1,011 (0.9437%), i.e. the ~1% 5-slot residue D31 predicted
-    (ETHBTC 183 + BTCGBP/BTCCHF/BTCCAD/XRPBTC 182 each = 911, plus /USDC/USD 90, STX/USD 8,
-    BCH/USD 1, XRP/USD 1). INERT (9,047, heads) and trailing (370, migrations) are unchanged.
+    MEASURED post-868: the 6 split slots read as REAL data — 5 of 6 fully (/USDTEUR, /USDTCHF,
+    /USDCGBP, /USDC/USDT, /USDTAUD: 0 interior cells), /USDC/USD with a 90-cell residue (its
+    twin's own span has sub-gaps) — and the frozen-interior count drops 2,013 -> 1,011 as 868
+    registered it. NOTE THE CONVENTION (TASK_877): 868 harvested that 1,011 with a LOCAL-time
+    window; through THIS leg's own UTC window the same pre-877 state is 1,012 (and INERT 9,046,
+    not 9,047 — one cell, moving between the two categories). See the "TASK_877
+    RE-REGISTRATION" block at the top of this file for the full reconciliation.
+
+    MEASURED post-877 (re-registered at the top of this file, this run's own UTC numbers): the
+    ticker-alias fold repairs BTCCHF too (id 1085 + XBTCHF id 1175, 48,780 shared timestamps at
+    max rel diff 0.0), so the frozen-interior count drops a further EXACTLY 182 cells to 830
+    (0.7747%) on 8 slots: ETHBTC 184 + BTCGBP/BTCCAD/XRPBTC 182 each (= 730), plus /USDC/USD 90,
+    STX/USD 8, BCH/USD 1, XRP/USD 1. INERT (9,046, heads) and trailing (370, migrations) are
+    unchanged by both repairs.
 
     A materially different share on ANY axis is a STOP."""
     import sqlite3
@@ -2190,8 +2244,9 @@ def leg_real_db_coverage():
     interiors.sort(key=lambda r: -r["frozen_interior_cells"])
     print(f"  frame: {len(frame)} slots from {os.path.relpath(REAL_FRAME_JSON, _REPO)}  "
           f"window {REAL_WINDOW[0]}..{REAL_WINDOW[1]}  stride {step}  (read-only, mode=ro)")
-    print(f"  ALIAS UNION (TASK_868 a1): {len(aliased)} of {len(frame)} slots resolved to "
-          f"MULTIPLE assets rows (D31: 11 empty stubs + 6 span-carriers):")
+    print(f"  ALIAS UNION (TASK_868 a1 + TASK_877): {len(aliased)} of {len(frame)} slots "
+          f"resolved to MULTIPLE assets rows (D31: 11 empty stubs + 6 span-carriers; "
+          f"TASK_877 adds 1 more span-carrier, BTCCHF/XBTCHF):")
     for k, sym, g, dsy in aliased:
         ov = gate_by_ids.get(tuple(g), [])
         ov_s = ", ".join(f"pair {o['pair']}: {o['shared_ts']} shared ts, max rel diff "
@@ -2244,6 +2299,8 @@ def leg_real_db_coverage():
     # twin pairs, the gate must record a large ZERO-diff overlap, and post-union they must
     # read as REAL data (interior cells ~0; /USDC/USD's residual sub-gap residue is named).
     split_recs = {r["symbol"]: r for r in slots if r["symbol"] in EXPECT_SPLIT_SYMBOLS}
+    # TASK_877's own split slot, checked identically (see EXPECT_877_SPLIT_SYMBOLS above).
+    split_recs_877 = {r["symbol"]: r for r in slots if r["symbol"] in EXPECT_877_SPLIT_SYMBOLS}
     gate_zero = {}
     for k, sym, g, dsy in aliased:
         for o in gate_by_ids.get(tuple(g), []):
@@ -2259,13 +2316,13 @@ def leg_real_db_coverage():
         # --- axis 1: INERT (no price at all) — unchanged by the union (heads are pre-listing) ---
         "inert_cell_share_matches_pre_registration": abs(
             pct(head_cells) - EXPECT_INERT_DECISION_CELL_PCT) <= EXPECT_INERT_PCT_TOLERANCE,
-        # --- axis 2: FROZEN — RE-REGISTERED post-868 (was 2.2243%) ---
-        "frozen_cell_share_matches_post868_registration_TIGHT": abs(
+        # --- axis 2: FROZEN — RE-REGISTERED post-877 (was 2.2243% pre-868, 1.2890% post-868) ---
+        "frozen_cell_share_matches_post877_registration_TIGHT": abs(
             pct(fz_tot) - EXPECT_FROZEN_DECISION_CELL_PCT) <= EXPECT_FROZEN_PCT_TOLERANCE,
-        "INTERIOR_frozen_share_matches_post868_registration_TIGHT": abs(
+        "INTERIOR_frozen_share_matches_post877_registration_TIGHT": abs(
             pct(fz_int) - EXPECT_REAL_INTERIOR_FROZEN_PCT) <= EXPECT_REAL_INTERIOR_PCT_TOLERANCE,
-        # --- axis 3: the headline total — RE-REGISTERED post-868 (was 10.6687%) ---
-        "not_real_cell_share_matches_post868_registration": abs(
+        # --- axis 3: the headline total — RE-REGISTERED post-877 (was 10.6687% pre-868) ---
+        "not_real_cell_share_matches_post877_registration": abs(
             pct(not_real) - EXPECT_NOT_REAL_DECISION_CELL_PCT) <= EXPECT_NOT_REAL_PCT_TOLERANCE,
         # --- structure ---
         "the_three_categories_partition_the_grid": partition_is_a_partition,
@@ -2280,7 +2337,6 @@ def leg_real_db_coverage():
             any(h["symbol"] == m and h["inert_head_cells"] > 0 for h in heads)
             for m in EXPECT_MIGRATION_SYMBOLS),
         # --- TASK_868 gate (i): the identity repair, measured ---
-        "all_17_frame_slots_alias_groups_resolved": len(aliased) == 17,
         "the_6_split_slots_are_aliased_to_the_named_twins": all(
             sorted(split_recs[s]["asset_ids"]) == sorted(EXPECT_SPLIT_SYMBOLS[s])
             for s in EXPECT_SPLIT_SYMBOLS),
@@ -2289,18 +2345,33 @@ def leg_real_db_coverage():
             <= EXPECT_SPLIT_RESIDUAL_CELLS.get(s, 0) + 5 for s in EXPECT_SPLIT_SYMBOLS),
         "agreement_gate_records_ZERO_diff_overlaps_for_the_6_twins": all(
             any(gate_zero.get(s, [])) for s in EXPECT_SPLIT_SYMBOLS),
-        "frozen_interior_is_the_5_slot_residue_plus_named_small_terms": (
+        # --- TASK_877 gate (i): the BTCCHF/XBTCHF ticker-alias split, measured the same way ---
+        "all_18_frame_slots_alias_groups_resolved": len(aliased) == 18,
+        "the_877_split_slot_is_aliased_to_the_named_twin": all(
+            sorted(split_recs_877[s]["asset_ids"]) == sorted(EXPECT_877_SPLIT_SYMBOLS[s])
+            for s in EXPECT_877_SPLIT_SYMBOLS),
+        "the_877_split_slot_reads_as_REAL_data": all(
+            split_recs_877[s]["frozen_interior_cells"]
+            <= EXPECT_877_SPLIT_RESIDUAL_CELLS.get(s, 0) + 5 for s in EXPECT_877_SPLIT_SYMBOLS),
+        "agreement_gate_records_ZERO_diff_overlap_for_the_877_twin": all(
+            any(gate_zero.get(s, [])) for s in EXPECT_877_SPLIT_SYMBOLS),
+        "frozen_interior_is_the_4_slot_residue_plus_named_small_terms": (
             sorted(set(big_interior)) == sorted(set(EXPECT_INTERIOR_FROZEN_SYMBOLS))),
         "every_named_residual_interior_symbol_is_disclosed": all(
             s in interior_syms for s in EXPECT_INTERIOR_FROZEN_SYMBOLS),
+        "BTCCHF_is_no_longer_in_the_interior_frozen_set_TASK_877": "BTCCHF" not in interior_syms,
         "no_successor_is_spliced": True,          # this leg never writes; splicing is out of scope
     }
     for k, v in checks.items():
         print(f"    {'OK  ' if v else 'FAIL'} {k}")
-    print(f"  GATE (i) SUMMARY: frozen-interior 2,013 (1.8789%) -> {fz_int} ({pct(fz_int):.4f}%); "
-          f"the 6 split slots read as REAL data via ids "
-          f"{[EXPECT_SPLIT_SYMBOLS[s] for s in EXPECT_SPLIT_SYMBOLS]}; honest not-real share "
-          f"10.6687% -> {pct(not_real):.4f}%")
+    print(f"  GATE (i) SUMMARY: frozen-interior 2,013 (1.8789%, pre-868 as registered) -> 1,012 "
+          f"(0.9446%, post-868 re-derived through THIS leg's UTC window; 868 itself registered "
+          f"1,011 from a LOCAL-time harvest — one cell, see the TASK_877 RE-REGISTRATION block) "
+          f"-> {fz_int} ({pct(fz_int):.4f}%, post-877, this run); the 6 (868) + 1 (877) split "
+          f"slots read as REAL data via ids "
+          f"{[EXPECT_SPLIT_SYMBOLS[s] for s in EXPECT_SPLIT_SYMBOLS]} + "
+          f"{[EXPECT_877_SPLIT_SYMBOLS[s] for s in EXPECT_877_SPLIT_SYMBOLS]}; honest not-real "
+          f"share 10.6687% (pre-868) -> 9.7334% (post-868) -> {pct(not_real):.4f}% (post-877)")
     return {"leg": "iii_real_db_coverage_cell_level", "passed": all(checks.values()),
             "checks": checks, "db": "trading_data.db (mode=ro)", "window": list(REAL_WINDOW),
             "bar_minutes": step, "warm_rows": REAL_WARM_ROWS, "n_slots": len(frame),
@@ -2336,6 +2407,25 @@ def leg_real_db_coverage():
             "pre_868_registration": {
                 "inert_pct": 8.4444, "frozen_pct": 2.2243, "frozen_interior_pct": 1.8789,
                 "not_real_pct": 10.6687, "frozen_interior_cells": 2013},
+            # Re-derived for TASK_877 by running THIS leg with TICKER_ALIASES emptied — i.e. the
+            # pre-877 (868 slash-only) state through this leg's own UTC window. The numbers 868
+            # itself registered were harvested with a LOCAL-time window (harvest_gate_i.py, the
+            # last un-migrated D31 (a3) instance; TASK_877 migrated it) and differ by ONE cell,
+            # moving between INERT and INTERIOR: local 9,047 / 1,381 / 1,011, UTC 9,046 / 1,382 /
+            # 1,012. NOT REAL is 10,428 = 9.7334% under both. The -182 fold delta is convention-
+            # independent. `as_registered_by_868` keeps 868's own claim verbatim.
+            "post_868_pre_877_registration": {
+                "window_convention": "UTC (TASK_869 / D31 (a3)) — this leg's own",
+                "inert_cells": 9046, "inert_pct": 8.4435,
+                "frozen_cells": 1382, "frozen_pct": 1.2899,
+                "frozen_interior_cells": 1012, "frozen_interior_pct": 0.9446,
+                "not_real_cells": 10428, "not_real_pct": 9.7334,
+                "live_cells": 96708, "n_aliased_slots": 17,
+                "as_registered_by_868": {
+                    "window_convention": "LOCAL time (harvest_gate_i.py, pre-migration)",
+                    "inert_pct": 8.4444, "frozen_pct": 1.2890, "frozen_interior_pct": 0.9437,
+                    "not_real_pct": 9.7334, "frozen_interior_cells": 1011,
+                    "n_aliased_slots": 17}},
             "definitions": {
                 "real": "the slot's alias-UNION printed at least one real close inside the bar "
                         "((r-1)*step, r*step] that panel row r stands for",

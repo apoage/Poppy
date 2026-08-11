@@ -26,8 +26,18 @@ WARM = 60
 
 prov = json.load(open(REAL_FRAME_JSON))
 frame = prov.get("frame_symbols") or prov.get("symbols")
-s_ts = int(datetime.strptime(REAL_WINDOW[0], "%Y-%m-%d").timestamp())
-e_ts = int(datetime.strptime(REAL_WINDOW[1], "%Y-%m-%d").timestamp())
+# TASK_877 fix pass: UTC midnight, matching the loaders (TASK_869 / D31 (a3)) and the 865 smoke's
+# leg_real_db_coverage. THIS SCRIPT WAS THE LAST UN-MIGRATED INSTANCE of the a3 defect — the naive
+# `datetime.strptime(...).timestamp()` it used resolved the window in the MACHINE'S LOCAL time, so
+# on a CEST workstation it read a 60-minute-shorter row axis (2,495,590 vs 2,495,650 minutes) and
+# reported ONE decision cell differently: INERT 9,047 / 829 interior instead of the loaders' 9,046
+# / 830 (post-877 fold), and 1,011 instead of 1,012 pre-fold — which is where TASK_868's
+# registered 1,011 came from. NOT REAL (10,246 post-877 / 10,428 pre-877) is identical under both
+# conventions; the cell only changes category. Numbers printed by this script BEFORE this fix are
+# LOCAL-convention and are reconciled in the "TASK_877 RE-REGISTRATION" block of
+# experiments/865_minute_frame_pin/smoke_minute_frame_pin.py.
+s_ts = int(datetime.strptime(REAL_WINDOW[0], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+e_ts = int(datetime.strptime(REAL_WINDOW[1], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 con = sqlite3.connect(f"file:{REAL_DB}?mode=ro", uri=True, timeout=60)
 try:
     all_assets = con.execute("SELECT id, symbol FROM assets").fetchall()
