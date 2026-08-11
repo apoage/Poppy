@@ -1,4 +1,4 @@
-# Factory run 31 handoff — TASK_886 HALTED on the 3-cycle rule
+# Factory run 31 handoff — TASK_886 HALTED on the 3-cycle rule, TASK_877 SHIPPED
 
 **Date:** 2026-08-10/11 · **Harness:** Claude Code (Opus 5, 1M context) · Subagents per
 `.dark-factory/config.json` model policy: implement on `sonnet`, fix passes escalated to
@@ -6,12 +6,60 @@
 
 ## Outcome
 
-Nothing shipped. `TASK_886` halted after three failed fix→verify cycles; code preserved in
-`git stash` ("TASK_886 … HALTED on the 3-cycle rule (D38)"). Tree clean, nothing committed to
-code, nothing pushed. **D38 seeded OPEN.**
+| Row | Result |
+|---|---|
+| TASK_886 — universe-pin certification | **HALTED** on the 3-cycle rule. Code in `git stash`. **D38 OPEN.** |
+| TASK_877 — XBT↔BTC alias fold | **SHIPPED** as `task877-xbt-alias-fold` (`72c0c87`) |
 
-Twelve subagent verifications ran: a 5-lens panel (correctness · fail-closed · regression ·
-security · flow-verifier), a 4-lens re-verify, and a 3-lens `opus` re-verify.
+Nineteen subagent runs total: for 886 a 5-lens panel, a 4-lens re-verify and a 3-lens `opus`
+re-verify; for 877 a 3-lens panel, a 2-lens re-verify and a narrow final verification.
+
+---
+
+# TASK_877 — SHIPPED
+
+Kraken's `XBT` is `BTC`. `BTCCHF` (id 1085, frame slot 23) and `XBTCHF` (id 1175) are the same
+instrument under two spellings — **48,780 shared timestamps agreeing to max relative close
+difference 0.0** — and the resolver's slash-only normalization left 92,639 real rows unread
+inside the exact window `BTCCHF` was recorded as "genuinely sparse".
+
+**Measured:** gap-window coverage 667 → **92,637** (UTC); frozen-interior cells for that span
+**182 → 0**, exact. Program-wide frozen-interior **1,012 → 830**, NOT-REAL **9.7334% → 9.5635%**,
+genuine sparse set **5 → 4**. Scope 4 answered concretely: the fold does **not** move the
+coverage ranking — zero symbols enter or exit the top-64 set in either window.
+
+**Three MAJORs, and the first one is the interesting one.** The agreement gate had no
+minimum-evidence floor: a merge sharing 0 or 1 timestamps was blessed exactly as confidently as
+one sharing 48,780. The obvious fix was wrong — a per-window floor was *measured* to refuse
+**seven already-shipped folds**, because each twin's rows begin precisely where the original's
+stop. Identity is a property of the ids, not of the requested window, so the floor falls back to
+the pair's whole history. `MIN_ALIAS_OVERLAP_TS = 64`, derived in code rather than chosen: 11×
+under the binding fixture minimum (720), 167× under the real DB's (10,657).
+
+The second: `runs/868_asset_identity_repair/duplicate_sweep.json` — tracked, cited by path in the
+868 CHANGELOG entry, and literally this task's own Scope 2 output — still asserted "NOT
+XBT-folding (different feeds)" and 55 groups. Regenerated to 56 / 14 live pairs. **The 868
+CHANGELOG entry now understates the file it cites.**
+
+The third: this task's own docstring rewrite falsely claimed the daily loaders apply the union.
+They resolve by literal `assets.symbol` match and never invoke the alias machinery. Corrected and
+**disclosed** per gate (iv): frame slot 11 `/USDC/USD` (id 996, 0 daily rows) reads INACTIVE while
+its twin `USDCUSD` (id 1145) holds 721 days — the minute path unions the identical slot correctly.
+Pre-existing to 868; wiring the daily loaders moves daily-pinned numerics, so it is a separate row.
+
+**A local-time ghost, caught and killed.** `harvest_gate_i.py` resolved its window with naive
+`.timestamp()` (local) while the suite used UTC — which is why two independent lenses reported
+cell counts one apart. Now migrated: the last known TASK_869/D31(a3) survivor. The true pre-877
+UTC interior is **1,012, not the 1,011 carried since 868**; 868's own figure is preserved verbatim
+rather than silently restated.
+
+**Two corrections to the task file itself**, both by re-measurement: XDG→DOGE has **zero**
+collisions (not "stub-only" — no DOGE-spelled row exists in either DB), and its 697-row figure was
+naive-local (667 UTC).
+
+---
+
+# TASK_886 — HALTED
 
 ## The finding: the row welded two concerns, and only one ever failed
 
@@ -105,8 +153,24 @@ committed to code; nothing pushed.
 
 ## State at end of run
 
-- Tree clean; the halted work is `stash@{0}` (the TASK_883 halt stash is now `stash@{1}`).
+- Tree clean. The halted 886 work is `stash@{0}` (the TASK_883 halt stash is now `stash@{1}`).
 - `tasks/DECISIONS.md`: **D38 OPEN** with the split recommendation and both outrunning findings.
-- `tasks/QUEUE.md`: run-31 grooming note; row 4 marked HALTED with "do not retake as written".
-- Ready rows untouched and takeable: **TASK_877** (XBT alias fold) → **TASK_878** (failed-fill
-  semantics) → **TASK_881** (checkpoint protection model).
+- `tasks/QUEUE.md`: run-31 grooming note; row 4 (886) marked HALTED with "do not retake as
+  written"; row 5 (877) struck through as shipped.
+- Shipped: `task877-xbt-alias-fold` (`72c0c87`). Nothing pushed — the owner pushes after review.
+- **Ready and takeable: TASK_878** (failed-fill semantics) → **TASK_881** (checkpoint protection
+  model). Both were left for the next run deliberately: 878 rewrites eval-core execution semantics
+  with every parity gate in the repo riding on it and carries a 3-arm ablation, and 881 is an M row
+  in the lane that has already consumed nine factory cycles. Each needs a full run's worth of
+  cycles; starting one at the tail of this session would have risked leaving it half-built.
+
+## Why the daily-loader gap deserves its own row
+
+Both halves of this run converged on the same shape from different directions. 886 died three
+times on "which bytes on disk are we actually talking about"; 877's last MAJOR was "the docstring
+says the union is applied here, and it is not". In both cases the code was fine and the *claim*
+about the code was wrong — and in both cases a reader would have believed the claim. The daily
+loaders are now honestly documented as alias-blind, but nothing pins that disclosure: no suite
+asserts the `/USDC/USD` state, so a future backfill can stale it silently. That, plus the
+`history.py:238-242` blanket `replace('BTC','XBT')` (which can resolve a request to the wrong
+`asset_id` through a last-writer-wins dict), is the natural next row on this lane.
