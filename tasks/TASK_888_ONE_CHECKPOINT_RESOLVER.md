@@ -5,7 +5,7 @@
 > survivor was in the latter. **The architecture layer has moved IN FULL to
 > [`tasks/TASK_889_CHECKPOINT_ARCHITECTURE_BINDING.md`](TASK_889_CHECKPOINT_ARCHITECTURE_BINDING.md)
 > — together with every persisted write: the save-time fingerprint, the save-time architecture
-> record, the backfill, and `distill.py`.** Do NOT build any of it here.
+> record, the retro-stamp tool, and `distill.py`.** Do NOT build any of it here.
 >
 > **THE CAPACITY LINE, which is the whole point of the re-cut: this row may only RESOLVE, REFUSE and
 > DESCRIBE. It writes into no checkpoint, no provenance document and no `runs/` artifact.** A row
@@ -26,7 +26,7 @@
 > `results_pin` restored to green. 105 checks across 6 new suites.
 >
 > **Subtract from the stash before shipping:** the architecture-binding work, the save-time
-> fingerprint write, the provenance emitter, and `tools/backfill_checkpoint_fingerprints.py`. All of
+> fingerprint write, the provenance emitter, and `tools/stamp_checkpoint_fingerprints.py`. All of
 > it belongs to 889.
 >
 > **Ranking corrected by D39.** The original file ranked this row on `real_trade_jax.py:145`. That
@@ -119,7 +119,7 @@ continues instead of refusing". Both are fixed by one resolution function and on
 ## Out of scope
 
 **Everything that writes into a persisted artifact — TASK_889.** Save-time architecture and
-fingerprint records, the refusing recorded-vs-loaded comparison, the backfill, `distill.py`'s
+fingerprint records, the refusing recorded-vs-loaded comparison, the retro-stamp tool, `distill.py`'s
 hand-built target, and the `config/real_trade_config.py` fossil. If a BLOCKER here lands in that
 surface, it belongs to 889 and this row waits.
 

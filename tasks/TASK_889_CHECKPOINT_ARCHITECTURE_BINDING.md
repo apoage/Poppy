@@ -3,8 +3,16 @@
 **Status**: READY 2026-08-12 (planner; created by the D39 ruling out of TASK_888's halt).
 **Size: S/M. Risk: HIGH in consequence** — this row owns every write into a persisted artifact.
 **Sequenced AFTER TASK_888R, BEFORE TASK_886.**
+
+> **NAMING (2026-08-12, operator correction).** This operation is called a **retro-stamp**, never a
+> "backfill". In this repo *backfill* already means TASK_858's append-only INGEST of historical minute bars,
+> and *back-fill* in the data sense is a FORBIDDEN look-ahead — the standing rule is forward-fill only, a stale
+> price is valid while nothing trades. This operation touches **no price data at all**: it computes a hash over
+> parameters already on disk and writes it into `trainer_metadata.json`. Naming ambiguity has now killed four
+> consecutive cycles on this lane; it does not get to kill a fifth.
+
 Surface: `mcts_trader/jax_agent/trainer.py` (save-time metadata + `load_checkpoint`) ·
-the shared checkpoint-IO module 888R ships · `tools/backfill_checkpoint_fingerprints.py` ·
+the shared checkpoint-IO module 888R ships · `tools/stamp_checkpoint_fingerprints.py` ·
 `experiments/857_vhat_distill/distill.py` · `config/real_trade_config.py`.
 
 ## Why this row exists, and why it is separate from 888R
@@ -16,7 +24,7 @@ nothing else.
 
 The capacity line, which is what D39 cut on: **888R may only resolve, refuse and describe — it
 writes into no checkpoint, no provenance document and no `runs/` artifact. This row owns every
-persisted write.** The backfill is untrustworthy *because* it builds a target from an architecture
+persisted write.** The retro-stamp is untrustworthy *because* it builds a target from an architecture
 it never records; that is the same defect as B1, so the writer and the thing that makes writing
 safe belong in one row.
 
@@ -41,7 +49,7 @@ a mismatch that is detected, printed, and then not acted on.
 
 Two more instances of the same root:
 
-- **The backfill hardcodes `vector_action=True`.** A scalar checkpoint is then fingerprinted over a
+- **The retro-stamp tool hardcodes `vector_action=True`.** A scalar checkpoint is then fingerprinted over a
   target carrying 2 extra leaves at the tool's own `PRNGKey(0)` init, and that wrong value is
   written into the document TASK_886 certifies against. Worse, a recorded-vs-recomputed
   DISAGREEMENT — precisely the "a checkpoint changed underneath you" signal the fingerprint exists
@@ -72,7 +80,7 @@ random leaves in silence.
    or recorded fingerprint ≠ loaded fingerprint ⇒ hard failure naming both values and the resolved
    path. No `print`-and-continue path may remain at `trainer.py:1854-1859`. Deliberate mismatch
    stays available only behind an explicit flag.
-4. **Fix the backfill.** Build the target from the checkpoint's OWN recorded architecture, never a
+4. **Fix the retro-stamp tool.** Build the target from the checkpoint's OWN recorded architecture, never a
    hardcode. A recorded-vs-recomputed disagreement **REFUSES and writes nothing**. `--apply` stays
    planner-gated. Note that applying it to the 4 TRACKED provenance documents moves EMITTED
    ARTIFACTS, not just the two hand-kept `.sha256` pins, via `eval_vector.py:819`'s
@@ -91,7 +99,7 @@ random leaves in silence.
   item 6 flips.
 - (iii) A checkpoint whose payload is altered after save produces a fingerprint disagreement and
   REFUSES; the disagreement is never overwritten.
-- (iv) The backfill run over the 7 surviving checkpoints (`runs/861_ref/ckpt_ref_s{0,1,2}`,
+- (iv) The retro-stamp run over the 7 surviving checkpoints (`runs/861_ref/ckpt_ref_s{0,1,2}`,
   `runs/861_imprint/ckpt_s{0,1,2}`, `runs/832_e5/ckpt_imprint_full`) is idempotent, refuses on
   disagreement, and is a **no-op without `--apply`**. **The 7 already carry a `param_fingerprint`
   written by run 32's cycle-1 bare `--apply` and it is UNTRUSTED** — no code in the tree produced
