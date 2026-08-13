@@ -1821,22 +1821,58 @@ class MuZeroTrainer:
 
         return written
 
-    def load_checkpoint(self, path: str, step: int = None):
-        """Load model checkpoint with additional metadata"""
+    def load_checkpoint(self, path: str, step: int = None, leaf_dir: str = None):
+        """Load model checkpoint with additional metadata.
+
+        ``path`` is the RUN dir — the directory holding the ``checkpoint_<step>`` leaves and the
+        two sidecars (``trainer_metadata.json``, ``popart_state.npz``) restored below.
+
+        ``leaf_dir`` (TASK_888 B1) is the CONCRETE orbax leaf to restore, as already resolved and
+        verified by ``checkpoint_io.resolve_checkpoint_dirs``. It exists because ``path`` alone
+        does NOT identify a checkpoint: ``restore_checkpoint(step=None)`` re-decides by calling
+        ``latest_checkpoint(path)``, and a run dir normally holds SEVERAL leaves
+        (``save_checkpoint(keep=3)``). So a caller that verified an OLDER leaf and then passed
+        only the run dir got the NEWEST one loaded — the guard blessing leaf A while the loader
+        installed leaf B. flax restores a leaf handed to it directly (``restore_checkpoint``:
+        ``if _is_orbax_checkpoint(ckpt_dir): ckpt_path = ckpt_dir``), so threading it through is
+        exact, not a re-derivation. Default ``None`` keeps every legacy caller byte-identical.
+        """
         import os
         import json
         import numpy as np
         from flax.training import checkpoints
+        from .checkpoint_io import unsafe_to_open_defect, SIDECAR_MAX_BYTES
+
+        if leaf_dir is not None and step is not None:
+            raise ValueError(
+                "load_checkpoint: pass leaf_dir OR step, not both — the leaf IS the step "
+                f"selection (leaf_dir={leaf_dir!r}, step={step!r})")
 
         restored_state = checkpoints.restore_checkpoint(
-            ckpt_dir=path,
+            ckpt_dir=(path if leaf_dir is None else leaf_dir),
             target=self.state,
             step=step
         )
 
+        def _assert_sidecar_openable(sidecar_path, what):
+            """TASK_888 B2: `stat` before `open`, for the two sidecars this method opens RAW.
+            They are SIBLINGS of the orbax leaf, so `checkpoint_io`'s leaf walk never saw them:
+            a FIFO at either one passed every guard and then blocked `openat` FOREVER
+            (strace-proven, 100% reproducible — not a race). Checked HERE, inside the method
+            that does the opening, so the protection covers every caller and cannot drift away
+            from the read it guards."""
+            defect = unsafe_to_open_defect(sidecar_path, SIDECAR_MAX_BYTES, what)
+            if defect is not None:
+                raise RuntimeError(
+                    f"REFUSING to open the checkpoint sidecar {sidecar_path!r}: {defect}.\n"
+                    f"  A hang is not a verdict (TASK_888): this file is opened raw while "
+                    f"restoring a checkpoint, so an unopenable one must refuse loudly rather "
+                    f"than block the process forever.")
+
         # Restore additional trainer metadata if available (BUG_019 fix)
         metadata_path = os.path.join(path, 'trainer_metadata.json')
         if os.path.exists(metadata_path):
+            _assert_sidecar_openable(metadata_path, "a checkpoint's trainer_metadata.json")
             try:
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
@@ -1879,6 +1915,7 @@ class MuZeroTrainer:
         if self.use_popart and self.popart is not None:
             popart_path = os.path.join(path, 'popart_state.npz')
             if os.path.exists(popart_path):
+                _assert_sidecar_openable(popart_path, "a checkpoint's popart_state.npz")
                 try:
                     from .popart import PopArtState
                     data = np.load(popart_path)
@@ -1898,9 +1935,17 @@ class MuZeroTrainer:
 
         return restored_state
 
-    def restore_checkpoint(self, path: str, step: int = None):
-        """Alias for load_checkpoint"""
-        return self.load_checkpoint(path, step)
+    # TASK_888 fix-pass (M3): ``restore_checkpoint(path, step)`` — a bare "Alias for
+    # load_checkpoint" — was DELETED here, not kept and re-guarded. A repo-wide census found
+    # ZERO callers (its only one, ``tools/paper_trade_vectorbt.py``, now loads through
+    # ``checkpoint_io.load_checkpoint_into``), and the alias had never been threaded with
+    # ``leaf_dir`` or given any refusal semantics — so it was dead code that still offered a
+    # second, UNGUARDED way into the loader. Anyone reaching for it in future would silently
+    # reopen exactly the D37 fail-open (flax returns ``target`` back unchanged on a miss) that
+    # this row closes at every other site. Deleting is the smaller fix and the one that matches
+    # the row's own thesis: ONE resolution function and ONE loader, not two entry points that
+    # agree today. Load checkpoints via ``checkpoint_io.load_checkpoint_into(trainer, path)``;
+    # ``load_checkpoint`` above remains the low-level primitive it calls.
 
     def reset_optimizer_state(self, state: TrainState) -> TrainState:
         """

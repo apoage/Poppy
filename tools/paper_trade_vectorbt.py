@@ -21,8 +21,13 @@ from datetime import datetime, timedelta
 import jax
 import jax.numpy as jnp
 
-# Import central config
-from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE
+# TASK_888 (D38): the ONE checkpoint resolver + fail-closed loader, shared with
+# eval_vector.py / train_jax_fast.py / experiments/857_vhat_distill/distill.py /
+# real_trade_jax.py. This tool was found during TASK_888's sweep to carry the SAME "loaded
+# successfully" liar: `if restored:` is truthy for the TrainState object flax's
+# restore_checkpoint returns even on a MISS (it aliases `target` back unchanged, D37), so a bad
+# --checkpoint used to silently run the paper-trading audit on random-init weights.
+from mcts_trader.jax_agent import checkpoint_io
 
 # Suppress gym deprecation warnings
 import warnings
@@ -38,8 +43,8 @@ def run_paper_trading(args):
 
     # Import after path setup
     from mcts_trader.env.vectorbt_env import VectorBTTradingEnv
-    from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
-    from mcts_trader.jax_agent.trainer import MuZeroTrainer
+    from mcts_trader.training.config import TrainingConfig
+    from mcts_trader.training.setup import setup_model_and_trainer
     from mcts_trader.jax_agent.mctx_search import create_mctx_search
 
     # Create environment
@@ -55,22 +60,27 @@ def run_paper_trading(args):
     )
     print(f"  Environment: {env.n_assets} assets, {args.steps} steps")
 
-    # Load model
+    # Load model. TASK_888 (B4): built through the CANONICAL
+    # ``TrainingConfig`` -> ``setup_model_and_trainer`` path, the same one train_jax_fast.py,
+    # eval_vector.py, distill.py and the backfill use. This tool used to construct
+    # ``MuZeroNetworks(...)``/``MuZeroTrainer(...)`` by hand and so silently drifted from every
+    # other site: it never passed ``use_vector_action``, so the model it built had NO
+    # ``vector_action_embedding`` — and loading a real vector-action checkpoint into it reported
+    # ``"loaded": true`` with a stable fingerprint while SILENTLY DROPPING
+    # ``vec_act_proj.{kernel,bias}``. flax's restore returns a pytree congruent to the TARGET, so
+    # no load-time check can see a leaf the target does not have; the only real countermeasure
+    # is that the target IS the canonical architecture.
     print("[2/4] Loading model...")
-    model = MuZeroNetworks(
+    cfg = TrainingConfig(
+        name="paper_trade_vectorbt",
+        model_size="small",           # neutral: the explicit state_dim below always wins
         state_dim=args.state_dim,
-        action_space_size=env.n_assets * 5,  # 5-action space
-        support_size=VALUE_SUPPORT_SIZE,
-        H_cycles=args.h_cycles,
-        L_cycles=args.l_cycles,
+        h_cycles=args.h_cycles,
+        l_cycles=args.l_cycles,
+        sims=args.sims,
+        vector_action=args.vector_action,
     )
-
-    trainer = MuZeroTrainer(
-        model=model,
-        learning_rate=1e-4,
-        num_simulations=args.sims,
-        batch_size=256,
-    )
+    model, trainer = setup_model_and_trainer(cfg, env.n_assets)
 
     # Initialize with dummy input
     rng = jax.random.PRNGKey(42)
@@ -78,16 +88,38 @@ def run_paper_trading(args):
     dummy_obs = jnp.ones((1, 27, env.n_assets, env.n_assets))
     state = trainer.init_train_state(init_rng, dummy_obs)
 
-    # Load checkpoint
-    if args.checkpoint:
-        abs_path = os.path.abspath(args.checkpoint)
-        print(f"  Loading checkpoint: {abs_path}")
-        restored = trainer.restore_checkpoint(abs_path)
-        if restored:
-            state = restored
-            print("  Checkpoint loaded successfully")
-        else:
-            print("  WARNING: Checkpoint load failed, using random weights")
+    # Load checkpoint. TASK_888: refuses (never "loaded successfully") on a checkpoint that
+    # cannot be found or loaded, naming the resolved path. Omitting --checkpoint entirely is
+    # still the explicit, deliberate fresh-init path (unchanged) — only a GIVEN-but-bad
+    # --checkpoint is now a hard failure instead of a silent random-weights fallback.
+    #
+    # `is not None`, not truthiness (fix-pass, same class as train_jax_fast.py's gate).
+    # `--checkpoint` declares no `default=`, so argparse's default is None and "omitted" stays
+    # distinguishable from "given, but empty". A caller that builds this flag programmatically
+    # from an unset variable passes `--checkpoint ''`, which is falsy but NOT None — under a
+    # truthiness gate that silently took the random-weights branch below and printed "No
+    # checkpoint provided", i.e. an explicitly-requested checkpoint became a fresh-init audit
+    # with no refusal anywhere. An empty value now reaches load_checkpoint_into and is refused
+    # by name; only a genuinely OMITTED --checkpoint still means "random weights on purpose".
+    if args.checkpoint is not None:
+        # M4 clipping: this line fires on EVERY invocation, not just failures, and echoed raw
+        # argv bounded only by MAX_ARG_STRLEN. The clip is counted and disclosed, so the path
+        # stays identifiable.
+        print(f"  Loading checkpoint: "
+              f"{checkpoint_io.clip_for_refusal(args.checkpoint, quote=False)}")
+        # Fail CLOSED but cleanly: real_trade_jax.py catches its refusal and logs it, and this
+        # tool used to spray an uncaught CheckpointRefusalError traceback for the same event.
+        # Same exit status (1), same refusal — only legible.
+        try:
+            checkpoint_load = checkpoint_io.load_checkpoint_into(trainer, args.checkpoint)
+        except checkpoint_io.CheckpointRefusalError as e:
+            print(f"  REFUSING to run the paper-trading audit: "
+                  f"{checkpoint_io.clip_for_refusal(e, limit=4000, quote=False)}")
+            sys.exit(1)
+        state = trainer.state
+        print(f"  Checkpoint loaded: resolved={checkpoint_load['resolved_path']} "
+              f"step={checkpoint_load['step']} "
+              f"fingerprint={checkpoint_load['param_fingerprint'][:12]}...")
     else:
         print("  No checkpoint provided, using random weights")
 
@@ -272,6 +304,13 @@ if __name__ == "__main__":
     parser.add_argument('--l-cycles', type=int, default=6, help='TRM L cycles')
     parser.add_argument('--sims', type=int, default=32, help='MCTS simulations')
     parser.add_argument('--gumbel-scale', type=float, default=3.0, help='Gumbel scale')
+    parser.add_argument('--vector-action', action='store_true', default=False,
+                        help='TASK_888: build the vector-action architecture (TASK_828 Stage 3, '
+                             'TrainingConfig.vector_action). Default OFF = the scalar canon this '
+                             'tool always built. Required to load a vector-action checkpoint: '
+                             'without it the model has no vector_action_embedding, and flax '
+                             'restores into the TARGET, so those leaves are silently DROPPED '
+                             'with no load-time error.')
 
     # Audit
     parser.add_argument('--episodes', type=int, default=3, help='Number of episodes to run')

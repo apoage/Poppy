@@ -109,6 +109,13 @@ from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_simple
 # module used to define its own; see the fix-pass note below for why it moved there instead
 # of the canon env loader importing this module).
 from mcts_trader.utils.db import _ro_connect, SQLITE_TIMEOUT_S
+# TASK_888 (D38): the ONE checkpoint resolution function + fail-closed loader, shared with
+# train_jax_fast.py / experiments/857_vhat_distill/distill.py / real_trade_jax.py. Replaces
+# this module's own (pre-888) abspath-only load_checkpoint_into — an abspath loader beside a
+# realpath guard is exactly the divergence (D38 c3) that halted TASK_886 cycle 3; this module's
+# pre-888 code had no realpath-based guard of its own yet, so the fix is to adopt the ONE
+# shared, already-realpath-based resolver rather than grow a second, locally-abspath one.
+from mcts_trader.jax_agent import checkpoint_io
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DB = os.path.join(_REPO, "fixtures", "trading_fixture.db")
@@ -2343,14 +2350,22 @@ def build_model_and_trainer(args, n_assets, init_seed):
     return model, trainer
 
 
-def load_checkpoint_into(trainer, ckpt_path):
-    """train_jax_fast.py:443 load pattern: load_checkpoint then assign trainer.state."""
-    abspath = os.path.abspath(ckpt_path)                      # orbax requires absolute paths
-    loaded = trainer.load_checkpoint(abspath)
-    if loaded is None:
-        raise RuntimeError(f"trainer.load_checkpoint returned None for {abspath}")
-    trainer.state = loaded
-    return trainer
+def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False):
+    """TASK_888: thin wrapper over the SHARED ``checkpoint_io.load_checkpoint_into`` — the ONE
+    resolver+loader used by this module, train_jax_fast.py, distill.py and real_trade_jax.py.
+
+    Pre-888 this function abspath'd ``ckpt_path`` itself and only checked ``loaded is None`` —
+    which flax's restore_checkpoint never actually returns on a miss (D37). An abspath loader
+    beside a realpath guard is exactly the divergence (D38, what killed TASK_886 cycle 3) the
+    shared resolver exists to make impossible: every checkpoint-identity question in this
+    program — "is this loadable" and "what does trainer.load_checkpoint actually read" — now
+    goes through the ONE function, ``checkpoint_io.resolve_checkpoint_dirs``.
+
+    Returns the load-evidence dict (``resolved_path``/``step``/``param_fingerprint``/``loaded``)
+    instead of the mutated ``trainer`` — both of this module's call sites already relied on the
+    in-place ``trainer.state`` mutation, not the return value, so this is a safe signature
+    change (verified: neither call site captured the old return)."""
+    return checkpoint_io.load_checkpoint_into(trainer, ckpt_path, allow_fresh_init=allow_fresh_init)
 
 
 def check_checkpoint_arch(ckpt_path, args):
@@ -2360,12 +2375,44 @@ def check_checkpoint_arch(ckpt_path, args):
     (a wrong-operator result, not a crash — unlike an n_assets/state_dim mismatch, which the
     param-shape check already rejects on load). Verify the eval arch against the checkpoint's
     ``trainer_metadata.json`` (written by trainer.save_checkpoint). Missing metadata -> WARN
-    (older checkpoint, cannot verify); mismatch -> ABORT before any rollout runs."""
-    meta_path = os.path.join(os.path.abspath(ckpt_path), "trainer_metadata.json")
+    (older checkpoint, cannot verify); mismatch -> ABORT before any rollout runs.
+
+    TASK_888: looks up the metadata beside the RESOLVED RUN DIR (``checkpoint_io.
+    resolve_checkpoint_dirs``) instead of ``os.path.abspath(ckpt_path)`` — pre-888 this read
+    metadata from a path that could diverge from the one ``load_checkpoint_into`` actually
+    loads (D38 c3: "check_checkpoint_arch reading the wrong checkpoint's metadata" was measured
+    on exactly this abspath/realpath split), so an orbax-leaf ``--checkpoint`` spelling crossing
+    a symlink could verify the WRONG checkpoint's architecture. Also checks ``state_dim`` now
+    (a mismatch there does not reliably surface as a shape defect on load and would otherwise
+    degrade several frames later into a bare ``flax.errors.ScopeParamShapeError``).
+
+    TASK_888 fix pass (B2): the metadata is a RUN-DIR SIBLING of the orbax leaf, so
+    ``checkpoint_io``'s leaf walk never covered it and this ``open()`` was raw — a FIFO planted
+    here blocked forever (a hang, not a verdict). ``stat`` before ``open``, through the SAME
+    ``checkpoint_io.unsafe_to_open_defect`` every other sidecar read in this program uses."""
+    run_dir, _leaf = checkpoint_io.resolve_checkpoint_dirs(ckpt_path)
+    meta_path = os.path.join(run_dir, "trainer_metadata.json")
+    # TASK_888 fix pass (M4, completion): every echo of `ckpt_path`/`meta_path` below goes
+    # through `checkpoint_io.clip_for_refusal`. `ckpt_path` is raw argv — bounded only by
+    # MAX_ARG_STRLEN (~128KB/entry) — and this function IS reachable from `main()` with a
+    # real-but-mismatched checkpoint (the preflight checks LOADABILITY, not architecture), which
+    # is how a 40,593-char exception was reproduced through a real path. The clip is counted and
+    # disclosed, so the refusal still names what failed; only how much of it is spelled is
+    # capped.
+    ckpt_echo = checkpoint_io.clip_for_refusal(ckpt_path, quote=False)
     if not os.path.exists(meta_path):
-        print(f"[835] WARN: no trainer_metadata.json in {ckpt_path} — cannot verify checkpoint "
+        print(f"[835] WARN: no trainer_metadata.json in {ckpt_echo} — cannot verify checkpoint "
               f"architecture; ensure --h-cycles/--l-cycles match the training run")
         return
+    open_defect = checkpoint_io.unsafe_to_open_defect(
+        meta_path, checkpoint_io.SIDECAR_MAX_BYTES, "a checkpoint's trainer_metadata.json")
+    if open_defect is not None:
+        raise RuntimeError(
+            f"[835] REFUSING to open {checkpoint_io.clip_for_refusal(meta_path)}: "
+            f"{open_defect}.\n"
+            f"  A hang is not a verdict (TASK_888): this sidecar sits beside the run dir, "
+            f"outside the checkpoint leaf the load guard walks, and is opened raw here and in "
+            f"trainer.load_checkpoint.")
     try:
         with open(meta_path) as fh:
             meta = json.load(fh)
@@ -2373,27 +2420,37 @@ def check_checkpoint_arch(ckpt_path, args):
         # Corrupt/truncated metadata (MEMORY: zstd->rsync doesn't detect source corruption) is
         # NOT a hard arch mismatch — trainer.load_checkpoint tolerates it and the pre-848 search
         # path never read this file. Downgrade to the SAME WARN-and-continue as missing metadata.
-        print(f"[835] WARN: trainer_metadata.json in {ckpt_path} is unreadable ({type(e).__name__}"
+        print(f"[835] WARN: trainer_metadata.json in {ckpt_echo} is unreadable ({type(e).__name__}"
               f": {e}) — cannot verify checkpoint architecture; ensure --h-cycles/--l-cycles match")
         return
     if not isinstance(meta, dict):
         # Valid JSON but wrong TYPE (null / number / list — page corruption can produce these):
         # meta.get(...) would raise AttributeError. Same WARN-and-continue as corrupt/missing.
-        print(f"[835] WARN: trainer_metadata.json in {ckpt_path} is not a JSON object "
+        print(f"[835] WARN: trainer_metadata.json in {ckpt_echo} is not a JSON object "
               f"(got {type(meta).__name__}) — cannot verify checkpoint architecture; ensure "
               f"--h-cycles/--l-cycles match")
         return
-    want = {"h_cycles": args.h_cycles, "l_cycles": args.l_cycles}
+    # state_dim: derived through the SAME TrainingConfig build_model_and_trainer uses, so
+    # model_size -> state_dim has exactly one definition in this module.
+    want = {"h_cycles": args.h_cycles, "l_cycles": args.l_cycles,
+            "state_dim": TrainingConfig(name="835_stage4_eval",
+                                        model_size=args.model_size).state_dim}
     mism = [(k, meta.get(k), v) for k, v in want.items()
             if meta.get(k) is not None and meta.get(k) != v]
     if mism:
-        detail = "; ".join(f"{k}: ckpt={m} eval={v}" for k, m, v in mism)
+        # `detail` is built from metadata VALUES, which are file-derived and capped only by
+        # SIDECAR_MAX_BYTES (4MB) — clipped for the same reason as the path echo above.
+        detail = checkpoint_io.clip_for_refusal(
+            "; ".join(f"{k}: ckpt={m} eval={v}" for k, m, v in mism), limit=2000, quote=False)
         raise RuntimeError(
-            f"checkpoint architecture mismatch ({ckpt_path}): {detail}. The TRM shares weights "
+            f"checkpoint architecture mismatch ({ckpt_echo}): {detail}. The TRM shares weights "
             f"across H/L recursion cycles, so a wrong --h-cycles/--l-cycles loads with identical "
-            f"param shapes and would SILENTLY evaluate a different net than was trained. Pass "
-            f"--h-cycles {meta.get('h_cycles')} --l-cycles {meta.get('l_cycles')} to match "
-            f"(source: {os.path.relpath(meta_path, _REPO)}).")
+            f"param shapes and would SILENTLY evaluate a different net than was trained; a wrong "
+            f"state_dim (set by --model-size) may not surface as a load-time shape defect and "
+            f"would otherwise degrade several frames later into a bare flax ScopeParamShapeError. "
+            f"Pass --h-cycles {meta.get('h_cycles')} --l-cycles {meta.get('l_cycles')} "
+            f"--model-size <matching {meta.get('state_dim')}> to match "
+            f"(source: {checkpoint_io.clip_for_refusal(os.path.relpath(meta_path, _REPO), quote=False)}).")
 
 
 def build_search(model, args, n_assets):
@@ -2927,7 +2984,7 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
 
 
 def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor, ext_windows,
-                        universe_pin=None):
+                        universe_pin=None, checkpoint_load=None):
     prices, env_cfg0, state_init, row_ts, col_symbols, panel_info = panel
     warm = int(env_cfg0.window_size)
     n_decisions = panel_info["n_decisions"]
@@ -3101,6 +3158,15 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
 
     result = {
         "tag": args.tag, "checkpoint": label["path"], "checkpoint_label": label["name"],
+        # TASK_888 scope 3: load evidence computed at LOAD time, always — resolved path, step,
+        # and a parameter fingerprint, independent of provenance. None only for the fixture
+        # smoke's fresh-init leg run BEFORE the save->load roundtrip (see run_smoke).
+        # resolved_path relativized the SAME way every other path in this artifact is
+        # (_display_path) — the raw evidence dict is absolute (a precise machine fact); a
+        # committed smoke artifact must not embed an ephemeral/absolute tmp path.
+        "checkpoint_load": ({**checkpoint_load,
+                            "resolved_path": _display_path(checkpoint_load["resolved_path"])}
+                            if checkpoint_load else None),
         "db": args.db, "window": [args.start, args.end], "bar_minutes": args.bar_minutes,
         "window_utc": _window_utc(args),              # TASK_869: resolved epoch bounds
         "eval_seed": args.eval_seed,
@@ -3815,7 +3881,7 @@ def run_smoke(args, corridor, ext_windows):
     print("[smoke] building second fresh-init trainer (seed 1) + load_checkpoint ...")
     model_b, trainer_b = build_model_and_trainer(args, args.n_assets, init_seed=1)
     differ_before = not _trees_allclose(trainer_a.state.params, trainer_b.state.params)
-    load_checkpoint_into(trainer_b, ckpt_dir)
+    checkpoint_load = load_checkpoint_into(trainer_b, ckpt_dir)
     match_after = _trees_allclose(trainer_a.state.params, trainer_b.state.params)
     roundtrip = {"ckpt_dir": _display_path(ckpt_dir),
                  "params_differ_before_load": bool(differ_before),
@@ -3829,7 +3895,8 @@ def run_smoke(args, corridor, ext_windows):
     label = {"path": _display_path(ckpt_dir),
              "name": "untrained_fresh_init(save->load roundtrip)"}
     result = evaluate_checkpoint(label, model_b, trainer_b.state.params, search_obj,
-                                 panel, args, corridor, ext_windows)
+                                 panel, args, corridor, ext_windows,
+                                 checkpoint_load=checkpoint_load)
     result["roundtrip"] = roundtrip
     return result
 
@@ -3860,17 +3927,19 @@ def run_smoke(args, corridor, ext_windows):
 def _own_provenance_path_for(ckpt_path):
     """``frame_provenance_<stem>.json`` beside ``ckpt_path`` (``ckpt_`` stripped off the
     basename) — the sibling file TASK_874's ``imprint.py`` writes next to every checkpoint it
-    emits (``imprint.frame_provenance_path_for``, imprint.py:799-808).
+    emits (``imprint.frame_provenance_path_for``).
 
-    Re-implemented here, not imported: ``imprint.py`` already imports FROM this module
-    (TASK_863's validator/framed-panel-loader reuse), so importing ``imprint`` here would be
-    circular. Mirrors imprint.py's helper exactly, including its documented caveat — the
-    mapping is not injective (``.../ckpt_foo`` and ``.../foo`` land on the same file) — which is
-    inert here: this module only ever READS the file, never writes it."""
-    base = os.path.basename(ckpt_path.rstrip(os.sep))
-    stem = base[len("ckpt_"):] if base.startswith("ckpt_") else base
-    return os.path.join(os.path.dirname(ckpt_path.rstrip(os.sep)) or ".",
-                        f"frame_provenance_{stem}.json")
+    Not imported from ``imprint.py``: that module already imports FROM this one (TASK_863's
+    validator/framed-panel-loader reuse), so importing ``imprint`` here would be circular.
+    TASK_888 fix pass: rather than keep a second literal copy of the rule, this delegates to
+    ``checkpoint_io.provenance_path_for`` — the shared module both this file and
+    ``tools/backfill_checkpoint_fingerprints.py`` already import. Byte-identical behaviour to
+    the copy it replaces (same string manipulation on the same raw ``ckpt_path``: this function
+    deliberately does NOT resolve, so every existing spelling keeps resolving exactly as it
+    did). Carries imprint's documented caveat — the mapping is not injective
+    (``.../ckpt_foo`` and ``.../foo`` land on the same file) — which is inert here: this module
+    only ever READS the file, never writes it."""
+    return checkpoint_io.provenance_path_for(ckpt_path)
 
 
 # 883R cycle 2 (security MINOR): provenance documents are ~KB; anything larger at the
@@ -4648,6 +4717,11 @@ def main():
             f"--collect-chosen-vectors takes a single walk but {len(ckpts)} checkpoints were "
             f"given; each would overwrite the same file. Run one checkpoint per collection "
             f"(the teacher pass is one deterministic walk).")
+    # TASK_888: refuse a nonexistent/unloadable --checkpoint (or checkpoint-list entry) before
+    # ANY panel/provenance work — the cheapest, highest-severity check in this sequence (a
+    # directory-listing probe, no model build). One poisoned entry aborts the whole run rather
+    # than silently grading a subset (the D36/D37 conservative direction).
+    checkpoint_io.preflight_checkpoint_loadable(ckpts)
     # TASK_883 gates (i)/(ii): refuse an unpinned or pin/checkpoint-mismatched run BEFORE any
     # panel is built. `--smoke` never reaches here (it returns out of run_smoke earlier).
     # TASK_883R (D36): the guard also hands over the REQUESTED universe, and the moment
@@ -4689,11 +4763,12 @@ def main():
         print(f"\n[835] evaluating {label['name']} ...")
         check_checkpoint_arch(path, args)                    # fail-loud arch guard (acceptance iii)
         model, trainer = build_model_and_trainer(args, args.n_assets, init_seed=0)
-        load_checkpoint_into(trainer, path)
+        checkpoint_load = load_checkpoint_into(trainer, path)   # TASK_888: refuses; never silent
         search_obj = build_search(model, args, args.n_assets) if args.operator == "search" else None
         result = evaluate_checkpoint(label, model, trainer.state.params, search_obj,
                                      panel, args, corridor, ext_windows,
-                                     universe_pin=universe_pin_info[path])
+                                     universe_pin=universe_pin_info[path],
+                                     checkpoint_load=checkpoint_load)
         out_name = f"results_{args.tag}_{label['name'].replace('/', '__')}.json"
         result["out_name"] = out_name
         # LEDGER pointer from the ACTUAL out_dir (scheduled runs write runs/835_stage4/).

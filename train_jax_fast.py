@@ -101,6 +101,9 @@ from mcts_trader.jax_agent.schedules import SimsSchedule
 from mcts_trader.training.safe_checkpoint import SafeCheckpointManager, append_checkpoint_score
 from mcts_trader.jax_agent.trainer import CheckpointVanishedError, CheckpointSidecarError
 from mcts_trader.training.evaluator import run_generalization_eval
+# TASK_888 (D38): the ONE checkpoint resolver + fail-closed loader, shared with
+# eval_vector.py / experiments/857_vhat_distill/distill.py / real_trade_jax.py.
+from mcts_trader.jax_agent import checkpoint_io
 
 # TASK_042: ReDo - Recycling Dormant Neurons
 from mcts_trader.jax_agent.redo import DormancyMonitor, recycle_dormant_neurons
@@ -183,6 +186,60 @@ def _attempt_checkpoint_save(trainer, target_dir, keep, what, epoch, run_dir):
             f"rollback-resume). Earlier checkpoints in {run_dir} are unaffected and still "
             f"resumable; training continues.")
     return written, msgs
+
+
+def _checkpoint_load_requested(config):
+    """Was ``--load-checkpoint`` GIVEN AT ALL — the gate for the load below, asked once here so
+    ``main()`` and its test exercise the same expression rather than two spellings that agree
+    today (guard-vs-loader drift is this task's whole thesis; a gate-vs-test copy is the same
+    class one layer up).
+
+    ``is not None``, deliberately NOT truthiness. ``--load-checkpoint``'s argparse default IS
+    ``None`` (``mcts_trader/training/cli.py:313``), so "omitted" and "given, but empty" are
+    genuinely distinguishable — and they must be, because eight orchestration scripts build this
+    flag PROGRAMMATICALLY and pass its value unconditionally
+    (``tools/run_scheduled_training.py:142``, ``tools/orchestration/dojo_v2.py:392``/``:470``,
+    ``dojo_v3_historical.py:791``/``:860``/``:942``, the sweeps). When the shell/Python variable
+    holding the checkpoint is unset, what reaches argv is ``--load-checkpoint ''`` and argparse
+    stores ``''`` — not None, but FALSY. Under the old truthiness gate that collapsed to "flag
+    not given": no print, no exception, no non-zero exit, and a multi-hour resume proceeded on
+    fresh ``init_train_state`` weights, invisible in the training curve because a fresh run looks
+    like a fresh run. That is precisely the scenario this row ranks FIRST, and it was surviving
+    at the site it ranks first, because the gate never let ``checkpoint_io`` see the input.
+
+    An explicitly-empty value now reaches ``load_checkpoint_into``, which refuses it by name (it
+    resolves to the cwd, finds no checkpoint there, and raises ``CheckpointRefusalError``).
+    Omitting the flag entirely still skips loading, exactly as before. Same idiom, same reason,
+    as ``eval_vector.py``'s ``is not None`` gates on its collect flags."""
+    return getattr(config, "load_checkpoint", None) is not None
+
+
+def _attempt_checkpoint_load(trainer, load_checkpoint_path, reset_optimizer):
+    """TASK_888 (D38 consequence order item 2 — "a multi-hour resume silently discards its
+    checkpoint and starts fresh"): the load-side counterpart of ``_attempt_checkpoint_save``,
+    factored out for the same reason — direct unit-testability without the rest of ``main()``.
+
+    Pre-888 this checked ``if loaded_state is not None:`` before printing "Checkpoint loaded
+    successfully" — flax's ``restore_checkpoint`` never actually returns ``None`` on a miss (it
+    silently aliases ``target`` back UNCHANGED instead, D37), so that ``else`` branch was DEAD
+    CODE and the success message printed unconditionally, including for a nonexistent/empty
+    ``--load-checkpoint`` dir. A resume that silently discards its checkpoint and starts fresh
+    is invisible in the training curve — a fresh run looks like a fresh run — which is exactly
+    the failure this task ranks #2 by consequence (the 884/885/887 batteries run in this lane).
+
+    Mutates ``trainer.state`` in place via ``checkpoint_io.load_checkpoint_into`` (resolved via
+    the SAME function every other checkpoint guard in this program uses) and RAISES on anything
+    that is not a real, complete load — never returns a "keep going" signal for a bad
+    checkpoint. Returns the load-evidence dict."""
+    checkpoint_load = checkpoint_io.load_checkpoint_into(trainer, load_checkpoint_path)
+    print(f"  Checkpoint loaded: resolved={checkpoint_load['resolved_path']} "
+          f"step={checkpoint_load['step']} "
+          f"fingerprint={checkpoint_load['param_fingerprint'][:12]}...")
+    if reset_optimizer:
+        print("  Resetting optimizer state for new regime...")
+        trainer.state = trainer.reset_optimizer_state(trainer.state)
+        print("  (Momentum and variance reset, model weights preserved)")
+    return checkpoint_load
 
 
 def main():
@@ -536,29 +593,16 @@ def main():
     state = trainer.init_train_state(init_rng, dummy_obs)
 
     # 6b. Load checkpoint if specified
-    if config.load_checkpoint:
-        # Orbax requires absolute paths
-        ckpt_path = os.path.abspath(config.load_checkpoint)
-        print(f"[CHECKPOINT] Loading from: {ckpt_path}")
+    if _checkpoint_load_requested(config):
+        print(f"[CHECKPOINT] Loading from: {config.load_checkpoint!r}")
         try:
-            loaded_state = trainer.load_checkpoint(ckpt_path)
-            if loaded_state is not None:
-                trainer.state = loaded_state
-                print(f"  Checkpoint loaded successfully")
-
-                # Reset optimizer state if requested (for curriculum transfer)
-                if config.reset_optimizer:
-                    print("  Resetting optimizer state for new regime...")
-                    trainer.state = trainer.reset_optimizer_state(trainer.state)
-                    print("  (Momentum and variance reset, model weights preserved)")
-            else:
-                print(f"  Warning: Failed to load checkpoint (trainer returned None)")
+            _attempt_checkpoint_load(trainer, config.load_checkpoint, config.reset_optimizer)
         except Exception as e:
             print(f"  Error loading checkpoint: {e}")
             raise
 
     # Clear buffer if requested (for curriculum transfer to new level)
-    if config.clear_buffer and config.load_checkpoint:
+    if config.clear_buffer and _checkpoint_load_requested(config):
         print("[BUFFER] Clearing replay buffer for new regime...")
         replay_buffer.clear()
 

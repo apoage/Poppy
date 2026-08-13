@@ -742,6 +742,26 @@ def main():
     got["checkpoint"] = want["checkpoint"]
     if isinstance(got.get("roundtrip"), dict) and isinstance(want.get("roundtrip"), dict):
         got["roundtrip"]["ckpt_dir"] = want["roundtrip"]["ckpt_dir"]
+    # TASK_888: `checkpoint_load.resolved_path` is the THIRD field carrying the --smoke-ckpt-dir
+    # path (the resolved orbax leaf inside it), so it normalizes exactly like the two above and
+    # for the identical reason: this leg deliberately writes the smoke checkpoint to a LEG-LOCAL
+    # directory, which no committed artifact can predict. Everything else in `checkpoint_load`
+    # — `step`, `param_fingerprint`, `loaded` — is left ALONE and is now pinned byte-for-byte
+    # against the committed artifact, so this leg gained a check rather than losing one: the
+    # fingerprint is a pure function of the saved parameter bytes, and a smoke whose roundtrip
+    # loaded different weights now FAILS here.
+    #   The recorded `excluded_keys`/`excluded_reason` fields below are deliberately NOT edited
+    # to name this third path. They are themselves compared, byte-for-byte, by the
+    # `vii_baseline_pins` results pin against the committed
+    # experiments/861_search_teacher_imprint/results_fixture_smoke.json, which moves ONLY
+    # through the planner-gated full-seed `--promote-baselines` recipe; editing the strings here
+    # would turn one green leg red for a documentation change. `excluded_reason`'s claim
+    # ("invocation-dependent ... smoke-ckpt-dir paths ...; every SCORED key is compared
+    # byte-for-byte") remains true of this third field — it is the enumerated LIST that is one
+    # entry short until the next promotion.
+    if isinstance(got.get("checkpoint_load"), dict) and \
+            isinstance(want.get("checkpoint_load"), dict):
+        got["checkpoint_load"]["resolved_path"] = want["checkpoint_load"]["resolved_path"]
     strip = lambda d: {k: v for k, v in d.items() if k not in CANON_835_VOLATILE}
     ok_835 = canon_json(strip(got)) == canon_json(strip(want))
     print(f"  835 fixture smoke vs the checked-in artifact "

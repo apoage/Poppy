@@ -71,6 +71,19 @@ from mcts_trader.env.jax_trading_env import (
 from mcts_trader.jax_agent import get_value_support
 from mcts_trader.jax_agent.sampled_search import create_sampled_vector_search
 from mcts_trader.jax_agent.popart import update_statistics
+# TASK_888 (D38): the ONE checkpoint resolver + fail-closed loader, shared with
+# eval_vector.py / train_jax_fast.py / real_trade_jax.py.
+from mcts_trader.jax_agent import checkpoint_io
+
+
+def _display_path(p):
+    """Repo-relative when inside the repo, absolute otherwise — same convention
+    eval_vector.py's ``_display_path`` uses, so emitted paths in this module's JSON read the
+    same way."""
+    p = os.path.abspath(p)
+    rel = os.path.relpath(p, _REPO)
+    return p if rel.startswith("..") else rel
+
 
 EXP_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DB = os.path.join(_REPO, "fixtures", "trading_fixture.db")
@@ -597,6 +610,60 @@ def _frozen_and_reward_unchanged(model, p0, p1, A):
 # driver
 # =============================================================================
 
+def resolve_warm_start(trainer, args):
+    """TASK_888 (D38 scope 2): the warm-start load, factored out of ``run()`` so it is directly
+    unit-testable without the rest of the (heavy, panel-dependent) pipeline.
+
+    Pre-888 an unloadable/absent ``--warm-start`` silently fell through to "WARM START ABSENT
+    ... fresh-init net" — a FALLBACK, not a request. Fresh-init now requires the operator to say
+    so explicitly (``--allow-fresh-init``); every other case REFUSES, naming the resolved path,
+    exactly like the other three TASK_888 sites (all via the shared
+    ``checkpoint_io.load_checkpoint_into``).
+
+    Returns ``(warm_start, checkpoint_load)``: ``warm_start`` is a display string (relpath when
+    inside the repo) or ``None`` when running fresh; ``checkpoint_load`` is always populated
+    (TASK_888 scope 3 — load evidence computed at LOAD time, always)."""
+    allow_fresh = bool(getattr(args, "allow_fresh_init", False))
+    if not args.warm_start:
+        if not allow_fresh:
+            raise RuntimeError(
+                "[857] REFUSING: no --warm-start given and --allow-fresh-init was not passed. "
+                "TASK_888 scope 2: deliberate fresh-init must be EXPLICITLY requested, never a "
+                "silent fallback. Pass --warm-start <checkpoint dir>, or --allow-fresh-init if "
+                "a fresh-init net is really what you want (e.g. a from-scratch ablation).")
+        checkpoint_load = {
+            "resolved_path": None, "step": int(trainer.state.step_count),
+            "param_fingerprint": checkpoint_io.param_fingerprint(trainer.state.params),
+            "loaded": False,
+        }
+        print("[857] --allow-fresh-init: no --warm-start given — proceeding on the trainer's "
+              "fresh init (explicitly requested, not a fallback)")
+        return None, checkpoint_load
+
+    # NOTE (PopArt handling — TASK_857 fix-pass FIX 4): load_checkpoint restores the WARM-START
+    # checkpoint's PopArt stats (the 832 imprint's, ~mean -8.29). Those are DELIBERATELY
+    # re-snapped below (distill_value_head) to the counterfactual-return distribution before
+    # training and re-saved with the distilled ckpt, because the value head is regressed on
+    # THOSE returns — its saved PopArt must match them, not 832's. This is SAFE for the graded
+    # operator regardless: the deployed --leaf-eval vhat-distilled decode is softmax·support
+    # (``_categorical_to_scalar``) and NEVER denormalizes through PopArt, so the stored stats
+    # are cosmetic for the deployment path.
+    checkpoint_load = checkpoint_io.load_checkpoint_into(
+        trainer, args.warm_start, allow_fresh_init=allow_fresh)
+    if checkpoint_load["loaded"]:
+        warm_start = _display_path(checkpoint_load["resolved_path"])
+        print(f"[857] warm-started from {warm_start} (step={checkpoint_load['step']} "
+              f"fingerprint={checkpoint_load['param_fingerprint'][:12]}...)")
+        return warm_start, checkpoint_load
+    # Only reachable with --allow-fresh-init (otherwise load_checkpoint_into refused above).
+    # M4 clipping: `--warm-start` is raw argv, bounded only by MAX_ARG_STRLEN; this line echoed
+    # it unclipped, which is the same unbounded echo checkpoint_io refuses to emit.
+    print(f"[857] --allow-fresh-init: {checkpoint_io.clip_for_refusal(args.warm_start)} not "
+          f"loadable — proceeding on the trainer's fresh init (explicitly requested, not a "
+          f"fallback)")
+    return None, checkpoint_load
+
+
 def run(args, out_path, tag):
     imp = load_imprint_module()
     corridor = imp._load_corridor()
@@ -619,24 +686,7 @@ def run(args, out_path, tag):
 
     # ---- model + trainer (canon arch) + warm start ----
     model, trainer = imp.build_model_and_trainer(args, A)
-    warm_start = None
-    if args.warm_start and os.path.isdir(args.warm_start):
-        # NOTE (PopArt handling — TASK_857 fix-pass FIX 4): load_checkpoint restores the
-        # WARM-START checkpoint's PopArt stats (the 832 imprint's, ~mean -8.29). Those are
-        # DELIBERATELY re-snapped below (distill_value_head) to the counterfactual-return
-        # distribution before training and re-saved with the distilled ckpt, because the value
-        # head is regressed on THOSE returns — its saved PopArt must match them, not 832's. This
-        # is SAFE for the graded operator regardless: the deployed --leaf-eval vhat-distilled
-        # decode is softmax·support (``_categorical_to_scalar``) and NEVER denormalizes through
-        # PopArt, so the stored stats are cosmetic for the deployment path.
-        loaded = trainer.load_checkpoint(os.path.abspath(args.warm_start))
-        if loaded is not None:
-            trainer.state = loaded
-            warm_start = os.path.relpath(args.warm_start, _REPO)
-            print(f"[857] warm-started from {warm_start}")
-    if warm_start is None:
-        print(f"[857] WARM START ABSENT ({args.warm_start}) — fresh-init net (fixture plumbing "
-              f"proof; the real run warms from runs/832_e5/ckpt_imprint_full)")
+    warm_start, checkpoint_load = resolve_warm_start(trainer, args)
     params_warm = trainer.state.params
 
     # ---- training observations for the decision rows (reuse 832 encoder path) ----
@@ -820,6 +870,12 @@ def run(args, out_path, tag):
         "bar_minutes": args.bar_minutes, "n_assets": A, "n_panel_rows": T,
         "warm": int(warm), "start_row": start_row, "n_decisions": N,
         "warm_start": warm_start,
+        # TASK_888 scope 3: load evidence computed at LOAD time, always — resolved path
+        # (relativized the same way `warm_start` above is), step, and a parameter fingerprint,
+        # independent of provenance. resolved_path/loaded=False only under --allow-fresh-init.
+        "checkpoint_load": {**checkpoint_load,
+                            "resolved_path": (_display_path(checkpoint_load["resolved_path"])
+                                              if checkpoint_load["resolved_path"] else None)},
         "cost_tiers_bp": list(GATE_COSTS),
         "dataset": {
             "mechanism": "true-env-leaf counterfactuals (851 _true_env_leaf_values, tail OFF): "
@@ -1129,6 +1185,13 @@ def main():
     ap.add_argument("--warm-start", default=None,
                     help="warm-start checkpoint dir (default: 832 ckpt_smoke fixture / "
                          "runs/832_e5/ckpt_imprint_full real)")
+    ap.add_argument("--allow-fresh-init", dest="allow_fresh_init", action="store_true",
+                    default=False,
+                    help="TASK_888 (D38 scope 2): EXPLICIT opt-in to train on a fresh-init net "
+                         "when --warm-start is absent or not loadable. Without this flag, a "
+                         "missing/unloadable --warm-start is a hard REFUSAL naming the resolved "
+                         "path — pre-888 it silently fell through to 'WARM START ABSENT ... "
+                         "fresh-init net', which is a fallback, not a request.")
     ap.add_argument("--ckpt-out", default=None,
                     help="distilled checkpoint dir (default: <exp>/ckpt_smoke fixture)")
     ap.add_argument("--tag", default=None)

@@ -1,5 +1,58 @@
 # TASK_888R — one checkpoint resolver, and a loader that refuses
 
+> **STATUS (2026-08-14): SHIPPED as `task888r-one-checkpoint-resolver`** — factory run 33, 2 cycles
+> (implement `sonnet` → escalated fix `opus` → fresh `sonnet` fail-closed re-verify). One resolution
+> function (`mcts_trader/jax_agent/checkpoint_io.py`) feeds BOTH guard and loader at all five sites; the
+> loader REFUSES via object identity instead of silently starting fresh; a bounded hang guard covers the
+> parameter payload AND the run-dir sidecars; load evidence lands in the run's own artifact only.
+>
+> **THE CAPACITY LINE HELD, proven mechanically rather than asserted:** `checkpoint_io.py` contains no
+> `open(...,'w')`, no `json.dump`, no `os.replace`, no `.write()`. Gate (v) verified against an
+> orchestrator-held baseline captured before any agent ran and re-checked after two full batteries and
+> seven agents — the 7 `runs/*/trainer_metadata.json` hash byte-identical in mtime and size, the 4 tracked
+> `runs/*frame_provenance*.json` are zero-diff vs HEAD, no provenance document carries `param_fingerprint`.
+> **Everything that writes into a persisted artifact was SUBTRACTED to TASK_889** — save-time fingerprint,
+> save-time architecture record, the retro-stamp tool, `distill.py`'s hand-built target, the
+> `config/real_trade_config.py` fossil — and a re-verifying judge diffed the tree against the stash
+> specifically to confirm none of it leaked back. **`stash@{0}` is LEFT INTACT: TASK_889 resumes from it.**
+>
+> **1 BLOCKER, found by the fail-closed lens at the site this row ranks FIRST — and it was this row's own
+> defect class one line upstream of the module that closes it.** `train_jax_fast.py` gated the only call
+> into `checkpoint_io` on TRUTHINESS, so `--load-checkpoint ""` (an unset shell variable in the
+> orchestration scripts that build this flag) collapsed to "flag not given" and training proceeded on fresh
+> weights in silence — verbatim the scenario this row exists to prevent. Fixed by gating on whether the flag
+> was GIVEN, via a named predicate so the test exercises the expression `main()` runs; regression test shown
+> RED then GREEN. Four other lenses, one explicitly hunting fail-opens, cleared every escape hatch inside
+> `checkpoint_io` and were right to — the hole was in the conditional guarding entry to it. Also closed:
+> uniform clip discipline, the dead `trainer.restore_checkpoint` alias DELETED (a second unguarded entry
+> into the loader), a read-permission gap that surfaced as a raw orbax `ValueError` instead of a
+> `CheckpointRefusalError`, and a docstring claiming a flax symmetry the code did not have.
+>
+> **ACCEPTANCE, stated at its true strength.** (i)/(iii) proven — 9 honest spellings resolve to one leaf and
+> one fingerprint through a REAL site, 3 escapes refused by BOTH guard and loader, the object-identity
+> detector mutation-tested by reproducing the historical D37 defect on a scratch copy. (iv) MEASURED, not
+> inferred — `83b8c96126fac…` agrees across nine spellings, the checkpoint's own recorded value, and a real
+> training epoch's printed evidence; a second checkpoint differs and matches its own record; all 7 real
+> checkpoints load with zero over-refusal after the readability guard. (v)/(vi) as above; scored fields
+> bit-identical. **(ii) is proven END-TO-END AT 4 SITES AND BY DIRECT IMPORT AT `distill.py`, NOT at five —
+> and that limit is stated rather than rounded up.**
+>
+> **REMAINDER → planner, a MAJOR this row deliberately did NOT fix.**
+> `experiments/857_vhat_distill/distill.py`'s CLI has been DEAD since TASK_874: `run()` unpacks 3 values
+> from `imprint.load_training_panel`, which returns 5, so `python distill.py …` dies with `ValueError: too
+> many values to unpack (expected 3)` before any refusal is reachable. Pre-existing at HEAD, reproduced by
+> three independent lenses. Repairing it decides whether distill consumes 868's `open_gate` and the alias
+> union — which changes what a distill run measures, out of this row's scope. **The 857/860 LEDGER numbers
+> predate the break and are unaffected.** Other remainders: the 7 orphaned `param_fingerprint` values are now
+> CORROBORATED by two independent re-derivations (889 must still recompute);
+> `tools/parallel_epoch_training.py:45` remains a 5th unguarded load site; `distill.py::resolve_warm_start`
+> still uses truthiness for `--warm-start` (verified NOT a fail-open).
+>
+> **`861/smoke_e2e.py` is 11 legs PASS / `vii_baseline_pins` FAIL on the single leaf
+> `/provenance/alias_union_rule`** — TASK_877's deliberate provenance-description rewrite, pre-existing since
+> run 31, `results` pin IDENTICAL, bit-identical before and after this row's fix pass. Clearing it needs ONE
+> operator authorization: `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines`.
+
 > **RE-CUT BY D39 (2026-08-12) after the run-32 halt. This row is now 888R: the VERIFIED half.**
 > The original row welded PATH IDENTITY + REFUSAL to ARCHITECTURE BINDING, and every cycle-3
 > survivor was in the latter. **The architecture layer has moved IN FULL to

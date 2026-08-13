@@ -32,8 +32,9 @@ from typing import Dict, List
 os.environ['JAX_PLATFORM_NAME'] = 'cpu' # Inference on CPU is robust
 
 # Project Imports
-from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
-from mcts_trader.jax_agent.trainer import MuZeroTrainer
+from mcts_trader.jax_agent import VALUE_SUPPORT_SIZE
+from mcts_trader.training.config import TrainingConfig
+from mcts_trader.training.setup import setup_model_and_trainer
 from mcts_trader.jax_agent.mctx_search import create_mctx_search
 from mcts_trader.data.history import HistoricalMarket
 from mcts_trader.encoder.state_fast import FastMultiAssetStateEncoder
@@ -42,6 +43,9 @@ from mcts_trader.data.kraken_client import KrakenClient
 from mcts_trader.data.stream import KrakenWebSocket
 from mcts_trader.data.database import Database
 from config import real_trade_config as cfg
+# TASK_888 (D38): the ONE checkpoint resolver + fail-closed loader, shared with
+# eval_vector.py / train_jax_fast.py / experiments/857_vhat_distill/distill.py.
+from mcts_trader.jax_agent import checkpoint_io
 
 # real_portfolio was never committed to this tree (see module docstring above).
 # Guard the import so the module can at least be imported/inspected; the
@@ -69,6 +73,132 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+
+def load_checkpoint_or_die(trainer, checkpoint_dir):
+    """TASK_888 (D38 consequence order item 1 — the highest-consequence site in the queue):
+    the ONE fail-closed checkpoint load for the live-trading path. Fixes two bugs that were,
+    until this task, the SAME bug wearing two faces:
+
+    (1) The pre-888 call here — ``self.trainer.load_checkpoint(cfg.CHECKPOINT_DIR)`` — DISCARDS
+        its return value. ``trainer.load_checkpoint`` (trainer.py:1824) ends ``return
+        restored_state``; it never assigns ``self.state`` itself (only ``init_train_state``
+        does that, trainer.py:380). So this process restored a checkpoint from disk, threw it
+        away, and traded the fresh ``PRNGKey(0)`` init from ``init_train_state`` on EVERY run,
+        not just a bad one — ``trade_step`` reads ``self.trainer.state.params``, which was
+        never reassigned to the loaded state.
+    (2) Even with the return value captured, flax's ``restore_checkpoint`` silently returns
+        ``target`` UNCHANGED on a nonexistent/unloadable checkpoint dir (D37) — never a raise,
+        never ``None`` — so a bad ``cfg.CHECKPOINT_DIR`` would ALSO have logged "Checkpoint
+        loaded successfully" while trading random-init weights.
+
+    ``checkpoint_io.load_checkpoint_into`` closes both: it MUTATES ``trainer.state`` itself (the
+    caller cannot forget to assign it) and REFUSES (raises) on anything that is not a real,
+    complete load, resolved via the SAME function every other checkpoint guard in this program
+    uses. No ``allow_fresh_init`` escape hatch is offered here, deliberately, unlike
+    ``distill.py --allow-fresh-init``: this is the live-trading site, and there is no legitimate
+    reason to ever trade random-init weights. Exits the process (matching this call's pre-888
+    contract of ``try/except`` + ``sys.exit(1)``) rather than raising, so the fix cannot be
+    silently bypassed by a future caller that forgets to catch a raised exception.
+
+    The log line CLIPS its echo of the path (``checkpoint_io.clip_for_refusal``): the refusal
+    message already embeds it once, so re-embedding it raw here doubled an operator-supplied
+    string that is bounded only by ``MAX_ARG_STRLEN`` — measured, a ~130,000-char input produced
+    a 390,559-char log line. What is refused does not change; only how it is spelled."""
+    try:
+        evidence = checkpoint_io.load_checkpoint_into(trainer, checkpoint_dir)
+    except Exception as e:
+        logging.critical(f"REFUSING to trade: checkpoint failed to load from "
+                         f"{checkpoint_io.clip_for_refusal(checkpoint_dir)}: "
+                         f"{checkpoint_io.clip_for_refusal(e, limit=4000, quote=False)}")
+        sys.exit(1)
+    logging.info(f"Checkpoint loaded: resolved={evidence['resolved_path']} "
+                 f"step={evidence['step']} "
+                 f"fingerprint={evidence['param_fingerprint'][:12]}...")
+    return evidence
+
+
+def build_model_and_trainer(n_assets=None, state_dim=None, use_prediction_head=None,
+                            use_popart=None, use_vector_action=None, sims=None, seed=0):
+    """THE model/trainer construction for this file — built through the CANONICAL
+    ``TrainingConfig`` -> ``setup_model_and_trainer`` path, the same one train_jax_fast.py,
+    eval_vector.py, distill.py, tools/paper_trade_vectorbt.py and the backfill use.
+
+    TASK_888 (fix pass, the BLOCKER at this row's own site). This used to hand-build
+    ``MuZeroNetworks(...)``/``MuZeroTrainer(...)`` inline in ``RealTrader.__init__``, and so
+    silently drifted from every other load site: it never passed ``use_vector_action``, which
+    defaults False (``muzero_model.py``), so the model it built had NO
+    ``vector_action_embedding`` at all — this repo's ACTIVE BUILD. ``restore_checkpoint``
+    finishes with ``from_state_dict(target, restored)``, which returns a pytree CONGRUENT TO THE
+    TARGET, so a checkpoint leaf the target does not have is DROPPED WITHOUT A WORD. Measured on
+    a real 64-asset checkpoint (``runs/861_ref/ckpt_ref_s0``, own fingerprint 83b8c96126fa...):
+    202 of its 204 leaves restored into that target, losing
+    ``vector_action_embedding.vec_act_proj.{kernel,bias}`` — the entire vector-action policy
+    projection — while ``checkpoint_io.load_checkpoint_into`` reported ``loaded=True`` with a
+    stable, well-formed but WRONG fingerprint (4c7918f1bf42...). Re-reproduced at tiny size in
+    ``test_real_trade_checkpoint_888.py`` (253 of 255 leaves, 7a2ced92552c... vs the
+    checkpoint's 315c86889deb...). The object-identity detector correctly sees a REAL load and
+    the shape check can only compare leaves both trees have, so ``load_checkpoint_or_die`` would
+    have logged a perfectly formatted TASK_888 evidence line over an untrained policy head.
+
+    No load-time check can close that class (see ``loaded_param_shape_defect``'s docstring): the
+    only countermeasure is that the TARGET IS THE CANONICAL ARCHITECTURE, which is what this
+    function makes true here. ``use_vector_action`` defaults to False — the scalar architecture
+    this file has always built, so the canon path is unchanged — and is overridable only via the
+    explicit keyword argument (this module's own tests build the vector-action side
+    deliberately). Binding that default to what a CHECKPOINT was actually saved with (so a wrong
+    answer REFUSES instead of silently dropping/randomly-initialising
+    ``vector_action_embedding``) is TASK_889's architecture-binding layer, not this row's:
+    ``trainer_metadata.json`` does not record it yet, and ``config/real_trade_config.py`` carries
+    no such knob.
+
+    SCOPE OF THE CONSEQUENCE, stated exactly and no wider: this site is DORMANT today. The
+    guarded ``RealPortfolioManager`` import fails in this tree (``_REAL_PORTFOLIO_AVAILABLE`` is
+    False), so ``RealTrader()`` is never constructed, and ``cfg.CHECKPOINT_DIR`` names a path
+    that does not exist. It was a landmine, not an active break.
+
+    Every argument except ``use_vector_action`` defaults to the corresponding
+    ``config/real_trade_config.py`` constant; overrides exist so the construction path can be
+    unit-tested at a tiny size WITHOUT instantiating ``RealTrader`` (which needs a Kraken client,
+    the live DB and a portfolio manager). Canon-faithful: ``model_size="small"`` is a neutral
+    placeholder so the explicit ``state_dim`` always wins (``TrainingConfig.__post_init__`` only
+    remaps state_dim from model_size when state_dim is at ITS default AND model_size !=
+    "small"), reproducing exactly what the hand-built ``MuZeroNetworks(state_dim=cfg.STATE_DIM,
+    ...)`` did."""
+    n_assets_val = int(cfg.N_ASSETS if n_assets is None else n_assets)
+    # Two config constants the canonical builder DERIVES rather than reads. Silently ignoring a
+    # value the operator set in real_trade_config.py is the same class of defect this task
+    # exists to close (a config that says one thing while the process does another), so they are
+    # asserted instead. ACTION_SPACE_SIZE is only checked when n_assets comes from the config —
+    # an explicit override (tests) is not the config speaking.
+    if n_assets is None and int(cfg.ACTION_SPACE_SIZE) != n_assets_val * 5:
+        raise RuntimeError(
+            f"real_trade_config.py: ACTION_SPACE_SIZE={cfg.ACTION_SPACE_SIZE} but the canonical "
+            f"model builder derives it as N_ASSETS*5 = {n_assets_val * 5}. Fix the config; "
+            f"refusing to build a model whose action space is not the one configured.")
+    if int(cfg.SUPPORT_SIZE) != int(VALUE_SUPPORT_SIZE):
+        raise RuntimeError(
+            f"real_trade_config.py: SUPPORT_SIZE={cfg.SUPPORT_SIZE} but the canonical model "
+            f"builder uses the central VALUE_SUPPORT_SIZE={VALUE_SUPPORT_SIZE}. Fix the config; "
+            f"refusing to build a value head with a support the config disagrees with.")
+    tcfg = TrainingConfig(
+        name="real_trade_jax",
+        model_size="small",
+        state_dim=int(cfg.STATE_DIM if state_dim is None else state_dim),
+        use_prediction_loss=bool(cfg.USE_PREDICTION_HEAD if use_prediction_head is None
+                                 else use_prediction_head),
+        use_popart=bool(cfg.USE_POPART if use_popart is None else use_popart),
+        # TASK_888R: no config knob exists for this (config/real_trade_config.py carries none —
+        # see this function's docstring). False matches what this file has always built.
+        # Binding it to what a checkpoint actually needs is TASK_889's scope, not this row's.
+        vector_action=bool(use_vector_action) if use_vector_action is not None else False,
+        sims=int(cfg.SIMULATIONS if sims is None else sims),
+    )
+    model, trainer = setup_model_and_trainer(tcfg, n_assets_val)
+    dummy_obs = jnp.ones((1, 27, n_assets_val, n_assets_val))
+    trainer.init_train_state(jax.random.PRNGKey(seed), dummy_obs)
+    return model, trainer
+
 
 class RealTrader:
     def __init__(self):
@@ -121,32 +251,17 @@ class RealTrader:
         self.encoder.register_assets(self.kraken_symbols)
 
         logging.info("Initializing JAX model...")
-        # Model architecture must match checkpoint (configured in real_trade_config.py)
-        self.model = MuZeroNetworks(
-            state_dim=cfg.STATE_DIM,
-            action_space_size=cfg.ACTION_SPACE_SIZE,
-            support_size=cfg.SUPPORT_SIZE,
-            use_prediction_head=cfg.USE_PREDICTION_HEAD,
-            n_assets=cfg.N_ASSETS,
-        )
-        self.trainer = MuZeroTrainer(
-            model=self.model,
-            use_popart=cfg.USE_POPART,
-        )
+        # Model architecture must match checkpoint (configured in real_trade_config.py).
+        # TASK_888: built through the CANONICAL TrainingConfig -> setup_model_and_trainer path
+        # (see build_model_and_trainer for the vector_action drift this closes), including the
+        # PRNGKey(0) dummy init this block used to do inline.
+        self.model, self.trainer = build_model_and_trainer()
 
-        # Dummy init
-        rng = jax.random.PRNGKey(0)
-        dummy_obs = jnp.ones((1, 27, cfg.N_ASSETS, cfg.N_ASSETS))
-        self.trainer.init_train_state(rng, dummy_obs)
-
-        # Load Checkpoint (use orbax for modern checkpoints)
+        # Load Checkpoint (use orbax for modern checkpoints). TASK_888: fail-closed, and the
+        # loaded state is actually installed on the trainer this time (see
+        # load_checkpoint_or_die's docstring for the two-bug history this replaces).
         logging.info(f"Loading checkpoint from {cfg.CHECKPOINT_DIR}...")
-        try:
-            self.trainer.load_checkpoint(cfg.CHECKPOINT_DIR)
-            logging.info("Checkpoint loaded successfully.")
-        except Exception as e:
-            logging.critical(f"Failed to load checkpoint: {e}")
-            sys.exit(1)
+        load_checkpoint_or_die(self.trainer, cfg.CHECKPOINT_DIR)
 
         self.search = create_mctx_search(self.model, num_simulations=cfg.SIMULATIONS, use_gumbel=True)
 

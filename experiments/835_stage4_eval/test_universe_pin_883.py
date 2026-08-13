@@ -69,11 +69,13 @@ re-cut:
 
   (iv)  a pin that MATCHES the checkpoint's own provenance is unaffected: it completes and its
         result carries EXACTLY the pre-883 key set plus the two additive keys
-        `universe_pinned`/`universe_pin` — nothing removed, nothing renamed. (The deep numeric
-        byte-identity claim — this run's `tiers`/`corridor` numbers are unchanged from HEAD —
-        was verified separately, once, via a `git stash` A/B on this exact checkpoint; seeing
-        it here on every run would require keeping a second copy of the pre-883 module around
-        forever, which is not what a standing regression test is for.)
+        `universe_pinned`/`universe_pin` (TASK_888 additionally added `checkpoint_load` —
+        load evidence computed at LOAD time on EVERY run, pinned or not; see EXPECTED_KEYS_PINNED)
+        — nothing removed, nothing renamed. (The deep numeric byte-identity claim — this run's
+        `tiers`/`corridor` numbers are unchanged from HEAD — was verified separately, once, via
+        a `git stash` A/B on this exact checkpoint; seeing it here on every run would require
+        keeping a second copy of the pre-883 module around forever, which is not what a
+        standing regression test is for.)
 
 Trains ONE real checkpoint on the fixture via `imprint.py` (which, per TASK_874, emits its own
 frame provenance next to the checkpoint it writes) and grades it four ways.
@@ -110,7 +112,10 @@ PRE_883_KEYS = {
     "tiers", "corridor", "teacher_floor", "panel_frame", "net_dependent",
     "out_name", "out_pointer", "ledger_row",
 }
-EXPECTED_KEYS_PINNED = PRE_883_KEYS | {"universe_pinned", "universe_pin"}
+# TASK_888 (D38 scope 3): `checkpoint_load` — resolved_path/step/param_fingerprint computed at
+# LOAD time, always (independent of provenance/pinning; every result carries it, pinned or
+# not). Additive, same as 883's own two keys were.
+EXPECTED_KEYS_PINNED = PRE_883_KEYS | {"universe_pinned", "universe_pin", "checkpoint_load"}
 
 
 def _write_frame(path, symbols):

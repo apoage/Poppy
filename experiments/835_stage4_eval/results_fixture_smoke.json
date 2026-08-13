@@ -2,6 +2,12 @@
   "tag": "fixture-smoke",
   "checkpoint": "experiments/835_stage4_eval/smoke_ckpt",
   "checkpoint_label": "untrained_fresh_init(save->load roundtrip)",
+  "checkpoint_load": {
+    "resolved_path": "experiments/835_stage4_eval/smoke_ckpt/checkpoint_0",
+    "step": 0,
+    "param_fingerprint": "ddb6cf9505388c58f611b74816f7d72e398bbca411add16668e151ca9b6219f5",
+    "loaded": true
+  },
   "db": "/home/lukas/Trader/fixtures/trading_fixture.db",
   "window": [
     "2025-09-13",
@@ -372,5 +378,5 @@
   },
   "out_name": "results_fixture_smoke.json",
   "out_pointer": "experiments/835_stage4_eval/results_fixture_smoke.json",
-  "ledger_row": "| 835/S4 | 2026-08-11 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -46.432 \u00b7 gross -14.848; final PV 96836; avgL 1.9 avgS 2.8; no HOLD collapse (pct_hold 63.4%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -46.432 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
+  "ledger_row": "| 835/S4 | 2026-08-13 | H1 (learned) | Stage-4 eval untrained_fresh_init(save->load roundtrip): deterministic full-timeline vector rollout (2025-09-13..2025-12-12, bar_minutes=60, seed 0) vs the corridor | net@21 -46.432 \u00b7 gross -14.848; final PV 96836; avgL 1.9 avgS 2.8; no HOLD collapse (pct_hold 63.4%); regimes net@21: bear22w n/a(fl -0.061), bull23w n/a(fl +1.434), y2024 n/a(fl +0.274), recent n/a(fl -0.534). FIXTURE-SMOKE \u2014 plumbing proof, untrained near-noise, no threshold applied; real Stage-4 numbers come from the scheduled run. | agent -46.432 in [+0.424, +29.698] net@21 (ref +0.751) | experiments/835_stage4_eval/results_fixture_smoke.json |"
 }
