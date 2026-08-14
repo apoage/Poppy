@@ -1,95 +1,92 @@
-# Factory run 33 — 2026-08-13/14 — TASK_888R SHIPPED
+# Factory run 33 — 2026-08-13/14 — TASK_888R and TASK_889 SHIPPED
 
-Ready #1 taken and shipped: `task888r-one-checkpoint-resolver` (`7cc50fb`). Tree clean, nothing pushed.
-No OPEN DECISIONS rows were outstanding at start, and none were seeded — this run needed no ruling.
+Two rows taken and shipped; the D39 sequence's first two steps are done.
+Tree clean, nothing pushed. No OPEN DECISIONS rows at start, none seeded — neither row needed a ruling.
+
+| Row | Commit | Tag | Cycles |
+|---|---|---|---|
+| TASK_888R | `7cc50fb` (+ handoff `0960f60`) | `task888r-one-checkpoint-resolver` | 2 |
+| TASK_889 | `f9d8ee4` | `task889-checkpoint-architecture-binding` | 3 |
+
+**Sequence status: 888R → 889 done. Next per D39: 886 → 878 → 881.**
 
 ## What shipped
 
-One checkpoint resolution function (`mcts_trader/jax_agent/checkpoint_io.py`) feeding BOTH the preflight
-guard and the loader at all five load sites, plus a loader that REFUSES instead of silently starting
-fresh. The miss is detected by object identity, never numeric parameter equality. Full detail in the
-CHANGELOG entry and the task banner; this file records what the next session needs.
+**888R** — one checkpoint resolution function feeding BOTH guard and loader at five sites, plus a loader
+that refuses via object identity instead of silently starting fresh. Detail in its CHANGELOG entry.
 
-**Resumed from `stash@{0}` by message, not rebuilt** — and the stash is LEFT INTACT, because TASK_889
-resumes from the same one. Do not drop it.
+**889** — save-time `vector_action` + `use_prediction_head` + `param_fingerprint`, a loader that REFUSES on
+recorded-vs-loaded disagreement, per-leaf `trainer_metadata_<step>.json` records, a retro-stamp that infers
+rather than guesses, a provenance emitter that refuses to silently rewrite tracked documents, and the config
+fossil flipped. Detail in its CHANGELOG entry.
 
-## The subtraction — verified file by file, because it is the whole point of the re-cut
+**`stash@{0}` is LEFT INTACT** — both rows took their half from it and neither dropped it.
 
-| Piece | In stash | Shipped | Destination |
-|---|---|---|---|
-| `config/real_trade_config.py` fossil flip | +17 | absent | 889 |
-| `tools/backfill_checkpoint_fingerprints.py` (+test) | +639 | absent | 889 (renamed retro-stamp) |
-| `imprint.py` provenance emitter | +89 | absent | 889 |
-| `trainer.py` save-time fingerprint | 61 lines | 43 lines | 889 |
-| `distill.py` hand-built target | present | zero matching lines | 889 |
-| resolver / refusal / hang guard / load evidence | — | SHIPPED | 888R |
+## The lesson this run bought, and it is not the one I expected
 
-The capacity line is proven statically as well as empirically: `checkpoint_io.py` contains no
-`open(...,'w')`, no `json.dump`, no `os.replace`, no `.write()`. A re-verifying judge diffed the working
-tree against the stash specifically to confirm no 889 surface leaked back in.
+**Both rows' BLOCKERs were outside the module under review, and both were found by running the real thing
+rather than the test.**
 
-## Gate (v) — and the method worth reusing
+- 888R: five lenses correctly cleared every escape hatch inside `checkpoint_io`. The hole was one line
+  upstream — `train_jax_fast.py` gated entry to it on TRUTHINESS, so `--load-checkpoint ""` collapsed to
+  "flag not given" and training ran on fresh weights in silence.
+- 889: the retro-stamp's own test monkeypatched `infer_vector_action`, the function that fails. Only the
+  tool's real bare invocation revealed it crashed on the one GPU-saved checkpoint.
 
-An orchestrator-held baseline manifest was captured BEFORE any agent ran, and re-checked after two full
-suite batteries and seven agents. The 7 `runs/*/trainer_metadata.json` hash byte-identical in mtime and
-size (md5 `151d8524b87a96f9be771c5eab6dc244` both times); the 4 tracked `runs/*frame_provenance*.json` are
-zero-diff vs HEAD; no provenance document carries `param_fingerprint`; fixture `b0f8de8b…` / 79310848 B
-unchanged; `trading_data.db` mtime still 2026-07-26 20:47.
+**A test that stubs the thing under test cannot fail.** For the rows still ahead on this lane, the cheap
+high-yield move is to run each tool's own documented invocation and each site's real CLI, not only its
+suite.
 
-**Reusable lesson:** holding that baseline in the ORCHESTRATOR rather than trusting each agent's own
-manifest is what made the check meaningful — a flow-verifier's honest self-report and my independent diff
-agreed, and a discrepancy would have been visible immediately. Run 32's contamination was invisible
-precisely because nobody held a before-state.
+**Two orchestrator directions were wrong and were caught because subagents were told to argue rather than
+comply.** (1) The proposed per-leaf filename `checkpoint_<step>.trainer_metadata.json` would have been
+returned AS the checkpoint — flax's `latest_checkpoint` globs `checkpoint_*` without checking the entry is
+a directory. (2) "Infer `vector_action` from the payload" deserializes arrays and so depends on saved
+sharding. Both were measured and corrected. Keep briefing subagents to disagree with evidence.
 
-## The finding worth carrying into TASK_889
-
-**The BLOCKER was not in the module five lenses were auditing.** `train_jax_fast.py` gated the only call
-into `checkpoint_io` on truthiness, so `--load-checkpoint ""` — an unset shell variable in the
-orchestration scripts that build the flag — collapsed to "flag not given" and training proceeded on fresh
-weights in silence. Correctness, regression, security and flow-verifier all traced the escape hatches
-INSIDE `checkpoint_io` and correctly found none. The hole was one line upstream, in the conditional
-guarding entry to it. **889 touches the same call sites: audit the CALL SITES, not only the module.**
-
-A related NIT survives: `distill.py::resolve_warm_start` still gates `--warm-start` on truthiness. Verified
-NOT a fail-open (it refuses `''` without `--allow-fresh-init`), but it is the same idiom in a file 889 will
-open.
-
-## Open items for the operator
+## Operator decisions pending — three, and the third is newly unblocked
 
 1. **`861/smoke_e2e.py` needs ONE authorization to go fully green.** 11 legs PASS; `vii_baseline_pins`
-   fails on the single leaf `/provenance/alias_union_rule` with the `results` pin IDENTICAL. This is
-   TASK_877's deliberate provenance-DESCRIPTION rewrite (XBT→BTC fold, `normalize_symbol_key`, the
-   `MIN_ALIAS_OVERLAP_TS = 64` evidence floor) — no numeric leaf moved. Bit-identical before and after this
-   run's fix pass. The command is
-   `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines`; it re-installs a
-   tracked oracle, which is not a factory action.
+   fails on the single leaf `/provenance/alias_union_rule`, `results` pin IDENTICAL. TASK_877's deliberate
+   provenance-DESCRIPTION rewrite; no numeric leaf moved. Verified bit-identical across four full battery
+   runs this session, before and after both rows. Command:
+   `python experiments/861_search_teacher_imprint/smoke_e2e.py --promote-baselines`. Re-installs a tracked
+   oracle, so it is not a factory action.
 2. **`distill.py`'s CLI has been DEAD since TASK_874 (2026-08-08)** — `run()` unpacks 3 values from
-   `imprint.load_training_panel`, which returns 5, so `python distill.py …` dies with `ValueError` before
-   reaching any checkpoint logic. Nobody noticed because no distill run has happened since. **The 857/860
-   LEDGER numbers predate the break and are unaffected.** The repair is not mechanical: it decides whether
-   distill consumes 868's `open_gate` and the alias union, which changes what a distill run measures. Needs
-   a ruling before anyone touches it.
+   `imprint.load_training_panel`, which returns 5. Reproduced by three lenses; pre-existing at HEAD.
+   **The 857/860 LEDGER numbers predate the break and are unaffected.** Repairing it decides whether distill
+   consumes 868's `open_gate` and the alias union, which changes what a distill run measures — a ruling,
+   not a patch. This is why 888R shipped gate (ii) proven at 4 sites and by direct import at the fifth,
+   rather than quietly fixing one line to make its own gate go green.
+3. **The `--apply` freeze on `runs/` can now lift, if you want it to.** D39 froze it "until architecture is
+   recorded at SAVE time" — 889 does that, so the stated precondition is met. Nothing was applied this run;
+   the 7 `trainer_metadata.json` manifest md5 `151d8524b87a96f9be771c5eab6dc244` is unchanged across 3
+   cycles, 4 judges and 4 batteries, and the 4 tracked provenance documents are zero-diff. **This gates
+   TASK_886's positive claim**, whose `verified: true` reads `param_fingerprint` from the frame-provenance
+   document — and all 4 tracked documents still lack that field. Note the blast radius the 889 task file
+   names: `eval_vector.py:819`'s `provenance_meta_block` copies every non-`frame_symbols` key into every
+   artifact reading that frame, and `runs/861_ref/frame_provenance_ref.sha256` would be invalidated.
 
-## Evidence that helps TASK_889
+## Evidence carried forward
 
-**The 7 orphaned `param_fingerprint` values are CORROBORATED.** D39 recorded them as untrusted — written by
-run 32's bare `--apply`, producer stashed, no code in the tree able to validate them. Two independent lenses
-this run re-derived all 7 via a legacy-signature load on both a HEAD worktree and the candidate: identical
-to each other AND to the recorded values (`ckpt_ref_s0` → `83b8c96126fac493c8dde4729f105698ad118cd2b933d32a89eef2abd5ab8942`
-three ways). **889 gate (iv) must still RECOMPUTE and refuse on disagreement** — D39's concern was a
-`vector_action=True` hardcode against SCALAR checkpoints, which these are not — but the evidence now says
-the values are correct for these vector-action lineages.
+- **The 7 orphaned `param_fingerprint` values are CORROBORATED.** D39 recorded them as untrusted. Three
+  independent agents re-derived all 7 this run — on a HEAD worktree and on the candidate — and they match
+  their recorded values (`ckpt_ref_s0` → `83b8c96126fac…`; `ckpt_imprint_full` → `b93e767738c0370d…` under
+  the newly-inferred architecture). They still must be recomputed, never trusted, but the evidence says
+  they are correct.
+- **Byte-identity is proven at unusual depth for 889:** a HEAD worktree compared all 7 real checkpoints on
+  fingerprint, per-leaf raw sha256 across all 204 leaves, PopArt state, and a full `initial_inference`
+  forward pass — all 7 byte-for-byte identical.
+- All 117 `checkpoint_*` leaves in the repo carry `_METADATA`; 0 carry the legacy `checkpoint` file.
 
-Also: `tools/parallel_epoch_training.py:45` remains a 5th load site calling `checkpoints.restore_checkpoint`
-raw, and three experiment probes (`834_e3_probe`, `836_value_ranking`, `844_short_bias`) guard themselves
-with `np.allclose` numeric equality — the same unsound class 888R replaced. All outside this row's surface.
+## Why I stopped here rather than taking TASK_878
 
-Minor loss to record: the planner's `.run32_quarantine/` directories (nested under
-`experiments/{863,865,874}/smoke_runs/`, not at repo root) were regenerated away by this run's suites.
-Regenerable smoke scratch per D39, so nothing load-bearing was lost, but the run-32 forensic sample is gone.
+886's contract is buildable but its positive claim is gated on decision 3 above. 878 is Ready and needs no
+ruling — but the planner ratified exactly this call in run 31: *"Stopping rather than starting 878 is
+RATIFIED — it rewrites eval-core execution semantics with every parity gate riding on it and carries a
+3-arm ablation; starting it at the end of a run to leave it half-built would have been the worse call."*
+That reasoning holds identically at the end of this run. 878 and 881 remain takeable by the next run.
 
 ## Queue state
 
-Ready: **1 TASK_889** (resumes from the intact `stash@{0}`) → 2 TASK_886 (contract only, now unblocked on
-888R but still blocked on 889) → 3 TASK_878 → 4 TASK_881. GATED: TASK_880 (D34+D35).
-No OPEN DECISIONS rows.
+Ready: **1 TASK_886** (contract only; positive claim gated on the `--apply` decision) → 2 TASK_878 →
+3 TASK_881. GATED: TASK_880 (D34+D35). No OPEN DECISIONS rows.
