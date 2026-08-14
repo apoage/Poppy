@@ -72,5 +72,6 @@
     "2025-10-04"
   ],
   "db": "trading_data.db",
-  "checkpoint": "runs/861_ref/ckpt_ref_s1"
+  "checkpoint": "runs/861_ref/ckpt_ref_s1",
+  "param_fingerprint": "36468b9575c95f39389d590e74aa1f8d259c9d5c76f2dc8eb4fece42ab481e53"
 }
