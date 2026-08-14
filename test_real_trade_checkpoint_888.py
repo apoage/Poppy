@@ -122,24 +122,47 @@ def test_site_construction_path_keeps_vector_action(rtj):
                all(np.allclose(src_leaves[k], dst_leaves[k]) for k in vec_leaves),
                "vec_act_proj values differ from the saved checkpoint")
 
-        # --- negative control: the exact drift this fix closes, still silent by construction -
-        # This is what real_trade_jax.py did before the fix (hand-built model, use_vector_action
-        # never passed => default False). It must still report a clean, successful load — that
-        # is the whole point: NO load-time check can see it, so the only defence is the target
-        # architecture, and this control is what makes the assertions above meaningful.
+        # --- negative control: the exact drift this fix closes is now CAUGHT, not silent -----
+        # This is what real_trade_jax.py did before TASK_888's fix (hand-built model,
+        # use_vector_action never passed => default False). Pre-TASK_889 it reported a clean,
+        # successful load with a WRONG fingerprint — proving NO load-time check could see it,
+        # only the construction path. TASK_889 (D39) closes exactly that gap: trainer_src's
+        # checkpoint now RECORDS vector_action=True (save-time architecture recording), and
+        # trainer.load_checkpoint REFUSES when a target's own vector_action disagrees with it —
+        # so this drift no longer needs the construction-path discipline above as its ONLY
+        # defence; it is caught at load time too (defense in depth), through
+        # load_checkpoint_or_die's own sys.exit(1) path.
         _model_drift, trainer_drift = rtj.build_model_and_trainer(
             n_assets=2, use_vector_action=False, seed=0)
-        evidence_drift = rtj.load_checkpoint_or_die(trainer_drift, ckpt_dir)
-        drift_leaves = set(jax.tree_util.keystr(p) for p, _ in
-                           jax.tree_util.tree_flatten_with_path(trainer_drift.state.params)[0])
-        _check("negative control: a scalar-only target (the pre-fix drift) DROPS exactly the "
-               "vector-action leaves", set(vec_leaves) and not (set(vec_leaves) & drift_leaves),
-               f"drift target still has {sorted(set(vec_leaves) & drift_leaves)}")
-        _check("negative control: and reports loaded=True with a WRONG fingerprint — proving "
-               "the evidence line cannot detect this class, only the construction path can",
-               evidence_drift["loaded"] is True
-               and evidence_drift["param_fingerprint"] != fp_src,
-               str(evidence_drift))
+        drift_params_before = trainer_drift.state.params
+        exited_drift = {"code": None}
+        real_exit_drift = sys.exit
+        def _fake_exit_drift(code=0):
+            exited_drift["code"] = code
+            raise SystemExit(code)
+        sys.exit = _fake_exit_drift
+        try:
+            try:
+                rtj.load_checkpoint_or_die(trainer_drift, ckpt_dir)
+                raised_drift = False
+            except SystemExit:
+                raised_drift = True
+        finally:
+            sys.exit = real_exit_drift
+        _check("TASK_889: a scalar-only target (the pre-888-fix drift) loading a vector-action "
+               "checkpoint now REFUSES (sys.exit) instead of silently reporting loaded=True "
+               "with a wrong fingerprint",
+               raised_drift and exited_drift["code"] == 1, f"exited={exited_drift}")
+        # The refusal must also be CLEAN: `load_checkpoint_into` promises `trainer.state` is
+        # left exactly as the caller built it on every refusal path, and a refusal that had
+        # already half-installed foreign weights would be worse than no refusal — the process
+        # exits, but an in-process caller (or a future one that catches the exit) would be
+        # holding a partially-restored model. Asserted the same way the sibling
+        # test_paper_trade_checkpoint_888.py does, by OBJECT IDENTITY on the pre-call params.
+        _check("TASK_889: ... and the refusal leaves trainer.state.params the UNTOUCHED "
+               "pre-call object (never a partial restore)",
+               trainer_drift.state.params is drift_params_before,
+               "params were mutated despite the refusal")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -52,5 +52,16 @@ MODEL_SIZE = 'small'  # small=64, medium=96, large=160
 STATE_DIM = 64  # Must match MODEL_SIZE
 ACTION_SPACE_SIZE = 320  # N_ASSETS * 5 (sell/hold/buy/limit_sell/limit_buy)
 SUPPORT_SIZE = 401  # PopArt: [-10, +10] with 0.05 resolution
-USE_PREDICTION_HEAD = True  # Enable prediction head (trained with --use-prediction-loss)
+# TASK_889 (D39, 2026-08-12): flipped True -> False. This constant was committed as LEGACY
+# working-tree state by 6ea7fe7 (2026-07-06), never authored as a decision, and every fact in
+# the tree disagrees with it: its only consumer (real_trade_jax.py) self-declares BROKEN/LEGACY
+# and cannot be constructed; the model's own default is use_prediction_head=False
+# (muzero_model.py); the active training line ASSERTS the prediction loss OFF as "the
+# 97%-of-loss trap" (train_jax_fast.py); and all 7 surviving checkpoints record
+# use_prediction_head: false as a genuine save-time fact. D39's ruling: the config was wrong,
+# the checkpoints were right — REFUSE a mismatch (see trainer.load_checkpoint), never normalize
+# it by leaving a config that silently random-inits 52/253 prediction-head leaves against every
+# checkpoint that exists. The True/False disagreement is now a CONSTRUCTED regression test
+# (see test_architecture_binding_889.py), not a landmine in a shipped config.
+USE_PREDICTION_HEAD = False  # NO prediction head — matches every checkpoint on disk (see above)
 USE_POPART = True  # Enable PopArt normalization

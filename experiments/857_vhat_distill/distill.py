@@ -610,6 +610,44 @@ def _frozen_and_reward_unchanged(model, p0, p1, A):
 # driver
 # =============================================================================
 
+def _peek_recorded_use_prediction_head(warm_start):
+    """TASK_889 (D39 scope 5): best-effort peek at a ``--warm-start`` checkpoint's OWN recorded
+    ``use_prediction_head`` (written by ``trainer.save_checkpoint``), so the TARGET this file
+    builds can match it instead of hand-rolling the 832 imprint recipe's hardcoded False.
+
+    THE DEFECT THIS CLOSES. ``run()`` used to call ``imp.build_model_and_trainer(args, A)``
+    unconditionally, which always built ``use_prediction_head=False`` (the 832 recipe). A
+    ``--warm-start`` checkpoint that DOES carry a prediction head then restored into a target
+    congruent to itself minus that head — ``price_predictor``/``latent_to_market`` leaves
+    silently left at random init (measured: 51 leaves), no shape defect, no identity miss, a
+    clean-looking load.
+
+    NEVER RAISES AND NEVER REFUSES — a missing/unresolvable/pre-TASK_889 checkpoint (no
+    recorded ``use_prediction_head`` at all) falls back to False, the canon 832 default this
+    file has always built. ``resolve_warm_start`` (called immediately after, on the trainer THIS
+    peek informs) is what actually refuses on a bad or mismatched checkpoint, with the full
+    TASK_888/889 evidence — this function only answers "what should the target's architecture
+    be", never "is this checkpoint loadable"."""
+    if not warm_start:
+        return False
+    try:
+        run_dir, _leaf = checkpoint_io.resolve_checkpoint_dirs(warm_start)
+        meta_path = os.path.join(run_dir, 'trainer_metadata.json')
+        if not os.path.exists(meta_path):
+            return False
+        if checkpoint_io.unsafe_to_open_defect(
+                meta_path, checkpoint_io.SIDECAR_MAX_BYTES,
+                "a checkpoint's trainer_metadata.json") is not None:
+            return False
+        with open(meta_path) as fh:
+            metadata = json.load(fh)
+        if not isinstance(metadata, dict):
+            return False
+        return bool(metadata.get('use_prediction_head', False))
+    except (OSError, ValueError):
+        return False
+
+
 def resolve_warm_start(trainer, args):
     """TASK_888 (D38 scope 2): the warm-start load, factored out of ``run()`` so it is directly
     unit-testable without the rest of the (heavy, panel-dependent) pipeline.
@@ -685,7 +723,12 @@ def run(args, out_path, tag):
           f"bar_minutes={args.bar_minutes}")
 
     # ---- model + trainer (canon arch) + warm start ----
-    model, trainer = imp.build_model_and_trainer(args, A)
+    # TASK_889 (D39 scope 5): build the target's use_prediction_head from the WARM-START
+    # checkpoint's OWN recorded architecture, never the 832 recipe's hardcoded False — see
+    # _peek_recorded_use_prediction_head for the 51-dropped-leaf defect this closes.
+    ckpt_use_prediction_head = _peek_recorded_use_prediction_head(args.warm_start)
+    model, trainer = imp.build_model_and_trainer(args, A,
+                                                 use_prediction_head=ckpt_use_prediction_head)
     warm_start, checkpoint_load = resolve_warm_start(trainer, args)
     params_warm = trainer.state.params
 

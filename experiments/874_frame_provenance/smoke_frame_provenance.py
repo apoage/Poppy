@@ -530,6 +530,104 @@ def leg_b3_no_silent_overwrite(R, imp):
     return {"leg": "b3_no_silent_overwrite", "passed": all(checks.values()), "checks": checks}
 
 
+def leg_b4_fingerprint_refresh_is_opt_in(R, imp):
+    """TASK_889 fix pass — the WEIGHT-BINDING half of B3, which shipped ungated.
+
+    ``param_fingerprint`` is excluded from the frame-identity comparison (it describes the
+    WEIGHTS, not the FRAME), so a document whose frame matches but whose fingerprint differs — or
+    is ABSENT — took a branch that REWROTE the file unconditionally, announcing itself on stdout
+    only: no flag, no dry-run gate, no awareness of the hand-kept ``.sha256`` pins. That is the
+    shape TASK_874 shipped a BLOCKER fix for one field up, reintroduced one field down, and it
+    was live: all four git-TRACKED provenance documents lack ``param_fingerprint`` today, so the
+    next ordinary run would have mutated four tracked artifacts with no operator sign-off.
+
+    The refresh now folds into ``--overwrite-frame-provenance``'s existing discipline."""
+    print("\n=== (B4) param_fingerprint refresh: REFUSED by default, opt-in replaces loudly ===")
+    from types import SimpleNamespace
+    ckpt = R("ckpt_b4")
+    os.makedirs(ckpt, exist_ok=True)
+    prov_path = os.path.join(RUN_DIR, "frame_provenance_b4.json")
+    base = dict(n_assets=8, start="2025-09-14", end="2025-12-12", db=FIXTURE_DB_REL,
+                panel_frame_from_checkpoint=None, panel_frame_source="daily",
+                overwrite_frame_provenance=False)
+    aliases = [{"slot": i, "symbol": s} for i, s in enumerate(FIXTURE_FRAME_SYMBOLS)]
+    args = SimpleNamespace(**base)
+    fp_a, fp_b = "a" * 64, "b" * 64
+
+    # A document with NO fingerprint — the exact state of all four tracked documents.
+    path_no_fp, doc_no_fp = imp.build_frame_provenance(ckpt, args, None, aliases)
+    imp.write_frame_provenance(path_no_fp, doc_no_fp, args)
+    unbound_bytes = open(prov_path, "rb").read()
+
+    # A hand-kept digest pin naming it, exactly like runs/861_ref/frame_provenance_ref.sha256.
+    pin_path = os.path.join(RUN_DIR, "frame_provenance_b4.sha256")
+    with open(pin_path, "w") as fh:
+        fh.write(f"{hashlib.sha256(unbound_bytes).hexdigest()}  frame_provenance_b4.json\n")
+
+    # ---- same frame, now WITH a fingerprint, no flag -> REFUSE, file untouched --------------
+    _p, doc_a = imp.build_frame_provenance(ckpt, args, None, aliases, param_fingerprint=fp_a)
+    raised_absent = None
+    try:
+        imp.write_frame_provenance(prov_path, doc_a, args)
+    except SystemExit as e:
+        raised_absent = str(e)
+    untouched_absent = open(prov_path, "rb").read() == unbound_bytes
+
+    # ---- the same refusal in the DRY RUN (fail-fast, before promote_parity_baseline) --------
+    raised_dry = None
+    try:
+        imp.write_frame_provenance(prov_path, doc_a, args, dry_run=True, stage="pre-promotion")
+    except SystemExit as e:
+        raised_dry = str(e)
+
+    # ---- the opt-in DOES refresh, loudly, preserving the frame --------------------------
+    forced = SimpleNamespace(**{**base, "overwrite_frame_provenance": True})
+    imp.write_frame_provenance(prov_path, doc_a, forced)
+    bound = json.load(open(prov_path))
+    bound_bytes = open(prov_path, "rb").read()
+
+    # ---- re-binding to DIFFERENT weights is refused again (not just the first time) ---------
+    _p2, doc_b = imp.build_frame_provenance(ckpt, args, None, aliases, param_fingerprint=fp_b)
+    raised_stale = None
+    try:
+        imp.write_frame_provenance(prov_path, doc_b, args)
+    except SystemExit as e:
+        raised_stale = str(e)
+    untouched_stale = open(prov_path, "rb").read() == bound_bytes
+
+    # ---- the SAME fingerprint stays a quiet no-op (no refusal treadmill on re-runs) ---------
+    rerun_raised = None
+    try:
+        imp.write_frame_provenance(prov_path, doc_a, args)
+    except SystemExit as e:
+        rerun_raised = str(e)
+
+    checks = {
+        "absent_fingerprint_refuses_by_default": raised_absent is not None,
+        "refusal_names_both_fingerprints": raised_absent is not None
+                                           and fp_a in raised_absent
+                                           and "None" in raised_absent,
+        "refusal_names_the_opt_in_flag": raised_absent is not None
+                                         and "--overwrite-frame-provenance" in raised_absent,
+        "refusal_discloses_the_hand_kept_digest_pin": raised_absent is not None
+                                                      and "frame_provenance_b4.sha256"
+                                                      in raised_absent,
+        "refused_write_left_the_file_untouched": untouched_absent,
+        "dry_run_refuses_too_fail_fast": raised_dry is not None,
+        "opt_in_flag_bound_the_fingerprint": bound.get("param_fingerprint") == fp_a,
+        "opt_in_refresh_kept_the_frame": bound.get("frame_symbols") == doc_a["frame_symbols"],
+        "stale_binding_refuses_again": raised_stale is not None,
+        "stale_refusal_left_the_file_untouched": untouched_stale,
+        "same_fingerprint_is_a_quiet_noop": rerun_raised is None,
+    }
+    for k, v in checks.items():
+        print(f"    {'OK  ' if v else 'FAIL'} {k}")
+    if raised_absent:
+        print(f"    refusal: {raised_absent[:400]}")
+    return {"leg": "b4_fingerprint_refresh_opt_in", "passed": all(checks.values()),
+            "checks": checks}
+
+
 # =============================================================================================
 # (I1) a provenance REFUSAL can never move the git-tracked parity baseline
 # =============================================================================================
@@ -649,6 +747,7 @@ def main():
     imp = _imprint_module()
     report["legs"].append(leg_iii_pinned_emission_matrix(R, imp))
     report["legs"].append(leg_b3_no_silent_overwrite(R, imp))
+    report["legs"].append(leg_b4_fingerprint_refresh_is_opt_in(R, imp))
     report["legs"].append(leg_b2_duplicate_frame_refused(R))
     report["legs"].append(leg_b1_refused_run_emits_nothing(R))
     report["legs"].extend(legs_i1_baseline_never_moves(R, imp))

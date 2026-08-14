@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """TASK_888 fix pass (B4) — the leaf-set hazard, and the countermeasure.
 
-Two things are proven here, and they are deliberately separate:
+Three things are proven here, and they are deliberately separate:
 
-1. **What a load-time check CANNOT see.** `flax.training.checkpoints.restore_checkpoint`
-   finishes with `serialization.from_state_dict(target, restored)`, so the returned pytree is
-   CONGRUENT TO THE TARGET. A checkpoint leaf the target does not have is therefore SILENTLY
-   DROPPED: `loaded` is True, the fingerprint is stable, no shape differs, and nothing in
-   `checkpoint_io` can fire — because the two leaf sets are equal by construction. This test
-   reproduces exactly that with a vector-action checkpoint loaded into a scalar-action model
-   (the measured case: `vec_act_proj.{kernel,bias}` dropped) so the narrowed claim in
-   `loaded_param_shape_defect`'s docstring is pinned by a test rather than asserted in prose.
-   The previous docstring said "A PARTIAL restore is refused too", which was an overstatement,
-   and the `only_model`/`only_ckpt` branches that pretended to check it were unreachable.
+1. **What a SHAPE check CANNOT see (narrowed by TASK_889 — see below).**
+   `flax.training.checkpoints.restore_checkpoint` finishes with
+   `serialization.from_state_dict(target, restored)`, so the returned pytree is CONGRUENT TO
+   THE TARGET. A checkpoint leaf the target does not have is therefore invisible to a SHAPE
+   check on the leaves both trees share: `loaded_param_shape_defect` compares only `b.keys() &
+   a.keys()`, so a leaf-SET difference (as opposed to a leaf-SHAPE difference) can never surface
+   there, demonstrated directly on the vector-action vs scalar-action trees below — pinning the
+   narrowed claim in `loaded_param_shape_defect`'s own docstring rather than asserting it in
+   prose. The previous docstring said "A PARTIAL restore is refused too", which was an
+   overstatement, and the `only_model`/`only_ckpt` branches that pretended to check it were
+   unreachable.
 
-2. **The countermeasure is that the TARGET is the canonical architecture.** Since no load-time
-   check can see this class, the only real defence is that every load site builds its model
-   through `TrainingConfig` -> `setup_model_and_trainer`. `tools/paper_trade_vectorbt.py` was
-   the site that had drifted — it hand-built `MuZeroNetworks(...)`/`MuZeroTrainer(...)` and so
-   never passed `use_vector_action`. That is now asserted against the function's own source.
+2. **TASK_889 (D39) closes the INTEGRATED path anyway, by a DIFFERENT mechanism.** Item 1 is
+   still true of `loaded_param_shape_defect` in isolation, but `checkpoint_io.load_checkpoint_into`
+   no longer reports false success for THIS class: a checkpoint now records its own
+   `vector_action` at save time, and `trainer.load_checkpoint` REFUSES when a target's own
+   `vector_action` disagrees with it. The load this test used to demonstrate as a "clean,
+   successful load with a wrong fingerprint" now refuses instead, leaving `trainer.state`
+   untouched.
+
+3. **The countermeasure ALSO stays real: the TARGET should be the canonical architecture.**
+   Belt-and-suspenders — `tools/paper_trade_vectorbt.py` was the site that had drifted (hand-
+   built `MuZeroNetworks(...)`/`MuZeroTrainer(...)`, never passing `use_vector_action`), and
+   that is still asserted against the function's own source.
 
 CPU-only, no GPU, no DB. Run: ``python test_paper_trade_checkpoint_888.py`` (exit 0 = PASS).
 """
@@ -85,23 +93,32 @@ def test_b4_silent_leaf_drop_is_invisible_at_load_time():
         _check("B4 setup: the drifted (non-vector-action) target really is missing leaves the "
               "checkpoint has", bool(dropped), "the two targets had identical leaf sets")
 
-        evidence = cio.load_checkpoint_into(scalar, ckpt)
-        _check("B4: the load REPORTS SUCCESS even though the target cannot hold every "
-              "checkpoint leaf — this is the class no load-time check can see",
-              evidence["loaded"] is True, f"evidence={evidence}")
-        _check("B4: and it produces a stable fingerprint, of the params that ACTUALLY ended up "
-              "live (not of the checkpoint's full contents)",
-              evidence["param_fingerprint"] == cio.param_fingerprint(scalar.state.params),
-              "fingerprint did not describe the live params")
-        after = _leaf_names(scalar.state.params)
-        _check(f"B4: the restored tree is congruent to the TARGET — {len(dropped)} checkpoint "
-              f"leaf/leaves ({', '.join(dropped)[:120]}) were SILENTLY DROPPED, and the leaf "
-              f"sets are equal by construction, which is why `only_model`/`only_ckpt` could "
-              f"never fire", after == scalar_leaves,
-              "the restored leaf set differed from the target's")
-        _check("B4: loaded_param_shape_defect honestly reports NOTHING here (it is a SHAPE "
-              "check; this is a leaf-set difference it cannot observe)",
-              cio.loaded_param_shape_defect(scalar.state.params, scalar.state.params) is None)
+        # TASK_889 (D39): pre-889 this loaded silently — `evidence["loaded"] is True` with a
+        # well-formed but WRONG fingerprint (the claim this test's docstring makes about
+        # `loaded_param_shape_defect`, a SHAPE check, specifically). TASK_889 closes the
+        # INTEGRATED path with a DIFFERENT mechanism: `vec`'s checkpoint now records
+        # vector_action=True at save time, and trainer.load_checkpoint refuses when a target's
+        # own vector_action disagrees with it — so `load_checkpoint_into` no longer reports
+        # false success for this class, even though the shape check alone still cannot see it
+        # (demonstrated directly, below, without relying on a load having happened at all).
+        params_before = scalar.state.params
+        try:
+            cio.load_checkpoint_into(scalar, ckpt)
+            _check("TASK_889: a scalar target loading a vector-action checkpoint now REFUSES "
+                  "instead of reporting loaded=True with a wrong fingerprint", False,
+                  "did not raise")
+        except RuntimeError as e:
+            _check("TASK_889: ... naming vector_action", "vector_action" in str(e), str(e))
+        _check("TASK_889: the refusal leaves scalar.state untouched (never a partial restore)",
+              scalar.state.params is params_before, "params were mutated despite the refusal")
+
+        _check(f"B4: loaded_param_shape_defect ITSELF (unchanged by TASK_889) still honestly "
+              f"reports NOTHING for the {len(dropped)} checkpoint leaf/leaves "
+              f"({', '.join(dropped)[:120]}) that differ between these two trees — it is a "
+              f"SHAPE check over the leaves both trees SHARE, and a leaf one tree lacks "
+              f"entirely is invisible to it, which is why `only_model`/`only_ckpt` could "
+              f"never fire and why TASK_889 needed the save-time architecture record instead",
+              cio.loaded_param_shape_defect(vec.state.params, scalar.state.params) is None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

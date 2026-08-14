@@ -96,6 +96,12 @@ from mcts_trader.env.jax_encoder import (
 from mcts_trader.training.env_factory import create_jax_env_historical
 from mcts_trader.jax_agent.muzero_model import MuZeroNetworks
 from mcts_trader.jax_agent.trainer import MuZeroTrainer
+# TASK_888 (D38 scope 4 / fix-pass M5): the ONE deterministic parameter fingerprint, and the
+# name the frame-provenance document records it under. Imported from the shared module rather
+# than re-derived so the value this emitter writes is bit-for-bit the value
+# `checkpoint_io.load_checkpoint_into` computes at LOAD time — the two must be comparable or
+# TASK_886's certification contract is comparing nothing.
+from mcts_trader.jax_agent import checkpoint_io
 from mcts_trader.jax_agent.replay_buffer import JAXReplayBuffer
 from mcts_trader.jax_agent.returns import compute_returns
 
@@ -808,9 +814,23 @@ def frame_provenance_path_for(ckpt_path):
                         f"frame_provenance_{stem}.json")
 
 
-def build_frame_provenance(ckpt_path, args, frame, asset_aliases):
+def build_frame_provenance(ckpt_path, args, frame, asset_aliases, param_fingerprint=None):
     """Build (and VALIDATE) the provenance document for ``ckpt_path``; return (path, doc).
     Writes nothing — see ``write_frame_provenance``.
+
+    ``param_fingerprint`` (TASK_888 D38 scope 4 / fix-pass M5) BINDS this document to the
+    weights it describes. TASK_886's certification contract reads exactly this field
+    (``universe_pin["provenance_param_fingerprint"]`` is sourced from it) and compares it
+    against the fingerprint of the parameters actually LOADED — without it, ``verified: true``
+    is structurally unreachable and the verdict reads "provenance predates fingerprint
+    binding". Real provenance documents on disk carry no such field, which is what the one-shot
+    ``tools/backfill_checkpoint_fingerprints.py`` repairs for the survivors.
+
+    ``None`` (the default) omits the field entirely rather than writing a null: the PRE-TRAINING
+    fail-fast validation calls this before any weights exist, and "this document was built
+    before there were weights to fingerprint" must not be spelled the same way as "these
+    weights fingerprint to nothing". ``write_frame_provenance`` treats the field as OUTSIDE the
+    frame identity for exactly that reason (see its ``_frame_identity_view``).
 
     Exactly one of ``frame`` (pinned: the ``load_framed_panel`` block, already order-exact
     ASSERTED against the pin by that loader — TASK_863) / ``asset_aliases`` (unpinned: the
@@ -929,6 +949,8 @@ def build_frame_provenance(ckpt_path, args, frame, asset_aliases):
         "checkpoint": _display_path(ckpt_path),
         "panel_frame_source": panel_frame_source,
     }
+    if param_fingerprint is not None:
+        doc[checkpoint_io.PROVENANCE_FINGERPRINT_FIELD] = param_fingerprint
     return frame_provenance_path_for(ckpt_path), doc
 
 
@@ -978,10 +1000,23 @@ PROVENANCE_REPLACED_FIELD = "provenance_replaced"
 PROVENANCE_REPLACED_SHA_FIELD = "replaced_provenance_sha256"
 REPLACEMENT_STAMP_FIELDS = (PROVENANCE_REPLACED_FIELD, PROVENANCE_REPLACED_SHA_FIELD)
 
+# TASK_888 (fix-pass M5): `param_fingerprint` joins them — for the SAME reason, one step over.
+# The two stamp fields describe the FILE's history; the fingerprint describes the CHECKPOINT's
+# WEIGHTS. Neither is part of the FRAME this document exists to record, and the frame is what
+# the "is this the same provenance?" comparison is about. Keeping the fingerprint out of that
+# comparison is also what lets the PRE-TRAINING fail-fast validation work at all: it runs before
+# any weights exist, so its document legitimately carries no fingerprint, and comparing it
+# against an on-disk document that has one would refuse every re-run over an existing
+# provenance. Refreshing a stale binding is handled explicitly in `write_frame_provenance`.
+FRAME_IDENTITY_EXCLUDED = REPLACEMENT_STAMP_FIELDS + (
+    checkpoint_io.PROVENANCE_FINGERPRINT_FIELD,)
 
-def _without_replacement_stamp(doc):
-    """``doc`` minus the I2 replacement stamp — what the frame-describing content compares as."""
-    return {k: v for k, v in doc.items() if k not in REPLACEMENT_STAMP_FIELDS}
+
+def _frame_identity_view(doc):
+    """``doc`` minus the fields that are not part of its FRAME identity (the I2 replacement
+    stamp and the TASK_888 weight fingerprint) — what the frame-describing content compares
+    as."""
+    return {k: v for k, v in doc.items() if k not in FRAME_IDENTITY_EXCLUDED}
 
 
 def write_frame_provenance(prov_path, doc, args, dry_run=False, stage=""):
@@ -989,13 +1024,41 @@ def write_frame_provenance(prov_path, doc, args, dry_run=False, stage=""):
     impossible — a refusal raises).
 
     * absent          -> write.
-    * present, IDENTICAL document (parsed, full compare modulo the I2 replacement stamp)
-      -> quiet no-op, file untouched.
+    * present, IDENTICAL document (parsed, full compare modulo the fields that are not part of
+      the FRAME identity — see ``_frame_identity_view``) -> quiet no-op, file untouched, EXCEPT
+      that a stale/absent ``param_fingerprint`` is REFUSED (TASK_889 fix pass; it was an
+      unconditional silent rewrite in TASK_888 M5) so the document cannot go on describing
+      weights it was not written for AND cannot be re-bound without the operator saying so.
+      ``--overwrite-frame-provenance`` performs the refresh, loudly, preserving the I2
+      replacement stamp the on-disk file carries and naming every hand-kept ``.sha256`` pin it
+      invalidates.
     * present, DIFFERS (or is unreadable/not a JSON object) -> REFUSE, naming both paths and the
       differing fields, leaving the existing file untouched — unless
       ``--overwrite-frame-provenance``, which replaces it with a loud stamp, ON STDOUT AND IN THE
       DOCUMENT (I2: ``provenance_replaced`` + ``replaced_provenance_sha256`` of the raw bytes it
       replaced).
+
+    OPERATIONAL CONSEQUENCE OF MAKING THE REFRESH OPT-IN, STATED IN FULL (TASK_889 fix pass 3).
+    All FOUR git-TRACKED provenance documents — ``runs/832_e5/frame_provenance_imprint.json`` and
+    ``runs/861_ref/frame_provenance_ref_s{0,1,2}.json`` — carry NO ``param_fingerprint`` today
+    (verified 2026-08-13: tracked, and the field is absent from each). So the same-frame branch
+    below sees ``existing.get(fp_field) != new_fp`` for every one of them, and this now REFUSES
+    where it used to rewrite. Concretely: **any future re-run of the exact recipe behind those
+    four documents will REFUSE at the provenance write** until the operator passes
+    ``--overwrite-frame-provenance`` (or points ``--ckpt-out`` elsewhere). That is the intended
+    trade — the refusal is fail-fast (it fires in the pre-training dry run, before ~1min of
+    imprint), it names both fingerprints and every hand-kept ``.sha256`` pin at stake, and the
+    alternative is four tracked artifacts mutating with no operator sign-off, from which
+    ``eval_vector.py::provenance_meta_block`` then copies every key into every artifact that
+    reads the frame.
+
+    NO CURRENTLY-GREEN SUITE IS AFFECTED (gate (vii)), verified rather than assumed: the only
+    callers of this function are ``imprint.py``'s own ``run()``/``main()`` and
+    ``experiments/874_frame_provenance/smoke_frame_provenance.py``, which builds every document
+    it writes in a tempdir. The suites that name the four tracked documents
+    (``experiments/865_minute_frame_pin/smoke_minute_frame_pin.py``,
+    ``runs/868_asset_identity_repair/harvest_gate_i.py``, ``tools/backfill_minute.py``) READ them
+    as the frame of record and never call this writer.
 
     ``dry_run`` runs the whole decision WITHOUT writing (``stage`` labels which validation pass is
     speaking). It is called THREE times per promoting run: once pre-training in run() so the
@@ -1021,7 +1084,81 @@ def write_frame_provenance(prov_path, doc, args, dry_run=False, stage=""):
         # when it was not valid JSON (the case where nothing else about it is recordable).
         prior_sha = hashlib.sha256(raw).hexdigest() if raw is not None else "unreadable"
         if (unreadable is None and isinstance(existing, dict)
-                and _without_replacement_stamp(existing) == doc):
+                and _frame_identity_view(existing) == _frame_identity_view(doc)):
+            # TASK_888 M5: same FRAME, possibly a different (or absent) weight binding. The
+            # fingerprint is not part of the frame identity, so this is not a "different
+            # provenance" refusal — but leaving a STALE or MISSING binding in place would make
+            # the document quietly describe weights it was not written for, so it is refreshed
+            # in place, preserving the I2 replacement stamp the on-disk file carries. A dry run
+            # says what it would do and touches nothing.
+            fp_field = checkpoint_io.PROVENANCE_FINGERPRINT_FIELD
+            new_fp = doc.get(fp_field)
+            if new_fp is not None and existing.get(fp_field) != new_fp:
+                # TASK_889 fix pass: THE REFRESH IS A WRITE, AND IT IS OPT-IN.
+                #
+                # This branch used to rewrite the document unconditionally, announcing itself on
+                # stdout only. That is the shape TASK_874 shipped a BLOCKER fix for one field
+                # up (an unconditional silent overwrite of provenance, replaced by a refusal),
+                # reintroduced one field down — and it was LIVE: all four git-TRACKED
+                # provenance documents (runs/832_e5/frame_provenance_imprint.json,
+                # runs/861_ref/frame_provenance_ref_s{0,1,2}.json) carry NO param_fingerprint
+                # today, so `existing.get(fp_field) != new_fp` holds for every one of them and
+                # the next ordinary imprint.py run would have mutated four tracked artifacts
+                # with no operator sign-off. The blast radius is not the four files:
+                # eval_vector.py's `provenance_meta_block` copies every non-`frame_symbols` key
+                # into EVERY artifact that reads the frame, and two hand-kept `.sha256` pins
+                # name these documents by hand.
+                #
+                # So it now refuses by default and folds into --overwrite-frame-provenance's
+                # existing discipline: the same flag, the same loud stamp, and the same
+                # "existing file is UNTOUCHED" promise when the flag is absent. The
+                # pre-training/pre-promotion DRY RUNS are unaffected in the normal case: they
+                # build their document before any weights exist, so `new_fp is None` and this
+                # branch is never reached.
+                pins = [_display_path(p) for p in checkpoint_io.digest_pins_naming(prov_path)]
+                if not overwrite:
+                    raise _frame_provenance_refusal(
+                        f"[874/889] REFUSED — the frame provenance on disk describes the SAME "
+                        f"frame but binds DIFFERENT weights.\n"
+                        f"  existing: {_display_path(prov_path)}\n"
+                        f"  its {fp_field}: {existing.get(fp_field)}\n"
+                        f"  this run's:    {new_fp}\n"
+                        f"  sha256 of the bytes on disk: {prior_sha}\n"
+                        + ("".join(f"  !!! a hand-kept digest pin NAMES this document: {p} — "
+                                   f"refreshing it INVALIDATES that pin, which nothing in the "
+                                   f"tree recomputes\n" for p in pins))
+                        + f"  Rewriting it is a WRITE into a provenance artifact, and several "
+                          f"of these documents are git-TRACKED with no per-run copy to restore "
+                          f"from; eval_vector.py's provenance_meta_block then copies every key "
+                          f"of this document into every artifact that reads the frame. The "
+                          f"existing file is UNTOUCHED.\n"
+                          f"  If re-binding this document to the weights THIS run wrote IS the "
+                          f"intent, re-run with --overwrite-frame-provenance. Otherwise point "
+                          f"--ckpt-out at a different name.\n")
+                if dry_run:
+                    print(f"[874/889] --overwrite-frame-provenance: WOULD REFRESH the "
+                          f"{fp_field} of the frame provenance at {_display_path(prov_path)} "
+                          f"({existing.get(fp_field)} -> {new_fp}; sha256 on disk {prior_sha})"
+                          + (f" [{stage}]" if stage else ""))
+                    for p in pins:
+                        print(f"[874/889] !!! WOULD INVALIDATE the hand-kept digest pin {p}")
+                    return prov_path
+                # Same key ORDER a fresh write produces (`{**doc, **stamp}`), so a refreshed
+                # file is byte-comparable with a newly written one.
+                merged = {**doc, **{k: v for k, v in existing.items()
+                                    if k in REPLACEMENT_STAMP_FIELDS}}
+                with open(prov_path, "w") as fh:
+                    json.dump(merged, fh, indent=1)
+                print("!" * 84)
+                print(f"!!! [874/889] --overwrite-frame-provenance: {fp_field} REFRESHED to bind "
+                      f"the weights THIS run wrote ({existing.get(fp_field)} -> {new_fp})")
+                print(f"!!! {_display_path(prov_path)} (replaced sha256 {prior_sha})")
+                for p in pins:
+                    print(f"!!! INVALIDATED the hand-kept digest pin {p} — this write changes "
+                          f"the bytes it records; re-pin it deliberately (nothing here rewrites "
+                          f"a digest on its own behalf)")
+                print("!" * 84)
+                return prov_path
             print(f"[874] frame provenance already present and IDENTICAL, left untouched: "
                   f"{_display_path(prov_path)}"
                   + (f" (it carries the I2 replacement stamp {PROVENANCE_REPLACED_FIELD}=true; "
@@ -1032,8 +1169,8 @@ def write_frame_provenance(prov_path, doc, args, dry_run=False, stage=""):
                   f"compared — refusing fail-closed rather than assuming it is stale.\n"
                   if unreadable is not None else
                   ("  differing field(s):\n" + _doc_field_diff(
-                      _without_replacement_stamp(existing) if isinstance(existing, dict)
-                      else {"<document>": existing}, doc)))
+                      _frame_identity_view(existing) if isinstance(existing, dict)
+                      else {"<document>": existing}, _frame_identity_view(doc))))
         detail += f"  sha256 of the bytes on disk: {prior_sha}\n"
         if not overwrite:
             raise _frame_provenance_refusal(
@@ -1212,17 +1349,25 @@ def inject_teacher(replay_buffer, obs, actions, rewards, dones, discount, chunk_
 # model / trainer — canon construction, imprint entropy knobs via CLI (PIN a)
 # =============================================================================
 
-def build_model_and_trainer(args, n_assets):
+def build_model_and_trainer(args, n_assets, use_prediction_head=False):
     """Mirror setup.py::setup_model_and_trainer for the vector path at the canon
     defaults that matter here (value_loss_weight=2.0 setup.py:530, PopArt ON,
     reward_scale 100, lr 1e-4 cli.py:121). Entropy knobs come from the CLI (PIN a) —
-    trainer DEFAULTS are untouched; these are constructor arguments."""
+    trainer DEFAULTS are untouched; these are constructor arguments.
+
+    ``use_prediction_head`` (TASK_889 / D39 scope 5, default False): the 832 imprint recipe
+    itself never trains a prediction head, so False reproduces every existing caller's
+    behavior byte-for-byte. It exists as a real parameter — not a hardcode — because
+    ``experiments/857_vhat_distill/distill.py`` builds its warm-start TARGET through this same
+    function, and a warm-start checkpoint that DOES have a prediction head must be matched, or
+    ``checkpoint_io.load_checkpoint_into`` silently drops (or, since TASK_889, correctly
+    REFUSES over) the prediction-head leaves."""
     model = MuZeroNetworks(
         state_dim=args.state_dim,
         action_space_size=n_assets * N_ACTIONS_PER_ASSET,
         H_cycles=args.h_cycles,
         L_cycles=args.l_cycles,
-        use_prediction_head=False,
+        use_prediction_head=use_prediction_head,
         n_assets=n_assets,
         use_vector_action=True,
         vector_n_actions_per_asset=N_ACTIONS_PER_ASSET,
@@ -2318,6 +2463,10 @@ def run(args, out_path, tag, provenance_sink=None):
     # than abort with `Destination .../checkpoint_<step> already exists`. There is no newer
     # checkpoint here for overwrite=False to protect.
     trainer.save_checkpoint(ckpt_path, overwrite=True)
+    # TASK_888 (D38 scope 4 / fix-pass M5): captured HERE, from the params that were just
+    # written, so the frame provenance emitted at the end of this function binds to THOSE
+    # weights and not to whatever `trainer.state` happens to hold by then.
+    ckpt_param_fingerprint = checkpoint_io.param_fingerprint(trainer.state.params)
     print(f"[832] imprint checkpoint -> {ckpt_path}")
     # TASK_874 fix pass (B1): the frame provenance is NOT emitted here. Writing it beside the
     # checkpoint at this point CERTIFIES the checkpoint as gradable while the run can still
@@ -2806,7 +2955,8 @@ def run(args, out_path, tag, provenance_sink=None):
     # (not carried from the pre-training dry run) so the pin is re-read and re-asserted at the
     # true moment of emission (scope 2). ``provenance_sink`` defers the write one final step, to
     # main(), past --write-parity-baseline's refusals.
-    _prov_path, _prov_doc = build_frame_provenance(ckpt_path, args, frame, asset_aliases)
+    _prov_path, _prov_doc = build_frame_provenance(ckpt_path, args, frame, asset_aliases,
+                                                   param_fingerprint=ckpt_param_fingerprint)
     if provenance_sink is None:
         write_frame_provenance(_prov_path, _prov_doc, args)
     else:

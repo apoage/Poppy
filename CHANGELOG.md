@@ -3,6 +3,90 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-14 — TASK_889 — a checkpoint is bound to the architecture it was saved under, and every leaf carries its own evidence
+
+- **What shipped.** `trainer.save_checkpoint` now records `vector_action`, `use_prediction_head` and
+  `param_fingerprint` at SAVE time — `vector_action` was recorded NOWHERE before, which is why no existing
+  fingerprint could be validated. `load_checkpoint` REFUSES when a checkpoint's recorded architecture or
+  fingerprint disagrees with the target being loaded into, naming both values and the resolved path. The
+  print-and-continue at the prediction-head site is GONE: D39's ruling is refuse, never normalize.
+- **The defect this closes.** `load_checkpoint` already DETECTED the prediction-head mismatch and
+  downgraded it to a stdout `print` while the success went to the log file. Reproduced in run 32 with the
+  shipped config: `USE_PREDICTION_HEAD=True` against every checkpoint's recorded `false` gave no refusal,
+  a wrong evidence fingerprint, and **52 of 253 leaves left at random init** (`price_predictor` 49,
+  `latent_to_market` 2, `action_embedding` 1). D37's exact shape, re-created by the row built to close it.
+- **The fossil is flipped.** `config/real_trade_config.py` `USE_PREDICTION_HEAD` True → False, per D39: the
+  config was committed as *legacy working-tree state*, its only consumer self-declares BROKEN/LEGACY and
+  cannot be constructed, the model default is `False`, and the active line ASSERTS the prediction loss off
+  as "the 97%-of-loss trap". Zero artifacts and zero live paths said `True`. The mismatch is now a
+  CONSTRUCTED test case instead of a landmine.
+- **PER-LEAF RECORDS — the part the panel forced, and the part that makes the binding real.** A first
+  implementation gated all three checks on `metadata.get('step_count') == restored_state.step_count`,
+  SKIPPING verification when the run-dir sidecar did not describe the leaf being loaded. **Three lenses
+  independently reproduced the consequence by construction:** in a run dir holding `checkpoint_100`
+  (`vector_action=True`) and a later `checkpoint_200` (`False`, overwriting the shared sidecar), loading
+  the older leaf into a `False` target gave NO refusal, dropped the `vec_act_proj` leaves, and returned
+  `loaded: True` — indistinguishable from a correct load at all five call sites. Gate (iii) was falsified
+  with no adversarial setup at all: tamper an older leaf in an ordinary `keep=3` dir and it was invisible.
+  **`keep=3` is `save_checkpoint`'s default and `train_jax_fast.py` uses it, so multi-leaf run dirs are the
+  norm.** A mutation test proved a narrower gate could not fix it — there was no per-leaf architecture
+  record at all. The fix splits the problem by the SCOPE of each field: `vector_action` and
+  `use_prediction_head` are per-RUN invariants and are now compared ALWAYS; `param_fingerprint` is
+  leaf-specific and gets a per-leaf `trainer_metadata_<step>.json` written beside the leaf. Where
+  verification is impossible (a true legacy checkpoint), the loader REFUSES rather than skipping.
+- **A filename that would have been a trap, caught by measurement.** The orchestrator proposed
+  `checkpoint_<step>.trainer_metadata.json`. flax's `latest_checkpoint` globs `checkpoint_*` and **never
+  checks the entry is a directory**, so that sibling file is returned AS the checkpoint. Measured, rejected,
+  and `trainer_metadata_<step>.json` shipped instead — proven inert to `latest_checkpoint` before a save,
+  after one, after two, and with a hand-planted stray. An independent judge reproduced both halves.
+- **The retro-stamp INFERS, it does not guess.** D39 scope 4 says drop the `vector_action=True` hardcode;
+  a silently-applied default is that hardcode by another name, and the first implementation's own test
+  ASSERTED the silent-wrong-guess as intended. `tools/stamp_checkpoint_fingerprints.py` (renamed from
+  "backfill" per the operator's correction — *backfill* means TASK_858's minute-bar ingest, and in the data
+  sense it is a forbidden look-ahead) now derives `vector_action` from the checkpoint's OWN structure,
+  orders recorded → inferred → explicit assertion → REFUSE, refuses on ANY disagreement between two
+  available sources, and records `vector_action_source` in its output. `--apply` on `runs/` remains
+  planner-gated and was never run.
+- **The provenance emitter no longer rewrites tracked documents silently.** `imprint.py`'s fingerprint
+  refresh would have rewritten `runs/832_e5/frame_provenance_imprint.json` and
+  `runs/861_ref/frame_provenance_ref_s{0,1,2}.json` — all four git-tracked, all four currently lacking
+  `param_fingerprint`, i.e. all four in the triggering state — on the next ordinary run, with no flag and
+  no operator sign-off. TASK_874 shipped a BLOCKER fix for exactly that shape and replaced it with a
+  refusal; this reintroduced it one field down. It now REFUSES by default, naming both fingerprints, the
+  on-disk sha256, the opt-in flag, and every co-located `.sha256` pin — via a shared
+  `checkpoint_io.digest_pins_naming` that the retro-stamp calls too, so there is one definition and two
+  writers.
+- **`distill.py`** builds its warm-start target through the shared path instead of hand-rolling it; the
+  51-dropped-leaf prediction-head warm start is proven fixed by leaf count.
+- **Byte-identity, proven the hard way.** A HEAD worktree at `0960f60` was built and all 7 real checkpoints
+  compared on `param_fingerprint`, per-leaf raw sha256 across all 204 leaves, PopArt state, AND a full
+  `initial_inference` forward pass (`latent_state`/`policy_logits`/`reward`/`value`). **All 7 matched
+  byte-for-byte on every field.** The new evidence keys appear only in the DEGRADED case, deliberately:
+  unconditional keys would have moved `861/smoke_e2e.py` leg (i), which compares the emitted artifact
+  byte-for-byte and embeds this dict verbatim via `eval_vector.py:3167`. Verified by replicating that leg's
+  comparison — IDENTICAL, same four keys both sides.
+- **Gate (v) equivalent.** Nothing this row's development touched the 7 `runs/*/trainer_metadata.json` or
+  the 4 tracked provenance documents: manifest md5 `151d8524b87a96f9be771c5eab6dc244` identical from before
+  the first agent ran to after the last, four tracked docs zero-diff vs HEAD, fixture `b0f8de8b…` and
+  `trading_data.db` mtime 2026-07-26 20:47 both unchanged.
+- **Verification.** 3 cycles (implement `sonnet` → fix `opus` → fix `opus`), a 3-lens panel
+  (correctness · fail-closed · regression) and a fresh fail-closed re-verify. Suites: selftest 12/12 ·
+  883R · 882 · `scorecard_smoke` · 863 · 865 · 874 · the 888R suites · and 889's own three — all exit 0.
+  **`861/smoke_e2e.py`: 11 legs PASS, `vii_baseline_pins` FAIL on `/provenance/alias_union_rule` alone,
+  `results` pin IDENTICAL** — TASK_877's pre-existing red, unchanged by this row. Notably `i_canon_832`
+  PASSES, so the new provenance refusal does not recreate the run-32 interaction.
+- **Disclosed operational consequences.** A legacy multi-leaf run dir refuses when an OLDER leaf is named
+  explicitly (in-tree: only the gitignored `experiments/832_linear_imprint/ckpt_smoke/`; nothing loads it by
+  name). A default `imprint.py` run refuses at emission on the gitignored
+  `experiments/832_linear_imprint/frame_provenance_smoke.json`, which lacks `param_fingerprint`; the same
+  refusal will fire on any future re-run of the recipe behind the 4 real tracked documents. Concurrent saves
+  into ONE run dir can leave an orphaned per-leaf record (cosmetic; no false-pass or false-refuse path).
+- **Remainders → planner.** The 7 surviving checkpoints get no per-leaf record from the retro-stamp — they
+  are single-leaf so none is needed, but a legacy multi-leaf dir stays refusing until re-saved.
+  `distill.py::_peek_recorded_use_prediction_head` reads the SHARED sidecar, so a heterogeneous multi-leaf
+  warm start now refuses where preferring the per-leaf record would let it load correctly.
+  `tools/parallel_epoch_training.py:45` remains a 5th load site bypassing every guard.
+
 ## 2026-08-14 — TASK_888R — one checkpoint resolver, a loader that refuses, and a row that cannot write
 
 - **What shipped.** `mcts_trader/jax_agent/checkpoint_io.py` (new) is the single checkpoint resolution function, and it feeds BOTH the preflight guard and the loader at every site: `train_jax_fast.py`, `experiments/857_vhat_distill/distill.py`, `experiments/835_stage4_eval/eval_vector.py`, `real_trade_jax.py`, and `tools/paper_trade_vectorbt.py`. A checkpoint that cannot be found or cannot be loaded is now a hard refusal naming the resolved path — never "loaded successfully", never a silent fresh-init. Deliberate fresh-init survives only behind an explicit flag. The miss is detected by OBJECT IDENTITY (flax returns its `target` unchanged on a miss), never by numeric parameter equality — run 31's cycle 1 died on the numeric version, which false-positived on an honestly-saved fresh-init checkpoint and broke two acceptance gates.

@@ -1767,6 +1767,7 @@ class MuZeroTrainer:
         import json
         import numpy as np
         from flax.training import checkpoints
+        from .checkpoint_io import leaf_metadata_path_for as _leaf_metadata_path_for
 
         # Save main state. flax returns the path it actually wrote
         # (``<path>/checkpoint_<step_count>``) — returned to the caller so a score can be
@@ -1787,6 +1788,7 @@ class MuZeroTrainer:
 
         try:
             # Save additional trainer metadata (BUG_019 fix + architecture info)
+            from .checkpoint_io import param_fingerprint as _param_fingerprint
             metadata = {
                 'entropy_coef': float(self.entropy_coef),
                 'step_count': int(self.state.step_count),
@@ -1797,12 +1799,93 @@ class MuZeroTrainer:
                 'state_dim': self.model.state_dim,
                 'use_prediction_head': self.model.use_prediction_head,
                 'physics_only': getattr(self.model, 'physics_only', False),
+                # TASK_889 (D39 scope 1): recorded NOWHERE before this task — the reason no
+                # existing fingerprint could ever be validated. `vector_action` gates whether
+                # `vector_action_embedding.vec_act_proj.{kernel,bias}` exists in this
+                # checkpoint's param tree at all (muzero_model.py), exactly like
+                # `use_prediction_head` gates the prediction-head leaves above.
+                'vector_action': self.vector_action,
+                # TASK_889 (D39 scope 2): the SAME deterministic fingerprint
+                # checkpoint_io.load_checkpoint_into computes at load time, recorded here at
+                # save time — of the params actually being written, not of the argv path that
+                # named them. NOTE: this sidecar is NOT what TASK_886's certification contract
+                # reads. That contract reads `universe_pin["provenance_param_fingerprint"]`,
+                # sourced from the FRAME PROVENANCE document (`frame_provenance_*.json`, same
+                # field name), which `imprint.py::build_frame_provenance` emits and
+                # `tools/stamp_checkpoint_fingerprints.py` retro-stamps. This copy is the one
+                # that exists for EVERY checkpoint, including the many that never get a
+                # provenance document, and it is what makes a checkpoint's own recorded
+                # fingerprint — and now its recorded architecture — auditable without one.
+                'param_fingerprint': _param_fingerprint(self.state.params),
             }
             metadata_path = os.path.join(path, 'trainer_metadata.json')
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f)
         except Exception as e:
             raise CheckpointSidecarError(written, 'trainer_metadata.json', e) from e
+
+        # TASK_889 fix pass: the SAME record, PER LEAF. `trainer_metadata.json` above stays
+        # exactly where it is and says exactly what it said — every reader expects it there and
+        # 888R's sidecar hang guard names it — but it is ONE file for a run dir that normally
+        # holds SEVERAL `checkpoint_<step>` leaves (`keep=3` is this method's default and what
+        # train_jax_fast.py:712 passes), and each new save OVERWRITES it. So for every leaf that
+        # is not the newest, the shared sidecar describes a DIFFERENT save, and the leaf-specific
+        # `param_fingerprint` cannot be validated from it at all. The loader's answer to that
+        # used to be to SKIP all three checks — which is how an architecture mismatch on an
+        # older leaf, and a tampered older leaf's payload, both escaped through the production
+        # API. This is the record that makes the check possible instead of skippable: written
+        # from `written` (the leaf path already VERIFIED on disk above), so the record and the
+        # leaf it describes are named by the same string.
+        try:
+            leaf_meta_path = _leaf_metadata_path_for(path, self.state.step_count)
+            with open(leaf_meta_path, 'w') as f:
+                json.dump(metadata, f)
+        except Exception as e:
+            raise CheckpointSidecarError(
+                written, os.path.basename(_leaf_metadata_path_for(path, self.state.step_count)),
+                e) from e
+
+        # Orphan sweep: flax's own keep-N pruning deletes older `checkpoint_<step>` leaves
+        # (and, under `overwrite=True`, NEWER ones), which would otherwise leave per-leaf
+        # records for leaves that no longer exist accumulating in the run dir forever. Only
+        # files matching THIS function's own `trainer_metadata_<int>.json` naming are considered,
+        # and only when their `checkpoint_<step>` sibling is GONE — so the invariant is simply
+        # "a per-leaf record exists iff its leaf does". Best-effort: a failure to tidy is never
+        # a reason to fail a save that is already verified on disk.
+        #
+        # BEST-EFFORT MEANS BEST-EFFORT (TASK_889 fix pass 3). Two holes made this a save-killer
+        # instead of a tidy-up, and both are closed here:
+        #   * `str.isdigit()` is TRUE for Unicode digit characters `int()` CANNOT parse —
+        #     `'²'.isdigit()` is True and `int('²')` raises ValueError. A file named
+        #     `trainer_metadata_².json` sitting in the run dir therefore reached `int(stem)` and
+        #     raised, AFTER `checkpoint_0`, `trainer_metadata.json` and `trainer_metadata_0.json`
+        #     were all durably on disk. The stem test is now strict ASCII digits, so such a name
+        #     is simply not ours and is left alone.
+        #   * `except OSError` does not catch `ValueError`, so that raise escaped —
+        #     `train_jax_fast.py::_attempt_checkpoint_save` only forgives ValueErrors containing
+        #     "already exists" and re-raises the rest, taking down a training run whose
+        #     checkpoint was already valid and loadable. The catch now covers both.
+        #
+        # DISCLOSED, NOT FIXED — concurrent saves into ONE run dir. This sweep is one-shot, and
+        # orbax's keep-N pruning is asynchronous: two processes racing `save_checkpoint` into the
+        # SAME run dir can leave a `trainer_metadata_<step>.json` whose leaf is deleted after
+        # this sweep has already run, so the orphan survives until the next save. Cosmetic only —
+        # an orphaned record is never read as evidence for a leaf that does not exist (readers
+        # look up the record FOR a leaf they already resolved), so there is no false-pass or
+        # false-refuse vector — and the repo convention is one run dir per training process.
+        # Adding cross-process coordination here would be new failure surface on the save path
+        # for a defect that produces a stray file.
+        try:
+            for name in os.listdir(path):
+                if not (name.startswith('trainer_metadata_') and name.endswith('.json')):
+                    continue
+                stem = name[len('trainer_metadata_'):-len('.json')]
+                if not (stem.isascii() and stem.isdigit()):
+                    continue
+                if not os.path.exists(os.path.join(path, f'checkpoint_{int(stem)}')):
+                    os.remove(os.path.join(path, name))
+        except (OSError, ValueError):
+            pass
 
         # Save PopArt state if enabled (critical for curriculum continuity)
         if self.use_popart and self.popart is not None:
@@ -1821,7 +1904,8 @@ class MuZeroTrainer:
 
         return written
 
-    def load_checkpoint(self, path: str, step: int = None, leaf_dir: str = None):
+    def load_checkpoint(self, path: str, step: int = None, leaf_dir: str = None,
+                        allow_architecture_mismatch: bool = False):
         """Load model checkpoint with additional metadata.
 
         ``path`` is the RUN dir — the directory holding the ``checkpoint_<step>`` leaves and the
@@ -1836,12 +1920,30 @@ class MuZeroTrainer:
         installed leaf B. flax restores a leaf handed to it directly (``restore_checkpoint``:
         ``if _is_orbax_checkpoint(ckpt_dir): ckpt_path = ckpt_dir``), so threading it through is
         exact, not a re-derivation. Default ``None`` keeps every legacy caller byte-identical.
+
+        ``allow_architecture_mismatch`` (TASK_889 / D39, default False): a checkpoint's RECORDED
+        ``vector_action``/``use_prediction_head`` (written by ``save_checkpoint``) disagreeing
+        with this target's own, or a recorded ``param_fingerprint`` disagreeing with what this
+        load actually restored, is a hard REFUSAL — see the architecture-compatibility block
+        below. It ALSO permits the one remaining "cannot verify" case (a leaf with no per-leaf
+        record whose run-dir sidecar describes a different save), because "cannot verify" must
+        not resolve to "proceed" on its own. Deliberate mismatch is available only by passing
+        True here explicitly; every caller threading it through must offer its OWN explicit flag
+        for "yes, I mean this" (the same discipline
+        ``checkpoint_io.load_checkpoint_into``'s ``allow_fresh_init`` uses).
+
+        Records what it was able to verify in ``self.last_load_verification``
+        (``architecture_verified`` / ``fingerprint_verified`` / ``verification_skipped``), which
+        ``checkpoint_io.load_checkpoint_into`` merges into its returned evidence when something
+        could NOT be verified — so a caller can tell an unverified load from a verified one
+        without reading stdout.
         """
         import os
         import json
         import numpy as np
         from flax.training import checkpoints
-        from .checkpoint_io import unsafe_to_open_defect, SIDECAR_MAX_BYTES
+        from .checkpoint_io import (unsafe_to_open_defect, SIDECAR_MAX_BYTES, param_fingerprint,
+                                    leaf_metadata_path_for, CheckpointRefusalError)
 
         if leaf_dir is not None and step is not None:
             raise ValueError(
@@ -1871,6 +1973,7 @@ class MuZeroTrainer:
 
         # Restore additional trainer metadata if available (BUG_019 fix)
         metadata_path = os.path.join(path, 'trainer_metadata.json')
+        metadata = None
         if os.path.exists(metadata_path):
             _assert_sidecar_openable(metadata_path, "a checkpoint's trainer_metadata.json")
             try:
@@ -1878,38 +1981,237 @@ class MuZeroTrainer:
                     metadata = json.load(f)
                 self.entropy_coef = metadata.get('entropy_coef', self.entropy_coef)
                 print(f"   Restored entropy_coef: {self.entropy_coef}")
-
-                # Check architecture compatibility
-                ckpt_pred = metadata.get('use_prediction_head', False)
-                ckpt_physics = metadata.get('physics_only', False)
-                ckpt_h = metadata.get('h_cycles')
-                ckpt_l = metadata.get('l_cycles')
-                ckpt_dim = metadata.get('state_dim')
-
-                # Warn on prediction head mismatch (CRITICAL)
-                if not ckpt_pred and self.model.use_prediction_head:
-                    print(f"   ⚠️  WARNING: Checkpoint has NO prediction head, but model has prediction enabled!")
-                    print(f"      Prediction weights will be RANDOM (not from checkpoint)")
-                    print(f"      Consider: --prediction-loss-weight 0 or use matching checkpoint")
-                elif ckpt_pred and not self.model.use_prediction_head:
-                    print(f"   ℹ️  Note: Checkpoint has prediction head, model does not (weights ignored)")
-
-                # Warn on physics_only mismatch
-                if ckpt_pred and ckpt_physics != getattr(self.model, 'physics_only', False):
-                    ckpt_mode = "physics-only" if ckpt_physics else "hybrid"
-                    model_mode = "physics-only" if self.model.physics_only else "hybrid"
-                    print(f"   ℹ️  Note: Checkpoint mode={ckpt_mode}, model mode={model_mode}")
-
-                # Error on architecture mismatch that would cause shape errors
-                if ckpt_h is not None and ckpt_h != self.model.H_cycles:
-                    print(f"   ⚠️  WARNING: Checkpoint H_cycles={ckpt_h}, model H_cycles={self.model.H_cycles}")
-                if ckpt_l is not None and ckpt_l != self.model.L_cycles:
-                    print(f"   ⚠️  WARNING: Checkpoint L_cycles={ckpt_l}, model L_cycles={self.model.L_cycles}")
-                if ckpt_dim is not None and ckpt_dim != self.model.state_dim:
-                    print(f"   ⚠️  WARNING: Checkpoint state_dim={ckpt_dim}, model state_dim={self.model.state_dim}")
-
             except Exception as e:
                 print(f"   Warning: Could not load trainer metadata: {e}")
+                metadata = None
+
+        # TASK_889 fix pass: the PER-LEAF record (`trainer_metadata_<step>.json`, written by
+        # save_checkpoint beside the leaf it describes). It is preferred over the run dir's
+        # shared sidecar wherever it exists, because it is the only record that is unambiguously
+        # ABOUT THE LEAF JUST RESTORED — the shared sidecar always describes the most recent
+        # save, whichever leaf this load asked for. Read with the same `stat`-before-`open`
+        # guard as the other two raw sidecar reads (it is a run-dir SIBLING of the leaf, so the
+        # leaf walk never covers it either; a FIFO planted here would block `openat` forever).
+        # A malformed one is treated as ABSENT, never as a mismatch: it degrades to the shared
+        # sidecar's evidence and, where that cannot describe this leaf, to the refusal below.
+        loaded_step = int(np.asarray(restored_state.step_count))
+        leaf_metadata = None
+        leaf_metadata_file = leaf_metadata_path_for(path, loaded_step)
+        if os.path.exists(leaf_metadata_file):
+            _assert_sidecar_openable(
+                leaf_metadata_file, "a checkpoint's per-leaf trainer_metadata_<step>.json")
+            try:
+                with open(leaf_metadata_file, 'r') as f:
+                    candidate = json.load(f)
+                leaf_metadata = candidate if isinstance(candidate, dict) else None
+            except Exception as e:
+                print(f"   Warning: Could not load per-leaf trainer metadata "
+                      f"{os.path.basename(leaf_metadata_file)}: {e}")
+                leaf_metadata = None
+
+        # What this load was able to VERIFY, for `checkpoint_io.load_checkpoint_into`'s evidence
+        # dict (TASK_889 fix pass). Assigned unconditionally and FIRST, so a stale record from a
+        # previous load on this trainer can never be mistaken for this one's.
+        self.last_load_verification = {
+            "architecture_verified": False,
+            "fingerprint_verified": False,
+            "verification_skipped": "no trainer_metadata.json / per-leaf record was found beside "
+                                    "this checkpoint (it predates TASK_889 or the sidecar is "
+                                    "unreadable) — nothing recorded to verify against",
+        }
+
+        # TASK_889 (D39 scope 3): architecture-compatibility checking lives OUTSIDE the lenient
+        # try/except above, deliberately. That block exists so a MALFORMED/unreadable
+        # trainer_metadata.json degrades to a warning for COSMETIC fields (entropy_coef), never
+        # a crash. A genuine architecture/fingerprint DISAGREEMENT must not be swallowed the
+        # same way an unreadable file is — that broad `except Exception` catching a `raise`
+        # here would be the exact print-and-continue defect this task closes, just one layer
+        # deeper (the mismatch WAS detected, at the old trainer.py:1889-1895, and downgraded to
+        # a stdout print while the caller's log recorded a success).
+        arch_record = leaf_metadata if isinstance(leaf_metadata, dict) else metadata
+        if isinstance(arch_record, dict):
+            # Check architecture compatibility
+            ckpt_pred = arch_record.get('use_prediction_head', False)
+            ckpt_physics = arch_record.get('physics_only', False)
+            ckpt_h = arch_record.get('h_cycles')
+            ckpt_l = arch_record.get('l_cycles')
+            ckpt_dim = arch_record.get('state_dim')
+            # TASK_889: recorded on NO checkpoint before this task shipped, so `None` on every
+            # legacy checkpoint means "cannot verify", not "recorded False" — only a checkpoint
+            # saved (or retro-stamped) AFTER this task can ever disagree here.
+            ckpt_vector_action = arch_record.get('vector_action')
+
+            # WHICH RECORD CAN SPEAK ABOUT THIS LEAF (TASK_889 fix pass — the BLOCKER).
+            # `trainer_metadata.json` is a RUN-DIR-level sidecar: ONE file, always OVERWRITTEN by
+            # the MOST RECENT `save_checkpoint`. A run dir legitimately holds SEVERAL
+            # `checkpoint_<step>` leaves (`keep=3` is the default and what train_jax_fast.py
+            # uses), and `leaf_dir` (TASK_888 B1) lets a caller load an OLDER one — restoring
+            # THAT leaf's params while the shared sidecar still describes the LATEST save.
+            #
+            # The first draft answered that by SKIPPING all three checks on a `step_count`
+            # disagreement. That was wrong in the one direction that matters: it turned "cannot
+            # verify" into "proceed", and both halves were then falsified through the production
+            # API — an architecture mismatch on a non-latest leaf escaped with
+            # `evidence["loaded"] is True` and `vec_act_proj.{kernel,bias}` silently dropped, and
+            # a TAMPERED older leaf's payload loaded with no refusal at all. The two kinds of
+            # field are now scoped separately, because they have genuinely different scope:
+            #
+            #   * `vector_action` / `use_prediction_head` are per-RUN ARCHITECTURE invariants.
+            #     A stale `step_count` does not make them untrustworthy, so they are compared
+            #     ALWAYS — from the per-leaf record where one exists, else from the shared
+            #     sidecar. (Removing the step gate alone was proven INSUFFICIENT: with no
+            #     per-leaf record the shared sidecar describes the newest leaf's architecture,
+            #     which is exactly what a heterogeneous run dir gets wrong. Both halves are
+            #     needed.)
+            #   * `param_fingerprint` is genuinely LEAF-SPECIFIC, so it is compared only against
+            #     a record that describes THIS leaf: the per-leaf record, or the shared sidecar
+            #     when its `step_count` names the step just restored. When neither can — a
+            #     legacy multi-leaf run dir — the load REFUSES (below) rather than skipping.
+            ckpt_step_count = metadata.get('step_count') if isinstance(metadata, dict) else None
+            if ckpt_step_count is not None:
+                # MINOR (fix pass): this conversion used to sit outside every guard, so a
+                # non-numeric `step_count` died with a bare `ValueError` from int() instead of
+                # this row's refusal discipline. A sidecar whose step cannot be read is a
+                # sidecar that cannot be shown to describe this leaf — fail CLOSED and say so.
+                try:
+                    ckpt_step_count = int(ckpt_step_count)
+                except (TypeError, ValueError):
+                    raise CheckpointRefusalError(
+                        f"REFUSING checkpoint at {path!r}: its trainer_metadata.json records a "
+                        f"non-numeric step_count={metadata.get('step_count')!r}, so there is no "
+                        f"way to tell whether it describes the leaf just restored "
+                        f"(step={loaded_step}). A sidecar that cannot be shown to describe this "
+                        f"checkpoint cannot verify it (TASK_889/D39) — 'cannot verify' fails "
+                        f"closed. Pass allow_architecture_mismatch=True only if this is "
+                        f"deliberate.") from None
+            metadata_describes_this_leaf = (isinstance(metadata, dict)
+                                            and (ckpt_step_count is None
+                                                 or ckpt_step_count == loaded_step))
+            fp_record = (leaf_metadata if isinstance(leaf_metadata, dict)
+                         else (metadata if metadata_describes_this_leaf else None))
+            ckpt_fingerprint = fp_record.get('param_fingerprint') if fp_record else None
+
+            if not allow_architecture_mismatch:
+                # D39: "the config is wrong, the checkpoints are right" — a recorded
+                # architecture that disagrees with the target this checkpoint is loading into
+                # is a hard REFUSAL, never the print-and-continue this block used to fall back
+                # to. Measured (run 32): USE_PREDICTION_HEAD=True (config/target) vs every real
+                # checkpoint's recorded false gave NO refusal and left 52 of 253 leaves at
+                # random init while reporting a successful load.
+                if ckpt_pred != self.model.use_prediction_head:
+                    raise CheckpointRefusalError(
+                        f"REFUSING checkpoint at {path!r}: recorded use_prediction_head="
+                        f"{ckpt_pred!r} disagrees with the target's use_prediction_head="
+                        f"{self.model.use_prediction_head!r}. A mismatch here silently leaves "
+                        f"the prediction-head leaves at random init (or ignores the "
+                        f"checkpoint's) while reporting a successful load (TASK_889/D39). "
+                        f"Pass allow_architecture_mismatch=True only if this is deliberate.")
+                if ckpt_vector_action is not None and ckpt_vector_action != self.vector_action:
+                    raise CheckpointRefusalError(
+                        f"REFUSING checkpoint at {path!r}: recorded vector_action="
+                        f"{ckpt_vector_action!r} disagrees with the target's vector_action="
+                        f"{self.vector_action!r}. A mismatch here silently drops or "
+                        f"random-inits vector_action_embedding.vec_act_proj.{{kernel,bias}} "
+                        f"while reporting a successful load (TASK_889/D39). Pass "
+                        f"allow_architecture_mismatch=True only if this is deliberate."
+                        + ("" if leaf_metadata is not None else
+                           f"\n  (read from the run dir's shared trainer_metadata.json; this "
+                           f"leaf carries no per-leaf record of its own)"))
+                self.last_load_verification["architecture_verified"] = True
+            else:
+                # allow_architecture_mismatch=True: deliberate, disclosed, never silent.
+                if ckpt_pred != self.model.use_prediction_head:
+                    print(f"   ⚠️  WARNING: allow_architecture_mismatch=True — checkpoint "
+                          f"use_prediction_head={ckpt_pred}, "
+                          f"target={self.model.use_prediction_head} (mismatched leaves are "
+                          f"random-init/ignored)")
+                if ckpt_vector_action is not None and ckpt_vector_action != self.vector_action:
+                    print(f"   ⚠️  WARNING: allow_architecture_mismatch=True — checkpoint "
+                          f"vector_action={ckpt_vector_action}, target={self.vector_action} "
+                          f"(mismatched leaves are random-init/dropped)")
+
+            # Warn on physics_only mismatch (unchanged — informational, not a TASK_889 scope
+            # item: physics_only is a sub-mode of the prediction head, gated on ckpt_pred)
+            if ckpt_pred and ckpt_physics != getattr(self.model, 'physics_only', False):
+                ckpt_mode = "physics-only" if ckpt_physics else "hybrid"
+                model_mode = "physics-only" if self.model.physics_only else "hybrid"
+                print(f"   ℹ️  Note: Checkpoint mode={ckpt_mode}, model mode={model_mode}")
+
+            # Error on architecture mismatch that would cause shape errors (unchanged)
+            if ckpt_h is not None and ckpt_h != self.model.H_cycles:
+                print(f"   ⚠️  WARNING: Checkpoint H_cycles={ckpt_h}, model H_cycles={self.model.H_cycles}")
+            if ckpt_l is not None and ckpt_l != self.model.L_cycles:
+                print(f"   ⚠️  WARNING: Checkpoint L_cycles={ckpt_l}, model L_cycles={self.model.L_cycles}")
+            if ckpt_dim is not None and ckpt_dim != self.model.state_dim:
+                print(f"   ⚠️  WARNING: Checkpoint state_dim={ckpt_dim}, model state_dim={self.model.state_dim}")
+
+            # TASK_889 (D39 scope 3, gate iii): the checkpoint's payload changed underneath its
+            # own recorded evidence. Computed over restored_state.params (what THIS load
+            # actually produced) vs what save time recorded FOR THIS LEAF — the per-leaf record
+            # where one exists, else the shared sidecar when its step_count names this leaf. A
+            # genuine disagreement is never overwritten, only ever compared and refused.
+            if ckpt_fingerprint is not None and not allow_architecture_mismatch:
+                loaded_fingerprint = param_fingerprint(restored_state.params)
+                if loaded_fingerprint != ckpt_fingerprint:
+                    raise CheckpointRefusalError(
+                        f"REFUSING checkpoint at {path!r}: recorded param_fingerprint="
+                        f"{ckpt_fingerprint!r} disagrees with the fingerprint of what was "
+                        f"just restored ({loaded_fingerprint!r}). The checkpoint's payload no "
+                        f"longer matches what save time recorded (TASK_889/D39) — never "
+                        f"overwritten, always refused.\n"
+                        f"  (compared against "
+                        + (f"{os.path.basename(leaf_metadata_file)}, the per-leaf record for "
+                           f"step={loaded_step}" if leaf_metadata is not None
+                           else f"trainer_metadata.json, which records step={ckpt_step_count} "
+                                f"for this leaf") + ")")
+                self.last_load_verification["fingerprint_verified"] = True
+                self.last_load_verification["verification_skipped"] = None
+            elif ckpt_fingerprint is None and not allow_architecture_mismatch:
+                # "CANNOT VERIFY" MUST NOT RESOLVE TO "PROCEED" (TASK_889 fix pass, D39's ruling
+                # applied to the skip itself). Two very different situations reach here:
+                #
+                #   * there IS leaf-specific evidence in this run dir, but it is about ANOTHER
+                #     leaf — the shared sidecar records a step this load did not restore, and
+                #     this leaf has no per-leaf record of its own (a run dir written before
+                #     TASK_889, under the default keep=3). The payload of the leaf actually
+                #     loaded is then unbacked by ANY recorded fingerprint, which is precisely
+                #     the hole a tampered older leaf walked through. REFUSE.
+                #   * nothing was ever recorded at all (a genuinely pre-889 single-leaf
+                #     checkpoint, `param_fingerprint` absent everywhere). There is no evidence
+                #     to be stale, and refusing would strand every checkpoint saved before this
+                #     task — so this one proceeds, but LOUDLY (⚠️ WARNING, not the ℹ️ Note tier
+                #     this codebase reserves for cosmetic items) and machine-visibly, via
+                #     `last_load_verification` -> the loader's evidence dict.
+                if isinstance(metadata, dict) and not metadata_describes_this_leaf:
+                    raise CheckpointRefusalError(
+                        f"REFUSING checkpoint at {path!r}: the leaf just restored "
+                        f"(step={loaded_step}) has NO per-leaf record "
+                        f"({os.path.basename(leaf_metadata_file)} is absent), and the run dir's "
+                        f"shared trainer_metadata.json describes step={ckpt_step_count} — a "
+                        f"DIFFERENT save (a run dir holds several checkpoint_<step> leaves by "
+                        f"default, and each save overwrites the shared sidecar). So NOTHING on "
+                        f"disk records what this leaf's parameters should hash to, and its "
+                        f"payload could have changed underneath its own evidence with nothing "
+                        f"able to see it (TASK_889/D39: 'cannot verify' is a REFUSAL, never a "
+                        f"skip).\n"
+                        f"  FIX: load the leaf the sidecar describes (step={ckpt_step_count}), "
+                        f"re-save this checkpoint so it gets a per-leaf record, or pass "
+                        f"allow_architecture_mismatch=True to accept an unverifiable load "
+                        f"deliberately.")
+                print(f"   ⚠️  WARNING: this checkpoint records NO param_fingerprint "
+                      f"(it predates TASK_889), so the payload just restored could NOT be "
+                      f"verified against anything — the load proceeded UNVERIFIED")
+                self.last_load_verification["verification_skipped"] = (
+                    f"no param_fingerprint is recorded for this checkpoint (pre-TASK_889 "
+                    f"save); the payload restored at step={loaded_step} was not verified")
+            else:
+                # allow_architecture_mismatch=True: the caller took the escape hatch, so the
+                # fingerprint comparison was deliberately not made. Disclosed, never silent.
+                print(f"   ⚠️  WARNING: allow_architecture_mismatch=True — the recorded "
+                      f"param_fingerprint was NOT compared against what this load restored")
+                self.last_load_verification["verification_skipped"] = (
+                    "allow_architecture_mismatch=True — the caller deliberately bypassed the "
+                    "architecture/fingerprint comparison")
 
         # Restore PopArt state if present and enabled (critical for curriculum)
         if self.use_popart and self.popart is not None:

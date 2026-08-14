@@ -217,6 +217,82 @@ RUN_DIR_SIDECARS = ("trainer_metadata.json", "popart_state.npz")
 SIDECAR_MAX_BYTES = 4 * 1024 * 1024
 
 
+def leaf_metadata_path_for(run_dir, step):
+    """``<run_dir>/trainer_metadata_<step>.json`` — the PER-LEAF architecture/fingerprint record
+    written beside each ``checkpoint_<step>`` leaf (TASK_889 fix pass).
+
+    WHY IT EXISTS. ``trainer_metadata.json`` is ONE file per RUN DIR, overwritten by the most
+    recent ``save_checkpoint``. A run dir normally holds SEVERAL leaves (``keep=3`` is the
+    default and what ``train_jax_fast.py`` uses), so for every leaf that is not the newest, the
+    shared sidecar describes a DIFFERENT save. `param_fingerprint` is genuinely leaf-specific,
+    so it cannot be validated for those leaves from the shared sidecar at all — and a loader
+    that responds to that by SKIPPING the check turns "cannot verify" into "proceed", which is
+    the D37/D39 pathology (measured: an older leaf's architecture mismatch and a tampered older
+    leaf's payload both escaped a step-gated skip, through the production API). One record per
+    leaf removes the ambiguity instead of tolerating it.
+
+    WHY THIS NAME, NOT ``checkpoint_<step>.trainer_metadata.json`` (MEASURED, flax 0.10.7).
+    flax's `latest_checkpoint` globs ``<run_dir>/checkpoint_*`` and takes the natural-sort LAST
+    entry — it never checks that what it found is a directory. A sibling named
+    ``checkpoint_100.trainer_metadata.json`` is therefore RETURNED AS THE CHECKPOINT:
+
+        latest_checkpoint(run_dir)                     -> .../checkpoint_100
+        (plant checkpoint_100.trainer_metadata.json)
+        latest_checkpoint(run_dir)                     -> .../checkpoint_100.trainer_metadata.json
+
+    which would hand `resolve_checkpoint_dirs` a JSON file as `leaf_dir`. `trainer_metadata_
+    <step>.json` does not match that glob (verified: `latest_checkpoint` is unchanged with one
+    present, before and after a second save). Writing the record INSIDE the orbax leaf was the
+    other candidate and is rejected for the same class of reason: the leaf is orbax's own
+    directory format, and adding files to it is new, untested surface on the payload the loader
+    reads.
+
+    Pure string manipulation on the paths it is GIVEN; it resolves nothing and touches no disk."""
+    return os.path.join(run_dir, f"trainer_metadata_{int(step)}.json")
+
+
+def digest_pins_naming(path):
+    """Every ``*.sha256`` file in ``path``'s directory whose CONTENT names ``path``'s basename —
+    the hand-kept digest pins that a write to ``path`` would INVALIDATE.
+
+    ONE definition, for both writers that can move a pinned document:
+    ``tools/stamp_checkpoint_fingerprints.py`` (the retro-stamp) and
+    ``experiments/832_linear_imprint/imprint.py::write_frame_provenance`` (the fingerprint
+    refresh). The load-bearing provenance documents are pinned by hand —
+    ``runs/861_ref/frame_provenance_ref.sha256`` covers all three
+    ``frame_provenance_ref_s{0,1,2}.json`` — so changing their bytes invalidates a digest
+    nothing in the tree recomputes. Neither caller rewrites those pins: a digest that a writer
+    refreshes on its own behalf pins nothing. They NAME them, before writing.
+
+    The mapping is not derivable from the filename (one digest file covers three documents), so
+    it is read out of the digest files themselves — cheap, exact, and it cannot go stale.
+
+    Read-only, and `stat`-before-`open` through `unsafe_to_open_defect` like every other sidecar
+    read in this module (an unopenable/oversized candidate is skipped, never blocked on).
+    Returns ABSOLUTE paths, sorted; callers relativize for display."""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    base = os.path.basename(path)
+    hits = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return hits
+    for name in names:
+        if not name.endswith(".sha256"):
+            continue
+        candidate = os.path.join(directory, name)
+        if unsafe_to_open_defect(candidate, SIDECAR_MAX_BYTES,
+                                 "a sha256 digest file") is not None:
+            continue
+        try:
+            with open(candidate) as fh:
+                if base in fh.read():
+                    hits.append(candidate)
+        except OSError:
+            continue
+    return hits
+
+
 # The field a FRAME-PROVENANCE document uses to bind itself to the weights it describes. This
 # is the name TASK_886's certification contract reads (`universe_pin["provenance_param_fingerprint"]`
 # is sourced from it), so it lives here, beside the function that COMPUTES the value, rather
@@ -665,12 +741,21 @@ class CheckpointRefusalError(RuntimeError):
     that wants to distinguish "this checkpoint is bad" from an unrelated `RuntimeError` can."""
 
 
-def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False):
+def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False,
+                         allow_architecture_mismatch=False):
     """THE loader every one of the four TASK_888 sites calls instead of a bare
     `trainer.load_checkpoint(...)` — resolves via `resolve_checkpoint_dirs` (the SAME function
     the guard uses), then REFUSES rather than continues on anything that is not a real, complete
     load. Mutates `trainer.state` in place on success and returns a load-evidence dict; on a
     permitted fresh-init (see below) `trainer.state` is left exactly as the caller built it.
+
+    ``allow_architecture_mismatch`` (TASK_889 / D39, default False): threaded straight through
+    to `trainer.load_checkpoint`, which REFUSES (before this function ever mutates
+    `trainer.state`) when the checkpoint's recorded `vector_action`/`use_prediction_head`
+    disagrees with the target's own, or its recorded `param_fingerprint` disagrees with what
+    this load actually restored. Pass True only from a call site that offers its OWN explicit
+    flag for "yes, I mean to load a mismatched checkpoint" — the same discipline
+    `allow_fresh_init` already uses here.
 
     Returns ``{"resolved_path": str, "step": int, "param_fingerprint": str, "loaded": bool}``.
     `resolved_path` and `param_fingerprint` describe whatever params end up live in
@@ -679,6 +764,25 @@ def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False):
     caller built before calling this. This is the load-time evidence TASK_888 scope 3 asks for:
     independent of provenance, it makes two runs of the "same" checkpoint comparable and detects
     a checkpoint changing underneath you.
+
+    A LOAD THAT COULD NOT BE VERIFIED SAYS SO, IN THE EVIDENCE (TASK_889 fix pass). ``loaded:
+    True`` used to be indistinguishable from a VERIFIED load at all five call sites: a checkpoint
+    whose recorded architecture/fingerprint could not be compared (nothing was ever recorded, or
+    the caller passed ``allow_architecture_mismatch``) returned the identical dict as one whose
+    every recorded field was checked and agreed. Three extra keys —
+    ``architecture_verified`` / ``fingerprint_verified`` / ``verification_skipped`` (a
+    human-readable reason) — are therefore merged in from `trainer.load_checkpoint`'s own record
+    of what it was able to check.
+
+    THEY APPEAR ONLY IN THE DEGRADED CASE, deliberately, and that is not decoration: this dict is
+    embedded VERBATIM in a graded artifact (``eval_vector.py``'s ``checkpoint_load`` block) and
+    that artifact is compared BYTE-FOR-BYTE against a committed baseline by
+    ``861/smoke_e2e.py`` leg (i) — every key except ``resolved_path`` is pinned. Unconditional
+    new keys would turn a green leg red for a fully-verified load and force a planner-gated
+    baseline promotion to say nothing new. A field present only in the degraded case is this
+    repo's existing idiom for exactly this (TASK_883's ``universe_pinned: false``, TASK_874's
+    ``provenance_replaced``): ``evidence.get("verification_skipped")`` is the machine-visible
+    test, None/absent = every recorded field was compared and agreed.
 
     ``allow_fresh_init`` (default False): when nothing loadable exists at `ckpt_path`, the
     default is a hard refusal (scope 2 — "never a fallback"). Pass True only from a call site
@@ -748,7 +852,8 @@ def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False):
     params_before = state_before.params
     # `leaf_dir` — the EXACT directory the guard above verified — is what gets restored; the run
     # dir goes along only because the two sidecars live beside it (B1, see the docstring).
-    loaded = trainer.load_checkpoint(run_dir, leaf_dir=leaf_dir)
+    loaded = trainer.load_checkpoint(run_dir, leaf_dir=leaf_dir,
+                                     allow_architecture_mismatch=allow_architecture_mismatch)
     if loaded is None:
         raise CheckpointRefusalError(
             f"trainer.load_checkpoint returned None for resolved leaf "
@@ -776,9 +881,18 @@ def load_checkpoint_into(trainer, ckpt_path, *, allow_fresh_init=False):
             f"  The commonest cause is a --n-assets (or model-size/h-cycles/l-cycles) that does "
             f"not match the run this checkpoint came from.")
     trainer.state = loaded
-    return {
+    evidence = {
         "resolved_path": leaf_dir,
         "step": int(np.asarray(loaded.step_count)),
         "param_fingerprint": param_fingerprint(loaded.params),
         "loaded": True,
     }
+    # TASK_889 fix pass: what `trainer.load_checkpoint` was actually able to VERIFY, merged in
+    # only when something could not be (see the docstring for why "only when" is load-bearing —
+    # the committed-artifact byte comparison in 861 leg (i)). `getattr` with a default because
+    # the attribute is this loader's contract with `trainer.load_checkpoint`, and a trainer-like
+    # object that predates it must degrade to the old dict rather than crash.
+    verification = getattr(trainer, "last_load_verification", None)
+    if isinstance(verification, dict) and verification.get("verification_skipped"):
+        evidence.update(verification)
+    return evidence

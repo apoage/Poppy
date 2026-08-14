@@ -1,5 +1,60 @@
 # TASK_889 — bind a checkpoint to the ARCHITECTURE it was saved under
 
+> **STATUS (2026-08-14): SHIPPED as `task889-checkpoint-architecture-binding`** — factory run 33,
+> **3 cycles** (implement `sonnet` → fix `opus` → fix `opus`), a 3-lens panel plus a fresh fail-closed
+> re-verify. Save time now records `vector_action`, `use_prediction_head` and `param_fingerprint`;
+> `load_checkpoint` REFUSES on recorded-vs-loaded disagreement naming both values; the print-and-continue
+> is gone; the fossil is flipped to `False` per D39.
+>
+> **THE PANEL FORCED THE DESIGN, and it is the reason this row is worth having.** The first implementation
+> gated all three checks on `step_count` matching, SKIPPING verification whenever the run-dir sidecar did
+> not describe the leaf being loaded. **Three lenses independently reproduced the consequence by
+> construction:** in a run dir with `checkpoint_100` (`vector_action=True`) and a later `checkpoint_200`
+> (`False`, overwriting the shared sidecar), loading the older leaf into a `False` target gave NO refusal,
+> dropped the `vec_act_proj` leaves, and returned `loaded: True`. Gate (iii) fell with no adversarial setup
+> at all. **`keep=3` is `save_checkpoint`'s default and `train_jax_fast.py` uses it, so multi-leaf run dirs
+> are the norm.** A mutation proved a narrower gate could not work — there was no per-leaf architecture
+> record at all. The fix splits by the SCOPE of each field: `vector_action`/`use_prediction_head` are
+> per-RUN invariants and are compared ALWAYS; `param_fingerprint` is leaf-specific and now has a per-leaf
+> `trainer_metadata_<step>.json`. Where verification is impossible, the loader REFUSES rather than skipping.
+>
+> **TWO ORCHESTRATOR DIRECTIONS WERE WRONG AND WERE CAUGHT BY MEASUREMENT.** (1) The proposed per-leaf
+> filename `checkpoint_<step>.trainer_metadata.json` would have been returned AS the checkpoint — flax's
+> `latest_checkpoint` globs `checkpoint_*` and never checks the entry is a directory. The implementer
+> measured it, refused the instruction, and shipped `trainer_metadata_<step>.json`; a judge reproduced both
+> halves. (2) "Infer `vector_action` from the payload" deserializes arrays and therefore depends on saved
+> sharding — the tool's own bare invocation crashed on `runs/832_e5/ckpt_imprint_full` (`device_str:
+> cuda:0` vs `TFRT_CPU_0` on the other six). Cycle 3 reads orbax's `_METADATA` key listing instead;
+> 117/117 leaves in the repo carry it, so nothing was lost.
+>
+> **The retro-stamp INFERS, never guesses** (`DEFAULT_VECTOR_ACTION` deleted; recorded → inferred →
+> asserted → REFUSE, refusing on ANY disagreement; `vector_action_source` recorded). **`imprint.py` no
+> longer silently rewrites tracked provenance documents** — it refuses by default, naming both
+> fingerprints, the on-disk sha256, the opt-in flag and every co-located `.sha256` pin. All four tracked
+> documents were in the triggering state, so the next ordinary run would have mutated them; TASK_874 fixed
+> exactly this shape once already.
+>
+> **Byte-identity proven the hard way:** a HEAD worktree compared all 7 real checkpoints on fingerprint,
+> per-leaf raw sha256 across all 204 leaves, PopArt state, AND a full `initial_inference` forward pass —
+> all 7 matched byte-for-byte. New evidence keys appear only in the DEGRADED case, deliberately, because
+> unconditional keys would have moved `861/smoke_e2e.py` leg (i); proven by replicating that comparison.
+>
+> **Suites:** selftest 12/12 · 882 · `scorecard_smoke` · 863 · 883R · 874 · 865 · 888R's suites · 889's
+> three (116 checks) · bare stamp-tool invocation 7/7 — all exit 0. **`861/smoke_e2e.py`: 11 legs PASS,
+> `vii_baseline_pins` FAIL on `/provenance/alias_union_rule` alone** (TASK_877's pre-existing red,
+> unchanged; needs one operator `--promote-baselines`). `i_canon_832` PASSES, so the new refusal does not
+> recreate the run-32 interaction. **`--apply` on `runs/` was NEVER run — the planner freeze holds, and the
+> 7 `trainer_metadata.json` manifest md5 is unchanged across 3 cycles, 4 judges and 4 batteries.**
+>
+> **Disclosed consequences:** a legacy multi-leaf run dir refuses when an OLDER leaf is named explicitly
+> (in-tree: only the gitignored `ckpt_smoke/`); a default `imprint.py` run refuses at emission on the
+> gitignored `frame_provenance_smoke.json`, and on any future re-run of the recipe behind the 4 tracked
+> documents; concurrent saves into ONE run dir can leave a cosmetic orphaned record.
+> **Remainders → planner:** the 7 survivors get no per-leaf record (single-leaf, none needed);
+> `distill.py::_peek_recorded_use_prediction_head` reads the SHARED sidecar, so a heterogeneous multi-leaf
+> warm start refuses where preferring the per-leaf record would load correctly;
+> `tools/parallel_epoch_training.py:45` is still a 5th load site bypassing every guard.
+
 **Status**: READY 2026-08-12 (planner; created by the D39 ruling out of TASK_888's halt).
 **Size: S/M. Risk: HIGH in consequence** — this row owns every write into a persisted artifact.
 **Sequenced AFTER TASK_888R, BEFORE TASK_886.**
