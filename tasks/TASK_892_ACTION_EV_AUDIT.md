@@ -55,6 +55,6 @@ policies, and compare realized forward returns after their non-HOLD decisions ag
 ## Out of scope
 
 The real leg (scheduled workstation run — planner lane; ~84 evals, no training). Any verdict
-past INSTRUMENT GREEN: the EDGE/ANTI-EDGE/NULL ruling is the planner's, seeded as D42 with the
+past INSTRUMENT GREEN: the EDGE/ANTI-EDGE/NULL ruling is the planner's, seeded as **D44** with the
 LEDGER row. The secondary search-operator subject and the imprint_full contrast (both are
 planner add-ons on the shipped instrument). Training anything.
