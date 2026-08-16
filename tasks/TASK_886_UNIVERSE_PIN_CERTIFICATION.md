@@ -1,7 +1,21 @@
 # TASK_886 — bind the universe claim to what was LOADED and what was RETURNED
 
-> **STATUS (2026-08-11): HALTED on the 3-cycle rule (factory run 31) — nothing shipped, code preserved in
-> `git stash` ("TASK_886 … HALTED on the 3-cycle rule (D38)"). Decision seeded: D38 OPEN.**
+> **STATUS (2026-08-16, planner): READY — RE-TAKE AUTHORIZED. Contract-only per D38; every premise
+> that gated the re-take is now discharged.** 888R shipped (`7cc50fb`) — one resolution function
+> feeds guard and loader, the loader refuses. 889 shipped (`f9d8ee4`) — save-time architecture
+> record + refusing loader. The retro-stamp ran (`8123a6b`, 7 stamped / 0 refused / 0 skipped):
+> `param_fingerprint` now lives in the 4 tracked provenance documents, so **`verified: true` is
+> REACHABLE for the 7 surviving load-bearing checkpoints** — the run-31 "unreachable" caveat is
+> retired by measurement, exactly as D38's emitter ruling intended. **Resume the contract half
+> from `stash@{1}`** ("TASK_886 … HALTED on the 3-cycle rule (D38)"): it survived two independent
+> opus fail-closed panels — do not re-derive it, rebase it onto the shipped 888R/889 surface
+> (`checkpoint_io.resolve_checkpoint_dirs`, the refusing loader, save-time `param_fingerprint`)
+> and re-run its six suites plus both cycle-1 forgery reproductions against HEAD. Do NOT rebuild
+> any load-path machinery — that surface is shipped and owned by 888R/889; if a finding lands
+> there, it is a new row, not this one.
+>
+> **Prior banner (2026-08-11): HALTED on the 3-cycle rule (factory run 31) — nothing shipped, code
+> preserved in `git stash`. Decision seeded: D38 — RULED, discharged (888R + 889 + retro-stamp).**
 >
 > **The row welded two concerns and only one ever failed.** (A) the CERTIFICATION CONTRACT — built, and
 > verified harder than anything this program has shipped: `verified: true` binds to the LOADED parameter
