@@ -3,6 +3,58 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-16 — TASK_893 — the D41 measurement: the backward fill is real, it is not exploitable *here*, and the docstring is still false
+
+- **What shipped.** `tools/measure_leading_prefix.py` — a read-only instrument that counts decision cells
+  sitting in leading backward-fill prefixes on the 819/820 daily panel and re-measures the published bar
+  with those cells masked inactive. Plus one `893/prefix-cells` row in `experiments/LEDGER.md`. **No
+  `trader/` source was modified** — D41 is OPEN, and which of its options to take is the planner's call.
+  This row supplies the evidence D41 explicitly pre-demanded ("it needs a measurement, not an argument").
+- **The headline numbers.** 4933 panel rows across 39 assets sit in a leading bfill prefix; 4904 of them
+  land inside the scored FULL window `[1,1705)` = **7.3793%** of the decision matrix, 4518 on the grid the
+  backtest actually scores. They concentrate in BULL21/BEAR22/REC23 and vanish after 2023. Masking every
+  one of them inactive moves the bar by **exactly 0.000000** on every metric — net@21 stays `+0.9673047900277524`,
+  net@8 `+1.0865`, turnover, equity, maxDD, and the bootstrap CIs all unchanged. **Zero** as-shipped
+  positions ever fall inside an asset's own prefix.
+- **Why that zero is honest and what it does NOT prove.** A clean zero is the most suspicious result this
+  program can produce, so it was attacked as one. A judge planted a synthetic position inside a prefix and
+  the instrument moved (`FULL.net21` Δ `+0.000749`, 11/12 metrics), and inverting the mask produced a large
+  response — the masking→scorer path is real. That positive control now **ships as a permanent regression
+  test** which prints a loud `CONTROL FAILED — the masking->scorer path is VACUOUS` banner and writes
+  `instrument_responsive: false` if it ever goes vacuous; a re-verifying judge mutated it to a no-op and
+  confirmed the banner fires. **But the Δ=0 is a structural corollary, not an independent test**: returns
+  inside a bit-identical prefix are exactly zero by construction, so `first_active` can never precede the
+  prefix boundary and `present_mask`'s `warm=30` excludes the region regardless. Both statements ship
+  together in the artifact, with the explicit D41 warning that **any consumer reading `close_d`/`logc`
+  without routing through `present_mask` gets no such protection and this instrument would not catch it.**
+  A ruling that leans on "0 measured exploitability" alone would be circular, and the LEDGER row says so.
+- **The cross-check was rebuilt because cycle 1's was fake.** Cycle 1 reported "26/39 exact, 13/39 +1,
+  0 unexplained" — but all 26 agreements were on assets with a ZERO prefix (trivial), and every asset with
+  anything to check disagreed, with an auto-classifier that stamped any `+1` gap as "explained" without
+  ever testing the mechanism. Two judges reached **opposite** conclusions about whether that explanation
+  held. It was settled by a value anchor, not an argument: SOL's `close_d[0] = 40.23` is exactly the close
+  of the bar at `2021-06-17 15:32:00Z`, while the last row carrying that value is stamped
+  `2021-06-16 22:56:00Z` — **59,760 seconds before the price it reports**. Row 167 is fabricated. The
+  docstring's premise ("the fill's source row also carries the value") is false for this panel because the
+  npz is built on a **one-minute** grid, filled there, then subsampled `[::1440]`, so the source row almost
+  never lands on the daily grid at all. Path B was off by one. The auto-classifier is gone; Paths A and B
+  now agree **39/39 exact, 29/29 on nonzero prefixes**, and the old npz-run detector is demoted to Path C
+  and reported as AMBIGUOUS (never as agreement) on the 26 assets where a 1-row run cannot distinguish
+  prefix 0 from prefix 1.
+- **A second defect fell out of the same investigation.** `build_close_aligned` admits bars only where
+  `timestamp >= grid_start`, so **16 majors that DO have real earlier history** still received a one-row
+  backward fill: XDG's first *admitted* bar is 23:03Z while it has a real 22:55Z bar that was never
+  admitted, making `close_d[0, XDG] = 0.0046336` a price from 420 s in the future. That is what moved the
+  count 4917 → 4933. All 16 land on row 0, outside FULL, so the decision-cell count and the share are
+  unchanged.
+- **What survives for D41 regardless of which option it takes:** `_ffill_bfill_cols`'s docstring claim of
+  *"no cross-time leak"* is **disproven**, at second-level resolution, for 29 assets.
+- **Also closed:** the fixture leg is now unmistakably labelled as a cross-check source only (`--db` never
+  feeds the panel) and emits an honest interval `[4917, 4943]` rather than a point value; the per-regime
+  split's 2-cell shortfall is caveated to pre-existing gaps at rows 730/1095/1461 in `regime_rows`; the
+  820 paper number is recorded as considered and deliberately dropped (a running ledger, not a recomputable
+  scalar); a stale draft artifact was removed and the output name made underivable.
+
 ## 2026-08-14 — TASK_889 — a checkpoint is bound to the architecture it was saved under, and every leaf carries its own evidence
 
 - **What shipped.** `trainer.save_checkpoint` now records `vector_action`, `use_prediction_head` and
