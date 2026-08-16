@@ -3,6 +3,55 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-16 — TASK_890 — distill's CLI runs again, applies 868's open gate, and can no longer claim it did
+
+- **What shipped.** `distill.py`'s CLI has been **DEAD since TASK_868/874** — `load_training_panel` returns
+  five values (`prices_j, logc, env_cfg, open_gate, asset_aliases`) and it unpacked three, so every
+  invocation died on `ValueError: too many values to unpack`; only the in-process import path was ever
+  exercised. The unpack is repaired and, per **D40**, the causal open-gate is now APPLIED —
+  `frame_hold_mask(prices_j, start_row, N, open_gate=open_gate)`, the same call `imprint.py:2231` makes —
+  to every counterfactual candidate and to the teacher's walked action, threaded through all four
+  `collect_pass` passes. Distill is the warm-start path, so an ungated distill was propagating v̂ targets
+  that encode entries on bars which never printed.
+- **The in-process path is byte-identical when the gate is inert** — proven by loading HEAD's and the
+  candidate's `distill.py` in one process and comparing every returned array (`dec_obs`, `cand`, `G`, `r0`,
+  `states`) for both policies, not by trusting the `if hold_mask is not None` guards.
+- **The artifact can no longer certify work that did not happen.** The first implementation computed the
+  `[890] force-HOLD 8 of 240` log line and `n_force_hold_decision_cells` **before** forwarding the mask, so
+  reverting one kwarg at the `run()` call site still printed "force-HOLD 8 of 240 … applied to the
+  counterfactual candidates" and still wrote `n_force_hold_decision_cells: 8` while **zero** candidates were
+  gated. That is D40's own diagnosis — absence read as a value — recreated one level below where it ruled.
+  The counts now accumulate **on the force-HOLD branch itself**, so no number in the artifact is producible
+  without the application having occurred; under the same mutation it reports `0`.
+- **The test could not see the defect it existed to catch.** The first version never called `run()` — it
+  built `hold_mask` itself and handed it to `collect_pass`, proving only machinery that was already correct
+  and shared with `imprint.py`. Two reviewers independently rebuilt the real regression (revert `run()`'s
+  wiring to D40's forbidden unpack-and-discard shape) and the shipped test stayed **11/11 green**. It now
+  runs the **real CLI in a subprocess** and grades the emitted artifact; the same two mutations, rebuilt at
+  the real drop site, produce 15 FAIL and 1 FAIL respectively.
+- **`8 of 240` was true and materially misleading, and the real figure is now measured.** Because the
+  teacher's **walked action** is gated and the walk is a sequential portfolio-state trajectory, forcing HOLD
+  at the first gated decision diverges the state from that point on. Gated vs ungated from an identical warm
+  start and rng: `decisions_with_ANY_changed_G = 29/30` on each teacher pass, `0/30` on each search pass —
+  **58 of 120 decisions**, roughly half the training set, against 8/240 (3.3%) raw cells. Independently
+  measured by the flow-verifier and then re-derived by the implementation to an exact match. The CLI and the
+  artifact now report both the floor and the blast radius, and say that a walked-action gate propagates.
+- **A second stale byte-identity claim was found and removed** — an inline comment still asserting the result
+  dict is "bit-identical to the shipped 857 output" with `--codistill-reward` OFF. The first pass had
+  corrected only the `--help` string.
+- **ACCEPTANCE (i) IS NOT MET, and was not made to look met.** The documented bare invocation
+  (`experiments/857_vhat_distill/SPEC.md:74`) now runs the entire pipeline and then raises `AssertionError`
+  on its **own** `--smoke-assert` quality gate before writing artifacts. Reproduced independently by two
+  reviewers at seed 0 (v̂-alone calibration `+0.1251 → −0.3953`); an unpack-and-discard arm fails a
+  *different* check instead, and at **seed 1 both arms fail the same one** — so the instrument is simply
+  noisy at fixture scale, and the gate is **not** orthogonal to it. **The thresholds were deliberately NOT
+  re-tuned** — moving an acceptance bar until it clears is the self-certification this program exists to
+  stamp out — and `SPEC.md` was not touched (out of scope; note that it still advertises the now
+  unreproducible pre-890 numbers `v̂-alone +0.2331 → +0.3416`). Repairing a CLI that had been dead for two
+  task-generations simply revealed a quality state nobody could previously observe. Seeded as **D43**:
+  re-validate distill's internal smoke-assert at the program's own ≥3-seed bar, and establish whether that
+  gate was ever green post-868. **Until someone answers that, no 857 number should be quoted from this path.**
+
 ## 2026-08-16 — TASK_886 — the program may now say a number was measured on a known universe, and it says exactly how much it knows
 
 - **What shipped.** The CERTIFICATION CONTRACT only, per D38's split — the entire checkpoint load path stayed

@@ -1,5 +1,40 @@
 # TASK_890 — repair `distill.py`'s dead CLI, and make it apply 868's open gate
 
+> **STATUS (2026-08-16): SHIPPED as `task890-distill-open-gate` — with acceptance (i) EXPLICITLY UNMET.**
+> 2 cycles; verified by a 3-lens panel (correctness · regression · flow-verifier). Gates **(ii)–(v) MET**.
+>
+> **The CLI works and the gate is applied.** Five-value unpack repaired; `frame_hold_mask(prices_j,
+> start_row, N, open_gate=open_gate)` — the same call `imprint.py:2231` makes — applied to every
+> counterfactual candidate AND the teacher's walked action, across all four passes. The in-process path is
+> byte-identical when the gate is inert, proven by loading both versions in one process and comparing every
+> returned array.
+>
+> **ACCEPTANCE (i) IS NOT MET.** The documented bare invocation (`SPEC.md:74`) now runs the whole pipeline
+> and then raises `AssertionError` on its **own** `--smoke-assert` quality gate before writing artifacts
+> (v̂-alone calibration `+0.1251 → −0.3953` at seed 0). An unpack-and-discard arm fails a *different* check;
+> at **seed 1 both arms fail the same one**. Thresholds were **deliberately not re-tuned** and `SPEC.md` was
+> not touched. **This is not a failure of the row** — the CLI had been dead since 868/874, so it had never
+> once executed past the arity bug and this gate's state was unknowable until now. **Seeded as D43** (OPEN):
+> re-validate the smoke-assert at the program's own ≥3-seed bar and establish whether it was ever green
+> post-868. **Until then, no 857 number should be quoted from this path.**
+>
+> **Two defects the panel caught that are worth carrying forward.** (1) The first implementation computed the
+> `force-HOLD` log line and the artifact counts **before** forwarding the mask, so reverting one kwarg still
+> printed "8 of 240 … applied" and wrote `n_force_hold_decision_cells: 8` while zero candidates were gated —
+> D40's own "absence read as a value", one level below where it ruled. Counts now accumulate **on the
+> force-HOLD branch itself**. (2) The first test never called `run()`; two reviewers independently rebuilt
+> the real regression and it stayed **11/11 green**. It now runs the real CLI in a subprocess and grades the
+> artifact, and the same mutations produce 15 FAIL / 1 FAIL.
+>
+> **`8 of 240` understates the effect by ~15×, and the real number is measured.** Gating a WALKED action
+> diverges the portfolio trajectory from that decision onward: `decisions_with_ANY_changed_G = 29/30` per
+> teacher pass, `0/30` per search pass — **58 of 120** decisions, against 8/240 raw cells. Both the floor and
+> the blast radius are now reported.
+>
+> **Remainder → planner:** D43, plus `SPEC.md:74` still advertising the unreproducible pre-890 numbers
+> (`v̂-alone +0.2331 → +0.3416`), and a gitignored `experiments/857_vhat_distill/ckpt_smoke/` written by an
+> earlier verification run — the silently-rebasable shared-artifact class from the run-25 fixture incident.
+
 **Status**: READY 2026-08-12 (planner; created by the D40 ruling out of factory run 33).
 **Size: XS/S. Risk: low to build, MEDIUM in meaning** — it decides whether the v̂-leaf distiller
 trains on fills that could not happen.

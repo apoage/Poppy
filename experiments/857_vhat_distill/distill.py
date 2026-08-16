@@ -235,10 +235,24 @@ def _reset_walk(prices_j, cfg, start_row, horizon):
 
 def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
                  start_row, N, A, discount, R, policy, base_rng,
-                 max_positions, min_cash):
+                 max_positions, min_cash, hold_mask=None):
     """One trajectory pass: walk ``policy`` ('teacher' = 819 book, or 'search' = true-env-leaf
     greedy pick over the candidate set) from ``start_row`` for ``N`` decisions. At each decision
     emit the counterfactual tuples for the K search candidates + the policy-argmax candidate.
+
+    ``hold_mask``: TASK_890 (D40) — (N, A) bool or None. When given, force HOLD (module constant
+    ``HOLD``) at every (decision, slot) it marks — the exact mechanic imprint.py's ``walk_env``
+    applies at imprint.py:1266, applied here to TWO things: (a) every counterfactual CANDIDATE
+    (so no (state, candidate, G) tuple trains the value head toward an entry that could not have
+    filled), which also covers the 'search' policy's walked action since it is picked FROM the
+    (already-masked) candidate set; and (b) the 'teacher' policy's walked action directly, since
+    it is built from the 819 book target rather than from ``cand``. None (default) = unmasked,
+    byte-identical to pre-890 behavior.
+
+    TASK_890 fix-pass — the gate's numbers are EARNED, not asserted. Everything this pass reports
+    about the gate is accumulated ON THE BRANCH THAT APPLIES IT, so no count can be produced
+    without the application having occurred (the caller's pre-computed ``hold_mask.sum()`` would
+    survive a dropped forward; ``applied_hold_mask``/``gate_audit`` below cannot).
 
     Returns dict of RAM arrays:
         dec_obs   (D, 27, A, A) float32 — one obs per visited decision
@@ -246,12 +260,24 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
         G         (D, M)        float32 — true R-step discounted return per candidate
         r0        (D, M)        float32 — the r0 component of G (TASK_860 reward-codistill target)
         states    list[pytree]  B=1 TradingState snapshots (for the ranking-transfer search)
+        applied_hold_mask (D, A) bool — the mask rows this pass ACTUALLY forced HOLD with
+                                        (all-False when ``hold_mask`` is None)
+        gate_audit dict — see ``_gate_audit`` keys below
     (D <= N; the walk stops early if the env terminates.)
     """
     book = jnp.ones((1, A), dtype=jnp.int32)
     state = _reset_walk(prices_j, cfg, start_row, N + R + 2)
     dec_obs, cand_dump, G_dump, r0_dump, states = [], [], [], [], []
+    # TASK_890 fix-pass: gate-application evidence, accumulated only where the gate is applied.
+    applied_rows = []                # (D, A) bool — one row per VISITED decision
+    n_cand_entries_forced = 0        # candidate entries actually flipped non-HOLD -> HOLD
+    n_act_entries_forced = 0         # walked-action entries actually flipped (teacher path)
+    decisions_cand_changed = []      # decisions whose candidate set the gate actually altered
+    first_walk_divergence = None     # first decision whose WALKED action the gate can have moved
+                                     # (targets diverge from the NEXT decision onward)
+    n_decisions_gate_applied = 0     # decisions at which the force-HOLD branch actually ran
     for k in range(N):
+        n_forced_here = 0
         obs_k = jnp.asarray(obs_all[k])[None]                     # (1,27,A,A)
         root = model.apply({"params": params}, obs_k, method="initial_inference")
         policy_logits = root["policy_logits"]                     # (1, A*5)
@@ -266,6 +292,23 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
         cand_K = helper.build_root_candidates(policy_logits, mask, book, rng_k)   # (1,K,A)
         argmax_vec = policy_logits.reshape(1, A, N_ACTIONS_PER_ASSET).argmax(-1).astype(jnp.int32)
         cand = jnp.concatenate([cand_K, argmax_vec[:, None, :]], axis=1)          # (1,M,A)
+        # TASK_890 (D40): force HOLD on every candidate's gated slots BEFORE the true-env leaf
+        # scores it — no (state, candidate, G) tuple below trains toward an entry on a bar that
+        # never printed. Broadcasts hold_mask[k] (A,) over the M candidates.
+        if hold_mask is not None:
+            gate_row = np.asarray(hold_mask[k], dtype=bool)                      # (A,)
+            cand_pre = np.asarray(cand[0], dtype=np.int32)                       # (M,A)
+            cand = jnp.where(jnp.asarray(gate_row)[None, None, :], HOLD, cand).astype(jnp.int32)
+            # evidence, recorded on the SAME branch that applies the mask
+            n_forced_here = int(np.count_nonzero(cand_pre[:, gate_row] != HOLD))
+            n_cand_entries_forced += n_forced_here
+            if n_forced_here:
+                decisions_cand_changed.append(k)
+            n_decisions_gate_applied += 1
+            applied_rows.append(gate_row)
+        else:
+            gate_row = None
+            applied_rows.append(np.zeros(A, dtype=bool))
         # TRUE R-step discounted return per candidate — reuse the shipped 851 leaf helper
         # (tail OFF ⇒ pure truncated true-env rollout). Q_true = r0 + γ·V is the 831/851
         # candidate score the true-env leaf ranks by; that IS the "true R-step return".
@@ -283,25 +326,75 @@ def collect_pass(model, params, helper, prices_j, cfg, obs_all, tgt, corridor,
             side = np.asarray(state.pos_side)[0]
             act = np.asarray(corridor._to_action_vec(tgt[start_row + k], side, A),
                              dtype=np.int32)
+            # TASK_890 (D40): the teacher action is built from the 819 book target, NOT from
+            # ``cand`` (already gated above) — so it needs the same force-HOLD applied directly,
+            # exactly as imprint.py's walk_env does at imprint.py:1266.
+            if hold_mask is not None:
+                act_pre = act
+                act = np.where(gate_row, HOLD, act).astype(np.int32)
+                n_act_here = int(np.count_nonzero(act_pre[gate_row] != HOLD))
+                n_act_entries_forced += n_act_here
+                # CASCADE onset: forcing the WALKED action makes the portfolio state (and hence
+                # every later decision's obs, candidates and true returns) diverge from the
+                # ungated walk from this decision onward.
+                if n_act_here and first_walk_divergence is None:
+                    first_walk_divergence = k
         else:                                   # 'search' = true-env-leaf greedy over candidates
+            # cand is already gated (above), so the search's greedy pick FROM it is gated too.
             act = np.asarray(cand[0][int(np.argmax(np.asarray(G[0])))], dtype=np.int32)
+            # CASCADE onset (search): identical candidates => identical G => identical greedy
+            # pick, so this walk can only leave the ungated trajectory at a decision where the
+            # gate actually CHANGED a candidate. Earliest-possible onset, conservative by
+            # construction (the pick need not in fact move at that decision).
+            if n_forced_here and first_walk_divergence is None:
+                first_walk_divergence = k
         state, _, _, done = batch_step_vector(
             state, jnp.asarray(act)[None], prices_j, cfg)
         if bool(np.asarray(done)[0]):
             break
+    D = len(dec_obs)
+    applied = (np.asarray(applied_rows, dtype=bool).reshape(D, A) if D
+               else np.zeros((0, A), dtype=bool))
+    # Decisions whose (state, candidate, G) targets actually differ from the ungated construction:
+    # the ones the gate edited directly, PLUS everything STRICTLY downstream of the walk's
+    # divergence. The +1 is load-bearing: a decision's obs/candidates/returns are emitted BEFORE
+    # its action is taken, so forcing the WALKED action at k leaves decision k's own targets
+    # untouched and moves the portfolio state (hence every target) from k+1 on.
+    differ = set(decisions_cand_changed)
+    if first_walk_divergence is not None:
+        differ |= set(range(first_walk_divergence + 1, D))
     return {
         "dec_obs": np.asarray(dec_obs, dtype=np.float32),
         "cand": np.asarray(cand_dump, dtype=np.int32),
         "G": np.asarray(G_dump, dtype=np.float32),
         "r0": np.asarray(r0_dump, dtype=np.float32),
         "states": states,
+        # TASK_890 fix-pass — see the docstring: application evidence, not a restatement of the
+        # caller's mask. Every field below is zero/False/empty unless the force-HOLD branch ran.
+        "applied_hold_mask": applied,
+        "gate_audit": {
+            "n_decisions_gate_applied": int(n_decisions_gate_applied),
+            "gate_applied_at_every_decision": bool(D and n_decisions_gate_applied == D),
+            "n_decisions_walked": int(D),
+            "n_cells_masked_applied": int(applied.sum()),
+            "n_candidate_entries_forced": int(n_cand_entries_forced),
+            "n_walked_action_entries_forced": int(n_act_entries_forced),
+            "n_decisions_with_forced_candidates": int(len(decisions_cand_changed)),
+            "first_walk_divergence_decision": (None if first_walk_divergence is None
+                                               else int(first_walk_divergence)),
+            "n_decisions_targets_differ": int(len(differ)),
+        },
     }
 
 
 def build_counterfactual_dataset(model, params, prices_j, env_cfg, obs_all, tgt, corridor,
-                                  start_row, N, A, args):
+                                  start_row, N, A, args, hold_mask=None):
     """Teacher + search-greedy walks × both cost tiers → the pooled counterfactual set (RAM).
-    Returns a list of per-pass dicts (from ``collect_pass``), tagged by (policy, cost)."""
+    Returns a list of per-pass dicts (from ``collect_pass``), tagged by (policy, cost).
+
+    ``hold_mask``: TASK_890 (D40) — (N, A) bool or None, forwarded unchanged to every
+    ``collect_pass`` call (both policies, both cost tiers) — the ONE place this gate is applied
+    in distill, mirroring imprint.py's single ``frame_hold_mask`` computation feeding every walk."""
     helper = create_sampled_vector_search(
         model, n_assets=A, n_actions_per_asset=N_ACTIONS_PER_ASSET,
         num_samples=args.vector_k, num_simulations=args.sims,
@@ -322,12 +415,69 @@ def build_counterfactual_dataset(model, params, prices_j, env_cfg, obs_all, tgt,
             ctr += 1
             p = collect_pass(model, params, helper, prices_j, cfg_c, obs_all, tgt, corridor,
                              start_row, N, A, args.discount, args.leaf_rollout_r, policy, rng,
-                             args.max_positions, args.min_cash_threshold)
+                             args.max_positions, args.min_cash_threshold, hold_mask=hold_mask)
             p["policy"], p["cost"] = policy, c
             passes.append(p)
             print(f"[857] pass {policy}@{c}bp: {p['dec_obs'].shape[0]} decisions, "
                   f"{p['cand'].shape[0] * p['cand'].shape[1] if p['cand'].size else 0} tuples")
     return passes, cfg_c
+
+
+GATE_CASCADE_NOTE = (
+    "The raw force-HOLD CELL count is a FLOOR on the blast radius, not the blast radius. Gating a "
+    "WALKED action makes the portfolio state diverge from that decision onward, so every later "
+    "decision in that pass gets a different obs, a different candidate set and different true "
+    "returns even where no cell is gated there. n_decisions_targets_differ (per pass, below) is "
+    "the honest figure: decisions whose candidate set the gate edited directly, UNION everything "
+    "STRICTLY after the walk's divergence decision (a decision's targets are emitted before its "
+    "action is taken). It is measured, not estimated — and it is not always large: a pass whose "
+    "candidates were already HOLD on every gated slot never diverges at all."
+)
+
+
+def summarize_gate_application(passes, open_gate_cells):
+    """TASK_890 fix-pass — the artifact's gate numbers, DERIVED FROM WHAT THE PASSES APPLIED.
+
+    Pre-fix, ``run()`` reported ``hold_mask.sum()``: a number computable whether or not the mask
+    was ever forwarded, so the artifact certified work that need not have happened (the same
+    'absence read as a value' defect D40 ruled on one level up). Every field here instead comes
+    from ``collect_pass``'s ``applied_hold_mask`` / ``gate_audit``, which are accumulated on the
+    branch that forces HOLD — drop the forwarding and these all go to zero.
+
+    ``open_gate_cells`` (N, A) bool: the cells the causal OPEN-GATE (868/D31 a2) contributes on
+    top of the pre-868 zero/negative-price mask. Intersecting it with what each pass actually
+    applied gives the open-gate's own applied count.
+    """
+    per_pass = []
+    for p in passes:
+        applied = p["applied_hold_mask"]                                    # (D, A) bool
+        d = int(applied.shape[0])
+        per_pass.append({
+            "policy": p["policy"], "cost": p["cost"],
+            **p["gate_audit"],
+            "n_open_gated_cells_applied": int((applied & open_gate_cells[:d]).sum()),
+        })
+
+    def _mn(key):
+        return min((d[key] for d in per_pass), default=0)
+
+    return {
+        "instrument": "counts accumulated inside collect_pass on the force-HOLD branch itself; "
+                      "they cannot be produced without the gate having been applied",
+        # headline = the count EVERY pass demonstrably applied (fail-closed: one unmasked pass
+        # drags the headline to 0), with the per-pass breakdown alongside.
+        "n_force_hold_decision_cells_applied": _mn("n_cells_masked_applied"),
+        "n_open_gated_decision_cells_applied": _mn("n_open_gated_cells_applied"),
+        "applied_in_every_pass": bool(per_pass) and all(
+            d["gate_applied_at_every_decision"] for d in per_pass),
+        "n_candidate_entries_forced_total": sum(d["n_candidate_entries_forced"] for d in per_pass),
+        "n_walked_action_entries_forced_total": sum(
+            d["n_walked_action_entries_forced"] for d in per_pass),
+        "n_decisions_targets_differ_total": sum(d["n_decisions_targets_differ"] for d in per_pass),
+        "n_decisions_total": sum(d["n_decisions_walked"] for d in per_pass),
+        "cascade_note": GATE_CASCADE_NOTE,
+        "per_pass": per_pass,
+    }
 
 
 # =============================================================================
@@ -707,7 +857,10 @@ def run(args, out_path, tag):
     corridor = imp._load_corridor()
 
     # ---- panel (TRAINING path, PIN b) + book signs on THAT panel (reuse 832) ----
-    prices_j, logc, env_cfg = imp.load_training_panel(args)
+    # TASK_868 (D31 a2) / TASK_874 added two more return values (open_gate, asset_aliases) to
+    # imp.load_training_panel; TASK_890 (D40) repairs this call's arity AND applies the gate —
+    # see below (hold_mask) and the asset_aliases handling in the artifact block.
+    prices_j, logc, env_cfg, open_gate, asset_aliases = imp.load_training_panel(args)
     T, A = logc.shape
     tgt, pres, warm = corridor.book_target_signs(logc)
     start_row = max(int(warm), int(env_cfg.window_size))
@@ -721,6 +874,31 @@ def run(args, out_path, tag):
             f"R={args.leaf_rollout_r} -> N={N} (fixture needs a smaller --bar-minutes)")
     print(f"[857] panel T={T} A={A} warm={warm} start_row={start_row} N={N} "
           f"bar_minutes={args.bar_minutes}")
+
+    # ---- TASK_890 (D40 ruling): route the causal OPEN-GATE through frame_hold_mask exactly as
+    # imprint.py:2231 does — force-HOLD OPENING wherever the panel slot printed no real close
+    # inside that decision row's bar (868/D31 a2). Distill builds counterfactual v̂ targets from
+    # walks over this same panel and is the warm-start path, so an ungated distill would propagate
+    # targets that encode entries on bars that never printed (the physical fact behind TASK_878's
+    # ruling: a no-print bar is an order PLACED and UNFILLED). Fail-closed by construction: this
+    # can only ever ADD force-HOLD cells relative to the price<=0-only mask, never remove any —
+    # so the count below with the gate present is >= the count without it. None (no zero/negative
+    # price AND no gated cell) = unmasked, byte-identical to pre-890 behavior.
+    hold_mask = imp.frame_hold_mask(prices_j, start_row, N, open_gate=open_gate)
+    price_only_mask = imp.frame_hold_mask(prices_j, start_row, N, open_gate=None)
+    # the cells the causal OPEN-GATE contributes ON TOP OF the pre-868 zero/negative-price mask
+    open_gate_cells = np.zeros((N, A), dtype=bool)
+    if hold_mask is not None:
+        open_gate_cells = np.asarray(hold_mask, dtype=bool).copy()
+        if price_only_mask is not None:
+            open_gate_cells &= ~np.asarray(price_only_mask, dtype=bool)
+    # NOTE (fix-pass): this line reports what was COMPUTED. It deliberately does NOT say the gate
+    # was applied — that claim is only made after collection, from the passes' own evidence.
+    print(f"[890] hold_mask COMPUTED: "
+          f"{0 if hold_mask is None else int(hold_mask.sum())} of {N * A} decision cells "
+          f"({int(open_gate_cells.sum())} from the causal open-gate, "
+          f"{(0 if hold_mask is None else int(hold_mask.sum())) - int(open_gate_cells.sum())} "
+          f"from zero/negative price) — whether it was APPLIED is reported after collection")
 
     # ---- model + trainer (canon arch) + warm start ----
     # TASK_889 (D39 scope 5): build the target's use_prediction_head from the WARM-START
@@ -742,7 +920,23 @@ def run(args, out_path, tag):
         _make_value_fns(model, args.discount)
     passes, _last_cfg = build_counterfactual_dataset(
         model, params_warm, prices_j, env_cfg, obs_all, tgt, corridor,
-        start_row, N, A, args)
+        start_row, N, A, args, hold_mask=hold_mask)
+
+    # ---- TASK_890 fix-pass: the gate's REPORTED numbers come from the passes, never from the
+    #      mask above. Under a dropped forward every field here is 0/False. ----
+    gate_report = summarize_gate_application(passes, open_gate_cells)
+    print(f"[890] gate APPLIED (measured in the passes, not restated from the mask): "
+          f"{gate_report['n_force_hold_decision_cells_applied']} force-HOLD cells per pass "
+          f"({gate_report['n_open_gated_decision_cells_applied']} of them from the causal "
+          f"open-gate); applied at every decision of every pass = "
+          f"{gate_report['applied_in_every_pass']}; "
+          f"{gate_report['n_candidate_entries_forced_total']} candidate entries and "
+          f"{gate_report['n_walked_action_entries_forced_total']} walked-action entries actually "
+          f"flipped to HOLD; CASCADE: "
+          f"{gate_report['n_decisions_targets_differ_total']} of "
+          f"{gate_report['n_decisions_total']} decisions have targets differing from the ungated "
+          f"construction — gating a WALKED action diverges the portfolio state from that decision "
+          f"onward, so the cell count above is a FLOOR, not the blast radius")
 
     # pool + train/held-out split (per-DECISION split so held-out states are unseen by distill)
     def _stack(key):
@@ -912,6 +1106,19 @@ def run(args, out_path, tag):
         "tag": tag, "db": args.db, "window": [args.start, args.end],
         "bar_minutes": args.bar_minutes, "n_assets": A, "n_panel_rows": T,
         "warm": int(warm), "start_row": start_row, "n_decisions": N,
+        # TASK_890 (D40): the fifth `load_training_panel` return value handled deliberately, as
+        # imprint.py's own canon unpinned path does (imprint.py:2748-2755) — NOT unpacked-and-
+        # discarded. `n_open_gated_decision_cells` is the evidence that the open-gate (868/D31 a2)
+        # is doing something: it counts ONLY the cells force-HELD because the slot printed no real
+        # close, excluding the (here: zero) zero/negative-price cells also folded into hold_mask.
+        # FIX-PASS: both counts are the APPLIED counts (summarize_gate_application) — derived from
+        # the passes' own force-HOLD branch, so they cannot be reported when nothing was gated.
+        "asset_aliases": asset_aliases,
+        "n_aliased_slots": sum(1 for a in (asset_aliases or []) if a.get("aliased")),
+        "n_open_gated_decision_cells": gate_report["n_open_gated_decision_cells_applied"],
+        "n_force_hold_decision_cells": gate_report["n_force_hold_decision_cells_applied"],
+        "n_decision_cells": int(N * A),
+        "open_gate": gate_report,
         "warm_start": warm_start,
         # TASK_888 scope 3: load evidence computed at LOAD time, always — resolved path
         # (relativized the same way `warm_start` above is), step, and a parameter fingerprint,
@@ -1036,7 +1243,10 @@ def run(args, out_path, tag):
     }
 
     # ---- TASK_860: reward co-distill deliverables (added ONLY when --codistill-reward; OFF ⇒
-    #      the result dict above is bit-identical to the shipped 857 output) ----
+    #      the result dict above carries no co-distill key. TASK_890 (D40) scope 3: this comment
+    #      used to claim OFF was "bit-identical to the shipped 857 output" — it is not, and has
+    #      not been since 868 declared those deliverables KNOWN-STALE and this row made the path
+    #      apply the causal open-gate. Same false byte-identity as the --codistill-reward help. ---
     reward_improved = None
     if codistill:
         reward_improved = bool(np.isfinite(r_held_post) and np.isfinite(r_held_pre)
@@ -1255,7 +1465,10 @@ def main():
                          "counterfactual targets ALONGSIDE the value imprint. Unfreezes the "
                          "dynamics_dense2 reward-projection columns via an added λ·reward-CE term "
                          "(SAME PopArt/two-hot form as the shipped trainer); policy head + encoder "
-                         "stay frozen. OFF reproduces the shipped 857 deliverables byte-for-byte.")
+                         "stay frozen. OFF isolates this flag's own effect (the reward CE term); "
+                         "it does NOT reproduce the shipped 857 deliverables byte-for-byte — those "
+                         "are KNOWN-STALE (TASK_868's banner) and TASK_890 (D40) made the gated "
+                         "path apply the causal open-gate, which this file did not before.")
     ap.add_argument("--reward-loss-weight", type=float, default=1.0,
                     help="TASK_860 λ on the reward CE term (co-distill only; default 1.0).")
     args = ap.parse_args()
