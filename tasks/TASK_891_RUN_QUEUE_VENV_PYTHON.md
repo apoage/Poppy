@@ -1,5 +1,38 @@
 # TASK_891 — close the run_queue bare-`python` trap
 
+> **STATUS (2026-08-16): HALTED on the 3-cycle rule (factory run 34) — NOTHING SHIPPED, code preserved
+> in `git stash` ("TASK_891 … HALTED on the 3-cycle rule (D42)"). Decision seeded: D42, OPEN.**
+> **Do NOT retake this row as written** — it needs D42's re-cut first.
+>
+> **The trap is still live on gpu-server.** Every failing spelling behaves exactly as it did pre-891, so
+> nothing is worse than HEAD; but the two-launch defect (861 chain, 879 rung-3) is NOT yet fixed there.
+>
+> **Three cycles, three panels, one shape.** (c1) whole-`trader_env/bin` PATH prepend + leading-token
+> refusal → `env python`/`nohup python`/`time python`/`bash -c "python …"`/`true && python`/
+> `PYTHONPATH=x python` all bypassed the refusal AND got the rejected interpreter, while the blanket
+> prepend silently swapped `pip` 23.0.1 → 26.0.1 on rows that never died at HEAD and labelled them
+> `passthrough`. (c2) three-class model + word-level regex → `\python` and `python$EMPTY` escaped the
+> character class entirely, and `echo python && pip --version` re-triggered the `pip` collision through
+> the new `embedded` path. (c3) **orchestrator-directed redesign — a python-only shim dir** (exactly
+> `python` + `python3` as `exec` wrappers, NOT symlinks: measured, a symlink shim makes CPython take
+> `sys.prefix` from the symlink's own directory, miss `pyvenv.cfg`, and silently load the base pyenv's
+> site-packages **while passing every version check**), `$VENV_BIN` never injected, text classification
+> demoted to deciding refusal only. That closed both prior MAJORs **structurally**: HEAD-vs-candidate A/B
+> job-log diff is exactly ONE hunk, `pip` stays 23.0.1, 11 independently-rebuilt mutations with 0
+> survivors, suites 109/109 + 16/16 + 18/18, selftest 12/12.
+>
+> **WHAT HALTED IT.** A manifest row that assigns `PATH=` itself (`PATH=/dir python …`, `env -i PATH=…
+> python …`) locally shadows the injected shim — bash performs the per-command assignment **before** the
+> path search — so the job runs the ambient interpreter, exits `rc=0`, and prints a **FALSE**
+> `interpreter=venv-path:…` label claiming the venv resolved it, which also hides it from a pre-launch
+> `--dry-run` review. Orchestrator-verified first-hand, not on report.
+>
+> **The pattern IS the finding:** the escaping spelling got more exotic each cycle
+> (`env python` → `\python` → `PATH= python`). This row's contract — *no manifest spelling may silently
+> run the wrong interpreter* — is a claim about arbitrary shell text, and wrapping cannot close it.
+> D42(a) recommends re-cutting to an honest, bounded contract and shipping c3's shim behind it, with the
+> label never asserting a resolution the code cannot back.
+
 **Status**: READY 2026-08-16 (planner/orchestrator; recommended unspecced since 2026-08-06 — it has
 now cost TWO launches).
 **Size: XS. Risk: LOW** — scheduler plumbing in `tools/deploy/`, no numerics, no canon surface.
