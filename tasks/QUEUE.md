@@ -8,8 +8,9 @@ gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last
 0 skipped, every recomputed fingerprint equal to its run-32 orphaned value), then
 `861/smoke_e2e.py --promote-baselines` (`1049152`, per-field attribution — clears the last red
 leg, red since 877). 886's D38/D39 premises are now all met.**
-**Ready (physically ordered): 1 TASK_886 (contract only) → 2 TASK_890 → 3 TASK_878 → 4 TASK_881.
-FILLER: TASK_891 (NEW — run_queue venv trap). GATED: TASK_880 (D34+D35).**
+**Ready (physically ordered): 1 TASK_886 (contract only) → 2 TASK_890 → 3 TASK_878 → 4 TASK_892
+(NEW — action-EV audit, the post-887 research row) → 5 TASK_881. FILLER: TASK_891, TASK_893.
+GATED: TASK_880 (D34+D35).**
 _Next takeable: **TASK_886** — re-bannered READY 2026-08-16; its two blockers (888R, 889) shipped
 in run 33 and the emitter premise dissolved (889 emits at save time; the retro-stamp backfilled
 the 7 surviving load-bearing checkpoints)._
@@ -20,94 +21,20 @@ Ruled decisions D29–D37 likewise live in [`tasks/DECISIONS_ARCHIVE.md`](DECISI
 
 ## Ready — take from the top
 
-_**FACTORY RUN 33 (2026-08-13/14) — TASK_888R and TASK_889 both SHIPPED; D39's re-cut is discharged in one run,**
-after that lane had halted four times running (D33 → D36 → D38 → D39). The capacity cut held: the row that could
-only resolve/refuse/describe shipped in 2 cycles, and the row that owns every persisted write shipped in 3._
-
-_**The finding that outlives both rows: both BLOCKERs were OUTSIDE the module under review, and both were found by
-running the real thing rather than the test.** 888R — five lenses correctly cleared every escape hatch inside
-`checkpoint_io`; the hole was one line upstream, where `train_jax_fast.py` gated entry on TRUTHINESS, so
-`--load-checkpoint ""` collapsed to "flag not given" and training ran on fresh weights in silence. 889 — the
-retro-stamp's own test monkeypatched `infer_vector_action`, **the function that was failing**; only the tool's real
-invocation showed it crashing on the one GPU-saved checkpoint. **A test that stubs the thing under test cannot
-fail.** Every remaining row on this lane must run each tool's documented invocation; it is cheap and it is where
-both blockers actually lived. This is now gate (i)/(iv) on TASK_890._
-
-_**FACTORY RUN 32 (2026-08-11/12) — TASK_888 HALTED on the 3-cycle rule. Nothing shipped; D39 RULED 2026-08-12.**
-Fourth halt on this lane (D33 → D36 → D38 → D39) and the same finding every time: **the row welded two layers and
-only one ever failed.** 888 named path identity + a refusing loader; it silently also contained ARCHITECTURE
-BINDING, and every cycle-3 survivor was in the layer the task file never named. The re-cut is by CAPACITY, one
-line further out than the orchestrator proposed: **888R may only resolve, refuse and describe — it writes into no
-checkpoint, no provenance document and no `runs/` artifact — and TASK_889 owns every persisted write.** The
-backfill is untrustworthy BECAUSE it builds a target from an architecture it never records; that is the same
-defect as the halt cause, so the writer and the thing that makes writing safe stay in one row._
-
-_**Planner findings this groom, both corrections to the run-32 wrap:**_
-_(1) **The `861/smoke_e2e` red is 877's, as reported — but a SECOND failure was masking it.** Re-run rather than
-taken on report: the suite never reached `collection_pin_fresh_vs_committed`, dying earlier at the canon-832 leg,
-because run 32's own now-stashed emitter stamped `param_fingerprint` into **14 gitignored smoke-scratch
-`frame_provenance*.json` documents** and HEAD's `imprint.py` does not emit that field, so 874's refusal fired.
-Quarantined into `.run32_quarantine/` (the **4 TRACKED** provenance documents under `runs/` were verified UNSTAMPED
-and untouched); the re-run then completed in 1112.8 s with **11 legs PASS and `vii_baseline_pins` failing on exactly
-that one leaf**, `results_differing_leaves: []`. The diff is a single human-readable provenance DESCRIPTION string
-that 877 deliberately rewrote (XBT→BTC fold, `normalize_symbol_key`, the `MIN_ALIAS_OVERLAP_TS = 64` evidence
-floor) — no numeric leaf moved, so **the re-base is legitimate and needs one operator authorization**
-(`smoke_e2e.py --promote-baselines`; blocked from the planner session). **The masking is the lesson: a halted row's
-side effects survive the stash and are invisible to the clean-tree gate — `git stash` restores CODE, it does not
-un-write FILES.** That is now gate (v) on 888R._
-_(2) **The blocking design question is answered: the CONFIG is wrong, the CHECKPOINTS are right ⇒ REFUSE, never
-normalize.** Zero artifacts and zero live code paths say `use_prediction_head: true`; one BROKEN/LEGACY file
-does. Full evidence chain in D39._
-
-_**FACTORY RUN 31 (2026-08-10/11) — TASK_886 HALTED on the 3-cycle rule. Nothing shipped; tree clean; D38 OPEN.**
-Three cycles, 12 subagent verifications (5-lens panel → 4-lens re-verify → 3-lens opus re-verify). The halt is
-correct and it is a DECOMPOSITION finding, not an implementation one: **the row welded the certification
-CONTRACT to hardening the checkpoint LOAD PATH, and every single BLOCKER was in the load path.** The contract
-itself was attacked by two independent opus fail-closed panels and held — including re-running both cycle-1
-forgery reproductions, which now refuse with no artifact. **The three deaths, each in the previous cycle's own
-fix:** numeric param equality as a load detector (broke `861/smoke_e2e` and `835/scorecard_smoke` — TASK_862's
-acceptance gate) → a hang guard that stat'd 5 named files while the loader opened the parameter payload (three
-strace-proven infinite hangs) → **`realpath` guard vs `abspath` loader**, where a `--checkpoint` crossing a
-symlink then `..` makes the guard bless one directory while `trainer.load_checkpoint` opens another. The repo
-ships exactly those symlinks. D38 recommends the D33-style re-cut: ship the contract, give path identity its
-own row whose FIRST item is "one resolution function feeds both the guard and the loader".
-**Two findings that outrun this row:** (1) under the verified contract `verified: true` is **unreachable for
-every checkpoint today** — no emitter writes a `param_fingerprint` into provenance (fail-closed, D36/D37-
-consistent, but it needs a ruling); (2) the D37 fail-open is not confined to the eval harness —
-`train_jax_fast.py:544`, `857_vhat_distill/distill.py:632` and **`real_trade_jax.py:145` (live)** all print
-"loaded successfully" on a bad path, so a multi-hour resume can silently discard its checkpoint.
-**Invariants held all run:** `trading_data.db` never opened (mtime still 2026-07-26), fixture never
-regenerated (`b0f8de8b…`, 79310848 B, verified by every agent), nothing committed to code, nothing pushed._
-
-
-_**PLANNER, RUN-31 RATIFICATION + D38 RULED (2026-08-11).** 877 shipped; its recovery re-measured cleanly and
-two of the task file's own claims were corrected BY re-measurement, which is the behaviour I want. 886 HALTED
-and correctly read as a DECOMPOSITION finding: all three deaths in the load path, each inside the previous
-cycle's own fix, while the contract survived two independent fail-closed panels. **D38 splits it — and merges
-the two questions I was asked SEPARATELY into ONE row (TASK_888), because "one resolution function feeds both
-guard and loader" IS the fix for the four "loaded successfully" liars.** 888 ranks FIRST on
-`real_trade_jax.py` consequence. **Stopping rather than starting 878 is RATIFIED** — it rewrites eval-core
-execution semantics with every parity gate riding on it and carries a 3-arm ablation; starting it at the end
-of a run to leave it half-built would have been the worse call._
-
-_**887 REPORTED (LEDGER `887/collapse-confirm`) — it changes the research line, not the queue.** C1 PASS 3/3
-and 3/3, C2 PASS: the epsilon target-mix genuinely prevents the hold collapse, and at a stable fixed point
-(final-50 slopes −0.0189/+0.0031/−0.0040, seed spread 0.18pp). **But C3 — pre-registered as
-reported-never-a-gate — is the finding: it buys nothing and costs plenty.** Median return over the final 50
-epochs: A −2.86% · E −9.11% · D −13.84%, perfectly MONOTONE IN ACTIVITY, at ZERO costs. **The collapse was
-ADAPTIVE, not pathological** — the policy had correctly concluded its own actions have negative EV, and every
-mechanism that makes it act more makes it lose more. Rung 1 must NOT be re-specced as "rung 1 with epsilon
-mixing"; `manifest_884_battery.txt` stays unlaunched. The live question moves from exploration to whether ANY
-policy on this recipe has positive-EV actions._
+_Run 31/32/33 wrap narratives and the 887 report moved to
+[`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) 2026-08-16, byte-for-byte (token economy — every
+factory startup reads this file; the lessons they carried are quoted as gates in the task files)._
 
 | # | Task | Size | Note |
 |---|------|------|------|
 | 1 | `tasks/TASK_886_UNIVERSE_PIN_CERTIFICATION.md` (**RE-SCOPED by D38 — CONTRACT ONLY**) | S | **UNBLOCKED 2026-08-16 — takeable.** Both premises discharged: 888R (`7cc50fb`, one resolver feeds guard and loader) and 889 (`f9d8ee4`, save-time architecture record + refusing loader) shipped in run 33, and the emitter premise dissolved — the retro-stamp (`8123a6b`) wrote `param_fingerprint` into the 4 tracked provenance documents, so `verified: true` is now REACHABLE for the 7 surviving load-bearing checkpoints. Re-bannered READY on the task file; resume the contract half from `stash@{1}`. _(was: BLOCKED by TASK_888R and TASK_889 (D39, 2026-08-12) — it certifies against documents 889 is the one allowed to write; both shipped.)_ **D38 RULED 2026-08-11: SPLIT. 886 keeps ONLY the certification contract; the entire load path moved to TASK_888 (discharged).** All three cycle deaths were in the load path; the contract survived two independent opus fail-closed panels. Ship the verified half — do not let it rot in a stash the way 876/880/881 did. _(factory note:)_ **HALTED 2026-08-11 on the 3-cycle rule (factory run 31) — nothing shipped, code in `git stash`, D38 OPEN. Do NOT retake this row as written; it needs D38's split first.** The certification CONTRACT is built and survived two independent opus fail-closed panels (both cycle-1 forgery repros now refuse; predicate proven non-vacuous; 12 byte-identity A/B pairs; all six suites exit 0). All three cycles died in the OTHER half — the checkpoint LOAD PATH (D37's folded-in item 0): numeric-equality load detector → hang guard covering only 5 named files → **`realpath` guard vs `abspath` loader** (the guard blesses directory A, the loader opens directory B; proven hang). See the task banner. _(prior note:)_ **NEW 2026-08-09 (D36 option (a)).** Binds the universe claim to the checkpoint actually LOADED and the panel actually RETURNED — argv is not evidence. Closes hole 1 (resolve provenance from the RESOLVED ckpt dir, so every spelling reaches the same verdict) and re-introduces the positive claim, earned. Replaces the boolean with a mechanism-typed `universe_pin` record, because the run-29 measurement proves `universe_pinned` conflates universe IDENTITY with PANEL CONSTRUCTION (same ckpt, same 8-symbol order: **−1.796** pin-file vs **−1.866** `--symbols`, both stamped `true`). **Answers the program call: the two mechanisms are NOT cross-comparable; comparability holds within a mechanism, and the artifact must say which.** **D37 FOLDED IN 2026-08-09 AS ITEM 0 (do it FIRST):** a nonexistent `--checkpoint` grades to **exit 0 on random-init weights with a paste-ready row** at HEAD. Planner audit: 367 results JSONs carry a `checkpoint` field and **NOT ONE** records whether it loaded — so the 48 with absent paths cannot be classified and **no historical number can be EXONERATED** of it. Hence the added requirement to record load evidence (resolved path + step + parameter fingerprint): refusing prevents recurrence, only a fingerprint makes the class falsifiable. `+0.9914` is clean by construction — 882 Leg A had two independent harnesses agree to 2.1e-4, which random-init cannot do. |
 | 2 | `tasks/TASK_890_DISTILL_CLI_OPEN_GATE.md` | XS/S | **NEW 2026-08-12 — D40 RULED.** `distill.py`'s CLI has been DEAD since 868/874: it unpacks 3 of the 5 values `load_training_panel` returns (`ValueError: too many values to unpack`, `distill.py:710`, reproduced by the planner). The repair is not mechanical — it decides whether the v̂-leaf distiller trains on fills that could not happen. **Ruled: APPLY the gate**, routing `open_gate` through `frame_hold_mask` exactly as `imprint.py:2231` does. Same physical fact the operator already ruled on for 878; uniform with every other loader; 857 is already KNOWN-STALE so no live number breaks; fail-closed by construction. **Rider: unpack-and-discard is the same defect wearing a working signature.** Also correct the `--codistill-reward` help text, which still claims byte-identity with deliverables that are stale. |
 | 3 | `tasks/TASK_878_FAILED_FILL_SEMANTICS.md` | S/M | **OPERATOR-RULED 2026-08-05 (+amendment) — resolves both open questions.** A no-print bar is an order PLACED THAT IS UNFILLED — not illegal, and not dead either: it could still execute on a later step, so execution is a **COINFLIP** (operator's simulation choice; the pending-order queue that holds it ~5 steps is the heavy variant and stays OUT of scope as its own future row — the per-step flip is its geometric special case). `p` comes from the slot's trailing print density (causal), not a magic number; the flip must be a seeded path-independent hash of (eval_seed, decision, slot) or every parity gate in the repo dies. A 3-arm ablation (never-fill / coinflip / always-fill) answers the operator's open question of whether flat-before-move cells carry SIGNAL rather than noise, instead of assuming. valuation marks at the last valid price (architecture), execution requires a real print, a failed fill changes position/cash/fee by nothing, and **the policy's INTENT is preserved** — today's 868 (a2) mask rewrites the BC target to HOLD, teaching "HOLD was intended" when the truth is "could not fill" (the 78.8%-class hazard). Force-HOLD survives only for zero-coverage slots (nothing quotable ⇒ nothing attemptable). PV conservation must stay exact. |
-| 4 | `tasks/TASK_881_CHECKPOINT_PROTECTION_MODEL.md` | M | **UN-GATED and re-ordered by D35 (2026-08-08).** Was Gated behind 880; 880's entire safety argument now runs THROUGH 881's path-first reader, so that ordering was a cycle. Owns: the score reader that resolves by `path`/`step` instead of digits-in-the-basename (D35 — `checkpoint_<step>` and `checkpoint_epoch_<N>` currently read UNSCORED forever, only `snapshot_ep<N>` round-trips), the `_is_protected` descendant rules, the TTL re-scan, the failed-`rmtree` audit row, the `followlinks=False` BLOCKER (`jax_ckpt_fast`/`jax_ckpt_easy` ARE symlinks to `/mnt/scratch`), and the disputed pre-existing `_order_newest_first` (needs a third independent measurement). Resume from `stash@{0}`'s stripped half — deliberately RETAINED for exactly this. **Ranked LAST on purpose:** nothing is at risk today (unreadable ⇒ UNSCORED is fail-safe, the `--apply` freeze STANDS, srv holds 162 GB free), and this lane has consumed 9 factory cycles across three runs while the ladder waited. |
+| 4 | `tasks/TASK_892_ACTION_EV_AUDIT.md` | S | **NEW 2026-08-16 — the research row the queue was missing.** 887 proved the collapse adaptive; this audit measures the decision the pivot hangs on: do the trained policies' non-HOLD actions carry ANY edge vs a matched-activity random null (cost0 + fee16, within-regime matched, block-bootstrap CIs, EDGE/ANTI-EDGE/NULL bands pre-registered in `experiments/892_action_ev/SPEC.md`). Eval-only, no training; verdict seeds D42. **Sequenced after 886, 890 AND 878** (eval_vector surface + post-878 semantics). |
+| 5 | `tasks/TASK_881_CHECKPOINT_PROTECTION_MODEL.md` | M | **UN-GATED and re-ordered by D35 (2026-08-08).** Was Gated behind 880; 880's entire safety argument now runs THROUGH 881's path-first reader, so that ordering was a cycle. Owns: the score reader that resolves by `path`/`step` instead of digits-in-the-basename (D35 — `checkpoint_<step>` and `checkpoint_epoch_<N>` currently read UNSCORED forever, only `snapshot_ep<N>` round-trips), the `_is_protected` descendant rules, the TTL re-scan, the failed-`rmtree` audit row, the `followlinks=False` BLOCKER (`jax_ckpt_fast`/`jax_ckpt_easy` ARE symlinks to `/mnt/scratch`), and the disputed pre-existing `_order_newest_first` (needs a third independent measurement). Resume from `stash@{0}`'s stripped half — deliberately RETAINED for exactly this. **Ranked LAST of the sequenced rows on purpose:** nothing is at risk today (unreadable ⇒ UNSCORED is fail-safe, the `--apply` freeze STANDS, srv holds 162 GB free), and this lane has consumed 9 factory cycles across three runs while the ladder waited. |
 
-| 5 | `tasks/TASK_891_RUN_QUEUE_VENV_PYTHON.md` | XS | **NEW 2026-08-16 — FILLER (parallel-safe).** `run_queue.sh` never activates `trader_env`, so a bare `python` in a manifest resolves to python2 on gpu-server and every job dies in ~30 s — has now cost TWO launches (861 chain, 879 rung-3). Resolve the venv in the runner + fail-loud refusal when it cannot. Surface: `tools/deploy/` only — zero overlap with rows 1–4. |
+| 6 | `tasks/TASK_891_RUN_QUEUE_VENV_PYTHON.md` | XS | **NEW 2026-08-16 — FILLER (parallel-safe).** `run_queue.sh` never activates `trader_env`, so a bare `python` in a manifest resolves to python2 on gpu-server and every job dies in ~30 s — has now cost TWO launches (861 chain, 879 rung-3). Resolve the venv in the runner + fail-loud refusal when it cannot. Surface: `tools/deploy/` only — zero overlap with rows 1–5. |
+| 7 | `tasks/TASK_893_PREFIX_MASK_MEASUREMENT.md` | XS | **NEW 2026-08-16 — FILLER (parallel-safe), the measurement D41 pre-demands.** Counts decision cells in leading bfill prefixes on the 819/820 panel and re-measures the +0.97 bar with prefixes masked — read-only, `trader/` source untouched, ruling follows after. Surface: `trader/`+`tools/` only. |
 
 _Sequencing (2026-08-08, supersedes the 2026-08-06 note below): **874 first** — XS, and it is the artifact 883 makes mandatory. **883 second** — it closes the fail-open that manufactured the 882 crisis, and every measurement the ladder is about to take runs through that harness. **877 third** — it shrinks the sparse-slot set, which is exactly the surface 878 then re-specifies (878's own out-of-scope says do 877 first). **878 fourth and alone** — it rewrites eval-core execution semantics with every parity gate in the repo riding on it. **881 last** — deliberately. It is real work and it is not urgent: unreadable ⇒ UNSCORED is fail-safe, the `--apply` freeze STANDS, srv holds 162 GB free. Four of the last five planner errors were boundary calls inside this one lane; ranking it last is the structural correction, not a demotion of the work._
 
@@ -419,7 +346,7 @@ redeployed 2026-07-08; the scheduler is cleared for use.
 | **882 decisive — Leg A (identity check)** | eval-only, 3 seeds: `ckpt_ref_s{0,1,2}` graded over the CONTINUOUS 2021-01-01..2025-10-04 — the same window their `imprint.py` sanity replay used — CORRECTLY PINNED to `frame_provenance_ref_s{0,1,2}.json`, `--operator policy-argmax --vector-weight-rebalance --teacher-floor`. Manifest `experiments/882_instrument_reconciliation/manifest_882_decisive.txt`. **Bands PRE-REGISTERED before launch** (TASK_882 §6): |Δ| vs `+0.9914` ≤ 0.1 ⇒ the instruments AGREE once pinned · ≤ 0.5 ⇒ named residual · > 0.5 or a SIGN FLIP ⇒ a second, pin-independent defect and the corroboration is WITHDRAWN. Framework-epoch diff run BEFORE launch per the 879 doctrine and recorded in the manifest header: srv redeployed b695487 → `60f77f7`; the eval-path delta is TASK_870's `_ro_connect` move plus a `--smoke`-only `overwrite=True`, neither semantic; `--vector-weight-rebalance` and `--panel-frame-from-checkpoint` PRESENT on every line. | gpu-server GPUs 1/2/3, tmux `d882` | **DONE 2026-08-08 — PASS, TOP BAND.** LEDGER `882/decisive-legA`. The instruments AGREE to **Δ 0.000214** net@21 (+0.9915919 pinned eval_vector vs +0.9913783 imprint.py), PV within 0.060%, residual localised to exactly 3 of 107,072 decision cells (float32 argmax tie-breaks). 3/3 seeds +0.99159 / +0.99355 / +0.95212, 1673/1673 decisions, no bankruptcy, 64/64 slots active. **`+0.9914` RESTORED, instrument-independent and 3-seed.** Does NOT close `861/ref-oos-rebase` — the OLD `ckpt_imprint_full` anomaly is an EPOCH question, untested here. |
 | **884 rung 1 — step-0 smoke** | 40 epochs, seed 0, 1 GPU, phase-1c recipe under the FIXED env, window truncated to 2021-01-01..2025-10-04 so the held-out span matches the imprint lane's OOS window. Pre-registered `experiments/884_rung1/SPEC.md` (pre-launch sha256 `2b265701…`); universe preflighted on the actual periods file (`preflight_frame.py`: 64/64 order-exact, pad does not fire, 0 zero-price cells). | gpu-server GPU 1, tmux `r884smoke` | **DONE 2026-08-08 — S2 FAILED, BATTERY NOT LAUNCHED.** LEDGER `884/rung1-smoke`. `pct_hold` 82.3% → 95.6% by **epoch 3** → 99.0% plateau; `policy_entropy` 0.691 → 0.070. **14.17 s/epoch measured** ⇒ the battery would have been ~7.9 h × 3 seeds; the gate cost 9 GPU-min and saved ~24 GPU-h. **No bankruptcy anywhere** (min `agent_return` −22.6%) — E-a fixed the cash cascade and the hold collapse happens anyway, so they were separate defects. `manifest_884_battery.txt` staged, NOT launched. |
 | **885 hold-collapse screen** | 3 arms × 40 epochs, seed 0: **B** `--sims 8` · **C** `--sims 128` · **D** `--sims 32 --epsilon-greedy 0.25` (the TASK_812 target-mix that severs MCTS-sharpening → policy-sharpening). Arm A = the completed 884 smoke. Tests whether the collapse is SEARCH-driven — the training-lane twin of `879/rung3`'s subtractive-search control. **Bands pre-registered** in `experiments/885_collapse_screen/SPEC.md` (sha256 `fc2edd4d…`): (P1) `pct_hold` ordered B<A<C with ≥2.0pp B-to-C spread AND `mcts_visit_entropy` ordered B>A>C · (P2) arm D reaches `pct_hold` < 95% · (NULL) all arms within 1.0pp. DIAGNOSTIC SCREEN, 1 seed/arm — the winner earns a 3-seed battery, nothing promotes off this. | gpu-server GPUs 1/2/3, tmux `r885` | **DONE 2026-08-08 — P1 FAILS, P2 PASSES.** LEDGER `885/hold-collapse-screen`. `pct_hold@40`: A 99.016 · B 98.854 · C 98.987 · **D 90.971**. A 16× sims range moves hold **0.13pp** and is non-monotone ⇒ **search depth is irrelevant**; the epsilon target-mix holds it at a plateau (82.3 → 92.2 by ep5, then flat to ep40) and keeps the RAW pre-mix `mcts_visit_entropy` at its epoch-1 value (0.1554 vs A's 0.0246, 6.3×). **The collapse is the distillation loop, not the search depth.** 1 seed/arm, 40 epochs — a screen; the winner owes a 3-seed battery. |
-| **886 rung-1 re-spec (PROPOSED, not launched)** | The 885 winner owes a 3-seed confirmation before any 2000-epoch commitment: arm D vs baseline at **3 seeds × 200–400 epochs**, plus an epsilon **sweep or decay schedule** (`--epsilon-schedule`, TASK_812) — 0.25 is a single untested point, and a constant mix that never decays caps final policy sharpness by construction. Needs its own SPEC and bands. **Rung 1's original `manifest_884_battery.txt` should NOT be launched as written** — it reproduces arm A. | gpu-server, ~1–2 h at the measured rates | **AWAITING OPERATOR** — planner recommends it as the next scheduled run |
+| ~~886 rung-1 re-spec~~ — **STRUCK 2026-08-16 by 887/collapse-confirm** | 887's C3 finding rules this out in its own words: a rung-1 re-spec around epsilon mixing "trains a policy to trade more and lose more" — at zero costs, activity is monotone in loss (A −2.86% · E −9.11% · D −13.84%). The collapse was ADAPTIVE: the policy correctly refuses negative-EV actions. **No training battery launches until the action-EV question is answered.** The replacement scheduled run is the **892 action-EV audit real leg** (eval-only, ~84 lightweight evals on existing checkpoints, workstation; EDGE/ANTI-EDGE/NULL bands pre-registered in `experiments/892_action_ev/SPEC.md`), which gates any new structural hypothesis (D42). `manifest_884_battery.txt` stays unlaunched regardless. | workstation (planner-scheduled) | **REPLACED BY TASK_892** — spec landed 2026-08-16; real leg awaits the factory build + operator go |
 
 ## Gated — do NOT start (named gate must open first)
 

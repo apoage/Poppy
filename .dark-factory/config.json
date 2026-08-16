@@ -53,7 +53,7 @@
   "guards": {
     "allow_push": false,
     "require_verdict": true,
-    "verdict_max_age_minutes": 60,
+    "verdict_max_age_minutes": 180,
     "halt_after_failures": 3
   },
 

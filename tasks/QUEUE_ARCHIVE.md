@@ -5,6 +5,88 @@ Split out of `tasks/QUEUE.md` on 2026-08-11 to cut session-startup context (~103
 `QUEUE.md` keeps the live Ready table, the current grooming banner, the sequencing note, and the
 Scheduled/Gated/Parked sections. STATUS banners on the task files remain the truth for what is done.
 
+## Superseded grooming banners (runs 31–33, moved 2026-08-16, byte-for-byte)
+
+_**FACTORY RUN 33 (2026-08-13/14) — TASK_888R and TASK_889 both SHIPPED; D39's re-cut is discharged in one run,**
+after that lane had halted four times running (D33 → D36 → D38 → D39). The capacity cut held: the row that could
+only resolve/refuse/describe shipped in 2 cycles, and the row that owns every persisted write shipped in 3._
+
+_**The finding that outlives both rows: both BLOCKERs were OUTSIDE the module under review, and both were found by
+running the real thing rather than the test.** 888R — five lenses correctly cleared every escape hatch inside
+`checkpoint_io`; the hole was one line upstream, where `train_jax_fast.py` gated entry on TRUTHINESS, so
+`--load-checkpoint ""` collapsed to "flag not given" and training ran on fresh weights in silence. 889 — the
+retro-stamp's own test monkeypatched `infer_vector_action`, **the function that was failing**; only the tool's real
+invocation showed it crashing on the one GPU-saved checkpoint. **A test that stubs the thing under test cannot
+fail.** Every remaining row on this lane must run each tool's documented invocation; it is cheap and it is where
+both blockers actually lived. This is now gate (i)/(iv) on TASK_890._
+
+_**FACTORY RUN 32 (2026-08-11/12) — TASK_888 HALTED on the 3-cycle rule. Nothing shipped; D39 RULED 2026-08-12.**
+Fourth halt on this lane (D33 → D36 → D38 → D39) and the same finding every time: **the row welded two layers and
+only one ever failed.** 888 named path identity + a refusing loader; it silently also contained ARCHITECTURE
+BINDING, and every cycle-3 survivor was in the layer the task file never named. The re-cut is by CAPACITY, one
+line further out than the orchestrator proposed: **888R may only resolve, refuse and describe — it writes into no
+checkpoint, no provenance document and no `runs/` artifact — and TASK_889 owns every persisted write.** The
+backfill is untrustworthy BECAUSE it builds a target from an architecture it never records; that is the same
+defect as the halt cause, so the writer and the thing that makes writing safe stay in one row._
+
+_**Planner findings this groom, both corrections to the run-32 wrap:**_
+_(1) **The `861/smoke_e2e` red is 877's, as reported — but a SECOND failure was masking it.** Re-run rather than
+taken on report: the suite never reached `collection_pin_fresh_vs_committed`, dying earlier at the canon-832 leg,
+because run 32's own now-stashed emitter stamped `param_fingerprint` into **14 gitignored smoke-scratch
+`frame_provenance*.json` documents** and HEAD's `imprint.py` does not emit that field, so 874's refusal fired.
+Quarantined into `.run32_quarantine/` (the **4 TRACKED** provenance documents under `runs/` were verified UNSTAMPED
+and untouched); the re-run then completed in 1112.8 s with **11 legs PASS and `vii_baseline_pins` failing on exactly
+that one leaf**, `results_differing_leaves: []`. The diff is a single human-readable provenance DESCRIPTION string
+that 877 deliberately rewrote (XBT→BTC fold, `normalize_symbol_key`, the `MIN_ALIAS_OVERLAP_TS = 64` evidence
+floor) — no numeric leaf moved, so **the re-base is legitimate and needs one operator authorization**
+(`smoke_e2e.py --promote-baselines`; blocked from the planner session). **The masking is the lesson: a halted row's
+side effects survive the stash and are invisible to the clean-tree gate — `git stash` restores CODE, it does not
+un-write FILES.** That is now gate (v) on 888R._
+_(2) **The blocking design question is answered: the CONFIG is wrong, the CHECKPOINTS are right ⇒ REFUSE, never
+normalize.** Zero artifacts and zero live code paths say `use_prediction_head: true`; one BROKEN/LEGACY file
+does. Full evidence chain in D39._
+
+_**FACTORY RUN 31 (2026-08-10/11) — TASK_886 HALTED on the 3-cycle rule. Nothing shipped; tree clean; D38 OPEN.**
+Three cycles, 12 subagent verifications (5-lens panel → 4-lens re-verify → 3-lens opus re-verify). The halt is
+correct and it is a DECOMPOSITION finding, not an implementation one: **the row welded the certification
+CONTRACT to hardening the checkpoint LOAD PATH, and every single BLOCKER was in the load path.** The contract
+itself was attacked by two independent opus fail-closed panels and held — including re-running both cycle-1
+forgery reproductions, which now refuse with no artifact. **The three deaths, each in the previous cycle's own
+fix:** numeric param equality as a load detector (broke `861/smoke_e2e` and `835/scorecard_smoke` — TASK_862's
+acceptance gate) → a hang guard that stat'd 5 named files while the loader opened the parameter payload (three
+strace-proven infinite hangs) → **`realpath` guard vs `abspath` loader**, where a `--checkpoint` crossing a
+symlink then `..` makes the guard bless one directory while `trainer.load_checkpoint` opens another. The repo
+ships exactly those symlinks. D38 recommends the D33-style re-cut: ship the contract, give path identity its
+own row whose FIRST item is "one resolution function feeds both the guard and the loader".
+**Two findings that outrun this row:** (1) under the verified contract `verified: true` is **unreachable for
+every checkpoint today** — no emitter writes a `param_fingerprint` into provenance (fail-closed, D36/D37-
+consistent, but it needs a ruling); (2) the D37 fail-open is not confined to the eval harness —
+`train_jax_fast.py:544`, `857_vhat_distill/distill.py:632` and **`real_trade_jax.py:145` (live)** all print
+"loaded successfully" on a bad path, so a multi-hour resume can silently discard its checkpoint.
+**Invariants held all run:** `trading_data.db` never opened (mtime still 2026-07-26), fixture never
+regenerated (`b0f8de8b…`, 79310848 B, verified by every agent), nothing committed to code, nothing pushed._
+
+
+_**PLANNER, RUN-31 RATIFICATION + D38 RULED (2026-08-11).** 877 shipped; its recovery re-measured cleanly and
+two of the task file's own claims were corrected BY re-measurement, which is the behaviour I want. 886 HALTED
+and correctly read as a DECOMPOSITION finding: all three deaths in the load path, each inside the previous
+cycle's own fix, while the contract survived two independent fail-closed panels. **D38 splits it — and merges
+the two questions I was asked SEPARATELY into ONE row (TASK_888), because "one resolution function feeds both
+guard and loader" IS the fix for the four "loaded successfully" liars.** 888 ranks FIRST on
+`real_trade_jax.py` consequence. **Stopping rather than starting 878 is RATIFIED** — it rewrites eval-core
+execution semantics with every parity gate riding on it and carries a 3-arm ablation; starting it at the end
+of a run to leave it half-built would have been the worse call._
+
+_**887 REPORTED (LEDGER `887/collapse-confirm`) — it changes the research line, not the queue.** C1 PASS 3/3
+and 3/3, C2 PASS: the epsilon target-mix genuinely prevents the hold collapse, and at a stable fixed point
+(final-50 slopes −0.0189/+0.0031/−0.0040, seed spread 0.18pp). **But C3 — pre-registered as
+reported-never-a-gate — is the finding: it buys nothing and costs plenty.** Median return over the final 50
+epochs: A −2.86% · E −9.11% · D −13.84%, perfectly MONOTONE IN ACTIVITY, at ZERO costs. **The collapse was
+ADAPTIVE, not pathological** — the policy had correctly concluded its own actions have negative EV, and every
+mechanism that makes it act more makes it lose more. Rung 1 must NOT be re-specced as "rung 1 with epsilon
+mixing"; `manifest_884_battery.txt` stays unlaunched. The live question moves from exploration to whether ANY
+policy on this recipe has positive-EV actions._
+
 ## Superseded grooming banners (pre-run-31)
 
 **D33 — my error, owned:** D32 rescoped 876 to "the non-destructive half" and then listed
