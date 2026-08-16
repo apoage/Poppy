@@ -3,6 +3,64 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-16 — TASK_886 — the program may now say a number was measured on a known universe, and it says exactly how much it knows
+
+- **What shipped.** The CERTIFICATION CONTRACT only, per D38's split — the entire checkpoint load path stayed
+  888R/889's. `eval_vector.py` resolves the checkpoint FIRST and then locates provenance relative to the
+  resolved directory (hole 1: every spelling now reaches the same verdict), certifies against the REALIZED
+  panel rather than argv, replaces the `universe_pinned` boolean with a mechanism-typed `universe_pin`
+  record, and re-introduces the positive claim `verified: true` — earned. `ledger_row` names the mechanism
+  INLINE in every case including `none`, because it is the field humans paste.
+- **`verified: true` is now REACHABLE, and that was the point.** 883R shipped it structurally absent; D38's
+  emitter ruling and 889's save-time `param_fingerprint` discharged the premise. A fresh checkpoint graded
+  against its own provenance certifies, with one coherent sentence. Four independent lenses plus a
+  re-verification could not forge it — not through path spellings, document forgery, TOCTOU, type confusion,
+  500K-char or NUL-byte payloads, or 15 hand-built adversarial conjunct combinations.
+- **The assertion flips in 883R's suite are EARNED, and were treated as guilty until proven otherwise.**
+  Gates (iv)/(vi-a) went from asserting `certified is False` to `True`. A judge established this not by
+  reading the diff but by training a checkpoint from scratch OUTSIDE the harness and measuring that the
+  fingerprint equality holds on real training output. Structurally the flips also went from 2 assertions to
+  4 while retaining every prior one, and every refusal gate is untouched — the opposite shape from
+  accommodation.
+- **THE FINDING THAT MATTERS MOST — the certification could not prove what its sentence claimed.**
+  `param_fingerprint` hashes parameter shape/dtype/bytes and has **zero dependence on symbol names**; weights
+  do not encode which asset a slot means. So reversing `frame_symbols` in a checkpoint's own provenance while
+  leaving the fingerprint intact still certified, moved **net@21 −1.7963 → −1.6575**, and emitted *"slot
+  identity is bound to the checkpoint actually LOADED."* False. Found by running the real flow, not the
+  suite. The structural close — recording a `frame_symbols` digest inside the checkpoint at SAVE time —
+  belongs to 889's surface and is a planner remainder; what shipped here is the honest claim: an explicit
+  `PROVEN:` / `NOT PROVEN:` split stating that the recorded order is **SELF-ATTESTING**.
+- **Then the fix for that overclaim contained a smaller overclaim, and a hang.** A `.sha256` pin check added
+  to partially close it (a) opened every `*.sha256` in the directory with no `stat.S_ISREG` guard — a FIFO
+  named anything at all hung every future certification of every document there, D38's cycle-2 hang class
+  recreated in new code, while the sibling function four hundred lines up stats first *for exactly that
+  reason* — and (b) claimed a matching pin meant tampering was "ruled out", when the pin is a sibling file
+  behind the same write permission as the document. Both reproduced end to end. Both closed: the guard is
+  now mirrored from the sibling rather than reinvented, and the sentence says what the pin actually catches
+  (a document that changed WITHOUT its pin changing — corruption, partial sync, a hand-edit that forgot the
+  pin) and what it does not (a writer who updates both; binding order to weights).
+- **Two conjuncts were being enforced by accident.** `_certification_verdict`'s `mechanism == "none"` check
+  was consulted only for the *reason string* after the success branch had already returned, so a
+  hand-built unpinned record certified; the invariant held only through non-local coupling to a different
+  function's dict literal. Deleting the branch changed no test outcome — a guard whose removal keeps the
+  suite green is not a guard. The same audit found `order_exact` in the same state, enforced solely by
+  `_cross_check_own_provenance` happening to raise. Both are now live conjuncts (an allowlist, not
+  `!= "none"`, because a record with no `mechanism` key certified too), pinned by direct predicate probes
+  rather than through the producer's coupling.
+- **Gate 0c** now keys the fixture caveat on content, not path: realpath fast path, then `filecmp.cmp`
+  with its size short-circuit, so a byte-identical COPY is caught while the 24GB `trading_data.db` returns
+  in 3.6e-05 s without reading a byte.
+- **Byte-identity held throughout.** Acceptance (v) proven by HEAD-worktree A/B on the certified path —
+  17 keys, 0 differing, net@21 identical — and 861's `i_canon_835` / `results_pin` canaries stayed green
+  across all three cycles. Nothing wrote a `.sha256`; all four tracked provenance documents and both pins
+  are byte- and mtime-identical (D39's red line).
+- **Remainders → planner.** (1) The save-time `frame_symbols` digest, on 889's surface — until it exists the
+  order is self-attesting and the artifact says so. (2) `runs/` is gitignored, so D39's "committed pins" are
+  committed operationally but not in the `git ls-files` sense; a genuinely independent pin would have to move
+  somewhere tracked. (3) A HEAD-worktree A/B on `eval_vector.py` needs **both** `fixtures/trading_fixture.db`
+  and `runs/831_ext` symlinked in — a missing `831_ext` silently nulls every `per_window` floor/ceiling and
+  reads as a `tiers` regression that is not real.
+
 ## 2026-08-16 — TASK_893 — the D41 measurement: the backward fill is real, it is not exploitable *here*, and the docstring is still false
 
 - **What shipped.** `tools/measure_leading_prefix.py` — a read-only instrument that counts decision cells

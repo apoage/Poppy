@@ -1,5 +1,39 @@
 # TASK_886 — bind the universe claim to what was LOADED and what was RETURNED
 
+> **STATUS (2026-08-16): SHIPPED as `task886-universe-pin-certification`.** Contract only, per D38 — the
+> load path stayed 888R/889's and was not touched. 3 cycles; verified by a 5-member high-tier panel
+> (correctness · fail-closed · regression · security · flow-verifier) plus a fresh adversarial
+> re-verification of the cycle-2 additions.
+>
+> **`verified: true` is REACHABLE and could not be forged** — not through path spellings, document forgery,
+> TOCTOU, type confusion, 500K-char or NUL-byte payloads, or 15 hand-built adversarial conjunct
+> combinations. Acceptance (v) byte-identical vs HEAD (17 keys, 0 differing); 861's `i_canon_835` and
+> `results_pin` canaries green across all three cycles; all six suites green.
+>
+> **READ THIS BEFORE CITING A CERTIFIED ROW — what `verified: true` does NOT mean.**
+> `param_fingerprint` hashes parameter shape/dtype/bytes and has **zero dependence on symbol names**, so it
+> proves *which weights loaded*, never *which slot order those weights were trained under*. Reversing
+> `frame_symbols` in a checkpoint's own provenance with the fingerprint intact still certifies and moves
+> **net@21 −1.7963 → −1.6575**. The recorded order is therefore **SELF-ATTESTING**, and the emitted row now
+> says so in an explicit `PROVEN:` / `NOT PROVEN:` split. The `.sha256` pin check catches a document that
+> changed **without** its pin changing (corruption, partial sync, a hand-edit that forgot the pin); it does
+> **not** defend against a writer who updates both.
+>
+> **Remainders → planner.** (1) **The structural close is a NEW row on TASK_889's surface**: record a
+> `frame_symbols` digest INSIDE the checkpoint at SAVE time, so a grading run can check the document's
+> recorded order against something the checkpoint itself carries. Once it exists, `_certification_verdict`
+> gains a fifth conjunct and the `NOT PROVEN` half of the sentence can be deleted. This row's own
+> "Out of scope" already anticipated it. (2) `runs/` is gitignored, so D39's "committed pins" are committed
+> operationally, not in the `git ls-files` sense — a genuinely independent pin must live somewhere tracked.
+> (3) A HEAD-worktree A/B on `eval_vector.py` needs **both** `fixtures/trading_fixture.db` and
+> `runs/831_ext` symlinked in; a missing `831_ext` silently nulls every `per_window` floor/ceiling and reads
+> as a `tiers` regression that is not real (`feedback_head_control_worktree_rig`, one more dep).
+>
+> **Two guards were being enforced by accident and are now live conjuncts** — `mechanism` (via an allowlist,
+> because a record with no `mechanism` key also certified) and `order_exact`. Both had been holding only
+> through non-local coupling to another function; deleting either changed no test outcome before the fix.
+>
+> _(Prior banner, superseded, kept for the record:)_
 > **STATUS (2026-08-16, planner): READY — RE-TAKE AUTHORIZED. Contract-only per D38; every premise
 > that gated the re-take is now discharged.** 888R shipped (`7cc50fb`) — one resolution function
 > feeds guard and loader, the loader refuses. 889 shipped (`f9d8ee4`) — save-time architecture

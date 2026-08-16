@@ -76,6 +76,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import argparse
 import dataclasses
+import filecmp
 import hashlib
 import importlib.util
 import json
@@ -2310,6 +2311,55 @@ def _display_path(p):
     return p if rel.startswith("..") else rel
 
 
+def _is_fixture_db(db_path):
+    """True iff ``db_path`` IS the pinned fixture: the same file under any spelling, OR a
+    BYTE-IDENTICAL copy of it at another path.
+
+    TASK_886 (gate 0c): ONE definition, reused by ``main()``'s ``is_fixture`` (tag/out_dir
+    defaulting — unchanged behavior) and by ``make_ledger_row``'s fixture caveat. That caveat
+    used to be keyed on ``r["tag"].startswith("fixture")`` — a custom ``--tag`` on fixture data
+    then shipped "Scheduled-run numbers" wording, because ``--tag`` is operator-chosen argv, not
+    evidence of what actually got opened. This is keyed on the DB instead, so no argv spelling
+    can hide the caveat.
+
+    EXACTLY WHAT IS DETECTED (886 fix pass, MAJOR 2 — stated precisely so nothing here is
+    over-claimed in either direction):
+
+    * DETECTED — the fixture itself, and every PATH spelling of it: a symlink, a relative path,
+      a ``..`` traversal, a bind/hard link. ``realpath``, not ``abspath``: under ``abspath`` a
+      symlink compares unequal and the mandatory FIXTURE-SMOKE wording silently drops off the
+      pasted row, i.e. the gate inverts for one spelling of the SAME input.
+    * DETECTED — a byte-identical COPY at an unrelated path (``shutil.copyfile`` /
+      ``rsync`` / a worktree duplicate of the gitignored fixture, which is this repo's own A/B
+      practice). ``realpath`` alone reads False for a copy, so the row shipped "Scheduled-run
+      numbers" for what is actually untrained fixture near-noise — strictly worse than HEAD's
+      ``--tag``-keyed check in that one case. Content identity is what "the DB actually opened"
+      means, so the comparison is on CONTENT.
+    * NOT DETECTED — a DB that merely RESEMBLES the fixture: a freshly regenerated
+      ``make_fixture.py`` output (sqlite page layout/ids differ), a truncated/extended/modified
+      copy, or any other small DB. Those read False and the row says "Scheduled-run numbers".
+      This is the honest boundary: the function can only recognize the fixture it was pinned to,
+      not "fixture-like data" in general.
+
+    COST: ``trading_data.db`` is the read-only 24GB source of record and must NEVER be hashed or
+    streamed by a caveat check. ``filecmp.cmp(..., shallow=False)`` compares ``st_size`` BEFORE
+    reading a single byte and returns False on a mismatch, so the only file that can reach the
+    byte comparison is one whose size equals the fixture's exactly (~79MB, chunked, short-circuits
+    on the first differing chunk, and ``filecmp``'s own cache keys on ``(path, stat)`` so repeated
+    calls in one process cost one stat pair). The 24GB DB never gets past the size gate. The
+    ``realpath`` fast path is tried first, so the ordinary case still costs two ``realpath``
+    calls and no I/O.
+
+    An unreadable/absent/non-regular path is not the fixture: False, not a traceback (the caller
+    is a LABEL, not a gate — the run's own DB open is what refuses a bad ``--db``)."""
+    if os.path.realpath(db_path) == os.path.realpath(FIXTURE_DB):
+        return True
+    try:
+        return filecmp.cmp(db_path, FIXTURE_DB, shallow=False)
+    except (OSError, ValueError):
+        return False
+
+
 # =============================================================================
 # checkpoint load — the TASK_834 pattern (run's TrainingConfig → trainer.load_checkpoint)
 # =============================================================================
@@ -2984,7 +3034,7 @@ def compute_teacher_floor(prices, env_cfg0, warm, n_decisions, period_minutes,
 
 
 def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor, ext_windows,
-                        universe_pin=None, checkpoint_load=None):
+                        universe_pin=None, checkpoint_load=None, universe_requested=None):
     prices, env_cfg0, state_init, row_ts, col_symbols, panel_info = panel
     warm = int(env_cfg0.window_size)
     n_decisions = panel_info["n_decisions"]
@@ -3242,15 +3292,45 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # future reader never has to infer any of this from the command line (the 882 investigation
     # only closed because results_s*.json happened to embed panel_frame; this makes it a
     # guarantee).
-    # TASK_883R (D36 — the binding re-cut): ``universe_pinned: true`` MUST NOT EXIST. The guard
-    # reasons about argv, not about the checkpoint actually LOADED or the panel actually
-    # RETURNED (run-29 holes 1/2), so under 883R NO run may carry the positive label — every
-    # grading artifact stamps ``false`` and the record carries ``certified: false`` whatever
-    # was supplied. 883R may only REFUSE or DISCLAIM, never BLESS; the earned positive claim
-    # (a mechanism-typed record bound to the loaded checkpoint + realized panel) is TASK_886's.
-    # Nothing consumes the field yet, so the cost is zero and the honesty is total.
+    # TASK_883R (D36 — the binding re-cut) froze ``universe_pinned``/``certified`` at ``false``
+    # for EVERY run, whatever was supplied: the guard reasoned about argv, not about the
+    # checkpoint actually LOADED or the panel actually RETURNED (run-29 holes 1/2), so 883R
+    # could only REFUSE or DISCLAIM, never BLESS. D36 scoped that freeze as lasting "until the
+    # certification row lands" — TASK_886 IS that row, and it UNFREEZES them by making them
+    # EARNED rather than constant: all three (``universe_pinned``, ``universe_pin.certified``,
+    # ``universe_pin.verified``) now carry the one boolean ``_certification_verdict`` computes
+    # from the LOADED checkpoint (``checkpoint_load``) and the RETURNED panel (``col_symbols``
+    # vs ``universe_requested``). Fail-closed: that predicate requires a parameter fingerprint
+    # recorded in the checkpoint's own provenance AND agreeing with the loaded weights, the
+    # panel realized exactly what was requested, and zero padded slots.
     if universe_pin is not None:
-        result["universe_pinned"] = False
+        # TASK_886 scope 2/3/4 — layer the EARNED, mechanism-typed fields onto 883R's record.
+        # ADDITIVE: nothing 883R shipped (pin_source/certified/pin_path/... below) is removed
+        # or renamed — the 883R regression suite pins those verbatim; mechanism/provenance_path/
+        # sha256/provenance_param_fingerprint were already added by enforce_universe_pin.
+        _realized_matches = _realized_matches_requested(universe_requested, col_symbols)
+        universe_pin = dict(universe_pin)          # copy — never mutate the caller's record
+        universe_pin["n_slots"] = int(panel_info["n_assets"])
+        # n_padded: slots build_panel could not fill with a real symbol. It cannot be non-zero
+        # on any run that could be certified — the framed path keeps zero-coverage slots
+        # INACTIVE in place (the 853 mechanic) and the explicit path is refused outright by
+        # _assert_realized_panel_universe when a requested symbol drops — so in practice it is
+        # a DISCLOSURE for the uncertifiable (unpinned) case. Made a live conjunct of
+        # _certification_verdict anyway: "cannot happen elsewhere" is an argument, and the
+        # certification predicate should not rest on one.
+        universe_pin["n_padded"] = max(
+            0, int(panel_info["n_assets"]) - int(panel_info["n_loaded_symbols"]))
+        universe_pin["realized_matches_requested"] = _realized_matches
+        universe_pin["verified"], universe_pin["verified_reason"] = _certification_verdict(
+            universe_pin, _realized_matches, checkpoint_load)
+        # ONE FACT, ONE VALUE. 883R's `certified` and the top-level `universe_pinned` used to be
+        # hardcoded False beside a computed `verified` — D36 scoped that freeze as lasting
+        # "until the certification row lands", and 886 IS that row, so leaving them pinned would
+        # ship an artifact that contradicts itself in its own JSON. They now carry the SAME
+        # boolean as `verified`; `certified` is kept as the 883R-era spelling purely so the
+        # committed artifact schema keeps every key it had (nothing renamed, nothing removed).
+        universe_pin["certified"] = universe_pin["verified"]
+        result["universe_pinned"] = universe_pin["verified"]
         result["universe_pin"] = universe_pin
     # TASK_856 scope 1: decision-rule provenance. Flag-gated (default 'argmax' adds NOTHING =>
     # byte-identical to HEAD); a non-default rule records its knobs and rewrites the operator
@@ -3326,26 +3406,95 @@ def make_ledger_row(r):
     collapse = ("HOLD-COLLAPSE (pct_hold "
                 f"{net['pct_hold_agg']:.1f}%)" if cor["hold_collapse"]
                 else f"no HOLD collapse (pct_hold {net['pct_hold_agg']:.1f}%)")
+    # TASK_886 (gate 0c): keyed on the DB ACTUALLY OPENED (r["db"], via the SAME _is_fixture_db
+    # main() uses for is_fixture) — not on the --tag string. A custom --tag on fixture data used
+    # to fall through to "Scheduled-run numbers" wording below (tag is operator-chosen argv, not
+    # evidence of what ran); r["db"] is the path build_panel/load_row_timestamps actually opened,
+    # present in every result dict pre- and post-886 (no new JSON key needed).
+    _is_fx = _is_fixture_db(r["db"])
     smoke_note = (" FIXTURE-SMOKE — plumbing proof, untrained near-noise, no threshold applied;"
-                  " real Stage-4 numbers come from the scheduled run." if r["tag"].startswith("fixture")
+                  " real Stage-4 numbers come from the scheduled run." if _is_fx
                   else " Scheduled-run numbers; PASS verdict applied by the planner (gate ladder).")
     # TASK_883R (D36, Q2 — RULED: the caveat goes INLINE, naming the mechanism). ledger_row is
     # the field a human copy-pastes into the LEDGER, and the 882 postmortem's complaint was
-    # verbatim "prints a paste-ready LEDGER row with no warning" — a caveat that does not
-    # travel with the pasted text is not a caveat. Under 883R universe_pinned is ALWAYS false
-    # (the positive claim does not exist until TASK_886), so EVERY checkpoint-grading row
-    # carries this. Smoke rows never carry a universe_pin record and are untouched
-    # (byte-identical to HEAD). Noisy in the LEDGER by design — it is accurate, and it puts
-    # real pressure on 886.
+    # verbatim "prints a paste-ready LEDGER row with no warning" — a caveat that does not travel
+    # with the pasted text is not a caveat. Smoke rows never carry a universe_pin record and are
+    # untouched (byte-identical to HEAD).
+    #
+    # TASK_886: ONE COHERENT STATEMENT PER STATE. Pre-886 this unconditionally emitted 883R's
+    # "the positive claim does not exist until TASK_886" sentence, which would now contradict a
+    # genuinely certified row in the same field humans paste. Both branches below name the
+    # mechanism inline (gate iv), including "none", and the certified branch carries the
+    # comparability rule the task's own "Comparability" section demands be visible: the
+    # mechanisms do NOT agree (measured Δ0.070 on the same checkpoint and the same 8-symbol
+    # order), so a certified number is comparable only WITHIN its mechanism.
     universe_caveat = ""
     _up = r.get("universe_pin")
     if _up is not None:
-        _mech = _up.get("pin_source") or "none (--allow-unpinned-universe)"
-        universe_caveat = (
-            f" UNIVERSE UNVERIFIED (TASK_883R): graded under universe-pinning mechanism "
-            f"'{_mech}', but slot identity is NOT certified — \"universe_pinned\": false; "
-            f"the positive claim does not exist until TASK_886. Do NOT compare this net@21 "
-            f"against any pinned read.")
+        _mech = _up.get("mechanism") or "none"
+        if _up.get("verified"):
+            # 886 fix pass (BLOCKER): this sentence used to claim "slot identity is bound to the
+            # checkpoint actually LOADED ... and to the panel actually RETURNED". The first half
+            # OVERCLAIMED. `param_fingerprint` hashes parameter shape/dtype/bytes per leaf and
+            # has ZERO dependence on `frame_symbols`, so it proves WHICH WEIGHTS were loaded and
+            # nothing about the symbol ORDER those weights were trained under. Measured on the
+            # fixture: reverse `frame_symbols` in the checkpoint's OWN provenance, leave the
+            # fingerprint untouched, re-grade pinned to that document — exit 0, verified: true,
+            # net@21 −1.796 -> −1.657 (pct_hold 48.5% -> 72.7%), i.e. the per-slot weights
+            # scoring against different real assets while the row said they were bound. Binding
+            # the order properly means recording a frame_symbols digest INTO the checkpoint at
+            # SAVE time, which is TASK_888/889's surface and out of scope here (a new row).
+            # What this field can do is stop lying: state what IS proven, and name the gap. This
+            # is the text a human pastes into the LEDGER, and an overclaim in it is precisely the
+            # self-certification this row exists to end.
+            # 886 fix pass, cycle-3 BLOCKER: the PINNED branch overclaimed in exactly the same
+            # register the certified sentence above was just fixed for — it said tampering with
+            # the order was "ruled out for THIS document". It is not. Nothing checks that the
+            # .sha256 is git-tracked, clean, or written by anyone other than whoever could edit
+            # the JSON; it sits in the same directory behind the same write permission.
+            # Reproduced end-to-end: reverse frame_symbols, recompute the digest of the tampered
+            # bytes, write it to the sibling .sha256 (the same filesystem access the tamper
+            # already required) — the run certifies, verified: true, net@21 −1.796 -> −1.657.
+            # What the pin ACTUALLY catches is an ASYMMETRIC change: a document that moved while
+            # its pin did not. Say that, and name the two gaps it leaves.
+            _pin_file = _up.get("checkpoint_provenance_sha256_pin")
+            _order_note = (
+                f"its frame_symbols order additionally matches the committed sha256 pin at "
+                f"{_pin_file}, which catches a document that changed WITHOUT its pin changing "
+                f"(corruption, a partial sync, a stale document, a hand-edit that forgot the "
+                f"pin); that pin is NOT independently trusted — it is a sibling file behind the "
+                f"same write permission as the document, so it does NOT defend against a writer "
+                f"who updates BOTH, and it still does not bind the order to the weights"
+                if _pin_file else
+                "NO committed sha256 pin sits beside that document, so a tampered or corrupted "
+                "frame_symbols order that leaves param_fingerprint intact would NOT be detected "
+                "here")
+            universe_caveat = (
+                f" UNIVERSE CERTIFIED (TASK_886): mechanism={_mech!r}. PROVEN: the parameters "
+                f"actually LOADED are the ones this checkpoint's own provenance was written for "
+                f"(param_fingerprint match); the requested universe agrees order-exact with that "
+                f"provenance; the panel build_panel actually RETURNED is order-exact the "
+                f"requested one (realized_matches_requested=true); zero padded slots. NOT "
+                f"PROVEN: that the provenance's recorded frame_symbols ORDER is the order these "
+                f"weights were trained under — param_fingerprint hashes parameter "
+                f"shape/dtype/bytes and has NO dependence on symbol names, so that order is "
+                f"SELF-ATTESTING; {_order_note}. Comparable ONLY against runs certified under "
+                f"the SAME mechanism.")
+        else:
+            # 886 fix pass (MINOR): both call sites pass a FRESHLY BUILT record, so
+            # `verified_reason` is always present today. Fed a HISTORICAL pre-886 `universe_pin`
+            # dict (883R-era artifacts carry `certified` but neither `verified` nor
+            # `verified_reason`) the f-string used to render the literal "— None", which reads
+            # as a missing fact rather than as what it is. Name the state instead; the sentence
+            # a human pastes must never contain a null.
+            _reason = _up.get("verified_reason") or (
+                "this universe_pin record carries no `verified_reason` (a pre-TASK_886 record, "
+                "which could not have been certified)")
+            universe_caveat = (
+                f" UNIVERSE NOT CERTIFIED (TASK_886): graded under universe-pinning "
+                f"mechanism={_mech!r}, but slot identity is NOT certified — "
+                f"{_reason}. Do NOT compare this net@21 against any "
+                f"certified read.")
     return (
         f"| 835/S4 | {date.today().isoformat()} | H1 (learned) | "
         f"Stage-4 eval {r['checkpoint_label']}: deterministic full-timeline vector rollout "
@@ -3925,21 +4074,34 @@ def run_smoke(args, corridor, ext_windows):
 # (``--allow-unpinned-universe``) before proceeding on exactly the inputs given.
 
 def _own_provenance_path_for(ckpt_path):
-    """``frame_provenance_<stem>.json`` beside ``ckpt_path`` (``ckpt_`` stripped off the
-    basename) — the sibling file TASK_874's ``imprint.py`` writes next to every checkpoint it
-    emits (``imprint.frame_provenance_path_for``).
+    """``frame_provenance_<stem>.json`` beside the checkpoint's RESOLVED RUN DIR (``ckpt_``
+    stripped off the basename) — the sibling file TASK_874's ``imprint.py`` writes next to
+    every checkpoint it emits (``imprint.frame_provenance_path_for``).
+
+    TASK_886 scope 1 ("Hole 1"): resolves via ``checkpoint_io.resolve_checkpoint_dirs`` FIRST —
+    the SAME resolution the checkpoint loader uses, on the REALPATH — so EVERY spelling of the
+    same checkpoint (the run dir passed to ``save_checkpoint``; the orbax leaf flax writes one
+    level inside it, ``<run_dir>/checkpoint_<step>``; and a SYMLINK to either, which this repo
+    uses for checkpoint storage — ``jax_ckpt_fast``/``jax_ckpt_easy`` -> /mnt/scratch)
+    resolves to the SAME sibling path. Pre-886 this used the raw argv string's basename
+    directly: pointed at the leaf (``.../ckpt_foo/checkpoint_500``), the stripped stem was
+    ``checkpoint_500`` (no ``ckpt_`` prefix to strip), the sibling lookup missed the checkpoint's
+    real provenance entirely, and ``own_found`` came back False — the order-exact cross-check
+    silently skipped, so a FULLY REVERSED pin graded to exit 0 under that spelling alone (both
+    spellings appear in committed manifests; the score is identical either way, so nothing else
+    flagged it).
 
     Not imported from ``imprint.py``: that module already imports FROM this one (TASK_863's
     validator/framed-panel-loader reuse), so importing ``imprint`` here would be circular.
-    TASK_888 fix pass: rather than keep a second literal copy of the rule, this delegates to
-    ``checkpoint_io.provenance_path_for`` — the shared module both this file and
-    ``tools/backfill_checkpoint_fingerprints.py`` already import. Byte-identical behaviour to
-    the copy it replaces (same string manipulation on the same raw ``ckpt_path``: this function
-    deliberately does NOT resolve, so every existing spelling keeps resolving exactly as it
-    did). Carries imprint's documented caveat — the mapping is not injective
-    (``.../ckpt_foo`` and ``.../foo`` land on the same file) — which is inert here: this module
-    only ever READS the file, never writes it."""
-    return checkpoint_io.provenance_path_for(ckpt_path)
+    Delegates the string manipulation to ``checkpoint_io.provenance_path_for`` — the shared
+    module both this file and ``tools/stamp_checkpoint_fingerprints.py`` already import — but on
+    the RESOLVED run dir rather than the raw argv string, per that function's own documented
+    contract ("callers that want symlink-resolved identity pass a run_dir from
+    resolve_checkpoint_dirs"). Carries imprint's documented caveat — the mapping is not
+    injective (``.../ckpt_foo`` and ``.../foo`` land on the same file) — which is inert here:
+    this module only ever READS the file, never writes it."""
+    run_dir, _leaf_dir = checkpoint_io.resolve_checkpoint_dirs(ckpt_path)
+    return checkpoint_io.provenance_path_for(run_dir)
 
 
 # 883R cycle 2 (security MINOR): provenance documents are ~KB; anything larger at the
@@ -3949,8 +4111,11 @@ _PROVENANCE_MAX_BYTES = 1_000_000
 
 def _provenance_frame_defect(path):
     """Read a provenance JSON's ordered symbol frame off disk WITHOUT deciding anything about
-    absence. Returns ``(frame, defect)``: exactly one is non-``None`` unless the file is
-    genuinely absent, in which case both are ``None``.
+    absence. Returns ``(frame, defect, doc)``: exactly one of frame/defect is non-``None``
+    unless the file is genuinely absent, in which case all three are ``None``. ``doc`` is the
+    whole parsed object whenever one was parsed (TASK_886 — the document records WHICH
+    checkpoint it was written for, and that checkpoint's ``param_fingerprint``; both are read
+    by the caller from this same single parse, never by re-opening the file a second time).
 
     Presence is ``lexists``, not ``exists``: a DANGLING SYMLINK is a file that is *there* and
     cannot be read, which is the present-but-unreadable state, not the absent one.
@@ -3974,47 +4139,50 @@ def _provenance_frame_defect(path):
     resolves next to an operator-supplied checkpoint string, and a refusal that echoes file
     content leaks whatever a hostile/accidental file put there."""
     if not os.path.lexists(path):
-        return None, None
+        return None, None, None
     try:
         st = os.stat(path)
     except OSError as e:
-        return None, f"it is present but cannot be stat'ed ({type(e).__name__}: {e})"
+        return None, f"it is present but cannot be stat'ed ({type(e).__name__}: {e})", None
     if not stat.S_ISREG(st.st_mode):
         return None, ("it is present but NOT a regular file (FIFO/socket/device/directory) — "
                       "refusing to open it: a FIFO or device here blocks the reader forever, "
-                      "which is a hang, not a verdict")
+                      "which is a hang, not a verdict"), None
     if st.st_size > _PROVENANCE_MAX_BYTES:
         return None, (f"it is {st.st_size} bytes — a provenance document is ~KB; refusing to "
-                      f"read anything over {_PROVENANCE_MAX_BYTES} bytes into memory")
+                      f"read anything over {_PROVENANCE_MAX_BYTES} bytes into memory"), None
     try:
         with open(path) as fh:
             doc = json.load(fh)
     except (OSError, ValueError, UnicodeDecodeError) as e:
-        return None, f"it could not be read as JSON ({type(e).__name__}: {e})"
+        return None, f"it could not be read as JSON ({type(e).__name__}: {e})", None
     if not isinstance(doc, dict):
         return None, (f"it is valid JSON but NOT a JSON object (got "
                       f"{type(doc).__name__}) — a provenance document is an object carrying "
-                      f"'frame_symbols'")
+                      f"'frame_symbols'"), None
     if "frame_symbols" not in doc and "symbols" not in doc:
         return None, ("it is a JSON object with NEITHER a 'frame_symbols' nor a 'symbols' key "
-                      f"({len(doc)} top-level keys present — key names not echoed)")
+                      f"({len(doc)} top-level keys present — key names not echoed)"), doc
     frame = doc.get("frame_symbols", doc.get("symbols"))
     if not isinstance(frame, list):
         return None, (f"its recorded frame is a {type(frame).__name__}, not a list of symbols "
-                      f"(an ordered list is the whole point — slot k IS asset k)")
+                      f"(an ordered list is the whole point — slot k IS asset k)"), doc
     if not frame:
-        return None, "its recorded frame is an EMPTY list — there is no slot order to compare"
+        return None, ("its recorded frame is an EMPTY list — there is no slot order to "
+                      "compare"), doc
     bad = [i for i, s in enumerate(frame) if not (isinstance(s, str) and s)]
     if bad:
         return None, (f"its recorded frame has non-string/empty entries at slot(s) "
-                      f"{bad[:8]} (entry values not echoed)")
-    return list(frame), None
+                      f"{bad[:8]} (entry values not echoed)"), doc
+    return list(frame), None, doc
 
 
 def _read_provenance_frame(path, ckpt):
-    """The checkpoint's OWN recorded frame (TASK_874's ``frame_provenance_<stem>.json`` sibling)
-    for the scope-2 agreement check, or ``None`` when that file is genuinely ABSENT — and a
-    REFUSAL for every state in between.
+    """``(frame, doc)`` — the checkpoint's OWN recorded frame (TASK_874's
+    ``frame_provenance_<stem>.json`` sibling) for the scope-2 agreement check, plus the whole
+    document it came from (TASK_886: the caller reads the recorded checkpoint path and
+    ``param_fingerprint`` off this same ``doc``, never a second re-open), or ``(None, None)``
+    when that file is genuinely ABSENT — and a REFUSAL for every state in between.
 
     * **absent** -> ``None``. A real and meaningful state, not "no pin requested": a checkpoint
       predating TASK_853 legitimately has no recorded frame, and a run can deliberately emit
@@ -4032,7 +4200,7 @@ def _read_provenance_frame(path, ckpt):
     guard whose only defence is that its evidence file happens to be readable is not a guard.
     ``imprint.py``'s own ``write_frame_provenance`` (:987-1026) already refuses a
     present-but-unreadable provenance rather than treating it as absent; this matches it."""
-    frame, defect = _provenance_frame_defect(path)
+    frame, defect, doc = _provenance_frame_defect(path)
     if defect is not None:
         raise RuntimeError(
             f"--panel-frame-from-checkpoint: REFUSING a checkpoint whose OWN frame provenance "
@@ -4051,7 +4219,7 @@ def _read_provenance_frame(path, ckpt):
             f"recorded frame, REMOVE the unusable file so the absent-provenance path applies — "
             f"the artifact then records \"checkpoint_provenance_found\": false, which is an "
             f"honest statement; a corrupt file is not.")
-    return frame
+    return frame, doc
 
 
 def _first_frame_mismatch(a, b):
@@ -4072,23 +4240,437 @@ def _sha256_file(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
+# A committed ``*.sha256`` pin is a handful of ``sha256sum`` lines; anything larger is not one.
+SHA256_PIN_MAX_BYTES = 1 << 20
+_SHA256_HEX = 64
+
+
+def _provenance_sha256_pin(path):
+    """TASK_886 (fix pass, BLOCKER) — ``(pinned_digest, pin_file)`` for the provenance document
+    ``path`` from a COMMITTED, CO-LOCATED ``*.sha256`` pin, or ``(None, None)`` when none names
+    it.
+
+    WHY THIS EXISTS. ``param_fingerprint`` (``checkpoint_io``) hashes shape + dtype + raw bytes
+    per parameter leaf. Weights do not encode symbol names, so the fingerprint proves WHICH
+    WEIGHTS were loaded and says NOTHING about the ``frame_symbols`` ORDER those weights were
+    trained under. Measured on the fixture: reverse ``frame_symbols`` in a checkpoint's own
+    provenance, leave ``param_fingerprint`` untouched, re-grade pinned to that document — exit 0,
+    ``verified: true``, and net@21 moves −1.796 → −1.657 (pct_hold 48.5% → 72.7%). The recorded
+    order is SELF-ATTESTING; nothing inside this program can check it against the weights.
+    Binding it properly means writing a ``frame_symbols`` digest INTO the checkpoint at SAVE
+    time, which is TASK_888/889's surface and explicitly out of scope here.
+
+    What IS available today is D39's hand-kept pins — ``runs/861_ref/frame_provenance_ref.sha256``
+    and ``runs/832_e5/frame_provenance_imprint.sha256`` — committed beside exactly the documents
+    this program treats as load-bearing. Where one exists, a document that changed WITHOUT its
+    pin changing is detectable and ``_assert_provenance_matches_sha256_pin`` refuses on it.
+    Where none exists, the artifact and the LEDGER row SAY SO rather than proceeding silently.
+
+    WHAT THIS IS NOT (886 fix pass, cycle-3 BLOCKER 2 — the claim overclaimed once already).
+    Nothing here checks that the ``.sha256`` is git-tracked, clean, or written by anybody other
+    than whoever could edit the JSON: it sits in the same directory, behind the same write
+    permission. So this detects an ASYMMETRIC change — corruption, a partial rsync, a stale
+    document, a hand-edit that forgot the pin — and it does NOT defend against a writer who
+    updates BOTH. Reproduced end-to-end: reverse ``frame_symbols``, recompute the digest of the
+    tampered bytes, write it to the sibling ``.sha256`` (the same filesystem access the tamper
+    already required) — the run certifies with ``verified: true`` and net@21 moves −1.796 →
+    −1.657. It also still does not bind the order to the WEIGHTS; only a ``frame_symbols``
+    digest written INTO the checkpoint at save time does that (TASK_888/889 surface, a new row).
+    Both limits are stated in the certified LEDGER sentence rather than papered over.
+
+    LOOKUP RULE — evidence, not a naming convention: scan the document's OWN directory for
+    ``*.sha256`` files and take the entry whose name matches this document's BASENAME. Both
+    committed spellings are covered by that and by neither of the obvious guesses: 832's pin file
+    is ``frame_provenance_imprint.sha256`` (stem, no ``.json``) and 861's single
+    ``frame_provenance_ref.sha256`` pins THREE documents (``frame_provenance_ref_s0..s2.json``),
+    so neither ``<doc>.sha256`` nor ``<stem>.sha256`` finds them both. Entries may be written
+    bare, repo-relative or absolute (the ``runs/deploys`` pins are repo-relative) — the basename
+    is the part every spelling agrees on, and the pin only has authority over files sitting
+    beside it anyway.
+
+    READ SAFETY (886 fix pass, cycle-3 BLOCKER 1) — the SAME stat-before-open discipline as
+    ``_provenance_frame_defect`` (:4127-4139), for the SAME reason, on a wider surface: that
+    helper opens ONE auto-derived path, whereas this lookup rule opens EVERY ``*.sha256`` in the
+    document's directory before it can know whether any of them names the document. So a
+    FIFO/socket/device under ANY name in a load-bearing directory blocks the reader forever —
+    a hang, not a verdict, and it would take out every future certification of every document
+    there. Reproduced: a FIFO named ``unrelated_junk.sha256`` beside
+    ``runs/861_ref/frame_provenance_ref_s0.json`` hung the grading run (``timeout 8`` -> exit
+    124), same under the ``<doc-stem>.sha256`` spelling. Non-regular candidates and oversized
+    ones are therefore SKIPPED unopened, which is this function's existing convention (below)
+    rather than a new mechanism: a pin file that cannot be read names nothing, so it pins
+    nothing, and the caller then records the honest "no committed pin" state — the artifact and
+    the LEDGER row SAY the order is unpinned instead of a hang, a guess, or a silent pass.
+    ``st_size`` from that same ``stat`` also bounds the read under the cgroup RAM cap.
+
+    READ-ONLY, ALWAYS (D39: "a digest a repair tool refreshes on its own behalf pins nothing").
+    This function never creates, refreshes or rewrites a ``.sha256``; it only reads.
+
+    Two pin files disagreeing about the same document is an ambiguity, not a majority vote:
+    ``("AMBIGUOUS", <files>)`` is returned so the caller can refuse rather than pick one.
+    Unreadable/oversized/unparseable pin files are skipped — they name nothing, so they pin
+    nothing; a document with no usable pin is the honest "unpinned" state, not a silent pass."""
+    want = os.path.basename(path)
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        names = sorted(n for n in os.listdir(directory) if n.endswith(".sha256"))
+    except OSError:
+        return None, None
+    found = {}                                     # digest -> [pin file, ...]
+    for name in names:
+        pin_file = os.path.join(directory, name)
+        try:
+            st = os.stat(pin_file)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > SHA256_PIN_MAX_BYTES:
+                continue
+            with open(pin_file, "r", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            parts = line.split()
+            # `sha256sum` format: "<64 hex>  <name>" (the binary-mode "*name" spelling too).
+            if len(parts) != 2 or len(parts[0]) != _SHA256_HEX:
+                continue
+            digest, entry = parts[0].lower(), parts[1].lstrip("*")
+            if os.path.basename(entry) == want:
+                found.setdefault(digest, []).append(_display_path(pin_file))
+    if not found:
+        return None, None
+    if len(found) > 1:
+        return "AMBIGUOUS", sorted(f for files in found.values() for f in files)
+    digest, files = next(iter(found.items()))
+    return digest, files[0]
+
+
+def _assert_provenance_matches_sha256_pin(path, flag):
+    """TASK_886 (fix pass, BLOCKER) — REFUSE a provenance document that contradicts the committed
+    ``*.sha256`` pin sitting beside it. Returns the pin file's display path, or ``None`` when the
+    document carries no pin (an honest state, recorded as such — never a silent pass).
+
+    This is the ONLY check available to this row for the recorded ``frame_symbols`` order: the
+    parameter fingerprint cannot see symbol names (see ``_provenance_sha256_pin``). It is
+    therefore a check on THE DOCUMENT, not on the weights, and it is only as strong as the pin's
+    own provenance — which is why the record and the LEDGER row both say whether one existed.
+
+    PRECISELY WHAT IT CATCHES (886 fix pass, cycle-3 BLOCKER 2): a document that changed WITHOUT
+    its pin changing. Nothing here establishes that the pin is git-tracked, clean, or written by
+    a different party than the document, so a writer who updates BOTH is NOT caught (reproduced
+    — see ``_provenance_sha256_pin``). Calling that "tampering ruled out" is the same
+    self-certification this row exists to end, so neither this refusal nor the certified sentence
+    says it.
+
+    CORRECTOR: refuses; never writes, refreshes or repairs a ``.sha256`` (D39)."""
+    pinned, pin_file = _provenance_sha256_pin(path)
+    if pinned is None:
+        return None
+    if pinned == "AMBIGUOUS":
+        raise RuntimeError(
+            f"{flag}: REFUSING — two committed sha256 pins disagree about this provenance "
+            f"document.\n"
+            f"  provenance: {_display_path(path)}\n"
+            f"  pin files: {', '.join(pin_file)}\n"
+            f"  A pin exists precisely so the document's recorded frame_symbols order cannot be "
+            f"changed unnoticed; two pins naming different digests for it means the question "
+            f"'was this tampered with?' has no answer here, and this row may not guess one.\n"
+            f"  FIX: reconcile the pins so exactly one digest is claimed for this document.")
+    actual = _sha256_file(path)
+    if actual == pinned:
+        return pin_file
+    raise RuntimeError(
+        f"{flag}: REFUSING — this provenance document does NOT match its committed sha256 pin.\n"
+        f"  provenance: {_display_path(path)}\n"
+        f"  pin file: {pin_file}\n"
+        f"  pinned sha256: {pinned}\n"
+        f"  actual sha256: {actual}\n"
+        f"  The universe claim rests on this document's recorded frame_symbols ORDER, and the "
+        f"parameter fingerprint cannot check that order (it hashes parameter shape/dtype/bytes "
+        f"and has no dependence on symbol names — measured: reversing frame_symbols with the "
+        f"fingerprint left intact moved net@21 −1.796 -> −1.657 while the artifact still read "
+        f"\"verified\": true). This pin is the one thing that can catch that, so a document "
+        f"contradicting it is refused rather than certified (TASK_886).\n"
+        f"  FIX: restore the pinned document, or — if the change is intended — update the pin "
+        f"deliberately (this program never rewrites a .sha256 on its own behalf, D39).")
+
+
+def _recorded_checkpoint_mismatch(doc, ckpt):
+    """TASK_886 (BLOCKER 3a). ``(recorded, resolved, why)`` when the provenance document names a
+    DIFFERENT checkpoint than the one this run resolved, else ``None``. ``recorded`` is already
+    clipped for echoing (``checkpoint_io.clip_for_refusal``); ``why`` is ``None`` for an ordinary
+    disagreement and a phrase when the recorded value is not a usable path at all.
+
+    TASK_874's emitter records ``"checkpoint": <the checkpoint this document was written for>``
+    (imprint.py's ``build_frame_provenance``). Read into the artifact and otherwise DISCARDED
+    pre-886, which made the whole certification rest on a NEIGHBOURING FILE rather than on the
+    checkpoint: the sibling path is derived from the checkpoint directory's NAME, and the
+    name-to-provenance mapping is documented non-injective (``.../ckpt_foo`` and ``.../foo`` land
+    on the same file). A reused ``--ckpt-out`` or a partial rsync (this repo syncs checkpoints
+    workstation<->server) reaches this state without anybody being adversarial.
+
+    Compared on ``realpath`` at both ends: the recorded value is written through imprint's
+    ``_display_path`` (repo-relative inside the repo, absolute outside) and is accepted under
+    EITHER committed spelling of the same checkpoint (run dir or orbax leaf, via
+    ``checkpoint_io.resolve_checkpoint_dirs``), so this refuses a DIFFERENT checkpoint, never a
+    different spelling of the same one.
+
+    ABSENT is not disagreement: a provenance predating the field is simply unable to make the
+    statement, and it cannot earn ``verified`` either way (that is BLOCKER 3(b)'s content
+    binding — see ``_certification_verdict``). Only a field that is PRESENT, a non-empty string,
+    and points elsewhere refuses.
+
+    A value that is not a resolvable path at all (a NUL byte is valid JSON and makes
+    ``os.path.realpath`` raise ``ValueError``) is a NAMED refusal in the same class rather than a
+    bare traceback out of the code whose job is naming things: whatever it is, it demonstrably
+    does not name THIS checkpoint, so it fails closed like any other disagreement, and ``why``
+    records that the failure was resolution rather than comparison."""
+    recorded = (doc or {}).get("checkpoint")
+    if not (isinstance(recorded, str) and recorded.strip()):
+        return None
+    rec = recorded.strip()
+    run_dir, leaf_dir = checkpoint_io.resolve_checkpoint_dirs(ckpt)
+    try:
+        if not os.path.isabs(rec):
+            rec = os.path.join(_REPO, rec)      # imprint's _display_path is repo-relative
+        rec_real = os.path.realpath(rec)
+    except (ValueError, OSError) as e:
+        return (checkpoint_io.clip_for_refusal(recorded, quote=False), run_dir,
+                f"that value is not a usable filesystem path ({type(e).__name__}: {e}), so it "
+                f"cannot name this checkpoint (or any other)")
+    if rec_real in {run_dir, os.path.realpath(leaf_dir) if leaf_dir else None}:
+        return None
+    return checkpoint_io.clip_for_refusal(recorded, quote=False), run_dir, None
+
+
+def _realized_matches_requested(requested, realized_symbols):
+    """TASK_886 scope 2 — does the REALIZED panel's slot->symbol list order-exact equal the
+    universe this run REQUESTED? Reuses ``_first_frame_mismatch``, the SAME primitive
+    ``_assert_realized_panel_universe`` refuses on, so there is one definition of "matches" for
+    both the hard refusal and this record — never a second, drifting copy of the comparison.
+
+    ``requested`` is ``enforce_universe_pin``'s second return value: ``None`` for an unpinned
+    run (nothing was requested, so nothing can mismatch — vacuously True; see
+    ``universe_pin.verified``/``mechanism`` for whether anything was actually pinned) or
+    ``(mechanism_label, symbols)``.
+
+    By construction this is ALWAYS True by the time ``evaluate_checkpoint`` runs on a request
+    that reached it: ``main()`` calls ``_assert_realized_panel_universe`` right after
+    ``build_panel`` and it raises (no artifact, no JSON) on any mismatch. Recomputed here anyway
+    rather than hardcoded True — a genuine field earned from the SAME data, not inferred from
+    control flow (so it stays correct even if a future caller reaches ``evaluate_checkpoint``
+    without going through that assertion)."""
+    if requested is None:
+        return True
+    _mechanism, requested_symbols = requested
+    return _first_frame_mismatch(requested_symbols, list(realized_symbols)) is None
+
+
+# TASK_886 (fix pass, MAJOR 1): the mechanisms under which a universe claim CAN be certified —
+# every `mechanism` value `enforce_universe_pin` emits EXCEPT the unpinned "none". An ALLOWLIST,
+# not a "!= none" test, so a record carrying a MISSING/null/unknown mechanism fails closed too
+# (`.get("mechanism") != "none"` reads True for a dict with no mechanism key at all). A future
+# mechanism must be added here deliberately before it can ever certify.
+CERTIFIABLE_MECHANISMS = ("checkpoint-provenance", "explicit-symbols", "periods-file")
+
+
+def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
+    """TASK_886 scope 4 — ``(verified, verified_reason)``. The ONE place that decides whether
+    this program is allowed to say a number was measured on a KNOWN universe.
+
+    FIVE conjuncts, all required, all about what HAPPENED rather than what was asked for:
+
+    0. the record names a mechanism that CAN be certified (``CERTIFIABLE_MECHANISMS``) — an
+       unpinned run (``mechanism: "none"``, the ``--allow-unpinned-universe`` hatch) requested no
+       universe, so there is nothing to certify;
+    1. the checkpoint's OWN recorded provenance was found AND agreed order-exact
+       (``verified_against_checkpoint_provenance`` and ``order_exact``, resolved from the
+       RESOLVED checkpoint dir — scope 1 — and refused outright if that document names a
+       different checkpoint);
+    2. the panel ``build_panel`` actually RETURNED equals the universe this run requested,
+       order-exact (scope 2);
+    3. the provenance's recorded parameter fingerprint equals the fingerprint of the parameters
+       actually LOADED (BLOCKER 3b);
+    4. the panel carries zero padded slots (``n_padded == 0``).
+
+    CONJUNCTS (0) AND THE ``order_exact`` HALF OF (1) ARE LIVE CONJUNCTS, NOT NARRATION (886 fix
+    pass, MAJOR 1). Both used to be enforced only by NON-LOCAL COUPLING to this function's single
+    caller-of-a-caller: ``enforce_universe_pin``'s unpinned branch happens to hardcode
+    ``verified_against_checkpoint_provenance: False`` in the same dict literal as
+    ``mechanism: "none"``, and ``_cross_check_own_provenance`` happens to RAISE on a non-exact
+    order rather than returning ``order_exact: False``. Both couplings hold today; neither is
+    stated by the predicate that is "the ONE place that decides". Measured before this fix: a
+    record ``{"mechanism": "none", "verified_against_checkpoint_provenance": True,
+    "provenance_param_fingerprint": <fp>, "n_padded": 0}`` against a matching loaded fingerprint
+    returned ``(True, "certified")`` — an UNPINNED run certifying — and deleting the ``none``
+    branch changed no test outcome in either suite, which is the definition of a guard that
+    guards nothing. Both are now conjuncts of the success branch and are pinned by DIRECT tests
+    that construct the record (``test_universe_pin_886.py`` gates (mech)/(order)), so the
+    invariant no longer depends on what some other function happens to do.
+
+    (3) exists because (1)+(2) alone certify by AGREEMENT BETWEEN TWO JSON FILES: both come from
+    a document located by a path derived from the checkpoint DIRECTORY'S NAME, and nothing in
+    them was ever compared against the weights — even though this run computes
+    ``checkpoint_load.param_fingerprint`` a few lines away. A reused ``--ckpt-out`` or a partial
+    rsync reaches the "two files agree, weights differ" state with nobody being adversarial.
+
+    THE PREMISE THAT USED TO MAKE ``verified: true`` UNREACHABLE IS DISCHARGED (TASK_886
+    STATUS 2026-08-16): ``imprint.py``'s ``build_frame_provenance``/``write_frame_provenance``
+    now write ``param_fingerprint`` at SAVE time (TASK_888/889), and the retro-stamp
+    (``tools/stamp_checkpoint_fingerprints.py``) backfilled it into the tracked provenance
+    documents for the surviving load-bearing checkpoints — so this predicate can and does read
+    ``True`` for a checkpoint whose provenance carries a fingerprint that agrees with what was
+    actually loaded. A provenance carrying no fingerprint, or one that disagrees, still reads
+    ``False`` with the reason spelled out — never a fingerprint invented on its behalf, and
+    never a weakening to path-equality-only.
+
+    ``n_padded == 0`` is made an explicit, LIVE conjunct (886 fix pass) rather than an implied
+    one: ``evaluate_checkpoint`` documents that a certifiable run cannot carry padded slots — the
+    framed path keeps zero-coverage slots INACTIVE in place and the explicit path is refused
+    outright by ``_assert_realized_panel_universe`` — but "cannot happen elsewhere" is an
+    argument, not an enforcement, and this function is the one place allowed to say ``true``. A
+    missing/unparseable ``n_padded`` is treated as UNKNOWN and blocks certification, because the
+    alternative is certifying on an absent field.
+
+    ``verified_reason`` is a stable, machine-readable string naming the FIRST unmet conjunct, so
+    a consumer can distinguish "nothing to verify against" from "verified against the wrong
+    thing" without parsing prose."""
+    mechanism = universe_pin.get("mechanism")
+    mechanism_ok = mechanism in CERTIFIABLE_MECHANISMS
+    prov_found = bool(universe_pin.get("verified_against_checkpoint_provenance"))
+    # `order_exact` is the OUTCOME of conjunct (1)'s comparison; `is True` (not truthiness), so
+    # the `None` an absent provenance records can never read as agreement.
+    order_ok = universe_pin.get("order_exact") is True
+    prov_ok = prov_found and order_ok
+    loaded_fp = (checkpoint_load or {}).get("param_fingerprint")
+    recorded_fp = universe_pin.get("provenance_param_fingerprint")
+    # DEFENCE IN DEPTH: today `provenance_param_fingerprint` reaches this record through exactly
+    # one funnel (`_cross_check_own_provenance`), which already rejects anything but a
+    # non-empty string straight out of the JSON. A second caller would have no such backstop, and
+    # `recorded_fp == loaded_fp` against an arbitrary JSON value is the kind of comparison that
+    # quietly does something surprising. Re-establish the type here; this function is the only
+    # one allowed to return True.
+    recorded_fp = (recorded_fp if isinstance(recorded_fp, str) and recorded_fp.strip()
+                   else None)
+    param_bound = bool(loaded_fp) and recorded_fp is not None and recorded_fp == loaded_fp
+    try:
+        n_padded_ok = int(universe_pin["n_padded"]) == 0
+    except (KeyError, TypeError, ValueError):
+        n_padded_ok = False
+    if mechanism_ok and prov_ok and realized_matches and param_bound and n_padded_ok:
+        return True, "certified"
+    if mechanism == "none":
+        # --allow-unpinned-universe: nothing was REQUESTED, so nothing can be certified. Said
+        # separately from "no provenance found" because this run never looked for one.
+        return False, "run is unpinned (--allow-unpinned-universe) — no universe was requested"
+    if not mechanism_ok:
+        # Neither a pin request nor the honest unpinned hatch: the record does not say HOW a
+        # universe was claimed, so no claim about it can be certified.
+        return False, "universe_pin records no certifiable pinning mechanism"
+    if not prov_found:
+        return False, "checkpoint carries no recorded provenance to verify against"
+    if not order_ok:
+        return False, "provenance order-exactness is not recorded as true"
+    if not realized_matches:
+        return False, "realized panel does not match the requested universe"
+    if not loaded_fp:
+        return False, "no load evidence recorded for this run"
+    if recorded_fp is None:
+        return False, "provenance predates fingerprint binding"
+    if not param_bound:
+        return False, "provenance parameter fingerprint does not match the loaded parameters"
+    # Last, because it is the conjunct hardest to reach today: everything above holds and the
+    # panel still carries slots build_panel could not fill with a real symbol.
+    return False, "panel carries padded slots (n_padded != 0, or not recorded)"
+
+
+def _assert_provenance_binds_loaded_params(ckpt_path, universe_pin, checkpoint_load):
+    """TASK_886 (BLOCKER 3b) — REFUSE a provenance whose recorded parameter fingerprint
+    contradicts the parameters this run actually loaded. Called in ``main()`` the moment the
+    load returns, so the refusal costs no rollout.
+
+    A provenance that records NO fingerprint is silent, not wrong: it cannot earn ``verified``
+    (``_certification_verdict``) and nothing here fires. A provenance that records a DIFFERENT
+    one is a caught lie about which weights it describes — the same defect class as the
+    order-exact frame MISMATCH this module already refuses on, so it gets the same treatment
+    rather than a disclaimer.
+
+    CORRECTOR: refuses; never rewrites the provenance and never substitutes a fingerprint."""
+    recorded = (universe_pin or {}).get("provenance_param_fingerprint")
+    loaded = (checkpoint_load or {}).get("param_fingerprint")
+    if recorded is None or loaded is None or recorded == loaded:
+        return
+    raise RuntimeError(
+        f"REFUSING checkpoint {_display_path(ckpt_path)}: its own recorded provenance names a "
+        f"DIFFERENT set of parameters than the ones this run loaded.\n"
+        f"  provenance: {universe_pin.get('checkpoint_provenance_path')}\n"
+        # File-sourced -> clipped, same rule as _recorded_checkpoint_mismatch's echo.
+        f"  it records {checkpoint_io.PROVENANCE_FINGERPRINT_FIELD}: "
+        f"{checkpoint_io.clip_for_refusal(recorded)}\n"
+        f"  parameters actually loaded fingerprint: {loaded}\n"
+        f"  The universe claim is a claim about the WEIGHTS that were graded, so a provenance "
+        f"that describes other weights cannot back it — grading anyway would be worse than an "
+        f"absent provenance, because the artifact would look bound while the binding is to the "
+        f"wrong object (TASK_886).\n"
+        f"  FIX: grade the checkpoint this provenance describes, or re-emit the provenance for "
+        f"the checkpoint actually being graded.")
+
+
 def _cross_check_own_provenance(ckpt, frame, flag, given_label, given_line, fix_line):
     """Order-exact cross-check of the universe THIS RUN will build (``frame``) against the
     checkpoint's OWN recorded training frame (TASK_874's ``frame_provenance_<stem>.json``
-    sibling). Returns ``(own_path, own_found, order_exact)``; REFUSES on disagreement.
+    sibling). Returns ``(own_path, own_found, order_exact, recorded_param_fingerprint,
+    sha256_pin_file)``; REFUSES on disagreement.
+
+    TASK_886 (fix pass, BLOCKER): the document is also checked against its committed
+    ``*.sha256`` pin when one sits beside it (``_assert_provenance_matches_sha256_pin``) — the
+    only tamper check this row has for the recorded ``frame_symbols`` ORDER, which the parameter
+    fingerprint provably cannot see. The pin file (or ``None``) is returned so the artifact and
+    the LEDGER row can say whether the order was independently pinned or is self-attesting.
 
     Shared by BOTH pin sources (fix pass, BLOCKER 1) — a ``--panel-frame-from-checkpoint``
     file and an explicit ``--symbols``/``--periods-file`` assets order are two spellings of
     the same claim ("this is the universe this checkpoint was trained on"), so they earn the
     same cross-check. ``flag``/``given_label``/``given_line``/``fix_line`` only spell WHICH
-    mechanism made the claim, so each refusal names the operator's own flag."""
+    mechanism made the claim, so each refusal names the operator's own flag.
+
+    TASK_886 (BLOCKER 3): the document must also NAME this checkpoint
+    (``_recorded_checkpoint_mismatch``), and the fingerprint it records for the weights it was
+    written for is returned so ``evaluate_checkpoint`` can bind the positive claim to the
+    parameters actually LOADED instead of to a neighbouring JSON."""
     own_path = _own_provenance_path_for(ckpt)
-    own_frame = _read_provenance_frame(own_path, ckpt)
+    own_frame, own_doc = _read_provenance_frame(own_path, ckpt)
     if own_frame is None:
-        return own_path, False, None
+        return own_path, False, None, None, None
+    # BEFORE anything is believed about the document's CONTENT: if a committed pin exists, the
+    # document must match it. A tampered frame_symbols order with an intact param_fingerprint is
+    # otherwise undetectable here, and this cross-check is the thing that would bless it.
+    own_pin = _assert_provenance_matches_sha256_pin(own_path, flag)
+    named = _recorded_checkpoint_mismatch(own_doc, ckpt)
+    if named is not None:
+        recorded, resolved, why = named
+        raise RuntimeError(
+            f"{flag}: REFUSING — the provenance found beside this checkpoint was written for a "
+            f"DIFFERENT checkpoint.\n"
+            f"  checkpoint given: {_display_path(ckpt)}\n"
+            f"  it resolves to: {resolved}\n"
+            f"  provenance found: {_display_path(own_path)}\n"
+            # File-sourced, therefore CLIPPED: this line is pasted into the LEDGER by hand, and
+            # the raw field is bounded only by the ~1MB provenance read cap.
+            f"  that document records checkpoint: {recorded!r}\n"
+            + (f"  {why}\n" if why else "") +
+            f"  The sibling lookup is derived from the checkpoint DIRECTORY'S NAME and that "
+            f"mapping is not injective, so a renamed/copied/re-synced checkpoint directory can "
+            f"sit next to a provenance describing someone else's weights. Certifying this run "
+            f"would mean two JSON files agreeing with each other while nothing was ever "
+            f"compared against the weights — this row's own thesis (argv is not evidence) "
+            f"violated one hop out (TASK_886).\n"
+            f"  FIX: grade the checkpoint this provenance actually describes, or emit the "
+            f"provenance for THIS checkpoint (imprint.py writes one beside every checkpoint it "
+            f"emits — TASK_874).")
+    recorded_fp = (own_doc or {}).get(checkpoint_io.PROVENANCE_FINGERPRINT_FIELD)
+    recorded_fp = recorded_fp if isinstance(recorded_fp, str) and recorded_fp.strip() else None
     mismatch = _first_frame_mismatch(frame, own_frame)
     if mismatch is None:
-        return own_path, True, True
+        return own_path, True, True, recorded_fp, own_pin
     idx, sym_given, sym_own = mismatch
     raise RuntimeError(
         f"{flag}: REFUSING a pin/checkpoint universe MISMATCH.\n"
@@ -4135,9 +4717,10 @@ def enforce_universe_pin(ckpts, args):
     the earned positive claim is TASK_886's:
 
     * ``checkpoint-provenance`` — a pin FILE, verified against the checkpoint's own
-      provenance when it has one (``order_exact: true`` records that comparison's outcome;
-      it is NOT a certification — hole 1, the orbax-step-subdir spelling, is unresolved
-      until 886 resolves provenance from the RESOLVED checkpoint dir).
+      provenance when it has one (``order_exact: true`` records that comparison's outcome).
+      Hole 1 (the orbax-step-subdir spelling missing the sibling entirely) is CLOSED by
+      ``_own_provenance_path_for`` resolving from the RESOLVED checkpoint dir (TASK_886
+      scope 1) — every spelling of the same checkpoint now reaches the same verdict here.
     * ``explicit-symbols`` — ``--symbols``/``--periods-file`` assets. The run PROCEEDS,
       disclaimed: ``verified_against_checkpoint_provenance`` records whether anything
       independent confirmed it (false when the checkpoint carries no provenance of its own,
@@ -4155,6 +4738,18 @@ def enforce_universe_pin(ckpts, args):
         whose own provenance is PRESENT but unusable is a third state and REFUSES by name
         (``_read_provenance_frame``): reading it as absent would downgrade this gate to a
         silent no-op while the artifact looked pinned.
+
+    TASK_886 scope 1/3 additions to every returned record (ADDITIVE — nothing above is removed
+    or renamed): ``mechanism`` splits ``explicit-symbols`` further into ``"periods-file"`` (the
+    universe came from ``--periods-file``'s ``"assets"`` list, a NAMED committed artifact) vs
+    ``"explicit-symbols"`` (a bare ``--symbols`` string), turns the unpinned ``pin_source: None``
+    into the literal string ``"none"``, and otherwise mirrors ``pin_source``; ``provenance_path``
+    /``sha256`` carry the periods-file's own identity for that split (``checkpoint-provenance``
+    duplicates ``pin_path``/``pin_sha256``; the other two mechanisms have nothing to back them,
+    ``None``). ``provenance_param_fingerprint`` is the checkpoint's OWN recorded fingerprint
+    (from ``_cross_check_own_provenance``), which ``evaluate_checkpoint`` compares against the
+    fingerprint of the parameters actually LOADED to decide ``verified``/``n_slots``/``n_padded``
+    once the panel exists.
 
     GUARD KIND: CORRECTOR, not normalizer, on every path — no symbol list is ever reordered,
     padded, de-duplicated or repaired here. The guard either refuses with the operator's
@@ -4212,9 +4807,19 @@ def enforce_universe_pin(ckpts, args):
                 f"load the same asset under the requested spellings).\n"
                 f"  FIX: remove the duplicate(s)/variant(s) so every slot names a distinct "
                 f"asset.")
+        # TASK_886 scope 3: --periods-file's "assets" is a NAMED, committed artifact distinct
+        # from a bare --symbols string, even though both funnel into the SAME `explicit` list
+        # and the SAME build_panel code path (883R's "explicit-symbols" pin_source, kept
+        # unchanged above, correctly covers both as one mechanical bucket). Computed ONCE, not
+        # per-checkpoint. `args.symbols_from_periods_file` is set by main() at the point it
+        # merges --periods-file's "assets" into args.symbols (False, incl. when the attr is
+        # absent, for any caller that builds a bare args namespace — e.g. the 882 in-process
+        # test — and never runs that merge).
+        _from_periods_file = getattr(args, "symbols_from_periods_file", False)
+        _periods_file_sha = _sha256_file(args.periods_file) if _from_periods_file else None
         info = {}
         for c in ckpts:
-            own_path, own_found, order_exact = _cross_check_own_provenance(
+            own_path, own_found, order_exact, own_fp, own_pin = _cross_check_own_provenance(
                 c, explicit, "--symbols/--periods-file assets", "explicit",
                 f"universe given: EXPLICIT {len(explicit)}-symbol order from "
                 f"--symbols/--periods-file assets",
@@ -4232,18 +4837,35 @@ def enforce_universe_pin(ckpts, args):
                 "verified_against_checkpoint_provenance": own_found,
                 "order_exact": order_exact,
                 "certified": False,
+                "mechanism": "periods-file" if _from_periods_file else "explicit-symbols",
+                "provenance_path": (_display_path(args.periods_file)
+                                    if _from_periods_file else None),
+                "sha256": _periods_file_sha,
+                # TASK_886 (BLOCKER 3b): the fingerprint the checkpoint's OWN provenance records
+                # for the weights it was written for. `evaluate_checkpoint` compares it against
+                # the fingerprint of the parameters actually LOADED; None (no matching emitter
+                # run yet, or the provenance predates the field) means the positive claim cannot
+                # be earned — fail-closed.
+                "provenance_param_fingerprint": own_fp,
+                # TASK_886 (fix pass, BLOCKER): the committed *.sha256 pin the checkpoint's own
+                # provenance was checked against, or None when it carries no pin. Recorded, not
+                # required: certification does not gate on it (most checkpoints have no pin), but
+                # a reader must be able to tell a document whose frame_symbols order is
+                # independently pinned from one that merely attests to itself.
+                "checkpoint_provenance_sha256_pin": own_pin,
             }
         # `--allow-unpinned-universe` is INERT here by design: it is the hatch for "no pin at
         # all", and a named order-exact universe IS a pin request. The artifact records what
         # is true (the mechanism, the cross-check outcome), never what the flag combination
-        # asked for — and under 883R never a positive label.
+        # asked for.
         _ver = sum(1 for i in info.values() if i["verified_against_checkpoint_provenance"])
-        print(f"[883R] universe pin source: EXPLICIT --symbols/--periods-file assets "
-              f"({len(explicit)} symbols, order-preserving) — a REQUESTED universe, NOT a "
-              f"certified one (D36: \"universe_pinned\": false / \"certified\": false until "
-              f"TASK_886). Cross-checked order-exact against the checkpoint's OWN provenance "
-              f"for {_ver}/{len(ckpts)} checkpoint(s); the rest carry none "
-              f"(train_jax_fast.py emits no frame_provenance sibling), and record "
+        print(f"[886] universe pin source: EXPLICIT --symbols/--periods-file assets "
+              f"({len(explicit)} symbols, order-preserving) — a REQUESTED universe. Whether it "
+              f"is a CERTIFIED one is decided after the load, from the checkpoint's own "
+              f"provenance and the realized panel (see \"universe_pin\": verified / "
+              f"verified_reason in the artifact). Cross-checked order-exact against the "
+              f"checkpoint's OWN provenance for {_ver}/{len(ckpts)} checkpoint(s); the rest "
+              f"carry none (train_jax_fast.py emits no frame_provenance sibling), and record "
               f"\"verified_against_checkpoint_provenance\": false.")
         return info, ("--symbols/--periods-file assets", explicit)
     if not pin_path:
@@ -4282,7 +4904,13 @@ def enforce_universe_pin(ckpts, args):
                      "checkpoint_provenance_path": None,
                      "checkpoint_provenance_found": False,
                      "verified_against_checkpoint_provenance": False, "order_exact": None,
-                     "certified": False}
+                     "certified": False,
+                     # TASK_886 scope 3 gate (iii): mechanism is present EVEN when unpinned —
+                     # the literal string "none", not null, so a reader never has to treat a
+                     # missing key/null as its own third state.
+                     "mechanism": "none", "provenance_path": None, "sha256": None,
+                     "provenance_param_fingerprint": None,
+                     "checkpoint_provenance_sha256_pin": None}
                  for c in ckpts},
                 None)
 
@@ -4291,7 +4919,7 @@ def enforce_universe_pin(ckpts, args):
     # which owns the pin's full legality (length vs --n-assets, duplicates, --symbols
     # agreement) — ever gets to speak in build_panel. Readability only; nothing else about the
     # pin is re-decided here, so a well-formed pin reaches build_panel exactly as before.
-    pin_frame, pin_defect = _provenance_frame_defect(pin_path)
+    pin_frame, pin_defect, _pin_doc = _provenance_frame_defect(pin_path)
     if pin_frame is None:
         raise RuntimeError(
             f"--panel-frame-from-checkpoint: REFUSING an UNUSABLE pin.\n"
@@ -4305,10 +4933,15 @@ def enforce_universe_pin(ckpts, args):
             f"  FIX: point --panel-frame-from-checkpoint at the JSON recording this "
             f"checkpoint's ordered training frame (imprint.py writes one beside every "
             f"checkpoint it emits — TASK_874).")
+    # TASK_886 (fix pass, BLOCKER): the PIN file gets the same committed-sha256 check as the
+    # checkpoint's own provenance — a pin is a provenance document too, and on the ordinary
+    # invocation (`--panel-frame-from-checkpoint <the checkpoint's own provenance>`) it IS that
+    # document. Refuses before any panel is built.
+    _assert_provenance_matches_sha256_pin(pin_path, "--panel-frame-from-checkpoint")
     pin_sha = _sha256_file(pin_path)
     info = {}
     for c in ckpts:
-        own_path, own_found, order_exact = _cross_check_own_provenance(
+        own_path, own_found, order_exact, own_fp, own_pin = _cross_check_own_provenance(
             c, pin_frame, "--panel-frame-from-checkpoint", "pin",
             f"pin given: {_display_path(pin_path)}",
             f"FIX: pass the checkpoint's own provenance "
@@ -4325,6 +4958,10 @@ def enforce_universe_pin(ckpts, args):
             "verified_against_checkpoint_provenance": own_found,
             "order_exact": order_exact,
             "certified": False,
+            "mechanism": "checkpoint-provenance",
+            "provenance_path": _display_path(pin_path), "sha256": pin_sha,
+            "provenance_param_fingerprint": own_fp,
+            "checkpoint_provenance_sha256_pin": own_pin,
         }
     return info, ("--panel-frame-from-checkpoint", pin_frame)
 
@@ -4614,6 +5251,12 @@ def main():
         args.max_decisions = None
     if args.symbols:
         args.symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    # TASK_886 scope 3: track whether the explicit universe came from --periods-file's
+    # "assets" (a NAMED, committed artifact) rather than a bare --symbols string, so
+    # enforce_universe_pin can label the mechanism precisely (mechanism: "periods-file" vs
+    # "explicit-symbols") instead of collapsing both into 883R's one "explicit-symbols"
+    # pin_source bucket (kept, unchanged, as the coarser legacy field).
+    args.symbols_from_periods_file = False
     if args.periods_file:
         with open(args.periods_file) as fh:
             first = json.load(fh)["periods"][0]              # train_jax_fast.py:227 pattern
@@ -4621,8 +5264,10 @@ def main():
         args.end = args.end or first["end_date"]
         if args.symbols is None:
             args.symbols = first.get("assets")
+            args.symbols_from_periods_file = args.symbols is not None
 
-    is_fixture = os.path.abspath(args.db) == os.path.abspath(FIXTURE_DB)
+    # TASK_886 gate 0c: keyed on the DB path (realpath), not on --tag — see _is_fixture_db.
+    is_fixture = _is_fixture_db(args.db)
     if args.smoke:
         # pre-registered smoke config (SPEC.md): fixture minute-slice universe/window
         args.db = FIXTURE_DB
@@ -4764,11 +5409,15 @@ def main():
         check_checkpoint_arch(path, args)                    # fail-loud arch guard (acceptance iii)
         model, trainer = build_model_and_trainer(args, args.n_assets, init_seed=0)
         checkpoint_load = load_checkpoint_into(trainer, path)   # TASK_888: refuses; never silent
+        # TASK_886 (BLOCKER 3b): the instant the weights exist, refuse if the checkpoint's own
+        # provenance records a fingerprint for DIFFERENT weights. Before any rollout cost.
+        _assert_provenance_binds_loaded_params(path, universe_pin_info[path], checkpoint_load)
         search_obj = build_search(model, args, args.n_assets) if args.operator == "search" else None
         result = evaluate_checkpoint(label, model, trainer.state.params, search_obj,
                                      panel, args, corridor, ext_windows,
                                      universe_pin=universe_pin_info[path],
-                                     checkpoint_load=checkpoint_load)
+                                     checkpoint_load=checkpoint_load,
+                                     universe_requested=requested_universe)
         out_name = f"results_{args.tag}_{label['name'].replace('/', '__')}.json"
         result["out_name"] = out_name
         # LEDGER pointer from the ACTUAL out_dir (scheduled runs write runs/835_stage4/).

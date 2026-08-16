@@ -59,16 +59,24 @@ re-cut:
         with mixed-case spellings normalizing to DISTINCT keys still completes,
         disclaimed.
 
-  D36's LOAD-BEARING CONSTRAINT, pinned by every completing leg below: `universe_pinned:
-  true` MUST NOT EXIST. Every artifact — pinned, explicit-symbols, or hatch — carries
-  `"universe_pinned": false` and `"certified": false` in its `universe_pin` record; the
-  earned positive claim (a mechanism-typed record bound to the LOADED checkpoint and the
-  RETURNED panel) is TASK_886's. And every grading row's `ledger_row` carries the caveat
-  INLINE naming the mechanism (D36 Q2: a caveat that does not travel with the pasted text is
-  not a caveat).
+  D36's LOAD-BEARING CONSTRAINT AT THE TIME 883R SHIPPED: `universe_pinned: true` did not
+  exist anywhere — every artifact carried `"universe_pinned": false` / `"certified": false`,
+  because no emitter wrote a `param_fingerprint` into provenance and the positive claim was
+  therefore UNREACHABLE. D36 scoped that freeze as lasting "until the certification row
+  lands" (TASK_886). TASK_888/889 made `imprint.py` write `param_fingerprint` at SAVE time
+  unconditionally and TASK_886 built the certification predicate that reads it, so a
+  checkpoint graded against its OWN matching, freshly-written provenance NOW CERTIFIES (gates
+  (iv) and (vi-a) below) — this is the earned positive claim TASK_886 exists to introduce, not
+  a regression of 883R's refuse/disclaim discipline (883R's REFUSAL gates — (i)/(ii)/(v)-(ix)
+  — are unaffected: certification is additive on top of them, never a relaxation of them).
+  Every grading row's `ledger_row` carries the caveat INLINE naming the mechanism, in BOTH the
+  certified and not-certified case (D36 Q2: a caveat that does not travel with the pasted text
+  is not a caveat; 886 retired 883R's "UNIVERSE UNVERIFIED" sentence for a mechanism-aware
+  "UNIVERSE CERTIFIED" / "UNIVERSE NOT CERTIFIED" pair so a certified row never also says "not
+  certified" in the same field).
 
-  (iv)  a pin that MATCHES the checkpoint's own provenance is unaffected: it completes and its
-        result carries EXACTLY the pre-883 key set plus the two additive keys
+  (iv)  a pin that MATCHES the checkpoint's own provenance is otherwise unaffected: its result
+        carries EXACTLY the pre-883 key set plus the two additive keys
         `universe_pinned`/`universe_pin` (TASK_888 additionally added `checkpoint_load` —
         load evidence computed at LOAD time on EVERY run, pinned or not; see EXPECTED_KEYS_PINNED)
         — nothing removed, nothing renamed. (The deep numeric byte-identity claim — this run's
@@ -311,21 +319,36 @@ def main():
               and doc.get("universe_pinned") is False
               and doc.get("universe_pin", {}).get("pin_source") is None
               and doc.get("universe_pin", {}).get("certified") is False
-              # D36 Q2: the caveat travels with the pasted text, naming the mechanism.
-              and "UNIVERSE UNVERIFIED (TASK_883R)" in (doc or {}).get("ledger_row", "")
-              and "none (--allow-unpinned-universe)" in doc.get("ledger_row", ""))
+              # D36 Q2: the caveat travels with the pasted text, naming the mechanism. Wording
+              # updated by TASK_886 (the certification row D36 scoped the freeze against):
+              # unpinned (mechanism "none") can never certify, so this still reads False, but
+              # the sentence is 886's ("NOT CERTIFIED ... mechanism=...") not 883R's retired one.
+              and "UNIVERSE NOT CERTIFIED (TASK_886)" in (doc or {}).get("ledger_row", "")
+              and "mechanism='none'" in doc.get("ledger_row", ""))
         print(f"    [{'PASS' if ok else 'FAIL'}] gate (iii)")
         if not ok:
             failures.append(
                 f"gate (iii): expected exit 0, a loud warning on stdout, "
                 f"universe_pinned=false + certified=false + pin_source=null in the artifact, "
-                f"and the UNIVERSE UNVERIFIED caveat naming the mechanism INLINE in "
+                f"and the UNIVERSE NOT CERTIFIED caveat naming the mechanism INLINE in "
                 f"ledger_row. returncode={r.returncode} doc={doc}\n"
                 f"stdout tail:\n{r.stdout[-2000:]}")
 
-        # ---- gate (iv): a MATCHING pin adds ONLY the additive stamp ---------------------
-        print("[883R] gate (iv) — a pin matching the checkpoint's own provenance must be "
-              "unaffected (additive-only) ...")
+        # ---- gate (iv): a MATCHING pin now CERTIFIES (TASK_886) -------------------------
+        # UPDATED BY TASK_886 (the certification row D36 scoped its freeze against — "until the
+        # certification row lands"). D36/883R's `certified`/`universe_pinned` were hardcoded
+        # False for EVERY run because no emitter wrote a `param_fingerprint` into provenance, so
+        # the positive claim was structurally unreachable. TASK_888/889 made `imprint.py` write
+        # `param_fingerprint` at SAVE time unconditionally, so THIS scenario — a checkpoint
+        # graded immediately after training, against its own freshly-written provenance — now
+        # satisfies every conjunct of `_certification_verdict` (order-exact match, realized
+        # panel equals requested, loaded fingerprint equals the recorded one, zero padded
+        # slots) and CERTIFIES. This is the earned positive claim TASK_886 exists to introduce,
+        # not a regression: a "pin matching the checkpoint's own provenance is unaffected"
+        # claim is no longer true post-886 BY DESIGN, and pinning `certified: False` here would
+        # be pinning the wrong law of nature.
+        print("[886] gate (iv) — a pin matching the checkpoint's own provenance, graded "
+              "against the SAME freshly-trained weights, now CERTIFIES ...")
         r = _run([EVAL_PY] + base +
                  ["--panel-frame-from-checkpoint", own_prov, "--panel-frame-source", "minute",
                   "--teacher-floor", "--tag", "g4", "--out-dir", work])
@@ -336,16 +359,16 @@ def main():
                 doc = json.load(fh)
         keys_ok = doc is not None and set(doc.keys()) == EXPECTED_KEYS_PINNED
         ok = (r.returncode == 0 and keys_ok
-              # D36's load-bearing constraint: even a pin that order-exactly MATCHES the
-              # checkpoint's own provenance may NOT carry the positive label until 886.
-              and doc.get("universe_pinned") is False
-              and doc.get("universe_pin", {}).get("certified") is False
+              and doc.get("universe_pinned") is True
+              and doc.get("universe_pin", {}).get("certified") is True
+              and doc.get("universe_pin", {}).get("verified") is True
+              and doc.get("universe_pin", {}).get("verified_reason") == "certified"
               and doc.get("universe_pin", {}).get("pin_source") == "checkpoint-provenance"
               and doc.get("universe_pin", {}).get("order_exact") is True
               and doc.get("universe_pin", {}).get("pin_path") is not None
               and doc.get("universe_pin", {}).get("pin_sha256") is not None
               and doc.get("universe_pin", {}).get("n_frame_symbols") == N_ASSETS
-              and "UNIVERSE UNVERIFIED (TASK_883R)" in (doc or {}).get("ledger_row", "")
+              and "UNIVERSE CERTIFIED (TASK_886)" in (doc or {}).get("ledger_row", "")
               and "'checkpoint-provenance'" in doc.get("ledger_row", ""))
         print(f"    [{'PASS' if ok else 'FAIL'}] gate (iv)")
         if not ok:
@@ -354,9 +377,10 @@ def main():
             failures.append(
                 f"gate (iv): expected exit 0, key set == pre-883 keys + "
                 f"{{'universe_pinned','universe_pin'}} (extra={extra} missing={missing}), "
-                f"universe_pinned=false + certified=false (D36: no positive label), "
-                f"order_exact=true, pin path/sha256/n_frame_symbols recorded, and the "
-                f"caveat naming 'checkpoint-provenance' INLINE in ledger_row. "
+                f"universe_pinned=true + certified=true + verified_reason='certified' "
+                f"(TASK_886: the earned positive claim), order_exact=true, pin path/sha256/"
+                f"n_frame_symbols recorded, and the UNIVERSE CERTIFIED caveat naming "
+                f"'checkpoint-provenance' INLINE in ledger_row. "
                 f"returncode={r.returncode}\nstderr tail:\n{r.stderr[-2000:]}")
 
         # ---- gate (v): the checkpoint-own-provenance STATE TABLE ------------------------
@@ -425,7 +449,13 @@ def main():
         sym_csv = ",".join(FRAME_SYMBOLS)
         # (vi-a) explicit order AGREES with the checkpoint's own provenance -> proceeds, and
         #        says so honestly: source explicit-symbols, cross-check VERIFIED, order_exact
-        #        true — but universe_pinned/certified stay FALSE (D36: 883R cannot bless).
+        #        true. UPDATED BY TASK_886 (D36 scoped 883R's freeze as lasting "until the
+        #        certification row lands"): this checkpoint is graded immediately after
+        #        training against its OWN freshly-written provenance (param_fingerprint set
+        #        unconditionally by imprint.py, TASK_888/889), so every conjunct of
+        #        _certification_verdict holds and this now CERTIFIES — the mechanism split
+        #        (explicit-symbols/periods-file/checkpoint-provenance) does not gate the
+        #        predicate, only WHICH provenance is cross-checked.
         r = _run([EVAL_PY] + base + ["--symbols", sym_csv, "--tag", "g6a", "--out-dir", work])
         arts = _artifacts(work, "g6a")
         doc = None
@@ -434,24 +464,27 @@ def main():
                 doc = json.load(fh)
         up = (doc or {}).get("universe_pin", {})
         ok = (r.returncode == 0 and doc is not None
-              and doc.get("universe_pinned") is False
-              and up.get("certified") is False
+              and doc.get("universe_pinned") is True
+              and up.get("certified") is True
+              and up.get("verified") is True
+              and up.get("verified_reason") == "certified"
               and up.get("pin_source") == "explicit-symbols"
               and up.get("explicit_symbols") == FRAME_SYMBOLS
               and up.get("n_frame_symbols") == N_ASSETS
               and up.get("verified_against_checkpoint_provenance") is True
               and up.get("order_exact") is True
-              and "UNIVERSE UNVERIFIED (TASK_883R)" in (doc or {}).get("ledger_row", "")
+              and "UNIVERSE CERTIFIED (TASK_886)" in (doc or {}).get("ledger_row", "")
               and "'explicit-symbols'" in doc.get("ledger_row", ""))
         print(f"    [{'PASS' if ok else 'FAIL'}] gate (vi-a) explicit symbols AGREEING with the "
-              f"checkpoint's own provenance run and are recorded as cross-checked (but NEVER "
-              f"blessed — D36)")
+              f"checkpoint's own provenance, graded against the SAME freshly-trained weights, "
+              f"now CERTIFIES (TASK_886)")
         if not ok:
             failures.append(
-                f"gate (vi-a): expected exit 0 with universe_pinned=false, certified=false, "
-                f"pin_source='explicit-symbols', verified_against_checkpoint_provenance=true, "
-                f"order_exact=true, and the caveat naming 'explicit-symbols' INLINE in "
-                f"ledger_row. returncode={r.returncode} universe_pin={up}\n"
+                f"gate (vi-a): expected exit 0 with universe_pinned=true, certified=true, "
+                f"verified_reason='certified', pin_source='explicit-symbols', "
+                f"verified_against_checkpoint_provenance=true, order_exact=true, and the "
+                f"UNIVERSE CERTIFIED caveat naming 'explicit-symbols' INLINE in ledger_row. "
+                f"returncode={r.returncode} universe_pin={up}\n"
                 f"stderr tail:\n{r.stderr[-2000:]}")
 
         # (vi-b) explicit order DISAGREES with the checkpoint's own provenance -> REFUSE,
