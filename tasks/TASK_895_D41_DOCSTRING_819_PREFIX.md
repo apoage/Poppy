@@ -1,5 +1,29 @@
 # TASK_895 — execute D41(a): kill the false docstring, fix the 819-prototype prefix fill
 
+> **STATUS (2026-08-17): SHIPPED IN PART as `task895-d41-docstring` — item 1 only.**
+> **Item 1 (the docstring) SHIPPED.** The disproven "no cross-time leak" claim is gone; the
+> replacement states the actual mechanism (forward-fill, then a BACKWARD fill of the leading gap),
+> cites 893's measured disproof, names the `present_mask` warm=30 protection AND the honest limit
+> that a raw `close_d`/`logc` reader gets none of it, and preserves D41's load-bearing caveat that
+> the Δ=0 is a STRUCTURAL COROLLARY, not a general fence. Comment-only diff; selftest 12/12,
+> parity GATE 1a PASS, 893 positive control green (+0.000749).
+>
+> **Item 2 (the 819 `build_close_aligned` rider) NOT SHIPPED — gate (iii) is INTERNALLY
+> UNSATISFIABLE. Escalated to DECISIONS `D44` (OPEN).** Both halves verified first-hand, not taken
+> on report: (α) `tools/measure_leading_prefix.py:118` hardcodes `_ADMIT`, a verbatim copy of the
+> OLD admission SQL, and Paths A/B plus the value anchor all query raw `ohlcv` through it — the
+> instrument never reads the panel, so NO edit to `runs/819_single_asset/portfolio.py` can move the
+> 4933 count (the implementer applied the fix, regenerated the panel, re-ran the tool, got 4933
+> bit-for-bit). (β) row 0's fabricated value EQUALS the first admitted close, which is exactly why
+> it is invisible to log-difference signals (`logc[t]−logc[0] == logc[t]−logc[1]`); admitting the
+> real earlier price necessarily breaks that identity for every lookback reaching row 0 from a
+> scored row, measured net@21 `+0.9673047900277524 → +0.9672495154672209`. Masking does not escape
+> it either — masking suppresses POSITIONS while the fabricated PRICE stays in the signal input.
+> **Correction this forces on the D41 record: 893's Δ=0 held because the fill is VALUE-NEUTRAL, not
+> because row 0 is unreached. Row 0 IS read, by every lookback spanning it.**
+> Tree verified: `portfolio.py` byte-identical to HEAD, frozen panel `_close_broad_daily.npz`
+> untouched (sha256 `7017e6c3…` AND mtime still 2026-06-28).
+
 **Status**: READY 2026-08-16 (planner; D41 operator-ruled option (a) 2026-08-16).
 **Size: XS. Risk: LOW** — a comment correction + a one-line alignment fix in a prototype.
 **Parallel-safe FILLER**: surfaces are `trader/data.py` (docstring only) and

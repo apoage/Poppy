@@ -3,6 +3,39 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-17 — TASK_895 — the docstring stops lying about the leading fill (item 1 of 2; the 819 rider is D44)
+
+- **What shipped.** `trader/data.py::_ffill_bfill_cols`'s docstring claimed *"Uses only same-series
+  past/adjacent bars (no cross-time leak)"*. TASK_893 DISPROVED that by value anchor: SOL's row 167
+  carries a close timestamped 59,760 s in its future, XDG's row 0 one 420 s in its future. The
+  replacement states the real mechanism (forward-fill, then a BACKWARD fill of every row before a
+  column's first valid print), names the protection that makes it safe TODAY (`present_mask`
+  warm=30 — 0 as-shipped positions ever land inside a prefix, all 39 assets), and names where that
+  protection stops (a consumer reading `close_d`/`logc` raw gets none of it). Per **D41(a)** the
+  BEHAVIOUR is deliberately unchanged; the diff is comment-only, proven by `git diff -U0`.
+- **The caveat is preserved, not softened.** D41 records that the Δ=0 is a STRUCTURAL COROLLARY of
+  `present_mask`'s warm-up — returns inside a bit-identical prefix are exactly zero, so
+  `first_active` can never precede the prefix boundary — and that citing the 0 without that caveat
+  is circular. The correctness judge specifically hunted for that overclaim and found it faithfully
+  reproduced. It also re-derived 59,760 s and 420 s from the live 26 GB DB rather than restating the
+  ledger, and traced `first_active`/`present_mask` to confirm the claim rests on the zero-return
+  property rather than on the specific `warm` value.
+- **Item 2 did NOT ship, and the reason is a spec defect, not an implementation failure —
+  DECISIONS D44 (OPEN).** Gate (iii) demands the count move 4933 → 4917 AND the bar stay bit-frozen.
+  Neither half is reachable. `tools/measure_leading_prefix.py:118` hardcodes `_ADMIT`, a verbatim
+  copy of the OLD `build_close_aligned` SQL, and every count it reports comes from re-querying raw
+  `ohlcv` through it — the instrument never reads the panel, so no edit to the prototype can move
+  the number (applied, panel regenerated, tool re-run: 4933 bit-for-bit). And row 0's fabricated
+  value EQUALS the first admitted close, which is precisely why it is invisible to log-difference
+  signals; a genuine fix breaks that identity for every lookback reaching row 0 from a scored row —
+  measured net@21 `+0.9673047900277524 → +0.9672495154672209`.
+- **Correction to the D41 record.** 893's Δ = 0.000000 held because the fill is VALUE-NEUTRAL, not
+  because row 0 is unreached by scored decisions. Row 0 IS read, by every lookback spanning it.
+  "No scored number moves" must not be re-quoted as "these cells are unreachable".
+- **Remainder → planner:** D44 — make prototype and instrument agree on ONE admission rule (the
+  count is a consequence of that answer, not the goal), with a pre-registered tolerance replacing
+  the bit-match, since a real fix must move the bar.
+
 ## 2026-08-16 — TASK_890 — distill's CLI runs again, applies 868's open gate, and can no longer claim it did
 
 - **What shipped.** `distill.py`'s CLI has been **DEAD since TASK_868/874** — `load_training_panel` returns

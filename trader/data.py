@@ -95,8 +95,29 @@ def apply_liquidity_filter(close_d, syms, zf_max=0.15, min_active=365):
 # =============================================================================
 
 def _ffill_bfill_cols(a):
-    """[copied from runs/819 portfolio._ffill_bfill_cols] Forward-fill then leading back-fill
-    per column. Uses only same-series past/adjacent bars (no cross-time leak)."""
+    """[copied from runs/819 portfolio._ffill_bfill_cols] Forward-fill each column, then set
+    every row BEFORE that column's first valid print to that first valid VALUE — i.e. the
+    leading gap is filled with a price carried BACKWARD from a later bar, not derived from any
+    same-series past/adjacent bar. Behaviour is UNCHANGED here (DECISIONS D41 ruled option (a):
+    keep it); this docstring only replaces the previous "no cross-time leak" claim, which is
+    DISPROVEN BY MEASUREMENT (TASK_893, LEDGER `893/prefix-cells`): SOL's row 167 carries a
+    price whose source bar is timestamped 59,760s in its future; XDG's row 0 carries a price
+    420s in its future. Both are genuine backward (future-to-past) fills, not adjacent-bar
+    carries.
+
+    Why this is safe as shipped, and exactly where that safety stops: every consumer that
+    reaches this array through `trader.strategy.present_mask` (`warm=30`) cannot trade a
+    leading-fabricated row — 893 measured 0 as-shipped positions ever landing inside a prefix,
+    across all 39 assets of the 819 broad panel. But that 0 is a STRUCTURAL COROLLARY of
+    `present_mask`'s warm-up, not a general fence this function provides: returns inside a
+    bit-identical prefix are exactly zero, so `strategy.first_active` can never precede the
+    prefix boundary, so `present_mask` can never fire there — by construction, not by
+    inspection. A consumer that reads `close_d`/`logc` directly WITHOUT routing through
+    `present_mask` (a different signal, a model featurizer, an eval harness, an external
+    notebook) gets NO protection from this function or from that mask. 893 shipped a positive
+    control proving the exposure is real for such a consumer: planting a position inside a
+    prefix cell (bypassing `present_mask`, exactly as an unprotected reader would) moves the
+    score, so the zero above is a property of the current caller, not of this function."""
     T, A = a.shape
     out = a.copy()
     valid = ~np.isnan(out)
