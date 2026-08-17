@@ -3,6 +3,58 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-17 — TASK_878 — a no-print bar is an order that failed to fill, not an illegal action
+
+- **What shipped.** The operator ruled (2026-08-05) that a bar with no print is *"an order placed
+  that fails to fulfil"*, not a forbidden decision. `--fill-prob {auto|<float>}` on both
+  `imprint.py` and `eval_vector.py` (**`default=None` = OFF**) makes the attempt LEGAL and RECORDED
+  while the fill succeeds with probability `p`; on a miss, position/cash/fee are untouched. `p` is
+  the slot's **causal** trailing print density, so a liquid-but-quiet slot fills easily and a
+  near-dead one rarely does. Valuation still uses the D30 forward-fill. Zero-coverage slots — no
+  price at all — stay force-HELD: nothing quotable, nothing attemptable.
+- **The point of the ruling, in one measurement.** 868 (a2) rewrote the BC target to HOLD, teaching
+  *"HOLD was intended"* when the truth was *"BUY was intended and could not fill"* — the
+  78.8%-class hazard. Now `teacher.final_pv` is byte-identical between OFF and `--fill-prob 0`
+  (92754.42 / 87335.85 both ways) while `teacher.action_hist` differs sharply (122/3518/128 vs
+  1349/2277/142): the trajectory is unchanged, the RECORDED INTENT is not. Gate (ii) is pinned by a
+  mutation that calls the actual pre-878 `frame_hold_mask(..., include_frozen=True)` at its real
+  drop site, so it goes red if the old behaviour returns.
+- **Determinism is a hash, not a stream.** The coinflip is
+  `fold_in(fold_in(PRNGKey(eval_seed), decision), slot)` — path-independent by construction, so one
+  changed decision cannot reshuffle any later flip and every parity gate in the repo survives.
+  Proven against a NEGATIVE CONTROL (a naive conditional-draw stream that passes a same-seed rerun
+  and fails path-independence), and independently: recomputing with 90 decisions leaves the first
+  50 rows bit-identical.
+- **OFF-parity at the repo's real bar — ZERO non-volatile differing leaves**, on three pairs
+  including the D17 OOS flag set: 248/248 · 266/266 · 953/953, all 0 added / 0 removed. The
+  disclosure keys are **structurally absent** when the flag is off, not present-and-null. The
+  null-valued first attempt produced 4 differing leaves and turned three 861 legs red; **promotion
+  was refused and the keys were made absent instead**, so no tracked oracle was re-based to
+  accommodate our own emission. Full 861 **12/12** with pins IDENTICAL; 863, 865, selftest green.
+- **Three cycles, eight panel findings, none self-reported.** Cycle 1's BLOCKER: `--fill-prob` made
+  zero-coverage slots tradeable and blew PV to **2.5e16**, because one conditional covered two
+  distinct populations — enabling the frozen-cell feature silently disabled the zero-coverage
+  guard, and the smoke could not catch it because its only real-CLI leg ran the engine where the
+  separation already held. Cycle 2's fix introduced two more: a widened guard whose BODY was not
+  updated, and `walk_pct_hold_agg` split from the payload it exists to describe, making
+  `imprint --teacher-vectors` emit a **false tampering diagnosis** at a 4.375 pp gap against a
+  0.5 pp tolerance. Cycle 3 closed those plus a stale `UNCONDITIONAL` claim that its own gating fix
+  had falsified — then a **26-hit sweep for the CLAIM rather than the line numbers** found 4 false
+  and 2 misleading assertions across three files. Fixing them one site at a time is what had
+  generated the previous three.
+- **What was deliberately NOT done.** No guard inside `step_vector` — not provably inert across
+  self-play, training rollouts, MCTS leaf, `trader/` and both experiment engines, so it took a
+  caller-contract docstring and an executable characterization leg instead
+  (`jax_trading_env.py` is purely additive, 205/0). No weakening of `_tv_replay_check`:
+  `--collect-chosen-vectors` + `--fill-prob` is **refused at argparse**, because a collection
+  promises a replay reproduces `provenance.walk_net21` and under a coinflip that is unsatisfiable
+  by construction. When a new feature cannot satisfy an existing gate, the gate is not what moves.
+- **Remainder → planner. Scope 6's 3-arm ablation (never-fill / data-derived / always-fill) is a
+  SCHEDULED real-data run and did not happen here** — the arms are built and demonstrated on the
+  fixture only, and that read is what decides whether flat/no-print cells carry signal. Follow-ups:
+  the one-line severance radius (bind counts to realized state); the arm-matched teacher floor;
+  (A)'s firing disclosed on stdout only; a pinned-frame smoke leg.
+
 ## 2026-08-17 — TASK_895 — the docstring stops lying about the leading fill (item 1 of 2; the 819 rider is D44)
 
 - **What shipped.** `trader/data.py::_ffill_bfill_cols`'s docstring claimed *"Uses only same-series

@@ -104,6 +104,10 @@ from mcts_trader.env.jax_trading_env import (
     # TASK_850: daily-source panel builds its own env states/config (the minute path goes
     # through create_jax_env_historical; the daily path reads ohlcv_daily directly).
     EnvConfig, jit_batch_reset,
+    # TASK_878: the shared failed-fill/coinflip primitives imprint.py already uses (same module,
+    # same functions — ``evaluate_checkpoint`` calls imprint's ``compute_frozen_fill_gate`` via
+    # ``load_imprint_module()`` below so the two engines can never define the mechanism twice).
+    parse_fill_prob, resolve_fill_prob_mode,
 )
 from mcts_trader.env.jax_encoder import EncoderConfig, jit_batch_encode_simple
 # TASK_870: the ONE _ro_connect implementation now lives in mcts_trader/utils/db.py (this
@@ -1870,7 +1874,10 @@ def load_minute_prices_framed(db_path, start_date, end_date, frame_symbols, bar_
     # TASK_868 (D31 a2): the causal OPEN-GATE mask at panel resolution — open_gate[r, col]
     # is True iff the slot printed a real close anywhere inside panel row r's bar. This is
     # the per-slot ``real_panel`` mask the frozen accounting already derives, assembled as
-    # one matrix so the rollout/walk can force-HOLD OPENING on every frozen cell. It is
+    # one matrix so the rollout/walk can force-HOLD OPENING on every frozen cell. (TASK_878:
+    # that force-HOLD is the flag-ABSENT reading. Under --fill-prob the same matrix instead
+    # marks the cells whose OPENING is attempted and probabilistically filled; the matrix
+    # itself is unchanged either way.) It is
     # CAUSAL by construction: bar r's value reads only prints inside bar r, so the mask at
     # decision t is identical whether or not rows after t exist (no look-ahead into whether
     # a gap later resumes — which is also why TRAILING gaps are gated: at decision time a
@@ -2557,7 +2564,7 @@ def _trees_allclose(a, b):
 
 def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
             eval_seed, max_positions, min_cash_threshold, policy_actions=None,
-            leaf_eval='model', collect=None, open_gate=None):
+            leaf_eval='model', collect=None, open_gate=None, fill_gate=None):
     """Walk the full timeline once: obs → mask → deterministic vector search → step_vector.
     Returns per-decision portfolio returns + the HOLD-collapse / position diagnostics.
 
@@ -2583,7 +2590,24 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     (decision, slot) — the SAME force-HOLD the env's own ``price_valid = price > 0`` rule
     applies to inert cells, extended to frozen ones, and CAUSAL (bar k's value reads only
     prints inside bar k). VALUATION is untouched: step_vector still marks the book at the
-    filled price."""
+    filled price.
+
+    TASK_878: ``fill_gate`` (default None) is a ``(frozen_mask, fill_miss_mask)`` pair of
+    (N, A) bool arrays from ``imprint.compute_frozen_fill_gate`` — the SAME function and the
+    SAME convention ``imprint.walk_env``'s own ``fill_gate`` parameter uses, so the two engines
+    can never define "frozen" or "the coinflip" differently. ``None`` keeps every line above
+    byte-identical — the legal mask restricts BOTH zero-coverage and frozen cells to HOLD
+    exactly as 868 shipped it, and the recorded action stream (``collect``/action histogram) is
+    the already-masked vector. When given, ``frozen_mask[k]`` cells no longer restrict the
+    SEARCH's legal mask (only genuinely zero-coverage cells still do — scope 1's carve-out: the
+    open-gate's False cells that are NOT in ``frozen_mask`` are exactly the zero-coverage ones,
+    since ``compute_frozen_fill_gate`` partitions them). A frozen-but-priced cell is instead
+    LEGAL: the search/replay proposes its true action (recorded as the ATTEMPT — ``av`` below,
+    unmasked), and ``fill_miss_mask[k]`` (already the coinflip's outcome, computed ONCE by the
+    caller via the seeded, path-independent hash — gate ia) decides EXECUTION: on a MISS the
+    vector fed to ``step_vector`` is overridden to HOLD for that slot only, so position/cash/fee
+    are unchanged (gate i); on a HIT the true action executes at the filled price, unchanged
+    from today."""
     enc_cfg = EncoderConfig(n_assets=n_assets, window_size=env_cfg.window_size,
                             n_channels=27)                    # self_play.py:627 (27ch)
     book = jnp.ones((1, n_assets), dtype=jnp.int32)           # v1 book = HOLD (DEC-3)
@@ -2600,11 +2624,18 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     key = jax.random.PRNGKey(eval_seed)
     pvs = np.empty(n_decisions + 1, dtype=np.float64)
     pvs[0] = initial_cash
-    hold_count = np.zeros(n_assets, dtype=np.int64)
-    action_hist = np.zeros(N_ACTIONS_PER_ASSET, dtype=np.int64)
+    hold_count = np.zeros(n_assets, dtype=np.int64)          # OUTCOME (executed vector)
+    action_hist = np.zeros(N_ACTIONS_PER_ASSET, dtype=np.int64)   # INTENT (attempted vector)
+    # TASK_878 fix pass (MAJOR-2): attempt/outcome companions, only ever read when a
+    # fill_gate is active, so they add no key to a flag-absent artifact.
+    hold_count_attempted = np.zeros(n_assets, dtype=np.int64)
+    action_hist_exec = np.zeros(N_ACTIONS_PER_ASSET, dtype=np.int64)
     n_long_total = n_short_total = 0
     bankrupt_at = terminated_early_at = -1
     n_exec = 0
+    frozen_mask, fill_miss_mask = fill_gate if fill_gate is not None else (None, None)
+    n_frozen_attempted = n_frozen_filled = 0
+    per_slot_missed = np.zeros(n_assets, dtype=np.int64)
     for k in range(n_decisions):
         if policy_actions is None:
             # A. leak-free obs window [t-window, t-1] + legal mask (self_play.py:645-668)
@@ -2614,18 +2645,23 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
             current_prices = prices[price_idx]                            # (1, A)
             mask = jit_batch_compute_action_mask(
                 state, current_prices, env_cfg, max_positions, min_cash_threshold)
-            # TASK_868 (D31 a2): force-HOLD the frozen cells — restrict the legal mask to
-            # HOLD wherever the slot printed nothing inside this decision's bar. Same
-            # mechanic as the env's own price_valid gate, one layer up (the frozen price
-            # is > 0, so the env's own mask cannot see it).
+            # TASK_868 (D31 a2) / TASK_878: force-HOLD the legal mask on cells the open-gate
+            # marks False MINUS the ones ``compute_frozen_fill_gate`` has already claimed as
+            # ATTEMPTABLE (frozen_mask) — i.e. only genuinely zero-coverage cells restrict the
+            # mask once a fill_gate is active; ``frozen_mask is None`` (fill_gate absent)
+            # reduces this to the unchanged 868 rule (both classes restrict the mask).
             if open_gate is not None and not bool(open_gate[k].all()):
-                # batch_compute_action_mask returns the FLAT (n_envs, A*5) mask —
-                # gate per (slot, action): every action of a gated slot illegal but HOLD.
-                n_act = mask.shape[-1] // n_assets
-                gated = jnp.repeat(jnp.asarray(~open_gate[k], dtype=bool), n_act)
-                hold_flat = (jnp.arange(mask.shape[-1]) % n_act) == HOLD
-                mask = jnp.where(gated.reshape((1,) * (mask.ndim - 1) + (-1,)),
-                                 hold_flat.astype(mask.dtype), mask)
+                not_open_k = ~np.asarray(open_gate[k], dtype=bool)
+                gate_for_mask = (not_open_k if frozen_mask is None
+                                 else (not_open_k & ~np.asarray(frozen_mask[k], dtype=bool)))
+                if gate_for_mask.any():
+                    # batch_compute_action_mask returns the FLAT (n_envs, A*5) mask —
+                    # gate per (slot, action): every action of a gated slot illegal but HOLD.
+                    n_act = mask.shape[-1] // n_assets
+                    gated = jnp.repeat(jnp.asarray(gate_for_mask, dtype=bool), n_act)
+                    hold_flat = (jnp.arange(mask.shape[-1]) % n_act) == HOLD
+                    mask = jnp.where(gated.reshape((1,) * (mask.ndim - 1) + (-1,)),
+                                     hold_flat.astype(mask.dtype), mask)
             # B. deterministic Sampled-MuZero vector search (visit-argmax selection)
             key, step_rng = jax.random.split(key)
             if leaf_eval == 'true-env':
@@ -2639,23 +2675,78 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
                     params, step_rng, obs, mask, book, True)      # deterministic=True (eval)
         else:
             # B'. TASK_848 policy-argmax replay: the precomputed per-asset argmax vector,
-            # no search, no mask (the 832 imprint-sanity direct-replay operator).
+            # no search, no mask (the 832 imprint-sanity direct-replay operator). TASK_878: on
+            # this replay path a fill_gate is None => pre-878 behaviour is unaffected by this
+            # block (the caller already force-HOLDs open-gated cells in ``policy_actions``
+            # itself, evaluate_checkpoint.py-side, exactly as 868 shipped it); when a fill_gate
+            # is given the caller instead leaves frozen cells UNMASKED in ``policy_actions`` and
+            # this function's own coinflip (below) is what decides their execution — so the
+            # ATTEMPT recorded via ``collect``/``action_hist`` is the policy's true argmax.
             action_vec = jnp.asarray(policy_actions[k], dtype=jnp.int32)[None, :]
-        # C. the REAL vector env step
-        state, _, _, done = jit_batch_step_vector(state, action_vec, prices, env_cfg)
+        # C. TASK_878: the ATTEMPT is the vector exactly as proposed above (recorded as ``av``,
+        # unmasked by the coinflip) — the search/replay branches above already restrict it to
+        # HOLD on zero-coverage cells (nothing was attemptable there), matching gate (iv).
+        av = np.asarray(action_vec)[0]
+        exec_vec = action_vec
+        if fill_miss_mask is not None:
+            # Mirrors imprint.walk_env's disclosure convention exactly: an "attempt" only
+            # exists where the cell is frozen AND the attempted action is non-HOLD (a HOLD
+            # attempt has nothing to fail). The override itself uses fill_miss_mask directly
+            # (idempotent on an already-HOLD cell), matching walk_env's act_effective rule.
+            miss_k = np.asarray(fill_miss_mask[k])
+            # Applied UNCONDITIONALLY (was `if miss_k.any()`) — a value-identical no-op when
+            # nothing missed, and it is what lets the counters below be read off the result.
+            exec_vec = jnp.asarray(
+                np.where(miss_k, HOLD, av).astype(av.dtype))[None, :].astype(jnp.int32)
+        # TASK_878 fix pass cycle 3 (MAJOR — forgeable disclosure, same class as walk_env's).
+        # ``xv`` is read back from ``exec_vec`` AFTER the branch, so it is by construction the
+        # vector the env is about to execute. Severing the assignment above now collapses the
+        # reported misses to 0 instead of leaving the artifact asserting suppression that
+        # never happened — measured pre-fix: SEVERED+gate pv=99226.42 == GOOD nogate pv while
+        # still reporting att=60 filled=27 missed=33 per_slot=[19,14].
+        xv = np.asarray(exec_vec)[0]
+        if fill_miss_mask is not None:
+            attempted_trade = np.asarray(frozen_mask[k]) & (av != HOLD)   # input property
+            missed_trade = xv != av                                       # executed evidence
+            n_frozen_attempted += int(attempted_trade.sum())
+            n_frozen_filled += int(attempted_trade.sum() - missed_trade.sum())
+            per_slot_missed += missed_trade.astype(np.int64)
+        # D. the REAL vector env step — EXECUTES exec_vec (== the attempt unless a frozen-cell
+        # coinflip just missed it), so position/cash/fee move exactly as the attempt dictates on
+        # a HIT and not at all on a MISS (gate i).
+        state, _, _, done = jit_batch_step_vector(state, exec_vec, prices, env_cfg)
         pv_arr = _pv_fn(state)
         jax.block_until_ready(pv_arr)                         # device→host boundary
         pv = float(np.asarray(pv_arr)[0])
-        av = np.asarray(action_vec)[0]
         sd = np.asarray(state.pos_side)[0]
         # TASK_861 pure recording: both arrays are ones the diagnostics below already
-        # materialized — appending them cannot perturb the walk (acceptance ii).
+        # materialized — appending them cannot perturb the walk (acceptance ii). TASK_878: `av`
+        # is the ATTEMPT (the BC/chosen-vector stream must see intent, not the masked outcome —
+        # scope 2); `sd` (realized book) is the OUTCOME, read from the post-exec_vec state.
         if collect is not None:
             collect["chosen_vectors"].append(av.astype(np.int32).tolist())
             collect["realized_book"].append(sd.astype(np.int32).tolist())
         pvs[k + 1] = pv
-        hold_count += (av == HOLD)
+        # TASK_878 fix pass (MAJOR-2) — ATTEMPT vs OUTCOME, decided per metric (scope 2):
+        #   hold_count / trades_per_asset / pct_hold_* / activity  -> OUTCOME (``xv``). These
+        #     are trade-ACTIVITY counters: a missed fill moved no position, paid no fee and
+        #     put nothing at risk, so counting it as a trade would overstate turnover and
+        #     make the scope-6 ablation arms indistinguishable on exactly the axis the arms
+        #     are supposed to separate. They keep their key names (a rename would break the
+        #     OFF-parity zero-differing-leaf bar) and are byte-identical when the flag is off.
+        #   action_hist -> INTENT (``av``). The action histogram measures POLICY BEHAVIOUR
+        #     (scope 2 names it explicitly alongside agreement), so it must show what the
+        #     policy chose, not what the market allowed. Its executed counterpart is emitted
+        #     as ``executed_action_hist_pct`` inside the flag-gated disclosure block.
+        hold_count += (xv == HOLD)
         action_hist += np.bincount(av, minlength=N_ACTIONS_PER_ASSET)
+        # Accumulated UNCONDITIONALLY (fix pass cycle 3): the OUTCOME long/short split is
+        # derived from it, and it equals ``action_hist`` exactly when the flag is off
+        # (``xv is`` the same values as ``av``), so the OFF path stays byte-identical.
+        action_hist_exec += np.bincount(xv, minlength=N_ACTIONS_PER_ASSET)
+        # Also unconditional: the 861 collection header reads the attempt-side HOLD fraction
+        # on every run, and it equals ``hold_count`` exactly when the flag is off.
+        hold_count_attempted += (av == HOLD)
         n_long_total += int((sd == 1).sum())
         n_short_total += int((sd == 2).sum())
         n_exec += 1
@@ -2684,8 +2775,73 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
         "avg_long": n_long_total / denom, "avg_short": n_short_total / denom,
         "bankrupt_at": bankrupt_at, "terminated_early_at": terminated_early_at,
         "trades_per_asset": trades_per_asset,
-        "activity_n_long": int(action_hist[2] + action_hist[4]),
-        "activity_n_short": int(action_hist[0] + action_hist[3]),
+        # TASK_878 fix pass cycle 3 (MAJOR): these feed the OUTCOME ``activity`` block, so
+        # they come from the EXECUTED histogram. They were built from ``action_hist``
+        # (INTENT) while the artifact declared them OUTCOME, which broke an invariant that
+        # held in EVERY pre-878 artifact — n_long + n_short == n_trades_total, exact because
+        # the non-HOLD codes are precisely {0,3} u {2,4}. Measured breakage: off by 23 and 14
+        # in arms A and B; a 1-asset probe at --fill-prob 0 reported "0 trades executed, 40
+        # long actions"; and all three arms reported the same n_long (116) while executing
+        # 296/305/320 trades — i.e. the field labelled OUTCOME was constant on the very axis
+        # the scope-6 ablation measures. It also ESCAPED the artifact: scorecard.py:1126,1586
+        # copies the activity tuple verbatim into graded rows and does NOT carry frozen_fill,
+        # so a scorecard reader saw self-contradictory numbers with no companion to correct
+        # them. Fixing it here fixes scorecard at the source. OFF is unchanged because
+        # action_hist_exec == action_hist there.
+        "activity_n_long": int(action_hist_exec[2] + action_hist_exec[4]),
+        "activity_n_short": int(action_hist_exec[0] + action_hist_exec[3]),
+        # TASK_878 scope 3 — first-class failed-fill disclosure, present only when the
+        # mechanism actually ran (``fill_gate is not None``). n_frozen_attempted_cells counts
+        # non-HOLD attempts on frozen (priced, no-print) cells; n_frozen_filled/missed_cells
+        # partition it by the coinflip outcome; per_slot_missed_fills is the per-asset
+        # breakdown. ``fill_gate_active`` lets ``score_tier`` decide whether to emit its own
+        # "frozen_fill" key at all — STRUCTURALLY ABSENT (not zero-valued) when fill_prob is
+        # off, so an unrelated caller never sees a positive claim about a mechanism that never
+        # engaged (883R precedent).
+        "fill_gate_active": fill_gate is not None,
+        "n_frozen_attempted_cells": int(n_frozen_attempted),
+        "n_frozen_filled_cells": int(n_frozen_filled),
+        "n_frozen_missed_cells": int(n_frozen_attempted - n_frozen_filled),
+        "per_slot_missed_fills": per_slot_missed.astype(np.int64).tolist(),
+        # TASK_878 fix pass (MAJOR-2): the INTENT side of the activity counters, so both
+        # readings are recoverable from one artifact. Read only when fill_gate_active.
+        "trades_per_asset_attempted": (n_exec - hold_count_attempted).astype(np.int64),
+        "action_hist_exec_pct": (100.0 * action_hist_exec
+                                 / max(action_hist_exec.sum(), 1)).tolist(),
+        # The ATTEMPTED split — from ``action_hist`` (INTENT). Before the cycle-3 fix these
+        # were a byte-for-byte copy of the expression above, so the companion duplicated the
+        # main block and the EXECUTED split was never emitted anywhere despite being computed.
+        "activity_n_long_attempted": int(action_hist[2] + action_hist[4]),
+        "activity_n_short_attempted": int(action_hist[0] + action_hist[3]),
+        # TASK_878 fix pass cycle 3: the ATTEMPT-side HOLD fraction, always computed (equals
+        # pct_hold_agg when the flag is off). The 861 collection header needs it so its
+        # composition self-check compares like with like — see build_collection_doc.
+        "pct_hold_agg_attempted": (100.0 * float(hold_count_attempted.sum())
+                                   / (denom * n_assets)),
+    }
+
+
+def _activity_block(tpa, n_exec, col_symbols, n_long, n_short):
+    """TASK_859's trade-activity block, factored out by the TASK_878 fix pass so the
+    OUTCOME block and its INTENT companion are produced by one estimator rather than two
+    that could drift. ``tpa`` = per-asset non-HOLD counts; ``n_long``/``n_short`` = the
+    long/short action split from the matching (executed or attempted) histogram. Arithmetic
+    is verbatim what score_tier computed inline, so the OFF path is bit-identical."""
+    tpa = np.asarray(tpa, dtype=np.int64)
+    denom = max(n_exec, 1)
+    n_assets = len(col_symbols)
+    n_trades_total = int(tpa.sum())
+    per_asset_traded = {sym: int(c) for sym, c in zip(col_symbols, tpa)}
+    top5 = dict(sorted(((s, c) for s, c in per_asset_traded.items() if c > 0),
+                       key=lambda kv: -kv[1])[:5])
+    return {
+        "hold_pct": 1.0 - n_trades_total / (denom * n_assets),
+        "trades_per_step": n_trades_total / denom,
+        "n_trades_total": n_trades_total,
+        "n_long": int(n_long),
+        "n_short": int(n_short),
+        "active_assets": int((tpa >= 1).sum()),
+        "top5_traded": top5,
     }
 
 
@@ -2717,23 +2873,11 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
     # (0..1) = pct_hold_agg/100 by construction; trades_per_step is the mean non-HOLD actions per
     # decision. Post-856-fix a top-m M run trades M assets every step => trades_per_step == M; a
     # 100%-HOLD run => hold_pct == 1.0, n_trades_total == 0 (acceptance ii).
+    # TASK_878 fix pass: the arithmetic moved verbatim into ``_activity_block`` so the
+    # attempt-side companion is computed by the SAME estimator, not a re-derived lookalike.
     tpa = np.asarray(rep["trades_per_asset"], dtype=np.int64)
-    n_exec = rep["n_exec"]
-    denom = max(n_exec, 1)
-    n_assets = len(col_symbols)
-    n_trades_total = int(tpa.sum())
-    per_asset_traded = {sym: int(c) for sym, c in zip(col_symbols, tpa)}
-    top5 = dict(sorted(((s, c) for s, c in per_asset_traded.items() if c > 0),
-                       key=lambda kv: -kv[1])[:5])
-    activity = {
-        "hold_pct": 1.0 - n_trades_total / (denom * n_assets),
-        "trades_per_step": n_trades_total / denom,
-        "n_trades_total": n_trades_total,
-        "n_long": int(rep["activity_n_long"]),
-        "n_short": int(rep["activity_n_short"]),
-        "active_assets": int((tpa >= 1).sum()),
-        "top5_traded": top5,
-    }
+    activity = _activity_block(tpa, rep["n_exec"], col_symbols,
+                               rep["activity_n_long"], rep["activity_n_short"])
     return {
         "sharpe_full": _f(_sharpe(rets, period_minutes)),
         "steps_completed": rep["n_exec"],
@@ -2749,6 +2893,46 @@ def score_tier(rep, ts_dec, ext_windows, period_minutes, tier, col_symbols, step
         "terminated_early_at": rep["terminated_early_at"],
         "per_window": per_window,
         "activity": activity,
+        # TASK_878 scope 3 — pass through the per-tier failed-fill disclosure. STRUCTURALLY
+        # ABSENT (the key itself) when --fill-prob is absent, per the orchestrator's ruling: a
+        # zero-valued "frozen_fill" would still be a positive claim about a mechanism that
+        # never ran (883R precedent — the OFF-parity bar is zero differing leaves, not a
+        # disclosed-but-null one).
+        **({} if not rep.get("fill_gate_active") else {
+            "frozen_fill": {
+                "n_attempted_cells": rep["n_frozen_attempted_cells"],
+                # NIT (fix pass cycle 3, documented not changed): "filled" here means the
+                # coinflip did NOT suppress the order — it is a count of ACTIONS SENT, not of
+                # positions realized. The env can still decline one downstream (measured: 8
+                # slots at --fill-prob 1 report 40 filled while realized_book shows 28 holding,
+                # the rest being cash-constrained BUYs dropped by step_vector's affordability
+                # rule). That matches this repo's pre-existing "counters count actions"
+                # convention (trades_per_asset, action_hist and pct_hold_* all count decisions,
+                # not realized positions), so it is left consistent rather than made a special
+                # case. Read realized_book / avg_long / avg_short for positions actually held.
+                "n_filled_cells": rep["n_frozen_filled_cells"],
+                "n_missed_cells": rep["n_frozen_missed_cells"],
+                "per_slot_missed_fills": {sym: int(c) for sym, c
+                                          in zip(col_symbols, rep["per_slot_missed_fills"])},
+                # TASK_878 fix pass (MAJOR-2) — the attempt/outcome split, stated so no
+                # reader has to infer which side any given key is on.
+                "attempt_vs_outcome": (
+                    "OUTCOME (post-coinflip EXECUTED vector): activity.*, pct_hold_agg, "
+                    "pct_hold_per_asset, and the trades_per_asset they derive from — a missed "
+                    "fill moved no position and paid no fee, so it is not turnover. "
+                    "INTENT (the ATTEMPTED vector, i.e. what the policy/teacher chose): "
+                    "action_hist_pct, and the chosen-vector stream --collect-chosen-vectors "
+                    "records, because those measure policy behaviour (TASK_878 scope 2). The "
+                    "companions below give the opposite reading of each."),
+                "attempted_activity": _activity_block(
+                    rep["trades_per_asset_attempted"], rep["n_exec"], col_symbols,
+                    rep["activity_n_long_attempted"], rep["activity_n_short_attempted"]),
+                "executed_action_hist_pct": rep["action_hist_exec_pct"],
+                # Consumed by build_chosen_vectors_doc so the 861 collection header's
+                # composition self-check compares attempt-vs-attempt (see that function).
+                "pct_hold_agg_attempted": rep["pct_hold_agg_attempted"],
+            },
+        }),
     }
 
 
@@ -2791,7 +2975,7 @@ def payload_digest(decisions):
 
 
 def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier_bp,
-                             walk_stats):
+                             walk_stats, fill_gate_meta=None):
     """Assemble the collection artifact: the recorded per-decision chosen vectors plus the
     provenance header the imprint runner gates on (checkpoint, full operator block, db, window,
     panel-frame provenance, env fingerprint, decision count).
@@ -2811,11 +2995,23 @@ def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier
     fee, slip = ((FEE_BPS, SLIP_BPS) if tier_bp else (0.0, 0.0))
     tier_cfg = env_cfg0.replace(fee_bps=fee, slippage_bps=slip)
     rows = list(range(warm, warm + n_coll))
+    # TASK_878 fix pass cycle 3: the note used to assert the chosen vectors are "the same
+    # object step_vector executes". That is FALSE under --fill-prob, where step_vector
+    # executes the post-coinflip vector and this payload deliberately records the ATTEMPT
+    # (gate ii — the BC target must be the intent). The claim is now conditioned.
+    _executes_note = (
+        "the same object step_vector executes and the 832 BC loss one-hots"
+        if fill_gate_meta is None else
+        "the object the 832 BC loss one-hots. NOTE (TASK_878): --fill-prob was active on "
+        "this collection, so step_vector executed the POST-COINFLIP vector, which differs "
+        "from this payload wherever a frozen-cell fill missed. Recording the ATTEMPT is "
+        "deliberate and is what acceptance gate (ii) requires of a BC target stream; see "
+        "provenance.fill_prob for how many cells that covers")
     decisions = {
         "note": "chosen_vectors[k] is the per-asset action vector the operator SELECTED at "
                 "decision k (panel row row_index[k]); codes are the env's "
-                "[0]Sell [1]Hold [2]Buy [3]LimitSell [4]LimitBuy — the same object "
-                "step_vector executes and the 832 BC loss one-hots. realized_book[k] is the "
+                "[0]Sell [1]Hold [2]Buy [3]LimitSell [4]LimitBuy — " + _executes_note +
+                ". realized_book[k] is the "
                 "post-step pos_side (0 flat / 1 long / 2 short), DIAGNOSTICS ONLY.",
         "row_index": rows,
         "timestamp": [int(row_ts[r]) for r in rows],
@@ -2875,7 +3071,34 @@ def build_chosen_vectors_doc(args, label, panel, collected, operator_block, tier
             "walk_bankrupt_at": walk_stats.get("bankrupt_at"),
             "walk_terminated_early_at": walk_stats.get("terminated_early_at"),
             "walk_steps_completed": walk_stats.get("steps_completed"),
-            "walk_pct_hold_agg": walk_stats.get("pct_hold_agg"),
+            # TASK_878 fix pass cycle 3 (MAJOR — cycle 2's own fix broke this consumer).
+            # ``walk_pct_hold_agg`` is cross-checked by imprint.gate_teacher_vectors against
+            # the PAYLOAD's own action composition (tol TV_COMPOSITION_TOL_PCT = 0.5 pp), and
+            # the payload is the ATTEMPT. Cycle 2 moved pct_hold_agg to OUTCOME, which split
+            # the two: measured header 13.4375% vs payload 9.0625%, a 4.375 pp gap (arm A:
+            # 7.19 pp) that made imprint.py --teacher-vectors REFUSE with a FALSE tampering
+            # diagnosis — "The targets in this file are NOT the actions that walk chose" — on
+            # the exact 861 collect -> imprint pipeline gate (ii) exists to serve. The header
+            # therefore reports the ATTEMPT side again (byte-identical when the flag is off,
+            # where attempt == outcome), and the executed fraction ships ALONGSIDE it rather
+            # than in place of it, so nothing is lost and nothing is conflated.
+            "walk_pct_hold_agg": ((walk_stats.get("frozen_fill") or {}).get(
+                "pct_hold_agg_attempted", walk_stats.get("pct_hold_agg"))),
+            **({} if fill_gate_meta is None else {
+                "walk_pct_hold_agg_executed": walk_stats.get("pct_hold_agg"),
+                # STAMPED so a consumer can never be surprised by an attempt/outcome gap it
+                # has no way to explain. Absent (structurally) on every flag-off collection,
+                # which keeps the TASK_867 committed collection baseline bit-identical.
+                "fill_prob": {
+                    **fill_gate_meta,
+                    "collection_semantics": (
+                        "chosen_vectors record the ATTEMPT (gate ii). walk_pct_hold_agg is "
+                        "therefore the ATTEMPT-side composition, which is what the payload "
+                        "self-check must compare against; walk_pct_hold_agg_executed is the "
+                        "post-coinflip figure and will differ. Scores in this header "
+                        "(walk_net21, walk_final_pv) are EXECUTED outcomes."),
+                },
+            }),
             "payload_sha256": payload_digest(decisions),
         },
         "decisions": decisions,
@@ -3051,6 +3274,30 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     gate_dec = (np.asarray(open_gate)[warm:warm + n_decisions]
                 if open_gate is not None else None)
 
+    # TASK_878: resolve --fill-prob ONCE for this checkpoint's evaluation via imprint's OWN
+    # ``compute_frozen_fill_gate`` — the SAME function ``imprint.run()`` calls, so the two
+    # engines can never diverge on what "frozen" or "the coinflip" mean. None (flag absent, the
+    # default) => every line below this stays exactly as 868 shipped it (byte-identical).
+    # TASK_878 fix pass: resolved through the SHARED resolver (the same one imprint.run
+    # uses), which refuses ambiguous OFF sentinels and REFUSES outright when --fill-prob is
+    # requested on a gate-free panel instead of silently producing a pre-878 artifact with
+    # no disclosure that the mechanism never engaged.
+    fill_prob_mode = resolve_fill_prob_mode(
+        getattr(args, "fill_prob", None), open_gate,
+        context=(f"eval_vector.py's panel (panel_source="
+                 f"{getattr(args, 'panel_source', 'minute')!r}, frame_pin="
+                 f"{getattr(args, 'panel_frame_from_checkpoint', None) is not None})"))
+    fill_gate = fill_gate_meta = None
+    if fill_prob_mode is not None:
+        imp = load_imprint_module()
+        # Always real arrays + a FULL meta key set (imprint fix pass FINDING 5) — the ON
+        # sub-schema no longer depends on whether this panel happens to contain frozen
+        # cells, and the ``fill_prob`` block below can index ``frozen_fill`` unconditionally.
+        frozen_mask, fill_miss_mask, fill_gate_meta = imp.compute_frozen_fill_gate(
+            prices, open_gate, warm, n_decisions, args.eval_seed, fill_prob_mode,
+            lookback=int(env_cfg0.window_size))
+        fill_gate = (frozen_mask, fill_miss_mask)
+
     # TASK_848: policy-argmax = the deterministic direct-replay operator lifted from 832.
     # Obs depend only on prices (state-independent), so the whole per-asset argmax vector
     # sequence batches through the net ONCE and replays across every cost tier (the policy
@@ -3070,27 +3317,86 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         policy_actions = policy_decision_actions(
             model, params, obs_all, int(env_cfg0.n_assets),
             args.decision_rule, args.decision_tau, args.decision_m)
-        # TASK_853: on the fixed-frame OOS panel a slot has NO real price at a decision row when
-        # it is fully-inactive (flat-zero all window) OR partial and the row is BEFORE its
-        # mid-window listing (left flat-zero by the framed loader). The env action mask
-        # (price_valid = price>0) HOLDs those under search; policy-argmax replay BYPASSES the mask,
-        # so apply the SAME rule per (decision, slot) here. Forcing HOLD on a zero-price cell is
-        # always correct (no tradeable market) and can never HOLD a genuinely-active decision (its
-        # price is >0), so it is alignment-safe. Framed path only (panel_frame present) → non-framed
-        # policy-argmax stays byte-identical.
-        if panel_info.get("panel_frame") is not None:
-            dec_prices = np.asarray(prices[warm:warm + n_decisions])   # (n_decisions, n_assets)
-            _invalid = dec_prices <= 0
-            if _invalid.any():
-                policy_actions = np.array(policy_actions, copy=True)
-                policy_actions[_invalid] = HOLD
-        # TASK_868 (D31 a2): the causal open-gate applies to the replay too — a FROZEN cell
-        # (price > 0 but no print inside the bar) is force-HELD on BOTH minute panels, the
-        # SAME rule the search operator now reads via rollout's open-gate. Daily/unpinned-
-        # daily replays carry no gate and are byte-identical.
-        if gate_dec is not None and (~gate_dec).any():
+        # ---- TASK_878 fix pass (BLOCKER): the two force-HOLD concerns, kept STRICTLY
+        # separate. They were previously entangled, and each was gated on a condition that
+        # had nothing to do with it, so BOTH could be off at once.
+        #
+        #   (A) ZERO COVERAGE — no price at all. Nothing quotable => nothing attemptable
+        #       (acceptance gate iv). APPLIES WHEN --fill-prob IS ACTIVE OR A PANEL FRAME IS
+        #       PINNED — see the `_apply_zero_coverage` comment below for why the scope is
+        #       exactly that and not wider. NOTE THE DELIBERATE DIVERGENCE FROM imprint:
+        #       ``imprint.frame_hold_mask`` DOES hold this unconditionally via its `price <= 0`
+        #       term (imprint.py:2439) and still does. eval_vector does NOT, because on the
+        #       flag-absent UNPINNED GATE-FREE path an unconditional guard would be a canon
+        #       behaviour change that is not flag-gated (invariant #1); imprint has no such
+        #       path — its mask is computed the same way on every run it makes. Do not
+        #       "restore" symmetry here by removing the gate: that re-breaks invariant #1.
+        #       The hole this guard closes: eval_vector held it only under `panel_frame is not
+        #       None`, so on the canon UNPINNED minute panel with --fill-prob set, NEITHER
+        #       this guard nor (B)
+        #       fired and the raw policy argmax reached step_vector. rollout()'s fill gate
+        #       cannot backstop that: compute_frozen_fill_gate deliberately EXCLUDES
+        #       zero-coverage cells from frozen_mask, so fill_miss_mask never covers them,
+        #       and step_vector has no internal price guard (see its CALLER CONTRACT).
+        #       MEASURED consequence of the hole: a BUY into a zero price mints
+        #       trade_value/1e-10 shares (pos_size 1e14) and portfolio value explodes to
+        #       5.0e15 the moment that slot starts printing — i.e. a new listing or a healing
+        #       gap, both routine — breaking gate (iv) directly and gate (iii) with it.
+        #   (B) FROZEN cells — priced, but no print inside the bar. This, and ONLY this, is
+        #       what --fill-prob converts from force-HOLD into attempt-and-maybe-miss. When
+        #       the flag is absent this stays exactly as 868 shipped it; when it is given,
+        #       these cells stay UNMASKED here because the ATTEMPT is what the BC/chosen-
+        #       vector stream and the action histogram must see (scope 2), and rollout()'s
+        #       coinflip decides their EXECUTION further down.
+        #
+        # Together (A) and (B) reproduce the 868 union exactly when the flag is absent —
+        # algebraically hold_mask_OFF == zero_coverage_mask | frozen_mask — which is the
+        # property that keeps the OFF path bit-identical. (A) is additionally INERT on every
+        # canon panel this repo grades: the unpinned minute smoke panel measures 0 of 320
+        # decision cells with price <= 0, and on the unpinned minute path (A) was already
+        # implied by (B) since ~gate_dec is a superset of the zero-coverage set.
+        dec_prices = np.asarray(prices[warm:warm + n_decisions])   # (n_decisions, n_assets)
+        _zero_coverage = dec_prices <= 0
+        # TASK_878 fix pass cycle 3 (MINOR-3): (A) applies on the two paths 878 is ABOUT —
+        # whenever the fill mechanism is on, and on a pinned frame where it always applied
+        # (TASK_853, unchanged). It is NOT applied on the flag-absent UNPINNED path.
+        # Why the scope is narrowed rather than left unconditional: with --fill-prob absent
+        # and no frame pin, the UNPINNED DAILY policy-argmax path has gate_dec None, so (B)
+        # cannot fire either and an unconditional (A) would be a canon behaviour change that
+        # is NOT flag-gated — a literal violation of invariant #1 ("every new behavior is
+        # flag-gated, default OFF"), defensible only by the measurement that it is inert
+        # (fixture: 0 of 652x8 zero-price daily decision cells) which does NOT extend to the
+        # 24GB DB and which no fixture-only test can even reproduce (--smoke pins
+        # bar_minutes=60 while --panel-source daily requires 1440). Gating restores bit-exact
+        # pre-878 behaviour there and costs the BLOCKER nothing: on the UNPINNED MINUTE path
+        # with the flag absent, ~gate_dec is a superset of the zero-coverage set so (B) still
+        # force-HOLDs these cells, and with the flag present (A) fires exactly as before —
+        # which is the only configuration in which the zero-coverage kill was ever reachable.
+        _apply_zero_coverage = (fill_prob_mode is not None
+                                or panel_info.get("panel_frame") is not None)
+        if _apply_zero_coverage and _zero_coverage.any():
             policy_actions = np.array(policy_actions, copy=True)
-            policy_actions[~gate_dec] = HOLD
+            policy_actions[_zero_coverage] = HOLD
+            # Not an artifact key (that would add a leaf on the OFF path). NOTE: stdout is
+            # NOT byte-identical to pre-878 on a PINNED frame with the flag absent — (A)
+            # always bites there, so this line appears where HEAD printed nothing (measured:
+            # 1 extra line, pinned minute, flag absent). The ARTIFACT is unaffected (828/828
+            # leaves) and no suite hashes stdout, so this is cosmetic — but it is a real
+            # difference and is recorded rather than claimed away.
+            print(f"[878] force-HOLD on {int(_zero_coverage.sum())} ZERO-COVERAGE decision "
+                  f"cells (no price at all — nothing quotable, nothing attemptable). Applies "
+                  f"whenever --fill-prob is active or a panel frame is pinned.")
+        if fill_prob_mode is None and gate_dec is not None:
+            # The FULL 868 union, deliberately NOT minus _zero_coverage. Cycle 2 subtracted it
+            # because (A) was unconditional; now that (A) is gated, (B) has to be the complete
+            # pre-878 rule or the flag-absent UNPINNED MINUTE path would lose its zero-coverage
+            # mask altogether — trading the fixed BLOCKER for a new one. Where (A) DID fire
+            # those cells are already HOLD, so the overlap is an exact no-op; where it did not,
+            # this is the only thing covering them. Byte-identical to pre-878 on both paths.
+            _frozen_hold = ~gate_dec
+            if _frozen_hold.any():
+                policy_actions = np.array(policy_actions, copy=True)
+                policy_actions[_frozen_hold] = HOLD
 
     # TASK_848 scope 3: the on-window teacher floor (weight-native ladder, same rows/env).
     teacher_floor = book_warm = None
@@ -3160,7 +3466,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
                       env_cfg0.n_assets, n_decisions, args.eval_seed,
                       args.max_positions, args.min_cash_threshold,
                       policy_actions=policy_actions, leaf_eval=args.leaf_eval,
-                      collect=collect, open_gate=gate_dec)
+                      collect=collect, open_gate=gate_dec, fill_gate=fill_gate)
         if collect is not None:
             collected = collect
         st = score_tier(rep, ts_dec[:rep["n_exec"]], ext_windows,
@@ -3251,6 +3557,36 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         },
         "cost_tiers_bp": list(GATE_COSTS),
         "annualization_period_minutes": period_minutes,
+        # TASK_878 — the failed-fill/coinflip mechanism this run used. STRUCTURALLY ABSENT
+        # (mechanism OFF, --fill-prob absent) => every key above is byte-identical to pre-878
+        # (868's force-HOLD legal mask), and this key does not exist at all (883R precedent —
+        # emitting it as null would still be a positive claim about a mechanism that never ran,
+        # and the OFF-parity bar this repo holds to is zero differing leaves). Per-tier
+        # counts/breakdown are in ``tiers[c]["frozen_fill"]`` (same absence rule); this block
+        # records WHAT PROBABILITY WAS USED (scope 1b: "whatever is used is RECORDED in the
+        # artifact") plus the aggregate share of decision cells affected.
+        **({} if fill_gate_meta is None else {"fill_prob": {
+            **fill_gate_meta,
+            # TASK_878 fix pass cycle 3: the teacher-floor exemption, stated HERE — where a
+            # reader of the fill mechanism will actually see it — and not only inside the
+            # teacher_floor block, which asserts the 868 rule. --teacher-floor + --fill-prob
+            # is a MIXED-SEMANTICS comparison: the operator gets probabilistic fills while the
+            # floor force-HOLDs every frozen cell, so at --fill-prob 1 the policy fills cells
+            # the floor refuses and corridor_position is flattered (and penalised at 0).
+            # Threading the gate through the floor would change what the corridor measures, so
+            # it is deliberately NOT done inside a fix pass; it needs its own decision row.
+            "teacher_floor_exemption": (
+                "the --teacher-floor walk retains PRE-878 semantics (every open-gated cell "
+                "force-HELD, no coinflip) even when --fill-prob is active, so it is a "
+                "868-semantics baseline, NOT an arm-matched one. corridor_position across "
+                "arms is therefore not an apples-to-apples comparison of policy vs floor."),
+            "n_decision_cells": int(n_decisions * env_cfg0.n_assets),
+            "share_of_decisions_affected": {
+                str(c): (float(tiers[str(c)]["frozen_fill"]["n_attempted_cells"])
+                        / max(n_decisions * env_cfg0.n_assets, 1))
+                for c in GATE_COSTS
+            },
+        }}),
         "tiers": tiers,
         "corridor": corridor_block,
         # TASK_848 scope 3/4: on-window teacher floor block (None unless --teacher-floor).
@@ -3262,14 +3598,48 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
             # TASK_869: the walk's hold-mask DISCLOSED (D30 rider (a) + D31 (a3) scope 2) —
             # which pin paths it applies on and how many decision cells it force-HOLDs.
             "hold_mask": {
-                "rule": "force-HOLD the whole action where the decision row has no real price "
-                        "(flat-zero) — the SAME price-validity rule the search operator and the "
-                        "policy-argmax replay apply — OR-ed with the D31 (a2) causal open-gate on "
-                        "EVERY minute panel (pinned AND canon unpinned: 868's gate is uniform "
-                        "there, so n_open_gate_masked_cells is legitimately > 0 on an unpinned "
-                        "minute run). The price-validity half applies on the framed pins only "
-                        "(minute AND daily); the unpinned DAILY path carries no mask at all and "
-                        "is bit-identical.",
+                # TASK_878 fix pass: the shared head is HEAD's, byte for byte. The TAIL is
+                # FLAG-GATED — with --fill-prob absent this string is byte-identical to
+                # pre-878, because everything 878 has to say here is about a mechanism that
+                # did not run. Emitting the 878 clauses on the OFF path would be the same
+                # inversion this row already refused twice (a positive claim about an
+                # inactive mechanism; 883R settled it by shipping such claims STRUCTURALLY
+                # ABSENT). Note HEAD's OFF sentence is TRUE again precisely because MINOR-3
+                # re-gated the operator's zero-price guard: with the flag absent the unpinned
+                # daily path really does carry no mask on either side.
+                "rule": ("force-HOLD the whole action where the decision row has no real price "
+                         "(flat-zero) — the SAME price-validity rule the search operator and the "
+                         "policy-argmax replay apply — OR-ed with the D31 (a2) causal open-gate on "
+                         "EVERY minute panel (pinned AND canon unpinned: 868's gate is uniform "
+                         "there, so n_open_gate_masked_cells is legitimately > 0 on an unpinned "
+                         "minute run). "
+                         + ("The price-validity half applies on the framed pins only "
+                            "(minute AND daily); the unpinned DAILY path carries no mask at all and "
+                            "is bit-identical."
+                            if fill_gate_meta is None else
+                            "The price-validity half of THIS FLOOR MASK applies on the "
+                            "framed pins only (minute AND daily). TASK_878 (--fill-prob ACTIVE "
+                            "on this run) corrects two claims this string makes when the flag "
+                            "is absent. (1) The OPERATOR's (policy-argmax "
+                            "replay) zero-price force-HOLD is CONDITIONAL, not unconditional: it "
+                            "applies when --fill-prob is active OR a panel frame is pinned, and NOT "
+                            "otherwise (flag-gated per canon invariant #1). So the unpinned "
+                            "GATE-FREE path — e.g. a daily panel with no causal open-gate, flag "
+                            "absent — carries NO mask on EITHER side: not on this floor mask, and "
+                            "not on the operator, exactly as pre-878. Where the operator's guard "
+                            "DOES fire (--fill-prob on, or a pinned frame) while this floor mask "
+                            "stays None, the two sides are asymmetric and a reader must know it. "
+                            "Measured INERT on the fixture (unpinned minute 0 of 2068x8, unpinned "
+                            "daily 0 of 652x8 zero-price decision cells, zero AND open_gate = 0), "
+                            "and a zero-price decision cell is in fact structurally unreachable on "
+                            "both unpinned canon loaders (leading zeros back-filled at "
+                            "eval_vector.py:625-627 / vectorbt_env.py:718-720, interior gaps "
+                            "forward-filled, all-zero columns dropped by _daily_coverage_ids) — "
+                            "but that is NOT proven on the 24GB DB. "
+                            "(2) This floor mask deliberately keeps PRE-878 semantics: it force-"
+                            "HOLDs every open-gated cell regardless of --fill-prob, so under "
+                            "--fill-prob the floor is a 868-semantics BASELINE while the operator "
+                            "gets probabilistic fills. See the artifact's fill_prob block.")),
                 "panel_frame_source": _pf_source,
                 "n_price_validity_masked_cells": _pv_masked_cells,
                 "n_open_gate_masked_cells": _gate_masked_cells,
@@ -3374,7 +3744,7 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
                 f"Refusing to write an empty teacher target stream.")
         write_chosen_vectors(collect_path, build_chosen_vectors_doc(
             args, label, panel, collected, result["operator"], COLLECT_TIER_BP,
-            tiers[str(COLLECT_TIER_BP)]))
+            tiers[str(COLLECT_TIER_BP)], fill_gate_meta=fill_gate_meta))
 
     # ledger_row is rendered by the caller once the ACTUAL output path is known
     # (out_pointer) — a hardcoded pointer here would dangle for scheduled runs.
@@ -5149,6 +5519,15 @@ def main():
                          "PROVES the path writable before the walk starts (fix pass FIX 3). The "
                          "header carries the walk's own net@21 / final_pv / bankrupt_at plus a "
                          "payload sha256 so the consumer can verify the stream (FIX 2)")
+    ap.add_argument("--fill-prob", type=parse_fill_prob, default=None, dest="fill_prob",
+                    help="TASK_878 (operator ruling — no-print bars are FAILED FILLS, not "
+                         "illegal actions): probabilistic fill on frozen (open-gated, "
+                         "priced>0) decision cells. Default (flag absent) = OFF, byte-identical "
+                         "to the 868 force-HOLD legal mask. 'auto' = the causal trailing "
+                         "print-density per slot (the ruled default once this is on). A float "
+                         "in [0, 1] = a CONSTANT p, for the scope-6 3-arm ablation: 0 = never "
+                         "fill (arm A), 1 = always fill (arm C). Zero-coverage cells (no price "
+                         "at all) always stay force-HOLD regardless of this flag.")
     ap.add_argument("--teacher-floor", dest="teacher_floor", action="store_true", default=False,
                     help="TASK_848: also walk 832's weight-native ladder teacher "
                          "(_make_weight_native_teacher_fn, same sentinels) on the SAME decision "
@@ -5304,6 +5683,32 @@ def main():
             f"--panel-frame-from-checkpoint: it chooses which table the FIXED FRAME is read from "
             f"and is inert without a pin. Pass the provenance JSON, or drop the flag (the "
             f"unpinned panel source is --panel-source).")
+
+    # TASK_878 fix pass cycle 3: --collect-chosen-vectors + --fill-prob is REFUSED, before any
+    # panel build. This is not a disclosure problem, it is an unsatisfiable CONTRACT. A
+    # collection artifact promises that replaying its stream reproduces the score its own walk
+    # recorded (`provenance.walk_net21`), and imprint._tv_replay_check enforces that at
+    # TV_WALK_SCORE_REL_TOL — "the highest-value integrity check in the pass", the only gate
+    # that compares the stream against a number the producer committed to. Under --fill-prob
+    # that score is COINFLIP-dependent while the payload is the deterministic ATTEMPT stream
+    # (gate ii), so a consumer replaying the payload cannot reproduce it BY CONSTRUCTION, not
+    # by corruption — measured: the provenance gate and the composition gate both PASS and the
+    # run still dies in the replay check. The alternatives were worse: weakening the replay
+    # check would degrade the repo's best integrity gate to accommodate a combination nothing
+    # asks for yet, and making the score reproducible needs the consumer to rebuild the exact
+    # gate (seed, mode, rows) in a second engine — a real cross-engine feature that deserves
+    # its own row, not a fix pass. Refusing keeps the contract intact and costs nothing today.
+    if (getattr(args, "collect_chosen_vectors", None) is not None
+            and getattr(args, "fill_prob", None) is not None):
+        ap.error(
+            "--collect-chosen-vectors cannot be combined with --fill-prob. The collection "
+            "header records the walk's own score (walk_net21) and imprint.py --teacher-vectors "
+            "REFUSES unless a deterministic replay of the payload reproduces it. Under "
+            "--fill-prob the recorded score depends on the failed-fill coinflip while the "
+            "payload is the ATTEMPT stream (TASK_878 gate ii), so that replay can never match "
+            "and every such collection would be rejected downstream. Collect WITHOUT "
+            "--fill-prob (the stream is the operator's intent either way), or run the "
+            "--fill-prob arms as ordinary graded evals without collecting.")
 
     if args.equivalence_gate:
         run_equivalence_gate(args)

@@ -1,5 +1,67 @@
 # TASK_878 — No-print bars are FAILED FILLS, not illegal actions (operator ruling, 2026-08-05)
 
+> **STATUS (2026-08-17): SHIPPED as `task878-failed-fill-semantics` (factory run 35, 3 cycles).**
+> A no-print bar is now an ATTEMPTED order that fills with probability `p`, not an illegal action.
+> `--fill-prob {auto|<float>}` on BOTH `imprint.py` and `eval_vector.py`, **`default=None` = OFF**,
+> and OFF reproduces 868 exactly.
+>
+> **OFF-parity at this repo's actual bar — ZERO non-volatile differing leaves.** eval_vector
+> policy-argmax 248/248 · eval_vector with the D17 OOS flags (`--teacher-floor
+> --vector-weight-rebalance`) 266/266 · imprint 953/953 — all **0 added, 0 removed**, differing
+> leaves only `{checkpoint, checkpoint_load.resolved_path, db, ledger_row, out_pointer,
+> roundtrip.ckpt_dir}`. **The disclosure keys are STRUCTURALLY ABSENT when the flag is off, not
+> present-and-null** — the null-valued first version produced 4 differing leaves and turned three
+> 861 legs red; promotion was REFUSED and the keys were made absent instead, so no oracle was
+> re-based. Full 861 recipe **12/12, 986.2 s, tracked pins IDENTICAL**; 863 and 865 all legs;
+> selftest 12/12; new `experiments/878_failed_fill/smoke_failed_fill.py` ALL LEGS PASS.
+>
+> **The determinism gate is the one that mattered.** The coinflip is a seeded PATH-INDEPENDENT
+> `fold_in(fold_in(PRNGKey(eval_seed), decision), slot)` — never a sequential stream. Proven
+> against a correct negative control (a naive conditional-draw stream that PASSES a same-seed rerun
+> and FAILS path-independence), and independently by the orchestrator: recomputing with 90
+> decisions leaves the first 50 rows bit-identical, which no sequential stream can do. `p` is the
+> causal trailing print density — corrupting panel rows ≥45 first perturbs decision 16, and
+> decision 15 IS row 45 with its window `[25,45)` correctly excluding its own row.
+>
+> **Gate (ii), the 78.8%-class hazard, is pinned by a REAL mutation** — the test calls the actual
+> pre-878 `frame_hold_mask(..., include_frozen=True)` at its true drop site and asserts the two
+> disagree. Confirmed economically on the real fixture: `teacher.final_pv` is byte-identical
+> between OFF and `--fill-prob 0` (92754.42 / 87335.85 both ways) while `teacher.action_hist`
+> differs sharply (122/3518/128 vs 1349/2277/142) — the trajectory unchanged, the RECORDED INTENT
+> different. That is the whole ruling in one measurement.
+>
+> **Three cycles, eight findings, every one from a panel and not from the author.** The cycle-1
+> BLOCKER: `--fill-prob` made zero-coverage slots tradeable and blew PV to 2.5e16, because one
+> conditional covered two distinct populations. Cycle 2 fixed it and introduced two more (a widened
+> guard whose BODY was not updated; `walk_pct_hold_agg` split from the payload it describes, making
+> `imprint --teacher-vectors` emit a FALSE tampering diagnosis). Cycle 3 closed those and a stale
+> `UNCONDITIONAL` claim falsified by its own gating fix. **A 26-hit sweep for the CLAIM (not the
+> line numbers) then found 4 false and 2 misleading assertions across three files** — fixing them
+> site-by-site is what had generated the previous three.
+>
+> **`step_vector` deliberately got NO guard** — not provably inert across self-play, training
+> rollouts, MCTS leaf, `trader/` and both experiment engines, so proving it exceeds this row while
+> risking canon bit-identity. It got a CALLER CONTRACT docstring naming the measured corruption
+> plus an executable characterization leg so the contract cannot rot. `jax_trading_env.py` is
+> **purely additive, 205 insertions / 0 deletions.**
+>
+> **`--collect-chosen-vectors` + `--fill-prob` is REFUSED at argparse, and the reason is worth
+> keeping:** it is not a disclosure problem but an unsatisfiable CONTRACT. A collection promises
+> that replaying its stream reproduces `provenance.walk_net21`, and `_tv_replay_check` enforces
+> that; under `--fill-prob` that score is coinflip-dependent while the payload is the deterministic
+> ATTEMPT stream, so no consumer can reproduce it BY CONSTRUCTION. Weakening the repo's best
+> integrity gate to accommodate a combination nothing asks for yet was rejected.
+>
+> **REMAINDER → planner.** (1) **Scope 6's 3-arm ablation (never-fill / data-derived / always-fill)
+> is a SCHEDULED real-data run and did NOT happen here** — the arms are built and demonstrated on
+> the fixture only; it is the read that decides whether flat/no-print cells carry signal.
+> (2) Follow-up rows: the one-line severance radius (bind fill counts to realized state, not to the
+> step's input array); the arm-matched teacher floor (threading the gate through changes what
+> `corridor_position` measures); (A)'s firing disclosed on stdout only, so gate (iv) rests on a
+> print line — fix is a count inside the already-ON-only `fill_prob` block; and a pinned-frame
+> smoke leg, since no 878 leg exercises one. (3) Other lanes: `scorecard.py` has no `frozen_fill`
+> passthrough; `imprint.py --help` crashes on a literal `%` in the `--iters` help string.
+
 **Status**: READY 2026-08-05 (operator ruling; resolves both QUEUE open questions at once).
 **Size: S/M. Risk: medium** (changes what a no-print bar MEANS in the env — every minute-panel
 numeric may move, by design and disclosed). Surface: the frozen open-gate in

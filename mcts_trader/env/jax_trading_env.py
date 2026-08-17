@@ -62,6 +62,7 @@ Task: TASK_027_JAX_VECTORIZED_ENV.md
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import chex
 from typing import Tuple
 from functools import partial
@@ -1382,6 +1383,27 @@ def step_vector(state: TradingState, action_vec: chex.Array,
       * A scalar SEQUENCE also advances ``current_step`` (and thus the price index / RNG) once
         per asset; ``step_vector`` advances it once for the whole rebalance. The equivalence test
         holds prices flat so the price index is immaterial and compares material state only.
+
+    CALLER CONTRACT — PRICE VALIDITY IS THE CALLER'S JOB (TASK_878 fix pass).
+    This function contains NO price-validity guard. It will happily execute a BUY against a
+    zero price: the only protection in the body is ``jnp.maximum(current_prices, 1e-10)`` on
+    the division guards, so a zero-priced slot mints ``trade_value / 1e-10`` shares. MEASURED
+    on a 2-slot flat panel with ``prices[:, 1] = 0.0`` and ``action_vec = [HOLD, BUY]``:
+    ``cash 100000 -> 90000``, ``pos_size[1] = 1e14``, ``pos_entry[1] = 0.0``, and portfolio
+    value explodes to ``5.0e15`` (a 5e10x inflation) the moment that slot starts printing a
+    real price — which is what a new listing or a healing data gap looks like. It is silent
+    until then, because at price 0 the position marks at 0.
+    The ``price_valid = current_prices > 0`` rule lives in ``compute_action_mask`` (which the
+    SEARCH path applies to the legal mask) and in the direct-replay callers' own force-HOLD
+    masks (``imprint.frame_hold_mask``'s ``price <= 0`` term; the zero-coverage mask in
+    ``eval_vector.evaluate_checkpoint``). Any NEW caller that hands a vector straight to this
+    function BYPASSES both and must mask zero-priced slots to HOLD itself.
+    The guard is deliberately NOT placed here: forcing HOLD inside the step would silently
+    change execution semantics for every existing caller (self-play, training rollouts, MCTS
+    leaf rollouts, both experiment engines), which cannot be proven inert at this task's scope
+    and would put the canon bit-identity invariant at risk. Owning it per-path keeps exactly
+    one guard responsible per path. ``experiments/878_failed_fill/smoke_failed_fill.py``
+    pins this contract as an executable characterization test so it cannot rot silently.
     """
     # Get current prices (identical to scalar step)
     current_prices = get_current_prices(
@@ -2346,3 +2368,204 @@ def get_info(state: TradingState, prices: chex.Array,
         'n_buy_orders': int(jnp.sum(state.order_active & (state.order_side == 1))),
         'n_sell_orders': int(jnp.sum(state.order_active & (state.order_side == 2))),
     }
+
+
+# =============================================================================
+# TASK_878 — failed-fill semantics: a no-print bar is an ATTEMPTED order that may
+# not FILL, not an illegal action. These two pure helpers are the shared primitive
+# both eval-time engines (eval_vector.py's rollout(), imprint.py's walk_env()) build
+# on, so the coinflip mechanics live in exactly one place. Neither function touches
+# any TradingState or EnvConfig — a caller decides, per (decision, slot), whether the
+# EFFECTIVE action fed to step_vector should be forced to HOLD (a miss), while the
+# ATTEMPTED action (what the policy/teacher actually chose) is recorded unchanged.
+# The operator's ruling (2026-08-05, amended): "the order would fail to fulfil,
+# because the given price is reasonable for the given time" — valuation still uses
+# the D30 forward-fill; only OPENING/adjusting a position is at risk, and only on a
+# cell the causal 868 (D31 a2) open-gate already marks frozen (priced > 0, no real
+# print inside that bar). A genuinely zero-coverage cell (no price at all) is
+# unaffected by anything here — that force-HOLD is untouched (scope item 1's
+# carve-out: nothing quotable, so nothing attemptable).
+# =============================================================================
+
+def fill_coinflip_uniforms(eval_seed: int, n_decisions: int, n_assets: int) -> np.ndarray:
+    """(n_decisions, n_assets) float64 in [0, 1): a seeded, PATH-INDEPENDENT draw per
+    (decision_index, slot), for the TASK_878 fill coinflip.
+
+    Built from ``jax.random.fold_in(PRNGKey(eval_seed), decision_index)`` then
+    ``fold_in(..., slot)`` — the SAME idiom this repo already uses everywhere for
+    per-step / per-candidate determinism without a sequential RNG stream (e.g.
+    ``sampled_search.py:741``, ``distill.py:289,414,559``, ``leaf_probe.py:222``: "the
+    K-candidate set at each state is drawn with jax.random.fold_in(PRNGKey(eval_seed),
+    k)"). The draw for (k, s) is a PURE function of (eval_seed, k, s) alone — it reads
+    no TradingState, no prior draw and no action, so it cannot depend on what happened
+    at any other decision. That is what TASK_878 acceptance (ia) requires: changing
+    ONE earlier decision (a different teacher, a different policy, a different chosen
+    action) can never alter a LATER cell's flip, because this matrix does not change
+    at all when it is recomputed — same (eval_seed, n_decisions, n_assets) always
+    reproduces the identical array, independent of every other input the caller has.
+    Contrast a sequential ``jax.random.split`` chain threaded once per decision: that
+    IS path-dependent (decision k+1's key depends on how many splits decision k drew,
+    which can depend on the action taken), which is exactly the failure mode this
+    function is built to avoid."""
+    base = jax.random.PRNGKey(int(eval_seed))
+    decision_idx = jnp.arange(int(n_decisions))
+    slot_idx = jnp.arange(int(n_assets))
+
+    def _per_decision(d):
+        key_d = jax.random.fold_in(base, d)
+        keys_ds = jax.vmap(lambda s: jax.random.fold_in(key_d, s))(slot_idx)
+        return jax.vmap(lambda k: jax.random.uniform(k))(keys_ds)
+
+    u = jax.vmap(_per_decision)(decision_idx)          # (N, A)
+    jax.block_until_ready(u)
+    return np.asarray(u, dtype=np.float64)
+
+
+def causal_print_density(open_gate: np.ndarray, start_row: int, n_decisions: int,
+                         lookback: int) -> np.ndarray:
+    """(n_decisions, n_assets) float64 in [0, 1]: for decision row t = start_row + k,
+    slot s, the fraction of the last ``lookback`` panel rows STRICTLY BEFORE t (rows
+    ``[max(0, t-lookback), t)``) that printed a real close in slot s
+    (``open_gate[r, s]`` True). TASK_878 scope 1b's causal trailing print-density
+    default for the fill probability ``p``: a liquid-but-momentarily-quiet slot fills
+    easily, a near-dead slot rarely does.
+
+    CAUSAL by construction: only rows ``< t`` are read, never row ``t`` itself or
+    anything after it — the same causality ``OPEN_GATE_RULE`` already establishes for
+    ``open_gate`` transfers directly, since this is a pure trailing aggregate of it.
+
+    TASK_878 fix pass (NIT): the window bounds are now clamped SYMMETRICALLY. ``hi`` was
+    already capped at ``n_rows``; ``lo`` was not, so a ``start_row`` at/beyond the panel
+    length indexed ``cum`` out of range and raised ``IndexError`` (measured:
+    ``start_row=10, n_decisions=2, lookback=3`` on a 5-row panel). It failed CLOSED and is
+    unreachable from both traced call sites, but an asymmetric bound is a latent trap, so
+    it is tightened rather than left to chance.
+
+    The ``n_bars`` floor of 1 guards a zero-length window from dividing by zero
+    (JAX-discipline style, even though this runs in plain numpy). That floor is a
+    LAST-RESORT guard, not a supported operating point: a shorter-than-``lookback``
+    trailing window would silently under-estimate ``p`` (in the limit, a fully-liquid slot
+    at ``t == 0`` would read ``p = 0`` and therefore NEVER fill), so the precondition that
+    makes it unreachable is asserted instead of assumed. Both shipped callers satisfy it by
+    construction — ``imprint.run`` passes ``start_row = max(warm, window_size)`` and
+    ``lookback = window_size``; ``eval_vector.evaluate_checkpoint`` passes
+    ``start_row = warm = window_size`` and the same ``lookback`` — so every decision row
+    has a FULL ``lookback`` of real history behind it."""
+    og = np.asarray(open_gate, dtype=np.float64)
+    n_rows, n_assets = og.shape
+    lookback = int(lookback)
+    start_row = int(start_row)
+    if lookback < 1:
+        raise ValueError(
+            f"causal_print_density needs lookback >= 1 (got {lookback}): a zero-length "
+            f"trailing window would make every p fall back on the n_bars floor and read 0.")
+    if start_row < lookback:
+        raise ValueError(
+            f"causal_print_density needs start_row >= lookback (got start_row={start_row}, "
+            f"lookback={lookback}): the first decision rows would otherwise average over a "
+            f"SHORTER trailing window than the rest and under-estimate the fill probability "
+            f"(at start_row=0 a fully-liquid slot would read p=0 and never fill). Both "
+            f"shipped callers pass start_row >= window_size == lookback.")
+    # The SAME asymmetry, at the other end (fix pass cycle 3). Clamping ``hi`` stops the
+    # IndexError but silently truncates the trailing window on any decision row at/past the
+    # panel end, and the last such row hits the n_bars floor and reads p = 0.0 — a
+    # fully-liquid slot that never fills, which is precisely the failure this docstring says
+    # is asserted rather than assumed. Both shipped callers satisfy it
+    # (imprint: N = T - 1 - start_row; eval_vector: warm + n_decisions <= T).
+    if start_row + int(n_decisions) > n_rows:
+        raise ValueError(
+            f"causal_print_density needs start_row + n_decisions <= n_rows (got "
+            f"{start_row} + {int(n_decisions)} > {n_rows}): decision rows at/past the panel "
+            f"end would average a TRUNCATED trailing window and the last would fall back on "
+            f"the n_bars floor, reading p=0.0 (never fills) for a slot that may be fully "
+            f"liquid. The clamps below stay as defence in depth but are unreachable from here.")
+    cum = np.concatenate([np.zeros((1, n_assets)), np.cumsum(og, axis=0)], axis=0)  # (T+1, A)
+    dec_rows = np.arange(start_row, start_row + int(n_decisions))
+    # Both bounds clamped to [0, n_rows] — ``cum`` has n_rows + 1 rows, so this is total.
+    hi = np.clip(dec_rows, 0, n_rows)
+    lo = np.clip(dec_rows - lookback, 0, n_rows)
+    counts = cum[hi] - cum[lo]
+    n_bars = np.maximum(hi - lo, 1).astype(np.float64)
+    return counts / n_bars[:, None]
+
+
+def parse_fill_prob(v):
+    """Validate/normalize ``--fill-prob``. Returns ``'auto'`` (data-derived causal
+    print density, TASK_878's ruled default mode) or a ``float`` in ``[0, 1]`` (a
+    constant, for the scope-6 ablation arms: 0 = never fill, 1 = always fill). Used
+    as an argparse ``type=`` in both ``eval_vector.py`` and ``imprint.py`` so the two
+    CLIs refuse an out-of-domain value identically, before anything runs."""
+    if isinstance(v, str) and v.strip().lower() in ("auto", "data"):
+        return "auto"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"--fill-prob must be 'auto' (data-derived causal print density) or a float in "
+            f"[0, 1] (constant, for ablation), got {v!r}")
+    if not (0.0 <= f <= 1.0):
+        raise ValueError(f"--fill-prob must be in [0, 1], got {f}")
+    return f
+
+
+def resolve_fill_prob_mode(raw, open_gate, *, context):
+    """TASK_878 fix pass — the ONE resolver for ``--fill-prob``, shared by both eval-time
+    engines (``imprint.run``, ``eval_vector.evaluate_checkpoint``) so they can never
+    disagree about what "off", "on" or "unavailable" mean. Returns ``None`` (mechanism OFF
+    — every downstream path byte-identical to pre-878) or the validated mode
+    (``'auto'`` | ``float`` in ``[0, 1]``).
+
+    It settles two failure modes that were previously silent:
+
+    (1) SENTINEL COLLISION (fix-pass MINOR). ``getattr(args, "fill_prob", None)`` treated
+    ANY non-None value as ON. A hand-built args object (``types.SimpleNamespace``, as
+    ``experiments/882_instrument_reconciliation/test_instrument_agreement.py:236`` already
+    builds for ``evaluate_checkpoint``) using the common ``False``/``0`` "disabled"
+    convention therefore got **arm A** — attempt-preserving with a coinflip that always
+    misses — rather than true pre-878 OFF, which force-HOLDs and records no attempt at
+    all. Those are two behaviourally different artifacts for what the caller believed was
+    "off". ``None`` is now the ONLY off value; ``bool`` and non-float numerics are REFUSED
+    rather than guessed at, because "0 means disabled" and "0 means never fill" are both
+    plausible readings of the same token and this code cannot know which was meant. The
+    CLIs are unaffected: ``parse_fill_prob`` hands us ``'auto'`` or a genuine ``float``.
+
+    (2) REQUESTED-BUT-UNAVAILABLE (fix-pass MAJOR). ``open_gate is None`` (the daily
+    panels, or any loader that does not populate it) means the panel carries no
+    print-coverage information at all, so failed-fill semantics CANNOT be applied. The
+    previous code simply skipped the whole block: no stdout line, no artifact key, and an
+    artifact whose every number silently carried pre-878 force-HOLD semantics under a flag
+    that names post-878 semantics. That is the TASK_890/D40 hazard exactly ("distill's CLI
+    ... can no longer claim it did"), so this REFUSES. The refusal fires before any walk,
+    so it costs no compute (the TASK_864 "a refused promotion costs nothing" precedent),
+    and it is the loud, one-line-fixable failure rather than the quiet mislabeled artifact
+    a reader cannot detect. Note this is strictly the "cannot run" case: a panel that HAS a
+    gate but happens to have ZERO frozen cells runs normally and discloses
+    ``n_frozen_decision_cells: 0`` — "ran and found none" is a result, not an error.
+
+    ``context`` is a short human string naming the panel/engine, quoted in the refusal."""
+    if raw is None:
+        return None
+    # ``np.bool_`` subclasses NEITHER ``bool`` NOR ``np.integer``, so it slipped past the
+    # first version of this guard and landed on float(): np.bool_(False) -> 0.0 (ablation
+    # arm A) and np.bool_(True) -> 1.0 — exactly the off-vs-arm-A collision the guard exists
+    # to stop, one type away. Numpy scalars reach here easily (a caller reading a mask/flag
+    # out of an array), so they are named explicitly.
+    if isinstance(raw, (bool, np.bool_)) or isinstance(raw, (int, np.integer)):
+        raise ValueError(
+            f"--fill-prob was given as {raw!r} ({type(raw).__name__}) by {context}. `None` is "
+            f"the ONLY value that means OFF (pre-878 force-HOLD, no attempt recorded). A bool "
+            f"or a plain int is ambiguous — `0` could mean 'disabled' or ablation arm A "
+            f"('never fill', which still RECORDS the attempt), and those produce different "
+            f"artifacts. Pass None to disable, or 0.0 / 1.0 as floats for arms A / C.")
+    mode = parse_fill_prob(raw)
+    if open_gate is None:
+        raise RuntimeError(
+            f"[878] --fill-prob={mode!r} was requested, but {context} carries NO causal "
+            f"open-gate, so this panel cannot express failed-fill semantics: there is no "
+            f"per-bar record of which cells actually printed, hence nothing to attempt-and-"
+            f"maybe-miss. REFUSING rather than running the pre-878 force-HOLD path under a "
+            f"flag that claims otherwise — the resulting artifact would be numerically "
+            f"indistinguishable from a --fill-prob-absent run while asserting it applied a "
+            f"mechanism that never engaged. Drop --fill-prob, or point this run at a MINUTE "
+            f"panel (pinned or canon unpinned), which is where the open-gate exists.")
+    return mode

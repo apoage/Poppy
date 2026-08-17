@@ -89,6 +89,8 @@ if _REPO not in sys.path:
 from trader import backtest
 from mcts_trader.env.jax_trading_env import (
     EnvConfig, reset, step_vector, get_current_prices, compute_portfolio_value,
+    fill_coinflip_uniforms, causal_print_density, parse_fill_prob,
+    resolve_fill_prob_mode,
 )
 from mcts_trader.env.jax_encoder import (
     EncoderConfig as FullEncoderConfig, jit_batch_encode_simple,
@@ -634,7 +636,7 @@ def load_framed_panel(args):
     return prices_j, logc, env_cfg, frame
 
 
-def frame_hold_mask(prices_j, start_row, n_decisions, open_gate=None):
+def frame_hold_mask(prices_j, start_row, n_decisions, open_gate=None, include_frozen=True):
     """(N, A) bool: True where the panel has NO real price at that (decision row, slot) — the
     853 ``price_valid = current_prices > 0`` rule, evaluated on the decision rows this run walks
     (``walk_env`` reads ``prices[start_row + k]`` at decision k). ``None`` when nothing is
@@ -644,12 +646,126 @@ def frame_hold_mask(prices_j, start_row, n_decisions, open_gate=None):
     loaders (pinned or canon unpinned). Where it is False at a decision row the panel price is
     forward-filled (real enough for VALUATION, never printed for OPENING), so the cell is
     force-HELD too — the same price_valid mechanic, extended to frozen cells. None (daily
-    pinned, or any caller that does not pass it) = the pre-868 mask, byte-identical."""
+    pinned, or any caller that does not pass it) = the pre-868 mask, byte-identical.
+
+    TASK_878: ``include_frozen`` (default True, byte-identical to pre-878 shipped behaviour)
+    controls whether the ``~open_gate`` term is folded into the returned mask at all. A caller
+    running the new failed-fill coinflip (scope 1) wants the price<=0 term ALONE here —
+    genuinely zero-coverage cells stay force-HELD (nothing quotable, nothing attemptable,
+    scope item 1's carve-out) — and drives frozen (priced>0, no real print) cells through
+    ``compute_frozen_fill_gate`` instead, which preserves the ATTEMPT and only makes the
+    OUTCOME probabilistic. ``include_frozen=False`` with ``open_gate=None`` is a no-op (there is
+    nothing to exclude), so the daily/unpinned paths are unaffected either way."""
     dec = np.asarray(prices_j[start_row:start_row + n_decisions], dtype=np.float64)
     mask = dec <= 0.0
-    if open_gate is not None:
+    if open_gate is not None and include_frozen:
         mask = mask | ~np.asarray(open_gate)[start_row:start_row + n_decisions]
     return mask if mask.any() else None
+
+
+# TASK_878 — the causal fill-gate contract, emitted into artifacts (parallel to OPEN_GATE_RULE).
+FILL_GATE_RULE = (
+    "FAILED-FILL SEMANTICS (operator ruling 2026-08-05 + amendment): a no-print bar is an "
+    "ATTEMPTED order, not an illegal one. Where the causal 868 (D31 a2) open-gate is False AND "
+    "the panel price is > 0 (a FROZEN, forward-filled cell — a genuinely zero-coverage cell "
+    "stays force-HELD, unaffected by this rule), the attempted action is recorded UNCHANGED "
+    "(the policy's/teacher's intent is preserved for BC targets and agreement metrics) while "
+    "EXECUTION is a coinflip: HIT (probability p) fills normally at the marked price, MISS "
+    "leaves position/cash/fee UNCHANGED for that (decision, slot) — the attempt is recorded, "
+    "only the outcome is null. Where the bar DOES print, execution stays unchanged and "
+    "deterministic. p defaults to the slot's own causal trailing print density (recomputed "
+    "with no look-ahead past the decision row); a constant --fill-prob is available for the "
+    "3-arm ablation (0=never fill, 1=always fill). The coinflip is a seeded, PATH-INDEPENDENT "
+    "hash of (eval_seed, decision_index, slot) (jax.random.fold_in twice from PRNGKey(eval_seed) "
+    "— see jax_trading_env.fill_coinflip_uniforms) — never a sequential RNG stream — so changing "
+    "one decision's action can never change any other decision's flip, and the same "
+    "(eval_seed, panel) always reproduces a byte-identical fill outcome. Default OFF "
+    "(--fill-prob absent): byte-identical to the pre-878 force-HOLD gate.")
+
+
+def compute_frozen_fill_gate(prices_j, open_gate, start_row, n_decisions, eval_seed,
+                             fill_prob_mode, lookback, zero_coverage_mask=None):
+    """TASK_878 scope 1/1b/1c. Splits the causal 868 open-gate into two independent masks:
+
+      * a cell with NO price at all (``zero_coverage_mask``, default derived here as
+        ``prices_j[start_row:start_row+N] <= 0``) is UNAFFECTED — nothing quotable, nothing
+        attemptable, force-HOLD stays exactly as it always has (frame_hold_mask's price<=0 term).
+      * a FROZEN cell (``open_gate`` False, price > 0) is ATTEMPTABLE: this function decides,
+        per (decision, slot), whether that attempt FILLS.
+
+    Returns ``(frozen_mask, fill_miss_mask, gate_meta)``:
+      ``frozen_mask``  (N, A) bool — True where the cell is priced but carries no real print
+                       inside its bar (the set this rule applies to at all).
+      ``fill_miss_mask`` (N, A) bool, subset of ``frozen_mask`` — True where the coinflip MISSED
+                       (caller substitutes HOLD for the EFFECTIVE/executed action there, while
+                       still recording the ATTEMPTED action unchanged).
+      ``gate_meta``    disclosure dict (p source, cell counts, mean p) for the artifact.
+
+    TASK_878 fix pass (FINDING 5 — SCHEMA STABILITY). This function no longer has a
+    zero-frozen-cell early return. It used to bail out with ``(None, None, <3-key dict>)``
+    whenever the panel happened to contain no frozen cells, which made the ON sub-schema
+    depend on panel CONTENT rather than on the flag: a real run (measured: the fixture
+    window at ``--n-assets 4``, whose 4 always-live symbols give 0 frozen cells) exited 0
+    and wrote a valid artifact whose ``fill_gate`` block was MISSING ``fill_prob_source``,
+    ``fill_gate_rule``, ``n_fill_misses_raw``, ``mean_fill_prob_on_frozen_cells`` and
+    ``eval_seed``. Nothing crashed in ``imprint.py`` (``walk_env`` returns those keys
+    unconditionally as None), but ``eval_vector.py`` DID crash — with ``fill_gate_meta``
+    non-None and ``fill_gate`` None, ``score_tier`` omits ``frozen_fill`` while the
+    ``fill_prob`` block still indexes ``tiers[c]["frozen_fill"]["n_attempted_cells"]``, a
+    hard ``KeyError``. Both are fixed at this root: whenever ``open_gate`` exists the
+    return is ALWAYS real arrays plus the FULL key set, with honest values (an all-False
+    ``fill_miss_mask``, ``n_frozen_decision_cells: 0``, and ``mean_fill_prob_on_frozen_cells:
+    None`` — the mean of an empty set is not a number and is not reported as one).
+    The all-False masks are numerically INERT: ``walk_env``'s ``if fill_miss_mask[k].any()``
+    never fires so ``act_effective == act_attempted``, and ``rollout``'s
+    ``gate_for_mask = not_open_k & ~frozen_mask[k]`` reduces to ``not_open_k`` — i.e. exactly
+    the behaviour the old ``fill_gate is None`` path produced. Only DISCLOSURE changes, and
+    ``n_fill_attempts: 0`` is the correct reading of "the mechanism ran and found nothing"
+    now that the "could not run" case is refused upstream.
+
+    ``open_gate is None`` RAISES: every shipped caller resolves ``--fill-prob`` through
+    ``resolve_fill_prob_mode``, which refuses that combination before this function is
+    reached, so arriving here with no gate means a caller bypassed the refusal. Raising
+    keeps the silent "requested but inert" path from being re-created by a future caller."""
+    N, A = int(n_decisions), int(prices_j.shape[1])
+    if zero_coverage_mask is None:
+        zero_coverage_mask = np.asarray(
+            prices_j[start_row:start_row + N], dtype=np.float64) <= 0.0
+    if open_gate is None:
+        raise ValueError(
+            "compute_frozen_fill_gate called with open_gate=None: this panel cannot express "
+            "failed-fill semantics. Callers must resolve --fill-prob through "
+            "jax_trading_env.resolve_fill_prob_mode, which refuses this combination up front.")
+    gate_dec = np.asarray(open_gate)[start_row:start_row + N]
+    frozen_mask = (~gate_dec) & (~zero_coverage_mask)
+    n_frozen = int(frozen_mask.sum())
+    if fill_prob_mode == "auto":
+        p = causal_print_density(open_gate, start_row, N, lookback)
+        p_source = f"data-derived causal trailing print density (lookback={int(lookback)} bars)"
+    else:
+        p_const = float(fill_prob_mode)
+        p = np.full((N, A), p_const, dtype=np.float64)
+        p_source = f"constant --fill-prob={p_const}"
+    u = fill_coinflip_uniforms(eval_seed, N, A)
+    fill_miss_mask = frozen_mask & (u >= p)
+    # The key set below is IDENTICAL in both cases (frozen cells or none) — only the values
+    # differ. A consumer that reads e.g. fill_gate.eval_seed must not break on a panel that
+    # happens to be fully live.
+    gate_meta = {
+        "fill_prob_mode": fill_prob_mode,
+        "fill_prob_source": p_source,
+        "fill_gate_rule": FILL_GATE_RULE,
+        "n_frozen_decision_cells": n_frozen,
+        "n_fill_misses_raw": int(fill_miss_mask.sum()),        # coinflip misses, ANY action
+        "mean_fill_prob_on_frozen_cells": (float(p[frozen_mask].mean()) if n_frozen else None),
+        "eval_seed": int(eval_seed),
+        "note": ("the coinflip ran on this panel"
+                 if n_frozen else
+                 "the mechanism RAN and found NO frozen cells on this panel (every decision "
+                 "cell either printed inside its bar or has no coverage at all), so the "
+                 "coinflip never fired — this is a result, not an unavailable mechanism"),
+    }
+    return frozen_mask, fill_miss_mask, gate_meta
 
 
 def check_inactive_slot_features(obs, inactive_slots):
@@ -1228,18 +1344,47 @@ def emit_frame_provenance(ckpt_path, args, frame, asset_aliases, dry_run=False, 
 # in-env walks (teacher replay / imprinted-policy sanity replay)
 # =============================================================================
 
-def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None):
+def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None, fill_gate=None):
     """Deterministic single-episode walk from panel row ``start_row`` through
     ``step_vector`` (the corridor/831 replay pattern, on the TRAINING panel/config).
     ``action_fn(k, state) -> (A,) int32`` (state = the pre-step TradingState, so a
     state-greedy mapping can read ``pos_side`` and, for the weight-native ladder,
     reconstruct the current signed weight). Returns per-decision returns + diag.
 
-    TASK_863: ``hold_mask`` (N, A) bool, when given, forces HOLD wherever the panel has no real
-    price at that (decision, slot) — the 853 price-validity rule, applied here because this walk
-    hands its vector straight to ``step_vector`` and so bypasses the env's action mask. The
-    RECORDED ``actions`` are the masked ones, so the injected BC labels are what was walked.
-    Default ``None`` = the unpinned path, unchanged."""
+    TASK_863: ``hold_mask`` (N, A) bool, when given, forces HOLD wherever the panel has NO
+    price at all at that (decision, slot) — the 853 price-validity rule, applied here because
+    this walk hands its vector straight to ``step_vector`` and so bypasses the env's action
+    mask. Nothing quotable there, so nothing is attemptable either: the RECORDED ``actions``
+    are the masked ones. Default ``None`` = the unpinned path, unchanged.
+
+    TASK_878: ``fill_gate`` (default None), a ``(frozen_mask, fill_miss_mask)`` pair of
+    (N, A) bool arrays from ``compute_frozen_fill_gate`` — DISTINCT from ``hold_mask``.
+    ``hold_mask`` still means "nothing to attempt"; ``fill_gate`` means "attempted, outcome
+    uncertain". Where ``fill_miss_mask[k]`` is True the EFFECTIVE action fed to ``step_vector``
+    for that slot is forced to HOLD (a failed fill: position/cash/fee unchanged), but the
+    RECORDED ``actions[k]`` stays the ATTEMPTED action (post-``hold_mask``, pre-``fill_gate``)
+    — this is what TASK_878 acceptance (ii) requires of the BC-target stream. ``None`` (default)
+    is byte-identical to pre-878: the effective and attempted actions are the same array.
+
+    TASK_878 fix pass (FINDING 4): ``avg_long_active`` / ``avg_short_active`` are emitted
+    whenever ANY masking mechanism is active (``hold_mask`` OR ``fill_gate``), not — as
+    before — only when ``hold_mask is not None``. That old gate encoded "is anything masked
+    at all", which stopped being true the instant ``--fill-prob`` moved the frozen half out
+    of ``hold_mask`` and into ``fill_gate``: on a panel with frozen cells but no
+    zero-coverage ones (the fixture window: measured 0 cells with ``price <= 0``), turning
+    the flag ON made ``hold_mask`` become ``None`` and these two disclosures VANISH from the
+    artifact while 1724 cells were in fact being masked. Same defect shape as the BLOCKER
+    this fix pass closes — a guard whose meaning changed underneath it.
+
+    ``live`` is deliberately derived from ``hold_mask`` ALONE and never from the fill gate.
+    These companions answer "can this slot ever carry a position" (zero coverage => never);
+    a missed fill is a one-step EXECUTION failure on a slot that is perfectly alive and may
+    well be holding a position opened earlier, so folding it in would make the denominator
+    step-varying and conflate two different questions. CONSEQUENCE, stated so no reader
+    mistakes it for a bug: on a panel with no zero-coverage cells, ``avg_long_active ==
+    avg_long`` exactly. That is honest and schema-stable, which beats absent. The fill side
+    is disclosed separately and completely by ``n_fill_attempts`` / ``n_fill_misses`` /
+    ``per_slot_fill_attempts`` / ``per_slot_fill_misses``."""
     initial_cash = float(cfg.initial_cash)
     state = reset(jax.random.PRNGKey(0), prices_j, cfg).replace(
         episode_start_idx=jnp.array(start_row), current_step=jnp.array(0),
@@ -1260,13 +1405,47 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None):
     # to an unpinned (fully-covered) reference. Count an ACTIVE-CELLS-ONLY companion alongside.
     n_long_active = n_short_active = 0
     bankrupt_at = -1
+    frozen_mask, fill_miss_mask = fill_gate if fill_gate is not None else (None, None)
+    # TASK_878 fix pass (FINDING 4): the active-cells-only companions are gated on "is
+    # ANYTHING masked, by ANY mechanism", NOT on ``hold_mask is not None``. See the docstring.
+    masked_any = (hold_mask is not None) or (fill_miss_mask is not None)
+    n_fill_attempts = n_fill_misses = 0
+    per_slot_attempts = np.zeros(A, dtype=np.int64)
+    per_slot_misses = np.zeros(A, dtype=np.int64)
     for k in range(n_decisions):
-        act = np.asarray(action_fn(k, state), dtype=np.int32)
+        act_attempted = np.asarray(action_fn(k, state), dtype=np.int32)
         if hold_mask is not None:
-            act = np.where(hold_mask[k], HOLD_ACTION_CODE, act).astype(np.int32)
-        state, _, r, d = jstep(state, jnp.asarray(act))
+            act_attempted = np.where(hold_mask[k], HOLD_ACTION_CODE, act_attempted).astype(np.int32)
+        act_effective = act_attempted
+        if fill_miss_mask is not None:
+            # Applied UNCONDITIONALLY (was `if fill_miss_mask[k].any()`): the no-miss case is
+            # a value-identical no-op, and making the write unconditional is what lets the
+            # disclosure below be derived from it rather than from the mask.
+            act_effective = np.where(fill_miss_mask[k], HOLD_ACTION_CODE,
+                                     act_attempted).astype(np.int32)
+        # TASK_878 fix pass cycle 3 (MAJOR — the disclosure was FORGEABLE). The counters used
+        # to be accumulated from ``fill_miss_mask`` BEFORE (and independently of) the branch
+        # that writes ``act_effective``. Severing the application therefore left the artifact
+        # still asserting the failed fills and their per-slot breakdown while PV reverted
+        # EXACTLY to the no-gate walk — measured: GOOD+gate pv=99581.77 vs SEVERED+gate
+        # pv=99790.61 == GOOD nogate pv, both reporting attempts=40 misses=23. That is the
+        # TASK_890 severance class: a disclosure that survives the removal of the thing it
+        # discloses. The MISS count is now derived from ``exec_arr`` — the very array handed
+        # to ``jstep`` — so it is evidence of what was executed, not a restatement of intent.
+        exec_arr = np.asarray(act_effective, dtype=np.int32)
+        if fill_miss_mask is not None:
+            # An "attempt" is a property of the INPUT (frozen cell + non-HOLD intent) and is
+            # not a claim about suppression, so it stays mask-derived. A "miss" IS such a
+            # claim, so it is read back off the executed array.
+            attempted_trade = frozen_mask[k] & (act_attempted != HOLD_ACTION_CODE)
+            missed_trade = exec_arr != act_attempted
+            n_fill_attempts += int(attempted_trade.sum())
+            n_fill_misses += int(missed_trade.sum())
+            per_slot_attempts += attempted_trade.astype(np.int64)
+            per_slot_misses += missed_trade.astype(np.int64)
+        state, _, r, d = jstep(state, jnp.asarray(exec_arr))
         jax.block_until_ready(r)
-        actions[k] = act
+        actions[k] = act_attempted                          # TASK_878 (ii): the ATTEMPT, recorded
         rewards[k] = float(r)
         dones[k] = float(d)
         cur = get_current_prices(prices_j, state.current_step - 1, state.episode_start_idx)
@@ -1274,8 +1453,11 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None):
         pvs[k + 1] = pv
         sd = np.asarray(state.pos_side)
         n_long += int((sd == 1).sum()); n_short += int((sd == 2).sum())
-        if hold_mask is not None:
-            live = ~hold_mask[k]
+        if masked_any:
+            # ``live`` is derived from hold_mask ONLY, never from the fill gate — see the
+            # docstring's FINDING 4 note. hold_mask None (nothing zero-coverage) => every
+            # slot is live, and the companions equal the aggregates exactly.
+            live = np.ones(A, dtype=bool) if hold_mask is None else ~hold_mask[k]
             n_long_active += int(((sd == 1) & live).sum())
             n_short_active += int(((sd == 2) & live).sum())
         if bankrupt_at < 0 and pv <= initial_cash * cfg.liquidation_threshold_pct:
@@ -1288,12 +1470,20 @@ def walk_env(prices_j, cfg, start_row, n_decisions, action_fn, hold_mask=None):
         "final_pv": float(pvs[-1]),
         "avg_long": n_long / max(n_decisions, 1),
         "avg_short": n_short / max(n_decisions, 1),
-        # FIX A companions — None on the unpinned path (nothing is masked there).
-        "avg_long_active": (None if hold_mask is None
-                            else n_long_active / max(n_decisions, 1)),
-        "avg_short_active": (None if hold_mask is None
-                             else n_short_active / max(n_decisions, 1)),
+        # FIX A companions — None only when NOTHING is masked by any mechanism (TASK_878
+        # fix pass FINDING 4; was ``hold_mask is None``, which silently dropped them the
+        # moment --fill-prob moved the frozen half out of hold_mask and into fill_gate).
+        "avg_long_active": (n_long_active / max(n_decisions, 1)) if masked_any else None,
+        "avg_short_active": (n_short_active / max(n_decisions, 1)) if masked_any else None,
         "bankrupt_at": bankrupt_at,
+        # TASK_878 scope 3 — failed-fill disclosure. None (not 0) when no fill_gate was passed,
+        # so a caller can tell "the coinflip never ran" from "it ran and found nothing to miss".
+        "n_fill_attempts": (None if fill_miss_mask is None else int(n_fill_attempts)),
+        "n_fill_misses": (None if fill_miss_mask is None else int(n_fill_misses)),
+        "per_slot_fill_attempts": (None if fill_miss_mask is None
+                                   else per_slot_attempts.tolist()),
+        "per_slot_fill_misses": (None if fill_miss_mask is None
+                                 else per_slot_misses.tolist()),
     }
 
 
@@ -1468,20 +1658,23 @@ def _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, n_assets):
 
 
 def order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N, bar_minutes,
-                          hold_mask=None):
+                          hold_mask=None, fill_gate=None):
     """The FIXED order-semantics floor: the canonical order-code teacher
     (``corridor._to_action_vec``, via ``teacher_fn``) walked at net@21 through the ORDER
     env (weight OFF). This is the 830/831 corridor floor and the SAME reference both the
-    primary and the weight-native re-gate are scored against."""
+    primary and the weight-native re-gate are scored against.
+
+    TASK_878: ``fill_gate`` passthrough to ``walk_env`` (default None = byte-identical)."""
     order_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
                                 vector_weight_rebalance=False)
-    wo = walk_env(prices_j, order_cfg, start_row, N, teacher_fn, hold_mask=hold_mask)
+    wo = walk_env(prices_j, order_cfg, start_row, N, teacher_fn, hold_mask=hold_mask,
+                  fill_gate=fill_gate)
     return {"s": _sharpe(wo["rets"], bar_minutes),
             "final_pv": wo["final_pv"], "bankrupt_at": wo["bankrupt_at"]}
 
 
 def expressibility_gate(prices_j, env_cfg, weight_teacher_fn, start_row, N, bar_minutes,
-                        order_ref, mapping, tol=0.10, hold_mask=None):
+                        order_ref, mapping, tol=0.10, hold_mask=None, fill_gate=None):
     """Pre-registered teacher-expressibility gate (TASK_845, the real deliverable).
 
     Walks ``weight_teacher_fn`` at net@21 through the WEIGHT env (weight ON) on the
@@ -1495,10 +1688,13 @@ def expressibility_gate(prices_j, env_cfg, weight_teacher_fn, start_row, N, bar_
     corridor floor reference (830/831); the weight-env value is the book the ExIt loop
     will actually imprint on. A miss > tol means the mapping does NOT reproduce ~floor
     under weight semantics => the caller swaps in the weight-native ladder and re-gates
-    against the SAME order_ref (DEC-2 core-risk check)."""
+    against the SAME order_ref (DEC-2 core-risk check).
+
+    TASK_878: ``fill_gate`` passthrough to ``walk_env`` (default None = byte-identical)."""
     weight_cfg = env_cfg.replace(fee_bps=FEE_BPS, slippage_bps=SLIP_BPS,
                                  vector_weight_rebalance=True)
-    ww = walk_env(prices_j, weight_cfg, start_row, N, weight_teacher_fn, hold_mask=hold_mask)
+    ww = walk_env(prices_j, weight_cfg, start_row, N, weight_teacher_fn, hold_mask=hold_mask,
+                  fill_gate=fill_gate)
     s_o = order_ref["s"]
     s_w = _sharpe(ww["rets"], bar_minutes)
     rel = _rel(s_w, s_o)
@@ -2228,7 +2424,41 @@ def run(args, out_path, tag, provenance_sink=None):
     # TASK_868 (D31 a2): the causal open-gate is folded in on BOTH minute paths (pinned AND
     # canon unpinned) — frozen cells (filled price, no print in the bar) are force-HELD for
     # OPENING exactly like inert ones. Daily pinned and any gate-free panel: unchanged.
-    hold_mask = frame_hold_mask(prices_j, start_row, N, open_gate=open_gate)
+    # TASK_878: --fill-prob (default None => flag OFF, this whole block is byte-identical to
+    # the shipped 868 gate) SPLITS that union. hold_mask keeps ONLY the zero-coverage half
+    # (nothing quotable, so nothing is force-HELD's business here anymore); frozen cells become
+    # ATTEMPTABLE, with the outcome decided by fill_gate's coinflip below.
+    # TASK_878 fix pass: resolved through the SHARED resolver, which (a) refuses ambiguous
+    # OFF sentinels (False / int 0, which used to silently select ablation arm A instead of
+    # true OFF) and (b) REFUSES outright when --fill-prob is requested on a panel with no
+    # causal open-gate, instead of running the pre-878 path with no disclosure at all.
+    fill_prob_mode = resolve_fill_prob_mode(
+        getattr(args, "fill_prob", None), open_gate,
+        context=("imprint.py's DAILY pinned panel" if args.panel_frame_from_checkpoint
+                 else "imprint.py's training panel"))
+    hold_mask = frame_hold_mask(prices_j, start_row, N, open_gate=open_gate,
+                               include_frozen=(fill_prob_mode is None))
+    frozen_mask = fill_miss_mask = fill_gate_meta = None
+    fill_gate = None
+    if fill_prob_mode is not None:
+        # open_gate is guaranteed non-None here (the resolver refused otherwise), and
+        # compute_frozen_fill_gate always returns real arrays + a FULL meta key set —
+        # so the ON sub-schema no longer depends on whether this panel HAS frozen cells.
+        frozen_mask, fill_miss_mask, fill_gate_meta = compute_frozen_fill_gate(
+            prices_j, open_gate, start_row, N, args.seed, fill_prob_mode,
+            lookback=int(env_cfg.window_size))
+        fill_gate = (frozen_mask, fill_miss_mask)
+        # "ran and found none" is a RESULT and says so; "could not run" no longer reaches
+        # this print at all (the resolver refuses it above), which is the distinction the
+        # old single message conflated.
+        print(f"[878] --fill-prob={fill_prob_mode}: "
+              + (f"{fill_gate_meta['n_frozen_decision_cells']} frozen decision cells eligible, "
+                 f"{fill_gate_meta['n_fill_misses_raw']} coinflip misses "
+                 f"(mean p={fill_gate_meta['mean_fill_prob_on_frozen_cells']:.4f})"
+                 if fill_gate_meta["n_frozen_decision_cells"]
+                 else "the gate RAN and found NO frozen cells on this panel, so the coinflip "
+                      "never fired (every cell either printed inside its bar or has no "
+                      "coverage at all) — a result, not an unavailable mechanism"))
     if frame is not None:
         n_hold_cells = 0 if hold_mask is None else int(hold_mask.sum())
         print(f"[863] force-HOLD cells (no real price at that decision row / slot): "
@@ -2242,6 +2472,25 @@ def run(args, out_path, tag, provenance_sink=None):
         # to an unpinned reference — hence the active-cells-only companions and this fraction.
         frame["panel_frame"]["masked_cell_fraction"] = (
             float(n_hold_cells) / float(max(N * A, 1)))
+        # TASK_878 fix pass (FINDING 4, companion half). n_force_hold_cells / masked_cell_
+        # fraction keep their ORIGINAL meaning — cells force-HELD because nothing is
+        # quotable there — which under --fill-prob narrows to the zero-coverage half. That
+        # value stays literally accurate, so it is NOT redefined (an existing tracked number
+        # must not silently change meaning). What WOULD otherwise be unanswerable is "how
+        # many cells are masked by ANY mechanism", so the fill-gate counts are recorded
+        # alongside. Flag-gated => structurally ABSENT when --fill-prob is off, so the OFF
+        # artifact keeps zero differing leaves.
+        if fill_gate_meta is not None:
+            frame["panel_frame"]["n_fill_gated_cells"] = int(
+                fill_gate_meta["n_frozen_decision_cells"])
+            frame["panel_frame"]["fill_gated_cell_fraction"] = (
+                float(fill_gate_meta["n_frozen_decision_cells"]) / float(max(N * A, 1)))
+            frame["panel_frame"]["masking_note"] = (
+                "n_force_hold_cells counts ONLY zero-coverage cells (nothing quotable => "
+                "nothing attemptable). Under --fill-prob the FROZEN cells are no longer "
+                "force-HELD — they are attempted with a probabilistic fill — and are counted "
+                "by n_fill_gated_cells instead. Total cells touched by either mechanism = "
+                "n_force_hold_cells + n_fill_gated_cells.")
 
     # ---- TASK_874 fix pass (B1/B2/B3): VALIDATE the emission now, WRITE it last ----
     # Everything the provenance document is made of (the frame, the window, n_assets, the pin) is
@@ -2305,17 +2554,18 @@ def run(args, out_path, tag, provenance_sink=None):
     teacher = floor = gate = None
     if tv_actions is None:
         teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, teacher_fn,
-                               hold_mask=hold_mask)
+                               hold_mask=hold_mask, fill_gate=fill_gate)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] teacher floor in-env: gross {floor[0]:+.3f}  net@21 {floor[21]:+.3f}")
 
         wn_fn = _make_weight_native_teacher_fn(prices_j, env_cfg, tgt, start_row, A)
         order_ref = order_floor_reference(prices_j, env_cfg, teacher_fn, start_row, N,
-                                          args.bar_minutes, hold_mask=hold_mask)
+                                          args.bar_minutes, hold_mask=hold_mask,
+                                          fill_gate=fill_gate)
         gate = expressibility_gate(prices_j, env_cfg, teacher_fn, start_row, N, args.bar_minutes,
                                    order_ref, "order-code (corridor._to_action_vec)",
-                                   hold_mask=hold_mask)
+                                   hold_mask=hold_mask, fill_gate=fill_gate)
         _gate_line(gate)
         if not gate["passed"]:
             # FAIL => re-gate the weight-native ladder mapping against the SAME order-code floor
@@ -2323,7 +2573,7 @@ def run(args, out_path, tag, provenance_sink=None):
             wn_gate = expressibility_gate(
                 prices_j, env_cfg, wn_fn, start_row, N, args.bar_minutes, order_ref,
                 "weight-native ladder (sign(w_target - w_cur) | |dw|>deadband)",
-                hold_mask=hold_mask)
+                hold_mask=hold_mask, fill_gate=fill_gate)
             _gate_line(wn_gate)
             gate["weight_native_regate"] = wn_gate
     else:
@@ -2360,7 +2610,8 @@ def run(args, out_path, tag, provenance_sink=None):
                 "certifies the weight-env teacher, not the order-env one (TASK_845 MINOR, "
                 "preserved across the 861 --teacher-vectors path)")
         tv_fn = lambda k, state: tv_actions[k]                          # noqa: E731
-        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, tv_fn, hold_mask=hold_mask)
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, tv_fn,
+                               hold_mask=hold_mask, fill_gate=fill_gate)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] IMPRINT MAPPING = {imprint_mapping} (861 collected chosen vectors); "
@@ -2382,7 +2633,8 @@ def run(args, out_path, tag, provenance_sink=None):
             "--imprint-mapping weight-native requires --vector-weight-rebalance so the teacher "
             "walk, obs encoding, and ExIt env all run weight semantics; the gate certifies the "
             "weight-env teacher, not the order-env one")
-        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, wn_fn, hold_mask=hold_mask)
+        teacher = {c: walk_env(prices_j, tier_cfg[c], start_row, N, wn_fn,
+                               hold_mask=hold_mask, fill_gate=fill_gate)
                    for c in GATE_COSTS}
         floor = {c: _sharpe(teacher[c]["rets"], args.bar_minutes) for c in GATE_COSTS}
         print(f"[832] IMPRINT MAPPING = weight-native ladder; teacher floor in-env: "
@@ -2483,6 +2735,11 @@ def run(args, out_path, tag, provenance_sink=None):
     # price-validity rule 853 applies in eval_vector.evaluate_checkpoint. Forcing HOLD on a
     # zero-price cell is always correct (no tradeable market there) and can never HOLD a
     # genuinely-active decision, so it is alignment-safe. Unpinned path: hold_mask is None.
+    # TASK_878 fix pass — this APPLICATION site is correct as written and deliberately left
+    # alone: under --fill-prob, hold_mask narrows to the zero-coverage half, which is exactly
+    # the set that must still be rewritten to HOLD here. Frozen cells must NOT be rewritten
+    # (that is the whole point of gate ii) — their execution is decided by fill_gate inside
+    # walk_env, while pol_actions keeps the ATTEMPT the agreement metric below needs.
     if hold_mask is not None:
         pol_actions = np.where(hold_mask, HOLD_ACTION_CODE, pol_actions).astype(np.int32)
     agreement = float(np.mean(pol_actions == teacher[net_tier]["actions"]))
@@ -2496,14 +2753,25 @@ def run(args, out_path, tag, provenance_sink=None):
         # forced cells) is computed over ALL N x A label cells, including the force-HOLD ones. Add
         # the ACTIVE-CELLS-ONLY companion (same estimator, cells restricted to ~hold_mask) without
         # touching the existing keys. Pinned-only: absent on the legacy path.
-        if hold_mask is not None:
-            act_ = ~hold_mask
+        # TASK_878 fix pass (FINDING 4): gated on "masked by ANY mechanism", not on
+        # ``hold_mask is not None`` — otherwise --fill-prob silently deletes this whole
+        # companion block (and masked_cell_fraction with it) from the artifact.
+        if hold_mask is not None or fill_gate is not None:
+            act_ = np.ones_like(tv_actions_original, dtype=bool) if hold_mask is None \
+                else ~hold_mask
             if int(act_.sum()):
                 tv_fit["active_cells_only"] = teacher_vectors_fit(
                     tv_logp[act_][:, None, :], tv_actions_original[act_][:, None])
             else:
                 tv_fit["active_cells_only"] = None
-            tv_fit["masked_cell_fraction"] = float(hold_mask.mean())
+            # TASK_878 fix pass cycle 3 (BLOCKER): the GUARD above was widened last cycle but
+            # this BODY still dereferenced hold_mask, so the --teacher-vectors lane died with
+            # `AttributeError: 'NoneType' object has no attribute 'mean'` AFTER the walk,
+            # training and checkpoint write — on the repo's own fixture, under the very
+            # precondition this fix pass documents (frozen cells exist, zero-coverage cells do
+            # not => hold_mask is None). Derived from ``act_`` instead, which already carries
+            # the None fallback and is the exact complement of the cells averaged over.
+            tv_fit["masked_cell_fraction"] = float(1.0 - act_.mean())
             tv_fit["active_cells_note"] = (
                 "the keys above average over ALL label cells, INCLUDING the force-HOLD cells of "
                 "inactive/pre-listing slots (see masked_cell_fraction). 'active_cells_only' is the "
@@ -2517,8 +2785,12 @@ def run(args, out_path, tag, provenance_sink=None):
               f"{tv_fit['modal_action_rate']:.3f}")
         if tv_fit.get("active_cells_only"):
             a_ = tv_fit["active_cells_only"]
+            # Fix pass cycle 3: reads the key fixed above, so it no longer crashes; the
+            # wording now also holds at 0.00% (nothing force-HELD, only fill-gated cells),
+            # where the companion equals the diluted figure by construction.
             print(f"[863] the line above is DILUTED by the force-HOLD cells "
-                  f"({100.0 * tv_fit['masked_cell_fraction']:.2f}% of cells). ACTIVE-CELLS-ONLY "
+                  f"({100.0 * tv_fit['masked_cell_fraction']:.2f}% of cells; 0.00% means "
+                  f"nothing was force-HELD and the companion equals it). ACTIVE-CELLS-ONLY "
                   f"companion (n={a_['n_label_cells']}): NLL "
                   f"{a_['nll_vs_original_targets']:.4f} vs marginal baseline "
                   f"{a_['nll_marginal_baseline']:.4f} -> reduction {a_['nll_reduction']:+.4f}; "
@@ -2528,7 +2800,7 @@ def run(args, out_path, tag, provenance_sink=None):
     sanity = {}
     for c in GATE_COSTS:
         rep = walk_env(prices_j, tier_cfg[c], start_row, N,
-                       lambda k, state: pol_actions[k], hold_mask=hold_mask)
+                       lambda k, state: pol_actions[k], hold_mask=hold_mask, fill_gate=fill_gate)
         s = _sharpe(rep["rets"], args.bar_minutes)
         sanity[c] = {
             "policy_inenv": float(s) if np.isfinite(s) else None,
@@ -2540,9 +2812,17 @@ def run(args, out_path, tag, provenance_sink=None):
         }
         # Fix pass FIX A — APPENDED (so the legacy dict is byte-identical): avg_long/avg_short
         # average open positions over ALL slots, dead ones included. Active-cells-only companions.
-        if hold_mask is not None:
+        # TASK_878 fix pass (FINDING 4 — the site that was MEASURED vanishing): gated on
+        # "masked by ANY mechanism". With --fill-prob on a panel whose only masked cells are
+        # frozen ones, hold_mask is None while 1724 cells are still masked via fill_gate, and
+        # the old ``hold_mask is not None`` gate deleted these two keys from the artifact.
+        if hold_mask is not None or fill_gate is not None:
             sanity[c]["avg_long_active_cells"] = rep["avg_long_active"]
             sanity[c]["avg_short_active_cells"] = rep["avg_short_active"]
+        # TASK_878 scope 3 — APPENDED, None (not 0) when --fill-prob is absent.
+        if fill_gate is not None:
+            sanity[c]["n_fill_attempts"] = rep["n_fill_attempts"]
+            sanity[c]["n_fill_misses"] = rep["n_fill_misses"]
 
     hist = lambda a: {str(i): int((a == i).sum()) for i in range(N_ACTIONS_PER_ASSET)}
     pol_hist = hist(pol_actions)
@@ -2623,10 +2903,24 @@ def run(args, out_path, tag, provenance_sink=None):
         sanity_extra["n_decision_cells"] = n_cells
         sanity_extra["n_masked_cells"] = n_masked
         sanity_extra["masked_cell_fraction"] = float(n_masked) / float(max(n_cells, 1))
+        # TASK_878 fix pass (FINDING 4): n_masked_cells / masked_cell_fraction above keep
+        # their original meaning (force-HOLD, i.e. zero-coverage under --fill-prob) and are
+        # NOT redefined; the fill-gate count is recorded next to them instead, so "masked by
+        # ANY mechanism" stays answerable. Flag-gated => absent when --fill-prob is off.
+        if fill_gate_meta is not None:
+            sanity_extra["n_fill_gated_cells"] = int(
+                fill_gate_meta["n_frozen_decision_cells"])
+            sanity_extra["fill_gated_cell_fraction"] = (
+                float(fill_gate_meta["n_frozen_decision_cells"]) / float(max(n_cells, 1)))
         # FIX A: active-cells-only companions for every diluted per-cell scalar above. The existing
         # keys keep their (diluted) values; these are the frame-comparable ones.
-        if hold_mask is not None:
-            act_cells = ~hold_mask
+        # TASK_878 fix pass (FINDING 4): gated on "masked by ANY mechanism" — see the
+        # sanity[c] site above. act_cells is derived from hold_mask alone (the "can this slot
+        # ever carry a position" question), so with no zero-coverage cells every cell is
+        # active and these companions equal their diluted counterparts exactly.
+        if hold_mask is not None or fill_gate is not None:
+            act_cells = (np.ones_like(pol_actions, dtype=bool) if hold_mask is None
+                         else ~hold_mask)
             n_act = int(act_cells.sum())
             sanity_extra["active_cells_only"] = {
                 "n_active_cells": n_act,
@@ -2646,7 +2940,14 @@ def run(args, out_path, tag, provenance_sink=None):
                 f"both sides — so they are INFLATED/deflated by cells no policy could influence "
                 f"and are NOT comparable to an unpinned reference (e.g. the +0.839 run's 97.5% "
                 f"agreement was measured on a fully-covered minute panel). Use "
-                f"'active_cells_only'.")
+                f"'active_cells_only'."
+                + ("" if fill_gate_meta is None else
+                   f" TASK_878: under --fill-prob the FROZEN cells are NOT force-HOLD and so "
+                   f"are NOT excluded here — they carry a real attempt whose EXECUTION was a "
+                   f"coinflip, so the policy did influence them. "
+                   f"{fill_gate_meta['n_frozen_decision_cells']} such cells are counted in "
+                   f"n_fill_gated_cells. When n_masked_cells is 0, 'active_cells_only' equals "
+                   f"the diluted figures above by construction."))
         else:
             sanity_extra["active_cells_only"] = None
             sanity_extra["dilution_note"] = (
@@ -2698,6 +2999,16 @@ def run(args, out_path, tag, provenance_sink=None):
             "action_hist": hist(teacher[net_tier]["actions"]),
             "values_stats": {"mean": float(values.mean()), "std": float(values.std()),
                              "min": float(values.min()), "max": float(values.max())},
+            # TASK_878 scope 2/(ii): STRUCTURALLY ABSENT (not null) when --fill-prob is off —
+            # the orchestrator's ruling (883R precedent): a positive-claim key present-and-null
+            # asserts something about a mechanism that never ran. n_fill_attempts/misses come
+            # from the SAME walk `values`/`inject_teacher` are built from (net_tier), so when
+            # present this is the direct evidence the injected BC labels are the ATTEMPT, not
+            # the outcome.
+            **({} if fill_gate is None else {
+                "n_fill_attempts": teacher[net_tier]["n_fill_attempts"],
+                "n_fill_misses": teacher[net_tier]["n_fill_misses"],
+            }),
         },
         "expressibility_gate": gate,
         "sanity": {
@@ -2738,6 +3049,24 @@ def run(args, out_path, tag, provenance_sink=None):
         "checkpoint": ckpt_path,
     }
 
+    # TASK_878 — top-level, present on BOTH pin paths (frame None or not; the causal open-gate
+    # applies on the canon unpinned minute panel too, per 868's uniformity ruling).
+    # STRUCTURALLY ABSENT (the key itself, not a null value) when --fill-prob is absent — the
+    # orchestrator's ruling: this repo's OFF-parity bar is ZERO differing leaves (883R
+    # precedent: a positive claim emitted-and-null when the mechanism never ran is the same
+    # "absence read as a value" inversion this program keeps closing, pointed the other way).
+    if fill_gate_meta is not None:
+        result["fill_gate"] = {
+            **fill_gate_meta,
+            "n_decision_cells": int(N * A),
+            "teacher_net21": {"n_fill_attempts": teacher[net_tier]["n_fill_attempts"],
+                              "n_fill_misses": teacher[net_tier]["n_fill_misses"],
+                              "per_slot_fill_attempts": teacher[net_tier]["per_slot_fill_attempts"],
+                              "per_slot_fill_misses": teacher[net_tier]["per_slot_fill_misses"]},
+            "sanity_net21": {"n_fill_attempts": sanity[net_tier].get("n_fill_attempts"),
+                             "n_fill_misses": sanity[net_tier].get("n_fill_misses")},
+        }
+
     # TASK_863: flag-gated ADDITIVE disclosure block — absent (and every key above byte-identical)
     # when --panel-frame-from-checkpoint is not passed. Present, a 6/8-live-slot imprint is
     # impossible to mistake for an 8/8-live one (the 853 dual-disclosure requirement).
@@ -2777,6 +3106,21 @@ def run(args, out_path, tag, provenance_sink=None):
         # TASK_868 causal open-gate on the minute paths, still forward-filled for VALUATION)
         # + LIVE = the whole grid. ``n_force_hold_cells`` (in panel_frame) is INERT + FROZEN on
         # the gated paths — the mask total, not a third category.
+        # TASK_878 fix pass cycle 3 (MINOR-2): under --fill-prob the two sentences above no
+        # longer describe the MASKING (the PARTITION is unchanged) — frozen cells become
+        # attemptable and n_force_hold_cells narrows to INERT only. The emitted ``rule`` string
+        # carries that rider so the artifact never ships the superseded claim. FOUR SITES
+        # STATE THIS RULE AND MUST BE CHANGED AS ONE GROUP — a site-by-site fix is how the
+        # last three instances were created:
+        #   1. panel_frame.masking_note              (imprint.py, this module)
+        #   2. sanity_extra.dilution_note            (imprint.py, this module)
+        #   3. decision_cell_honesty.rule            (HERE — the one 861/865 consumers assert
+        #      against: smoke_e2e.py:1203, smoke_minute_frame_pin.py:2910)
+        #   4. teacher_floor.hold_mask.rule          (eval_vector.py, ~:3600) — falsified by
+        #      the TASK_878 cycle-3 gating of eval_vector's zero-coverage guard, 230 lines
+        #      from the code that changed.
+        # Related, same class, different rule: the (A)-guard block header in
+        # eval_vector.py (~:3321) and the smoke's section header/caller-contract notes.
         _fz = _load_eval_module().frozen_decision_cells(frame["coverage"], start_row, N)
         _n_cells = int(N * int(args.n_assets))
         # INERT must be derived from PRICES (no price at all), not from hold_mask: as of
@@ -2803,7 +3147,23 @@ def run(args, out_path, tag, provenance_sink=None):
                      "the minute paths — interior spans re-anchor and can fabricate PnL; still "
                      "forward-filled for VALUATION, D30 PV-exact); LIVE = the panel row samples "
                      "a real close. Disjoint, and they sum to n_decision_cells; the force-HOLD "
-                     "mask total is INERT + FROZEN."),
+                     "mask total is INERT + FROZEN."
+                     + ("" if fill_gate_meta is None else
+                        " TASK_878 RIDER (--fill-prob ACTIVE on this run, so the two clauses "
+                        "above are SUPERSEDED here): FROZEN cells are NOT force-HELD — the "
+                        "action is attempted and recorded, and only its EXECUTION is a "
+                        "coinflip — and panel_frame.n_force_hold_cells is therefore INERT "
+                        "ONLY, not INERT + FROZEN. The cell PARTITION above is unchanged (it "
+                        "describes the panel, not the masking); what changes is which cells "
+                        "the force-HOLD mask covers. n_fill_gated_decision_cells below is the "
+                        "frozen-and-attemptable count as its own axis.")),
+            # Emitted ONLY under --fill-prob (structurally absent otherwise, so no OFF-path
+            # consumer sees a new leaf): the frozen cells this run made ATTEMPTABLE rather
+            # than force-HELD, as a first-class axis instead of an inference from `rule`.
+            **({} if fill_gate_meta is None else {
+                "n_fill_gated_decision_cells": int(
+                    fill_gate_meta["n_frozen_decision_cells"]),
+            }),
         }
         if frame["panel_frame"].get("panel_frame_source") == "minute":
             result["panel_frame_source"] = "minute"
@@ -3434,6 +3794,18 @@ def main():
                          "passes, the 2021-2022 WF fold is 50/64 and refuses without an explicit "
                          "override, the 8-slot fixture frame is 6/8 by design and refuses (the "
                          "fixture smokes pass 0). Daily pins are unaffected")
+    ap.add_argument("--fill-prob", type=parse_fill_prob, default=None, dest="fill_prob",
+                    help="TASK_878 (operator ruling 2026-08-05 + amendment): default None = OFF, "
+                         "byte-identical to the shipped 868 force-HOLD gate on frozen (no-print) "
+                         "cells. When given, a frozen cell is ATTEMPTABLE (the policy's/teacher's "
+                         "chosen action is recorded, never rewritten to HOLD) and its EXECUTION "
+                         "is a seeded, path-independent coinflip: HIT fills normally, MISS leaves "
+                         "position/cash/fee unchanged. 'auto' (the ruled default MODE, once the "
+                         "flag is used at all) computes p per (decision, slot) from the slot's own "
+                         "causal trailing print density; a float in [0, 1] is a CONSTANT p for the "
+                         "scope-6 ablation (0 = never fill, 1 = always fill — the pre-868 "
+                         "behaviour). Zero-coverage cells (no price at all) are unaffected either "
+                         "way — force-HOLD stays for those")
     ap.add_argument("--teacher-vectors", default=None, dest="teacher_vectors",
                     help="TASK_861: JSON collection written by `eval_vector.py "
                          "--collect-chosen-vectors` — the per-decision action vectors the "
