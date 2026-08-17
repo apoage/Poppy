@@ -1,5 +1,42 @@
 # TASK_891 — close the run_queue bare-`python` trap (RE-CUT per D42)
 
+> **STATUS (2026-08-17): HALTED on the 3-cycle rule (factory run 35) → `DECISIONS` D46 (OPEN).**
+> All three cycles died in the same place, and naming it makes the fix obvious: **the row keeps
+> trying to make a JOB-WRITABLE DIRECTORY authoritative.**
+>
+> **BUILT AND VERIFIED (rebuild from this):** both original kills are DEAD — `/bin/true` as the
+> venv python is refused at parse time; a deferred row whose shim breaks mid-wait is refused three
+> ways, including a wrapper that FORGES `RQPROBE|3|<exact expected exe>|<exact expected prefix>`
+> for `-c` and execs a stub otherwise. **The `cmp` provenance check is real and load-bearing.**
+> Gate (iv) holds in the clean case. Six mutations independently rebuilt at their real drop sites,
+> **6/6 red, candidate clean**. Suites 16/16 + 16/16 + 18/18 + selftest 12/12, mutations 21/22
+> (M9 a legitimate, orthogonal survivor). **The three-tier honest contract — CLAIMED /
+> BEST-EFFORT-EXPLICITLY-NOT-CLAIMED / NOT COVERED, with limits re-derived from the mechanism and
+> real manifests cited inline — should survive the re-cut verbatim.**
+>
+> **WHAT HALTED IT:** restoring the PATH prepend re-opened BLOCKER 2 one indirection out. The
+> header claims "verified, then executed, with no lookup in between", but TWO lookups sit in
+> between and both use the already-prepended PATH — `env … bash -c …` execvp's **`bash`** (`:386`),
+> and the verified wrapper's own `#!/usr/bin/env bash` shebang (`:766`) resolves at exec time. A
+> job that plants `$SHIM_DIR/bash` hijacks the whole job shell while `python`/`python3` stay
+> **byte-identical**, so `cmp` and the probe both pass and python2 runs under
+> `interpreter=venv-shim` at **rc 0 with a clean summary row** — worse than HEAD, which claimed
+> nothing. Proven causal by an M15 rebuild. Precondition is exactly the threat model the `cmp` was
+> bought for (`:130`), and the mitigation covers 2 filenames out of N. **MAJOR:** `cmp` (`:781`) is
+> the one unbounded call in a guard advertising boundedness — `mkfifo $SHIM_DIR/python` wedges the
+> manifest so passthrough rows never launch and no summary is written, a hang HEAD never had.
+>
+> **Resume per D46(a): DELETE THE SHIM DIRECTORY.** Claim only the leading token and deliver it by
+> ABSOLUTE-PATH SUBSTITUTION (`python foo.py` → `<repo>/trader_env/bin/python foo.py`). The shim
+> dir exists only to serve the PATH prepend, and the prepend is what re-opened the BLOCKER;
+> removing it deletes the whole attack surface — no writable dir in the trust path, no wrapper to
+> `cmp`, no FIFO to wedge on, no shebang/`bash` lookup through an attacker-writable dir, no
+> lifecycle. `trader_env/` is already PROTECTED. **Cost, honestly: chained/child `python`s become a
+> documented NOT-COVERED limit, so ship it with a one-time sweep of the tracked manifests**
+> (`runs/860_codistill/manifest_860.txt:6-8` is exactly that shape). **Needs OPERATOR ratification
+> — D42(a) ruled the mechanism, and (a) abandons it (though D42's symlink measurement is not
+> contradicted, it simply stops applying when there is no shim).**
+
 > **STATUS (2026-08-16, planner): READY — RE-CUT per D42(a), operator-ruled.** The run-34 halt was
 > correct: the original contract ("no manifest spelling may silently run the wrong interpreter") is
 > a claim about arbitrary shell text and wrapping cannot close it. This re-cut ships cycle-3's shim

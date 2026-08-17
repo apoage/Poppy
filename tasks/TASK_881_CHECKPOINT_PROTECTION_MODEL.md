@@ -1,5 +1,45 @@
 # TASK_881 — The checkpoint protection model: explicit, tracked, fail-loud
 
+> **STATUS (2026-08-17): HALTED on the 3-cycle rule (factory run 35) → `DECISIONS` D45 (OPEN).**
+> Fourth halt on this lane, and the same shape D33/D36/D38/D39 each named: every cycle's FIXING
+> CODE contained the next defect, and every defect lived in ONE layer the row never scoped —
+> **manifest INGESTION** (what counts as a manifest, what the scan can see, what a line MEANS).
+>
+> **BUILT AND VERIFIED across three cycles and six opus judges, every kill re-run from scratch:**
+> all six prior kills are DEAD — symlinked manifest FILE (exit 2), symlinked manifest DIRECTORY
+> (refused even when `--experiments-dir` points AT the symlink), torn `scores.jsonl` (per-run-dir
+> refusal, peak survives), **the cycle-2 killer's full four-step sequence** (refuse → follow the
+> refusal's own remediation → re-run under the floor → **the 42.0 peak SURVIVES**), and
+> missing/symlinked/directory `--protect-file` (exit 2). `write_run_index` atomicity holds under
+> SIGKILL mid-`json.dump`. **`root_resolution()` closes the D38-c3 asymmetry — measured under
+> `--apply` on BOTH deleters with a simulated mounted scratch disk, survivor sets BYTE-IDENTICAL.**
+> `plan()`'s 4th value is honoured by both production callers. MAJOR E's dangling-entry refusal is
+> correctly SCOPED (real tree: three unresolvable `828_stage3_train` entries print loudly, refuse
+> **0** run dirs, all **7** checkpoints kept even at `--min-free-gb 100000 --keep-unscored 0`).
+> **The disputed D33 `_order_newest_first` bug is SETTLED BY EXECUTION** (cross-family:
+> `checkpoint_100`, the true newest on disk, was deleted while a 999 s-stale `checkpoint_200`
+> survived as "newest (resume)") and fixed. Suites 62/62 + 20/20 + selftest 12/12.
+>
+> **WHAT HALTED IT — cycle 3 shipped a NEW silent deletion, caused by cycle 3's own fix.**
+> `_parse_spec_block` (`ckpt_gc.py:618`) consumes only the FIRST `protected:`/`covers:` block
+> (`re.search`); `_strip_spec_manifest_blocks` (`:646`, added in cycle 3) strips EVERY block
+> (`while True`). The strip removes strictly more than the parse consumes, so every block after the
+> first is neither manifest-protected nor advisory-rescued — a `SPEC.md` naming a checkpoint under
+> a second `protected:` block has it **DELETED at exit 0, zero diagnostic, by BOTH deleters**.
+> Proven a regression by monkeypatching the strip to identity (0 deletions, 3 kept). It inverts
+> ruled model item 3 using the code added to honour it, and it is **D38-c3's shape at the TEXT
+> level: two functions disagreeing about what the same bytes mean.** Plus two MAJORs — a malformed
+> `protect:` line is reported then IGNORED (an inline trailing comment gets the named checkpoint
+> deleted at exit 0), and `_root_escape` gets an empty allowed-list when `was_resolved` is False so
+> the in-run pruner deletes outside every configured root for an out-of-tree non-symlinked run dir,
+> contradicting its own docstring.
+>
+> **Nothing is at risk today:** the `--apply` freeze (D32/D34) STANDS, `--ckpt-retention` stays
+> `recency`, unreadable ⇒ UNSCORED ⇒ never score-pruned, and the real-tree dry run keeps all 7.
+> **Resume per D45(a): re-cut by capacity — `881I` (ingestion only: ONE function owns both parse
+> and strip, returning `(entries, spans)`; may PARSE, CLASSIFY and REFUSE, deletes nothing) and
+> `881D` (the protection model + deleter, resumed from the verified work above).**
+
 > **SCOPE ADDITION 2026-08-08 (factory run 28, TASK_876 shipped as `task876-score-emission`).
 > This row now also owns the GC's SCORE READER, and it is a hard gate on TASK_880 that D34
 > did not encode.**
