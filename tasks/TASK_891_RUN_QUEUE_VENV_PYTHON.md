@@ -1,77 +1,42 @@
-# TASK_891 — close the run_queue bare-`python` trap (RE-CUT per D42)
+# TASK_891 — close the run_queue bare-`python` trap (SECOND RE-CUT per D46)
 
-> **STATUS (2026-08-17): HALTED on the 3-cycle rule (factory run 35) → `DECISIONS` D46 (OPEN).**
-> All three cycles died in the same place, and naming it makes the fix obvious: **the row keeps
-> trying to make a JOB-WRITABLE DIRECTORY authoritative.**
+> **STATUS (2026-08-17, planner): READY — RE-CUT per D46, operator-RATIFIED 2026-08-17.** D42(a)'s
+> shim mechanism is ABANDONED: run 35 proved the shim dir exists only to serve the PATH prepend, and
+> the prepend is itself the attack surface (`env … bash -c` execvp's `bash`, and the wrapper's own
+> `#!/usr/bin/env bash` shebang, both resolved through the already-prepended job-writable PATH).
+> **The mechanism is now ABSOLUTE-PATH SUBSTITUTION and nothing else.** Resume from tag
+> `stash-891r-halted-d46`: both original kills verified DEAD there (fake-venv refused at parse time;
+> mid-wait shim breakage refused three ways incl. a forged probe), 6/6 rebuilt mutations red, suites
+> 16/16 + 16/16 + 18/18 + selftest 12/12. **The three-tier honest contract (CLAIMED /
+> BEST-EFFORT-NOT-CLAIMED / NOT COVERED) survives verbatim** — it was the best-written artifact of
+> run 35.
 >
-> **BUILT AND VERIFIED (rebuild from this):** both original kills are DEAD — `/bin/true` as the
-> venv python is refused at parse time; a deferred row whose shim breaks mid-wait is refused three
-> ways, including a wrapper that FORGES `RQPROBE|3|<exact expected exe>|<exact expected prefix>`
-> for `-c` and execs a stub otherwise. **The `cmp` provenance check is real and load-bearing.**
-> Gate (iv) holds in the clean case. Six mutations independently rebuilt at their real drop sites,
-> **6/6 red, candidate clean**. Suites 16/16 + 16/16 + 18/18 + selftest 12/12, mutations 21/22
-> (M9 a legitimate, orthogonal survivor). **The three-tier honest contract — CLAIMED /
-> BEST-EFFORT-EXPLICITLY-NOT-CLAIMED / NOT COVERED, with limits re-derived from the mechanism and
-> real manifests cited inline — should survive the re-cut verbatim.**
->
-> **WHAT HALTED IT:** restoring the PATH prepend re-opened BLOCKER 2 one indirection out. The
-> header claims "verified, then executed, with no lookup in between", but TWO lookups sit in
-> between and both use the already-prepended PATH — `env … bash -c …` execvp's **`bash`** (`:386`),
-> and the verified wrapper's own `#!/usr/bin/env bash` shebang (`:766`) resolves at exec time. A
-> job that plants `$SHIM_DIR/bash` hijacks the whole job shell while `python`/`python3` stay
-> **byte-identical**, so `cmp` and the probe both pass and python2 runs under
-> `interpreter=venv-shim` at **rc 0 with a clean summary row** — worse than HEAD, which claimed
-> nothing. Proven causal by an M15 rebuild. Precondition is exactly the threat model the `cmp` was
-> bought for (`:130`), and the mitigation covers 2 filenames out of N. **MAJOR:** `cmp` (`:781`) is
-> the one unbounded call in a guard advertising boundedness — `mkfifo $SHIM_DIR/python` wedges the
-> manifest so passthrough rows never launch and no summary is written, a hang HEAD never had.
->
-> **Resume per D46(a): DELETE THE SHIM DIRECTORY.** Claim only the leading token and deliver it by
-> ABSOLUTE-PATH SUBSTITUTION (`python foo.py` → `<repo>/trader_env/bin/python foo.py`). The shim
-> dir exists only to serve the PATH prepend, and the prepend is what re-opened the BLOCKER;
-> removing it deletes the whole attack surface — no writable dir in the trust path, no wrapper to
-> `cmp`, no FIFO to wedge on, no shebang/`bash` lookup through an attacker-writable dir, no
-> lifecycle. `trader_env/` is already PROTECTED. **Cost, honestly: chained/child `python`s become a
-> documented NOT-COVERED limit, so ship it with a one-time sweep of the tracked manifests**
-> (`runs/860_codistill/manifest_860.txt:6-8` is exactly that shape). **Needs OPERATOR ratification
-> — D42(a) ruled the mechanism, and (a) abandons it (though D42's symlink measurement is not
-> contradicted, it simply stops applying when there is no shim).**
-
-> **STATUS (2026-08-16, planner): READY — RE-CUT per D42(a), operator-ruled.** The run-34 halt was
-> correct: the original contract ("no manifest spelling may silently run the wrong interpreter") is
-> a claim about arbitrary shell text and wrapping cannot close it. This re-cut ships cycle-3's shim
-> behind an HONEST BOUNDED contract. **Resume from tag `stash-891-halted-d42`** — cycle-3's shim
-> (python-only shim dir, exec wrappers NOT symlinks) was verified at halt time: 11 independently-
-> rebuilt mutations 0 survivors; suites 109/109 + 16/16 + 18/18; selftest 12/12; HEAD-vs-candidate
-> A/B job-log diff exactly one hunk; `pip` stays 23.0.1.
->
-> _(Prior banner, superseded: HALTED on the 3-cycle rule (factory run 34) — full post-mortem in
-> `lore/handoff_2026-08-16_factory_run_34.md` and D42.)_
+> _(Prior banners, superseded: run-34 HALT (D42) and run-35 HALT (D46) — full post-mortems in
+> `lore/handoff_2026-08-16_factory_run_34.md`, the run-35 banner history, and DECISIONS D42/D46.)_
 
 **Size: XS/S. Risk: LOW** — scheduler plumbing in `tools/deploy/`, no numerics, no canon surface.
 **Parallel-safe FILLER**: touches `tools/deploy/run_queue.sh` (+ its tests) only.
 
-## The bounded contract (D42(a) — this replaces the run-34 contract in full)
+## The bounded contract (D46, operator-ratified — replaces the D42(a) shim contract)
 
-1. **A leading bare `python`/`python3` token** (first whitespace-separated word of the command)
-   resolves to the repo venv via a **python-only shim dir** prepended to the job's PATH: a
-   directory containing exactly two `exec` wrappers (`python`, `python3`) that exec
-   `trader_env/bin/python`. NOT symlinks — measured in run 34: a symlink shim makes CPython take
-   `sys.prefix` from the symlink's own directory, miss `pyvenv.cfg`, and silently load the base
-   pyenv's site-packages while passing every version check. The shim dir contains NOTHING else, so
-   no other binary (`pip`, …) is shadowed.
-2. **Every other spelling passes through UNTOUCHED and is labelled `passthrough`** — `env python`,
-   `bash -c "python …"`, `PATH=/x python …`, `sudo python`, anything. The queue makes NO claim
-   about them. The pre-launch `--dry-run` printout and the launch log say `interpreter=venv-shim`
-   or `interpreter=passthrough:<token>` — and **never a resolution claim the code cannot back**.
-   The run-34 halt case (`PATH=… python …` locally shadows the shim) must PRINT `passthrough`,
-   not `venv-path:…`.
-3. **The documented-limits list is derived from the actual mechanism**, not from aspiration: the
-   header comment states precisely the one spelling class that is covered (leading bare token)
-   and that everything else is the manifest author's responsibility.
-4. **Fail loud on a broken venv**: if `trader_env/bin/python` is missing/not executable/not
-   python3, a job whose leading token is bare `python`/`python3` is REFUSED at parse time (named
-   job + line, non-zero exit, nothing launched for that row). Passthrough rows are unaffected.
+1. **Claim exactly one spelling class: a leading bare `python`/`python3` token** (first
+   whitespace-separated word of the command). Deliver it by **absolute-path substitution**: the
+   command is rewritten to `<repo>/trader_env/bin/python <rest>` before launch. **No shim
+   directory, no PATH prepend, no wrapper scripts** — nothing job-writable enters the trust path.
+2. **Every other spelling passes through byte-untouched and is labelled `passthrough`** —
+   including chained/child pythons (`bash -c "python …"`, `env python`, `python a.py && python
+   b.py`'s second command), which are a documented **NOT COVERED** limit. The three-tier contract
+   text (CLAIMED / BEST-EFFORT-NOT-CLAIMED / NOT COVERED) is carried over from the halted work
+   verbatim, with the limits re-derived from THIS mechanism.
+3. **Fail loud on a broken venv**: if `trader_env/bin/python` is missing/not executable/not
+   python3, a claimed-spelling row is REFUSED at parse time (named job + line, non-zero exit).
+   Passthrough rows are unaffected.
+4. **`--dry-run` and the launch log print the rewritten command** for claimed rows — the operator
+   sees the absolute path, not a description of one.
+5. **One-time manifest sweep, in scope**: tracked manifests containing chained/child `python`
+   spellings (`runs/860_codistill/manifest_860.txt:6-8` is the named shape) get an inline comment
+   or respelling so no tracked manifest silently relies on NOT-COVERED behaviour. This is a
+   comment/respelling pass only — no semantics change to any manifest that was already correct.
 
 ## Acceptance (gates)
 
@@ -82,12 +47,16 @@
   including the `PATH=`-shadow case that halted run 34.
 - (iii) Venv missing (sandboxed copy, `trader_env` renamed): bare-python rows refused by name,
   exit non-zero, passthrough rows still scheduled.
-- (iv) No binary other than `python`/`python3` is shadowed: `pip --version` in a manifest prints
-  the same version with the queue's PATH injection as without.
+- (iv) **No PATH manipulation at all**: a claimed row's environment is byte-identical to a
+  passthrough row's (`env` diff empty); `pip --version` inside any job resolves exactly as the
+  ambient shell does. The halted shim's `cmp`/probe machinery is GONE — deleted, not bypassed.
 - (v) Default behaviour otherwise byte-identical (summary table, log layout) when no bare
-  `python` rows are present.
-- (vi) Every guard has a test that goes red when the guard is removed at its REAL drop site
-  (run-34's standing lesson); mutations independently rebuilt; no test stubs the mechanism
+  `python` rows are present; the `--dry-run` printout shows the rewritten absolute-path command
+  for claimed rows and `passthrough:<token>` for the rest.
+- (vi) The manifest sweep lands: every tracked manifest either contains no NOT-COVERED spelling
+  or carries an inline comment naming it; the sweep diff is comment/respell only.
+- (vii) Every guard has a test that goes red when the guard is removed at its REAL drop site
+  (run-34/35 standing lesson); mutations independently rebuilt; no test stubs the mechanism
   under test.
 
 ## Out of scope

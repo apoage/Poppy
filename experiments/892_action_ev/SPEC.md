@@ -79,8 +79,8 @@ policies that actually trade.
 
 Instrument build = factory (fixture smoke only). Real leg = one scheduled workstation run
 (3 subjects × 2 tiers + ~60 null walks ≈ 84 lightweight evals; est. 2–4 h CPU/single-GPU).
-No server battery, no training. Verdict → LEDGER `892/action-ev` → D44 (the pivot ruling;
-D42/D43 were taken by factory run 34's 891-halt and 857-smoke-assert decisions).
+No server battery, no training. Verdict → LEDGER `892/action-ev` → D47 (the pivot ruling;
+D42–D46 were taken by factory runs 34/35; this program burns decision numbers fast).
 
 ## Explicitly NOT in this experiment
 

@@ -4,8 +4,9 @@
 anticipated by its own Out-of-scope).
 **Size: S. Risk: MEDIUM** — touches the checkpoint SAVE path (889's surface) and 886's
 certification predicate. Default behaviour for old checkpoints must stay byte-identical.
-**Sequenced after TASK_878** (eval-core semantics row rides alone per the queue's standing note);
-no surface conflict with 878/892 otherwise.
+**Sequenced after TASK_892** — this row adds a fifth conjunct to `_certification_verdict` in
+`eval_vector.py`, and 892 adds a flag to the same file; serial, 892 first (the research row).
+(878, the original sequencing constraint, shipped in run 35.)
 
 ## The hole this closes (measured, not argued)
 
