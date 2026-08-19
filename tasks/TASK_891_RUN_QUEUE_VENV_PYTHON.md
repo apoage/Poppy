@@ -1,5 +1,30 @@
 # TASK_891 — close the run_queue bare-`python` trap (SECOND RE-CUT per D46)
 
+> **STATUS (2026-08-19): SHIPPED as `task891-run-queue-venv-python` (`706ce97`), factory run 36,
+> 3 cycles (cycles 2-3 on opus).** D46's absolute-path substitution, unchanged. Gates (i)-(vii) met.
+> Suites: interpreter **25/25** (12 gates + 13 mutation kills), scheduler 16/16, watchdog 18/18,
+> selftest 12/12, gate (v) byte-identity vs HEAD.
+> **The defect was the CLAIM, and the claim is what changed.** A fail-closed judge demonstrated live
+> that the parse-time-only venv check left an hours-long TOCTOU while the code asserted there was
+> none; fixed by a launch-time re-probe (one shared `_venv_usable_ok` at both sites) plus text that
+> says what is true — NOT a security boundary (same-uid `systemd-run --user --scope`, an ordinary
+> same-user-writable interpreter, and a `protected` list with no enforcement code), so the checks buy
+> protection against ACCIDENT, not against a hostile process. Probe limits MEASURED: four forgeries
+> refuse, `exec -a <our path> <real python>` + a planted `pyvenv.cfg` passes, and the comment says so.
+> **Found in the verification machinery itself:** the suite printed 18 passed while M8's mutant was
+> never built (anchor drift scored as a KILL). A build failure now FAILS the suite by name — proven on
+> both mutation paths, all 12 anchors re-verified unique.
+> **Withdrawn against its own evidence:** "freed exactly once" — a double-`_free_gpu` mutant SURVIVED
+> (duplicate pool entry skipped by the per-GPU `flock`), so the gate claims only "came back, never
+> double-booked".
+> **Remainders → planner:** redeploy `tools/deploy/` to gpu-server (as TASK_833);
+> `runs/860_codistill/manifest_860.txt` stays UNTRACKED so its inline comment is non-durable — the
+> durable half is the runtime chained-python warning, and the tracking question is **D48**; the
+> watchdog suite's load-sensitive flake remains a separate candidate row (did not fire this run).
+>
+> _(Prior banners, superseded: run-34 HALT (D42) and run-35 HALT (D46) — post-mortems in
+> `lore/handoff_2026-08-16_factory_run_34.md`, the run-35 banner history, and DECISIONS D42/D46.)_
+
 > **STATUS (2026-08-17, planner): READY — RE-CUT per D46, operator-RATIFIED 2026-08-17.** D42(a)'s
 > shim mechanism is ABANDONED: run 35 proved the shim dir exists only to serve the PATH prepend, and
 > the prepend is itself the attack surface (`env … bash -c` execvp's `bash`, and the wrapper's own
