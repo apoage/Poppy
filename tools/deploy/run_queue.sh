@@ -62,6 +62,115 @@
 # CSV to watch (per job): an optional leading `csvglob:<glob>` token in the command names it
 # explicitly (stripped before the command runs); else it is inferred from `--name <X>` in the
 # command (logs/training_<X>.csv); else logs/training_<job_id>.csv.
+#
+# --- Interpreter contract (TASK_891 — D46, RATIFIED: ABSOLUTE-PATH SUBSTITUTION and nothing
+#     else. Supersedes D42(a)'s python-only shim-dir + PATH-prepend design, which run 35 killed
+#     TWICE: a job planting $SHIM_DIR/bash hijacked the job shell because `env … bash -c` and the
+#     wrapper's own `#!/usr/bin/env bash` shebang both resolved through the prepended, job-writable
+#     PATH — the prepend was itself the attack surface. Deleting the shim dir deletes that whole
+#     class: no directory WE create ever enters the trust path, so there is nothing of ours to
+#     hijack, forge, or cmp against, and no lifecycle (build/self-probe/cleanup) to get an
+#     interrupt window wrong.
+#
+#     THREAT MODEL — read this before reading any guarantee into the labels below. THIS IS NOT A
+#     SECURITY BOUNDARY, and it never was one. Every queued job runs under tools/safe_run.sh,
+#     which is `exec systemd-run --user --scope` (safe_run.sh:50): the SAME uid, the same login
+#     session, with only a cgroup RAM cap — there is no privilege boundary between this queue and
+#     the jobs it launches. `trader_env/bin/python` is an ordinary same-user-writable path (a
+#     lukas:lukas symlink inside lukas-owned drwxrwxr-x directories), and the `protected` list in
+#     .dark-factory/config.json is an AGENT-WRITE POLICY convention with no enforcement code
+#     anywhere in the repo — not an OS ACL. So "trader_env/ is PROTECTED" (D46's wording) means
+#     "agents are told not to write it", NOT "jobs cannot write it". A job that actually wanted to
+#     subvert an interpreter would not need the venv at all: it could rewrite this script,
+#     tools/safe_run.sh, or the training code it is about to run. What the checks below buy is
+#     therefore protection against ACCIDENT AND MISTAKE — a half-rebuilt venv, a `pip install`
+#     that clobbered the interpreter, an earlier manifest row that removed what a later row needs
+#     — and NOT defence against a hostile same-user process. Nothing here should be read as such
+#     a defence. ---
+# Three-tier honest contract (kept verbatim in shape from the halted D42(a) work; the CONTENT is
+# re-derived for THIS mechanism, not copied from the shim's):
+#   (1) CLAIMED. A LEADING bare `python`/`python3` token — the first whitespace-separated word of
+#       the command — is rewritten, in the command STRING itself, to the absolute path
+#       `<repo>/trader_env/bin/python`. The rewritten string IS what bash execs, so the row cannot
+#       be silently redirected by a PATH that the job (or anything above it) set, and a broken
+#       interpreter fails loudly (bash rc 126/127) instead of quietly resolving somewhere else.
+#       What is CLAIMED is the path that will be exec'd — not the identity of the file at the end
+#       of it. That file is re-checked (existence + identity) immediately before THIS row's own
+#       launch, which is as close to the `execve` as a shell can get; the residual window is
+#       documented under LIMITS below and is not claimed away.
+#   (2) BEST-EFFORT, NOT CLAIMED — EMPTY under this mechanism. D42(a)'s middle tier was a PATH
+#       prepend covering a row's SECOND bare python and any bare-python children; that prepend is
+#       exactly what reopened the attack surface, so D46 deletes it with no replacement. There is
+#       nothing left in this tier: a chained/child python either gets the absolute-path rewrite
+#       (only ever the row's leading word) or it does not, with no half-measure in between.
+#   (3) NOT COVERED AT ALL — no claim, no help, byte-untouched, labelled `passthrough:<leading
+#       token>`: `env python ...`, `bash -c "python ..."`, `PATH=/x python ...` (the run-34 halt
+#       case — a row that assigns its own PATH shadows nothing of ours, because nothing of ours is
+#       ever injected), `sudo python`, quoted/escaped/`$VAR`-suffixed spellings, versioned
+#       spellings (`python3.11`), absolute interpreter paths, a `#!/usr/bin/env python` shebang
+#       script the row calls, metacharacter-glued leading spellings (`python;true` is one token,
+#       not bare `python`, so it is passthrough too) — AND, now that tier (2) is gone, every
+#       SECOND-OR-LATER bare `python`/`python3` in a chained row (`python a.py && python b.py`'s
+#       second half) and any bare-python child process a job spawns. This is a priced, documented
+#       cost (D46), and the one-time TASK_891 sweep MEASURED how much of the tree actually leans on
+#       it. Result, scoped to what version control can show: all 1438 GIT-TRACKED files were scanned
+#       BY CONTENT SHAPE (not by filename), 18 contain lines matching the run_queue row shape (15 are
+#       real manifests; 3 are .py sources whose lines coincidentally match), and ZERO contain a
+#       NOT-COVERED spelling — so there was nothing tracked to re-spell or comment and the sweep is
+#       a no-op diff. KNOWN EXCEPTION, named because "tracked" is what excludes it: the only manifest
+#       anywhere in the checkout carrying this shape is `runs/860_codistill/manifest_860.txt:17-19`
+#       (`python distill.py && test -e … && python eval_vector.py`), and it is UNTRACKED —
+#       `.gitignore:54` (`runs/*/*`) excludes it and it has zero git history. So it cannot be cited
+#       as evidence the sweep landed, and a comment written into it would not survive a clone; its
+#       non-durability is recorded on DECISIONS D48 and is NOT claimed fixed here.
+#       NOT SILENT, though. An accepted limit still has to be VISIBLE, or an operator cannot tell
+#       `python train.py && python eval.py` (whose eval half runs the ambient python2 on gpu-server)
+#       from a harmless passthrough row — both used to print the same label. So a row carrying a
+#       chained bare python in COMMAND POSITION is (a) WARNED at parse time by job name + manifest
+#       line, (b) marked `not-covered-chained-python=<n>` on its dry-run/launch line, and (c) listed
+#       in the summary. It is still SCHEDULED AS WRITTEN — D46 priced this limit as accepted, so the
+#       queue does not start refusing rows the ratified contract permits. The detector is a narrow
+#       QUOTE-AWARE token heuristic, not a shell parser (`_uncovered_chained_pythons` states the
+#       exact rules and the mutation-proved table behind them): quoted spans are never scanned, so
+#       an argument that merely reads `python` (`--tag python`, `--note "a && python b"`,
+#       `--desc env python`) is never flagged; and it deliberately does not see a python inside
+#       quotes, inside a substitution, behind a launcher it does not model (`xargs`/`time`/`sudo`),
+#       or one a job spawns at runtime. So `n=0` means "none visible", never "none present" — the
+#       record it feeds is a FLOOR on what is uncovered, not a census.
+# Fail loud on a broken venv TWICE, at both ends of the deferral: once at PARSE TIME (a doomed
+# manifest is refused before anything at all is scheduled, by name and manifest line) and again
+# IMMEDIATELY BEFORE EACH claimed row's own launch (a row that sat for hours behind a GPU wait is
+# not launched against an interpreter that broke in the meantime). Both ends run the SAME check:
+# `trader_env/bin/python` must exist and be executable, and must answer a PROBE-TIME NONCE with its
+# own major version, `sys.executable` and `sys.prefix` — an rc-only check would bless `/bin/true`
+# (ignores its arguments, exits 0), and a check that only looked for the digit `3` would be
+# satisfied by any fixed-output stub. The probe is bounded by `timeout` so a wedged interpreter can
+# hang neither the parse nor a launch. A row that fails either end is REFUSED BY NAME (with its
+# manifest line at parse time), recorded `venv-refused` in the summary, and never launched;
+# passthrough rows are entirely unaffected at both ends.
+#
+# LIMITS of that check — stated here so nobody trusts it further than it goes:
+#   - It is NOT authentication, and cannot become authentication. Measured against four forgeries
+#     during the TASK_891 fix pass, not asserted: `/bin/true` FAILS (no output), a fixed-output stub
+#     FAILS (the nonce is only known at probe time), a plain shell delegator that `exec`s the real
+#     interpreter FAILS (`sys.executable` then reports the real path, not the path we invoked), and
+#     some other python planted at that path FAILS (`sys.prefix` must be the venv root) — BUT a
+#     two-line delegator that spoofs argv[0] (`exec -a <the path we invoke> <real python> "$@"`)
+#     next to a three-line planted `pyvenv.cfg` PASSES ALL FOUR CHECKS. So the probe raises the bar
+#     from "any broken thing" to "a deliberate forgery", and that is exactly where it stops: it does
+#     not prove the file is the interpreter we believe it is, and per the THREAT MODEL above,
+#     proving that is not its job.
+#   - It does NOT close the TOCTOU window, because a shell cannot: there is always a gap between
+#     the last check and the `execve`, and bash resolves the substituted absolute path at exec
+#     time, i.e. after our final look. The launch-time re-probe SHRINKS that window from hours (a
+#     row parsed, then queued behind a GPU wait) to milliseconds. Sized honestly: it reliably
+#     catches the venv breaking MID-QUEUE, which is a realistic accident, and it catches nothing
+#     that races the exec — which, per the THREAT MODEL above, it is not trying to.
+# The `--dry-run` printout AND the live launch line both show the REWRITTEN command for a claimed
+# row (the operator sees the absolute path, not a description of one), and the summary carries a
+# durable `interpreter` block recording every claimed row's rewritten command, so a post-mortem
+# does not depend on transient /proc state. Everything else prints
+# `interpreter=passthrough:<leading token>` and is otherwise untouched.
 set -uo pipefail    # NOTE: no -e; a single failed job must not abort the queue.
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -150,7 +259,13 @@ declare -A PID2IDX=() PID2CSVGLOB=() PID2STARTTS=() PID2LASTMTIME=() PID2LASTCHA
 declare -A PID2EXPLICIT=() PID2BASELINE=()  # explicit=csvglob-declared; baseline=pre-launch stale mtime
 WEDGE_RETRIED_COUNT=0  # jobs auto-retried after a wedge (surfaced in the summary only when >0)
 LAST_LAUNCH_PID=""     # set by launch() so callers can register watchdog state for the new pid
-RESULTS=()            # "job<TAB>rc<TAB>log"  (rc: integer | "malformed" | "skipped" | "interrupted" | "wedged-failed")
+CLAIMED_CMDS=()        # "job<TAB>rewritten command" per interpreter=venv launch (D46 clause 4:
+                       # durable record of the absolute path a claimed row actually ran). Empty
+                       # unless a claimed row launched -> summary stays byte-identical otherwise.
+NOTCOVERED_ROWS=()     # "job<TAB>count<TAB>command" per launched row carrying a NOT-COVERED chained
+                       # bare python (same emptiness property).
+RESULTS=()            # "job<TAB>rc<TAB>log"  (rc: integer | "malformed" | "skipped" | "interrupted"
+                      # | "wedged-failed" | "venv-refused")
 ACQUIRED_GPU=""       # set by acquire_idle_gpu (finding #1: mutate PARENT state, no subshell)
 ACQUIRE_SAW_VALID=0   # 1 if the last acquire pass got a valid nvidia-smi reading from any pool GPU
 START_TS="$(date -Iseconds)"
@@ -266,10 +381,59 @@ confirm_vram_or_warn() {  # $1 gpu $2 job — best-effort: wait for VRAM to rise
   return 0
 }
 
-launch() {  # $1 job  $2 dev  $3 mem  $4 gpu(""=cpu)  $5 cmd
-  local job="$1" dev="$2" mem="$3" g="$4" cmd="$5"
+_free_gpu() {  # $1 gpu -> return it to the pool and drop its advisory lock (mirrors reap())
+  local g="$1" fd="${GPU_LOCK_FD[$g]:-}"
+  FREE_GPUS+=("$g")
+  if [[ -n "$fd" ]]; then
+    flock -u "$fd" 2>/dev/null || true
+    eval "exec ${fd}>&-" 2>/dev/null || true
+    unset 'GPU_LOCK_FD[$g]'
+  fi
+}
+
+launch() {  # $1 job  $2 dev  $3 mem  $4 gpu(""=cpu)  $5 cmd  $6 interp label (venv|passthrough:<tok>)
+            # $7 count of NOT-COVERED chained bare pythons in the command (0 = none visible)
+            # -> 0 = launched (LAST_LAUNCH_PID set), 1 = REFUSED, nothing launched.
+  local job="$1" dev="$2" mem="$3" g="$4" cmd="$5" interp="${6:-}" nc="${7:-0}"
   local log="$RUN_DIR/$job.log"
   local sr=("$REPO_ROOT/tools/safe_run.sh" --name "$job" --mem "$mem")
+  # Interpreter contract (TASK_891 — D46): a `venv` row's command is rewritten to the absolute
+  # venv path IN THE STRING ITSELF, here, right before it is handed to safe_run — no env var, no
+  # PATH entry, no wrapper. A `passthrough` row's cmd is untouched. Nothing else about the launch
+  # path differs between the two, which is the whole content of gate (iv): a claimed row's
+  # environment is byte-identical to a passthrough row's.
+  if [[ "$interp" == "venv" ]]; then
+    # RE-ASSERT the interpreter HERE, immediately before this row actually goes. The parse-time
+    # check can be hours stale for a row that waited out a GPU queue, and trader_env/bin/python is
+    # an ordinary same-user-writable path (see THREAT MODEL in the header) — so a mid-queue
+    # ACCIDENT (a half-rebuilt venv, a `pip install` that clobbered the interpreter, an earlier row
+    # that removed what this row needs) must refuse the row rather than run it under an
+    # `interpreter=venv` label the code can no longer back. This SHRINKS the check->exec window
+    # from hours to milliseconds; it does not close it (see LIMITS in the header), and it adds
+    # nothing job-writable to the trust path, so it does not reopen what D46 deleted.
+    if ! _venv_usable_ok; then
+      echo "[queue] REFUSED at launch: job '$job' needs the repo venv interpreter (its command's leading token is bare python/python3) but $VENV_REASON — the venv passed the parse-time check, so something changed since. Refusing this row only; nothing was launched, other rows are unaffected." >&2
+      RESULTS+=("$job"$'\t'"venv-refused"$'\t'"-")
+      LAST_LAUNCH_PID=""
+      [[ -n "$g" ]] && _free_gpu "$g"
+      return 1
+    fi
+    cmd="$(_rewrite_leading "$cmd")"
+    # Durable record of what a claimed row ACTUALLY ran (D46 clause 4): the launch line below goes
+    # to the queue's stdout only, which in a tmux session is not durable, and the absolute path
+    # otherwise survives only in the transient /proc cmdline. write_summary() replays this into
+    # runs/<sweep>/queue_summary.md so a post-mortem can read it.
+    CLAIMED_CMDS+=("$job"$'\t'"$cmd")
+  fi
+  # NOT-COVERED marker (D46's priced limit, made VISIBLE): without it, `interpreter=passthrough:
+  # python` reads identically for a harmless row and for `python train.py && python eval.py`, whose
+  # second half silently resolves to the ambient interpreter. Warned at parse time, marked here, and
+  # recorded durably in the summary. Never a refusal.
+  local ncmark=""
+  if (( nc > 0 )); then
+    ncmark=" not-covered-chained-python=$nc"
+    NOTCOVERED_ROWS+=("$job"$'\t'"$nc"$'\t'"$cmd")
+  fi
   # --debug-stall-dump: PYTHONFAULTHANDLER=1 makes a SIGABRT (sent on a detected wedge) print a
   # full Python traceback into the job log. Empty unless the flag is set -> canon path unchanged.
   local fh=()
@@ -283,16 +447,24 @@ launch() {  # $1 job  $2 dev  $3 mem  $4 gpu(""=cpu)  $5 cmd
     sr+=(--cpu -- bash -c "cd $REPO_ROOT && $cmd")
   fi
   if [[ "$DRY" -eq 1 ]]; then
-    echo "[queue][dry] $job dev=$dev gpu=${g:-cpu} mem=$mem -> $cmd" | tee -a "$log"
+    echo "[queue][dry] $job dev=$dev gpu=${g:-cpu} mem=$mem interpreter=$interp$ncmark -> $cmd" | tee -a "$log"
     ( sleep 1 ) &   # stand-in child so scheduling logic exercises reap/free
   else
-    echo "[queue] launch $job dev=$dev gpu=${g:-cpu} mem=$mem log=$log"
+    # D46 clause 4: the LIVE launch line prints the REWRITTEN command for a claimed row, exactly as
+    # --dry-run does — the operator sees the absolute path, not a description of one. Passthrough
+    # rows keep the pre-891 line verbatim (nothing was rewritten, so there is nothing to show).
+    if [[ "$interp" == "venv" ]]; then
+      echo "[queue] launch $job dev=$dev gpu=${g:-cpu} mem=$mem interpreter=$interp$ncmark log=$log -> $cmd"
+    else
+      echo "[queue] launch $job dev=$dev gpu=${g:-cpu} mem=$mem interpreter=$interp$ncmark log=$log"
+    fi
     ( "${sr[@]}" >"$log" 2>&1 ) &
   fi
   local pid=$!
   LAST_LAUNCH_PID="$pid"
   PID2JOB[$pid]="$job"; PID2LOG[$pid]="$log"
   [[ -n "$g" ]] && PID2GPU[$pid]="$g"
+  return 0
 }
 
 # ---- checkpoint-save WEDGE watchdog (TASK_841) ---------------------------------------------
@@ -403,9 +575,12 @@ _relaunch() {  # $1 idx -> re-run the same manifest row once (called after a wed
         sleep "$POLL"
       fi
     done
-    launch "$job" gpu "$mem" "$g" "$cmd"
-    _watch_register "$idx"
-    confirm_vram_or_warn "$g" "$job"
+    # launch() returns non-zero if it REFUSED the row (launch-time venv re-probe): register no
+    # watchdog state and wait for no VRAM that will never rise.
+    if launch "$job" gpu "$mem" "$g" "$cmd" "$(_interp_for_idx "$idx")" "${CHAIN[$idx]:-0}"; then
+      _watch_register "$idx"
+      confirm_vram_or_warn "$g" "$job"
+    fi
   else
     ws=$SECONDS
     while [[ "$(_cpu_running)" -ge "$MAX_CPU" ]]; do
@@ -417,8 +592,7 @@ _relaunch() {  # $1 idx -> re-run the same manifest row once (called after a wed
       fi
       sleep "$POLL"
     done
-    launch "$job" cpu "$mem" "" "$cmd"
-    _watch_register "$idx"
+    launch "$job" cpu "$mem" "" "$cmd" "$(_interp_for_idx "$idx")" "${CHAIN[$idx]:-0}" && _watch_register "$idx"
   fi
 }
 
@@ -531,14 +705,221 @@ write_summary() {
     # Watchdog note — emitted ONLY when a wedge actually fired, so the no-stall summary stays
     # byte-identical to the pre-TASK_841 output on any manifest that never wedges.
     (( WEDGE_RETRIED_COUNT > 0 )) && { echo ""; echo "**$WEDGE_RETRIED_COUNT job(s) auto-retried after a checkpoint-save wedge (WEDGED-RETRIED).**"; }
+    # Interpreter block (TASK_891 — D46 clause 4). Emitted ONLY when a row's leading bare
+    # python/python3 was actually rewritten, so a manifest with no claimed row produces a summary
+    # byte-identical to the pre-891 one. This is the DURABLE copy of the rewritten command: the
+    # launch line lives on the queue's stdout (tmux scrollback, not durable) and the absolute path
+    # is otherwise only in the transient /proc cmdline.
+    if ((${#CLAIMED_CMDS[@]})); then
+      echo ""
+      echo "### interpreter: rewritten commands (${#CLAIMED_CMDS[@]} claimed launch(es))"
+      echo ""
+      echo "A row whose command's LEADING token was bare \`python\`/\`python3\` had that token"
+      echo "rewritten to the absolute repo-venv path below before launch. Every other spelling ran"
+      echo "byte-untouched (\`passthrough\`) — see the interpreter contract in run_queue.sh."
+      echo ""
+      local cj ccmd
+      for r in "${CLAIMED_CMDS[@]}"; do
+        IFS=$'\t' read -r cj ccmd <<< "$r"
+        echo "- \`$cj\` -> \`$ccmd\`"
+      done
+    fi
+    # NOT-COVERED chained pythons in rows that actually launched (D46's accepted limit, recorded
+    # durably rather than only warned to stderr at parse time).
+    if ((${#NOTCOVERED_ROWS[@]})); then
+      echo ""
+      echo "### interpreter: NOT COVERED (${#NOTCOVERED_ROWS[@]} row(s) with a chained bare python)"
+      echo ""
+      echo "The contract covers a row's LEADING token only (D46). These rows also invoke bare"
+      echo "\`python\`/\`python3\` further along the command, where NOTHING rewrites it — it resolves"
+      echo "through whatever PATH the job inherited (bare \`python\` is python2 on gpu-server). This"
+      echo "is an accepted limit, not a failure: the rows ran as written."
+      echo ""
+      local nj nn ncmd
+      for r in "${NOTCOVERED_ROWS[@]}"; do
+        IFS=$'\t' read -r nj nn ncmd <<< "$r"
+        echo "- \`$nj\` ($nn chained): \`$ncmd\`"
+      done
+    fi
   } > "$SUMMARY"
   SUMMARY_WRITTEN=1
+}
+
+# ---- interpreter contract helpers (TASK_891 — D46: ABSOLUTE-PATH SUBSTITUTION) ----------------
+_leading_token() {  # $1 cmd -> first whitespace-delimited token (leading-whitespace-safe)
+  local c="$1"
+  [[ "$c" =~ ^[[:space:]]*([^[:space:]]+) ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
+  echo ""
+}
+_is_bare_python_leading() {  # $1 cmd -> 0 iff the LEADING token is exactly python or python3
+  local t; t="$(_leading_token "$1")"
+  [[ "$t" == "python" || "$t" == "python3" ]]
+}
+_ucp_visit() {  # HELPER FOR _uncovered_chained_pythons ONLY — nothing else may call it. Bash's
+                # dynamic scoping is deliberate here: this reads/updates that function's locals
+                # (tok/tq/started, n/idx/cmdpos) so the "consume one finished token" logic exists
+                # ONCE and runs identically at a whitespace boundary and at end-of-string.
+  local t="$tok" q="$tq" next=0
+  # Count: a token AFTER the leading one, not from inside quotes, spelled exactly python/python3,
+  # standing in command position.
+  if (( idx > 0 && cmdpos && ! q )) && [[ "$t" == "python" || "$t" == "python3" ]]; then
+    n=$((n+1))
+  fi
+  # Decide whether the NEXT token starts in command position. A QUOTED token never does this: a
+  # quoted `&&` is a literal argument, not a separator.
+  if (( ! q )); then
+    case "$t" in
+      '&&'|'||'|';'|'|'|'&'|'('|'{'|then|else|do) next=1;;
+      # TRANSPARENT PREFIXES are transparent only when THEY are themselves in command position.
+      # `--desc env python` is an argument list, so its `env` is a WORD, not the env(1) command, and
+      # the `python` after it is not an invocation. (Cycle-3 false positive; `env python x.py`, where
+      # `env` really is the command, still counts.)
+      env) (( cmdpos )) && next=1;;
+      *=*) [[ "$t" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && (( cmdpos )) && next=1;;
+    esac
+  fi
+  cmdpos=$next
+  idx=$((idx+1))
+  tok=""; tq=0; started=0
+}
+_uncovered_chained_pythons() {  # $1 cmd -> count of bare `python`/`python3` tokens in COMMAND
+                    # POSITION after the leading one. These are the NOT-COVERED tier (D46 priced
+                    # them, and this row does NOT start refusing them): nothing rewrites them, so
+                    # they resolve through whatever PATH the job inherits — and on gpu-server bare
+                    # `python` is python2 (the repo says so itself:
+                    # experiments/884_rung1/manifest_884_battery.txt:6). Without this, a landmine row
+                    # (`python train.py && python eval.py`) is indistinguishable at runtime from a
+                    # harmless one, so the queue WARNS by name and line.
+                    #
+                    # WHAT THIS IS, EXACTLY. The count is not just a stderr warning: it lands in a
+                    # DURABLE, operator-facing record (the NOT-COVERED block of
+                    # runs/<sweep>/queue_summary.md), and a post-mortem has to be able to trust that
+                    # record — so this comment states what the code does, not what would be nice:
+                    #   * Tokenisation is QUOTE-AWARE and is NOT a shell parser. One character pass
+                    #     splits on UNQUOTED whitespace and marks any token that took a character
+                    #     from inside '...' / "..." / a backslash escape as QUOTED. A quoted token is
+                    #     never counted AND never acts as a separator or prefix, so nothing inside a
+                    #     quoted span is ever scanned: `--note "a && python b"` and
+                    #     `--desc 'x && python y'` are arguments and stay arguments.
+                    #   * COMMAND POSITION = the previous token is an UNQUOTED shell separator
+                    #     (&& || ; | & ( {, or then/else/do), or a TRANSPARENT PREFIX (`env`, a
+                    #     VAR=value assignment) that was ITSELF in command position. The start of the
+                    #     command counts as a command position, so `env python x.py` and
+                    #     `PATH=/x python x.py` count their python, while `--desc env python` and
+                    #     `--opt FOO=bar python` do not.
+                    #   * Consequently it NEVER fires on an argument that merely reads `python`
+                    #     (`--tag python`, `--out "a python b"`, `--desc env python`). That is
+                    #     asserted, not asserted-in-a-comment: gate NCT in
+                    #     tools/tests/test_run_queue_interpreter.sh runs THIS function over a table
+                    #     of 21 spellings and is mutation-proved.
+                    #   * ACCEPTED BLIND SPOTS, deliberately not chased (a narrow heuristic is worth
+                    #     more here than a half-built shell parser): a python inside quotes
+                    #     (`bash -c "python x"`), inside a substitution (`$(python x)`, backticks),
+                    #     behind a launcher this does not model (`xargs python`, `time python`,
+                    #     `sudo python`, `nohup python`), an escaped spelling (`\python`), or one the
+                    #     job spawns at runtime. So n=0 means "no chained one VISIBLE from here",
+                    #     never "none present": the summary block is a FLOOR on what is uncovered,
+                    #     not a census.
+  local c="$1" len i ch
+  local tok="" tq=0 started=0 sq=0 dq=0    # tq = this token took a character from inside quotes
+  local n=0 idx=0 cmdpos=1                 # cmdpos: the start of the command IS a command position
+  len=${#c}
+  for (( i = 0; i < len; i++ )); do
+    ch="${c:i:1}"
+    if (( sq )); then                      # inside '...': everything is literal until the next '
+      if [[ "$ch" == "'" ]]; then sq=0; else tok+="$ch"; fi
+    elif (( dq )); then                    # inside "...": backslash escapes one char
+      case "$ch" in
+        '\') i=$((i+1)); tok+="${c:i:1}";;
+        '"') dq=0;;
+        *)   tok+="$ch";;
+      esac
+    else
+      case "$ch" in
+        "'")            sq=1; tq=1; started=1;;
+        '"')            dq=1; tq=1; started=1;;
+        '\')            i=$((i+1)); tok+="${c:i:1}"; tq=1; started=1;;
+        ' '|$'\t'|$'\n') (( started )) && _ucp_visit;;   # UNQUOTED whitespace = token boundary
+        *)              tok+="$ch"; started=1;;
+      esac
+    fi
+  done
+  (( started )) && _ucp_visit              # flush the final token (also covers an unclosed quote)
+  echo "$n"
+}
+_interp_for_idx() {  # $1 idx -> the interpreter= label (must never claim more than the code did)
+  if [[ "${NEED[$1]}" == "leading" ]]; then
+    echo "venv"
+  else
+    echo "passthrough:$(_leading_token "${CMD[$1]}")"
+  fi
+}
+_rewrite_leading() {  # $1 cmd -> the same command with its LEADING bare python/python3 token
+                      # replaced by the absolute path of the repo venv interpreter. Only ever
+                      # called for a row already classified `leading` (the token is exactly
+                      # `python` or `python3`); %q leaves the rest of the command untouched.
+  local c="$1" rest
+  [[ "$c" =~ ^[[:space:]]*[^[:space:]]+(.*)$ ]] || { printf '%s' "$c"; return 0; }
+  rest="${BASH_REMATCH[1]}"
+  printf '%s%s' "$(printf '%q' "$VENV_PYTHON")" "$rest"
+}
+PROBE_TIMEOUT=10   # seconds; a wedged interpreter must never hang manifest parsing OR a launch
+_venv_identity_ok() {  # $1 interpreter -> 0 if it behaves like THIS venv's working Python 3, else 1
+                       # (sets VENV_REASON). Deliberately more than an rc check and more than "did
+                       # it print 3": an rc-only check blesses `/bin/true` (ignores its arguments,
+                       # exits 0) and a digit-only check blesses any fixed-output stub. So the probe
+                       # passes a NONCE only known now and demands, in one line each: the major
+                       # version, `sys.executable` (must be the path we invoked) and `sys.prefix`
+                       # (must be the venv root), plus arithmetic on the nonce. Bounded by `timeout`
+                       # so a wedged interpreter hangs neither the parse nor a launch.
+                       # NOT AUTHENTICATION — see the LIMITS block in the header: a forgery that
+                       # delegates to a real python3 passes this, and that is unfixable by probing.
+  local interp="$1" out rc nonce want_root
+  want_root="$(cd "$(dirname "$interp")/.." 2>/dev/null && pwd)"
+  # Arithmetic (not string concatenation) so the nonce can never acquire a leading zero, which
+  # bash's $(( )) would read as octal.
+  nonce=$(( RANDOM * 32768 + RANDOM + $$ ))
+  out="$(timeout "$PROBE_TIMEOUT" "$interp" -c 'import sys
+sys.stdout.write("%d\n%s\n%s\n%d\n" % (sys.version_info[0], sys.executable, sys.prefix, int(sys.argv[1]) * 3 + 7))' "$nonce" 2>/dev/null)"
+  rc=$?
+  if (( rc == 124 )); then
+    VENV_REASON="$interp did not answer within ${PROBE_TIMEOUT}s (wedged interpreter)"; return 1
+  elif (( rc != 0 )); then
+    VENV_REASON="$interp is not a working Python 3 interpreter (identity check exit $rc)"; return 1
+  fi
+  local major exe prefix answer
+  { IFS= read -r major; IFS= read -r exe; IFS= read -r prefix; IFS= read -r answer; } <<< "$out"
+  if [[ "${major:-}" != "3" ]]; then
+    VENV_REASON="$interp did not identify itself as Python 3 (got '${major:-<no output>}')"; return 1
+  elif [[ "${answer:-}" != "$(( nonce * 3 + 7 ))" ]]; then
+    VENV_REASON="$interp did not evaluate the probe nonce (fixed-output stub? expected $(( nonce * 3 + 7 )), got '${answer:-<nothing>}')"; return 1
+  elif [[ "${exe:-}" != "$interp" ]]; then
+    VENV_REASON="$interp reports sys.executable='${exe:-<nothing>}' — not the interpreter we invoked"; return 1
+  elif [[ -n "$want_root" && "${prefix:-}" != "$want_root" ]]; then
+    VENV_REASON="$interp reports sys.prefix='${prefix:-<nothing>}' — not the repo venv root $want_root (a python, but not THIS venv's)"; return 1
+  fi
+  return 0
+}
+_venv_usable_ok() {  # -> 0 if $VENV_PYTHON exists, is executable, AND passes the identity probe.
+                     # The SINGLE check used at BOTH ends of the deferral (parse time and again
+                     # immediately before each claimed row's launch), so the two can never drift.
+  [[ -n "${VENV_PYTHON:-}" ]] || { VENV_REASON="no repo venv interpreter path resolved"; return 1; }
+  if [[ ! -x "$VENV_PYTHON" ]]; then
+    VENV_REASON="repo venv python not found/executable at $VENV_PYTHON"; return 1
+  fi
+  _venv_identity_ok "$VENV_PYTHON"
 }
 
 # ---- parse manifest (finding #4: malformed lines become explicit FAILED rows) ----
 # GLOB[idx] holds an explicit `csvglob:<glob>` watchdog override (stripped from the command so
 # the job runs exactly as written); empty means "infer from --name / job_id" (see _resolve_glob).
-JOB_ID=(); DEV=(); MEM=(); CMD=(); GLOB=()
+# NEED[idx] is the interpreter-contract classification (TASK_891 — D46): `leading` (claimed,
+# rewritten to the absolute venv path) or `passthrough` (everything else, byte-untouched).
+# LINE[idx] is the 1-based manifest line number, so a refusal can name it.
+# CHAIN[idx] is the count of NOT-COVERED chained bare pythons visible in the command (see
+# _uncovered_chained_pythons) — warned about at parse time, marked on the launch line, and recorded
+# in the summary. Never a refusal: D46 priced chained pythons as an ACCEPTED limit.
+JOB_ID=(); DEV=(); MEM=(); CMD=(); GLOB=(); LINE=(); NEED=(); CHAIN=()
 lineno=0
 while read -r job dev mem cmd || [[ -n "$job" ]]; do
   lineno=$((lineno+1))
@@ -563,12 +944,64 @@ while read -r job dev mem cmd || [[ -n "$job" ]]; do
       RESULTS+=("$job"$'\t'"malformed"$'\t'"-"); continue
     fi
   fi
-  JOB_ID+=("$job"); DEV+=("$dev"); MEM+=("$mem"); CMD+=("$cmd"); GLOB+=("$glob")
+  need="passthrough"
+  _is_bare_python_leading "$cmd" && need="leading"
+  # NOT-COVERED chained python: warn LOUD and BY NAME, but schedule the row (D46 accepted this
+  # limit; refusing here would break manifests the ratified contract permits).
+  chain="$(_uncovered_chained_pythons "$cmd")"
+  if (( chain > 0 )); then
+    echo "[queue] NOT-COVERED manifest line $lineno job '$job': $chain chained bare python/python3 invocation(s) after the leading token. The interpreter contract covers the LEADING token ONLY (D46) — the chained one(s) resolve through whatever PATH this job inherits, which on gpu-server is python2 for bare \`python\`. Spell them \`trader_env/bin/python\` if that is not what you want. Scheduling the row as written." >&2
+  fi
+  JOB_ID+=("$job"); DEV+=("$dev"); MEM+=("$mem"); CMD+=("$cmd"); GLOB+=("$glob"); LINE+=("$lineno"); NEED+=("$need"); CHAIN+=("$chain")
 done < "$MANIFEST"
 
-N=${#JOB_ID[@]}
 MALFORMED=${#RESULTS[@]}
-echo "[queue] sweep=$SWEEP jobs=$N malformed=$MALFORMED gpus={${GPUS_CSV}} frac=$FRAC idle_mib=$IDLE_MIB poll=${POLL}s acquire_timeout=${ACQUIRE_TIMEOUT}s max_cpu=$MAX_CPU dry=$DRY $( ((STALL_TIMEOUT>0)) && echo "watchdog: armed stall_timeout=${STALL_TIMEOUT}s grace=${STALL_GRACE}s max=${MAX_WEDGE_RETRY} auto-retry" || echo "watchdog OFF (opt-in --stall-timeout)")"
+
+# ---- interpreter contract: resolve the venv, ONLY if some row needs it (TASK_891 — D46) -------
+# A manifest with no `leading` row never touches trader_env and never prints the venv: line below
+# — behaviour is untouched for every sweep that doesn't reference bare python as a leading token
+# (acceptance v). This is the FIRST of two checks, not the only one: it exists to refuse a doomed
+# manifest up front, by name and manifest line, before anything is scheduled. Because
+# trader_env/bin/python is an ordinary same-user-writable path (see the THREAT MODEL in the
+# header), the same check is re-run in launch() immediately before each claimed row actually goes,
+# so a row deferred for hours behind a GPU wait cannot be launched against an interpreter that
+# broke after this point.
+VENV_PYTHON=""
+VENV_OK=0
+VENV_REASON=""
+NEED_VENV=0
+for _i in "${!NEED[@]}"; do [[ "${NEED[$_i]}" == "leading" ]] && { NEED_VENV=1; break; }; done
+if (( NEED_VENV )); then
+  VENV_PYTHON="$REPO_ROOT/trader_env/bin/python"
+  _venv_usable_ok && VENV_OK=1
+  if (( VENV_OK )); then
+    echo "[queue] venv: $VENV_PYTHON (identity OK: python3) — leading bare python/python3 rows are rewritten to this absolute path in the command string; nothing else (PATH, env, other rows) is touched"
+  else
+    echo "[queue] venv: UNUSABLE — $VENV_REASON" >&2
+  fi
+fi
+
+# Fail loud, per row (never per manifest): a `leading` row with no usable venv is REFUSED and
+# dropped from what gets scheduled; `passthrough` rows are untouched and still run.
+VENV_REFUSED=0
+if (( NEED_VENV )) && (( ! VENV_OK )); then
+  # The surviving rows are re-indexed here, in lockstep, so nothing downstream misattributes a
+  # row's index after some rows are dropped.
+  F_JOB_ID=(); F_DEV=(); F_MEM=(); F_CMD=(); F_GLOB=(); F_LINE=(); F_NEED=(); F_CHAIN=()
+  for _i in "${!JOB_ID[@]}"; do
+    if [[ "${NEED[$_i]}" == "leading" ]]; then
+      echo "[queue] REFUSED manifest line ${LINE[$_i]} job '${JOB_ID[$_i]}': command's leading token is bare python/python3, which needs the repo venv interpreter, but $VENV_REASON — refusing this row only (no silent fallback); other rows are unaffected" >&2
+      RESULTS+=("${JOB_ID[$_i]}"$'\t'"venv-refused"$'\t'"-")
+      VENV_REFUSED=$((VENV_REFUSED+1))
+      continue
+    fi
+    F_JOB_ID+=("${JOB_ID[$_i]}"); F_DEV+=("${DEV[$_i]}"); F_MEM+=("${MEM[$_i]}"); F_CMD+=("${CMD[$_i]}"); F_GLOB+=("${GLOB[$_i]}"); F_LINE+=("${LINE[$_i]}"); F_NEED+=("${NEED[$_i]}"); F_CHAIN+=("${CHAIN[$_i]}")
+  done
+  JOB_ID=("${F_JOB_ID[@]}"); DEV=("${F_DEV[@]}"); MEM=("${F_MEM[@]}"); CMD=("${F_CMD[@]}"); GLOB=("${F_GLOB[@]}"); LINE=("${F_LINE[@]}"); NEED=("${F_NEED[@]}"); CHAIN=("${F_CHAIN[@]}")
+fi
+
+N=${#JOB_ID[@]}
+echo "[queue] sweep=$SWEEP jobs=$N malformed=$MALFORMED $( ((VENV_REFUSED>0)) && echo "venv_refused=$VENV_REFUSED " )gpus={${GPUS_CSV}} frac=$FRAC idle_mib=$IDLE_MIB poll=${POLL}s acquire_timeout=${ACQUIRE_TIMEOUT}s max_cpu=$MAX_CPU dry=$DRY $( ((STALL_TIMEOUT>0)) && echo "watchdog: armed stall_timeout=${STALL_TIMEOUT}s grace=${STALL_GRACE}s max=${MAX_WEDGE_RETRY} auto-retry" || echo "watchdog OFF (opt-in --stall-timeout)")"
 
 # Arm the cleanup trap only now that PID2JOB/RESULTS/etc. exist (set -u safe).
 trap cleanup INT TERM EXIT
@@ -615,7 +1048,9 @@ for idx in "${!JOB_ID[@]}"; do
       fi
       sleep "$POLL"
     done
-    (( cpu_ok )) && { launch "$job" cpu "$mem" "" "$cmd"; _watch_register "$idx"; }
+    # `&&`: launch() returns non-zero if it REFUSED the row (launch-time venv re-probe) — there is
+    # then no pid to arm the watchdog against.
+    (( cpu_ok )) && { launch "$job" cpu "$mem" "" "$cmd" "$(_interp_for_idx "$idx")" "${CHAIN[$idx]:-0}" && _watch_register "$idx"; }
   else
     g=""
     wait_start=$SECONDS
@@ -645,9 +1080,12 @@ for idx in "${!JOB_ID[@]}"; do
       fi
     done
     if [[ -n "$g" ]]; then
-      launch "$job" gpu "$mem" "$g" "$cmd"
-      _watch_register "$idx"
-      confirm_vram_or_warn "$g" "$job"
+      # launch() returns non-zero if it REFUSED the row (launch-time venv re-probe); it has already
+      # released the GPU it was handed, so there is nothing to arm or to wait for VRAM on.
+      if launch "$job" gpu "$mem" "$g" "$cmd" "$(_interp_for_idx "$idx")" "${CHAIN[$idx]:-0}"; then
+        _watch_register "$idx"
+        confirm_vram_or_warn "$g" "$job"
+      fi
     fi
   fi
 done

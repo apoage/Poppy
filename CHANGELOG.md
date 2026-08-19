@@ -3,6 +3,74 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-19 — TASK_891 — the run_queue claims exactly one spelling, and now the claim is true
+
+- **What shipped.** D46's ratified mechanism, unchanged: a leading bare `python`/`python3` token is
+  rewritten to `<repo>/trader_env/bin/python` by **absolute-path substitution**. No shim directory, no
+  PATH prepend, no wrapper — nothing job-writable enters the trust path, and the halted D42(a) shim
+  machinery is deleted rather than disabled (`grep` finds no `SHIM_DIR`, no `PATH=…:$PATH`, no wrapper
+  body, no cleanup lifecycle). Every other spelling passes through byte-untouched and is LABELLED
+  `passthrough:<token>`; 12 adversarial spellings classify correctly (quoted, `VAR=1`, subshell, brace
+  group, `exec`/`nohup`, versioned, relative, absolute, semicolon-glued, near-miss substrings), and the
+  rewrite preserves `--tag python`, a quoted `"a python b"` argument and an `&&` tail byte-exact.
+- **The claim was the defect, and the claim is what changed.** The shipped comment said `trader_env/`
+  is "already PROTECTED (never job-writable) … there is no deferred-window forgery risk left". That is
+  false, and a fail-closed judge proved it live: an ordinary `passthrough` row overwrote
+  `trader_env/bin/python` after the one-time parse-time check, and a later row labelled
+  `interpreter=venv` — the tier the operator is told to trust — executed the forgery at `rc=0`. All
+  three pillars verified independently: the interpreter is a `lukas:lukas` symlink in `drwxrwxr-x`
+  `lukas`-owned dirs; `tools/safe_run.sh:50` is `exec systemd-run --user --scope`, i.e. the SAME uid
+  with only a cgroup RAM cap; and the `protected` list in `.dark-factory/config.json` has **no
+  enforcement code anywhere**. The fix re-asserts identity immediately before each claimed row's own
+  `launch()` (one shared `_venv_usable_ok`, so the two call sites cannot drift) and **rewrites the
+  text to say what is true**: this is NOT a security boundary and never was — a hostile same-user job
+  could rewrite this script, `safe_run.sh`, or the training code — so what the checks buy is protection
+  against ACCIDENT (a half-rebuilt venv, a `pip install` that clobbered the interpreter, an earlier row
+  that removed what a later row needs).
+- **The limits are measured, not asserted.** The strengthened probe (probe-time nonce + `sys.executable`
+  + `sys.prefix`) refuses `/bin/true`, a fixed-output stub, a plain `exec`-delegator and a foreign
+  python — **but `exec -a <our path> <real python> "$@"` plus a planted 3-line `pyvenv.cfg` passes all
+  four**, and the comment says exactly that instead of claiming the hole shut. A judge verified the
+  documented limit in BOTH directions. The residual TOCTOU is disclosed as unclosable by a shell: the
+  re-probe shrinks the window "from hours to milliseconds" and "catches nothing that races the exec".
+  A judge then raced the `execve` and got a payload through — and ruled it NOT a finding, because the
+  LIMITS section discloses precisely that.
+- **A hollow green found in the verification machinery itself.** The suite printed `18 passed, 0 failed`
+  while mutation **M8's mutant was never built**: the cycle-3 detector rewrite moved its anchor, the
+  harness printed `MUTATION-BUILD-ERROR`, then observed "the scenario failed" (the mutant script did not
+  exist) and scored **MUTATION KILLED**. A mutation that cannot be constructed was counted as proof a
+  guard is live. Fixed generally, not per-instance: `expect_red` now has three outcomes and a build
+  failure **FAILS** the suite by name ("The guard is UNPROVEN … This is NOT a kill"), proven on both the
+  direct and `deploy_mutant` paths, with all 12 anchors re-verified to occur exactly once. Suite
+  25/25 — the count rose because a fake kill became a real one.
+- **Quote-aware detection, and an honest floor.** `_uncovered_chained_pythons` counted bare `python` in
+  command position via unquoted word-splitting, so `--note "step1 && python notes"`,
+  `--desc "note ( python inline )"`, `--desc env python` and `--desc 'x && python y'` all produced a
+  **false NOT-COVERED entry in the durable `queue_summary.md`** — contradicting the function's own
+  header ("must never fire on an ARGUMENT that merely reads `python`") in a record whose entire value is
+  trustworthiness. Rewritten quote-aware (a token that took a character from a quote or escape never
+  counts and never acts as a separator or prefix; `env`/`VAR=value` are transparent only when THEY are in
+  command position). 22/22 table, mutation-proved by M9/M10/M12, and M9 killed twice — unit table AND
+  end-to-end through the real summary with a bullet-count assertion, so a false durable entry cannot
+  pass. The header now states the true contract: `n=0` means "none visible — a FLOOR, not a census".
+- **Chained pythons stay a WARNING, never a refusal** — D46 priced them as an accepted NOT-COVERED
+  limit, and the factory does not start refusing rows a ratified decision permits. The row that carries
+  the shape is named at parse time by job and line, marked `not-covered-chained-python=<n>` on its
+  launch line, and listed in the summary; `--tag python` is correctly not flagged.
+- **What was deliberately NOT claimed.** "Freed exactly once" was **withdrawn by the implementer against
+  its own evidence**: a double-`_free_gpu` mutant SURVIVED (a duplicated pool entry is skipped by the
+  per-GPU `flock`), so the gate claims "came back, never double-booked" and the measurement is recorded
+  instead of an assertion stronger than its evidence. The sweep header no longer cites
+  `runs/860_codistill/manifest_860.txt` as evidence the sweep landed: 1438 tracked files scanned BY
+  CONTENT SHAPE (18 match the row shape — 15 manifests, 3 `.py` coincidences), **0** carry a NOT-COVERED
+  spelling, and the one dirty manifest in the checkout is **untracked** (`.gitignore:54`, zero git
+  history), so a comment written into it would not survive a clone. Its non-durability is recorded on
+  **D48** and is NOT claimed fixed here — the durable half is the runtime warning.
+- **Remainder → planner.** `tools/deploy/` needs redeploying to gpu-server (as with TASK_833); the
+  `--verify`-side of D48 (whether the 819/893/860 untracked-but-cited lineage becomes tracked) is an
+  operator call; and the watchdog suite's load-sensitive flake remains a separate noted candidate row
+  (it did not fire in any run this cycle, at load 13.04).
+
 ## 2026-08-17 — TASK_878 — a no-print bar is an order that failed to fill, not an illegal action
 
 - **What shipped.** The operator ruled (2026-08-05) that a bar with no print is *"an order placed
