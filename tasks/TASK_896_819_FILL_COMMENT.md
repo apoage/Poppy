@@ -1,25 +1,35 @@
 # TASK_896 — D44 execution: name the 819 prototype's 1-row fill honestly
 
-**Status**: READY 2026-08-17 (planner; D44 operator-ruled DOCUMENT-AND-LEAVE 2026-08-17).
-**Size: XS. Risk: comment-only.** **Parallel-safe FILLER** — `runs/819_single_asset/portfolio.py`
-only.
+**Status**: READY 2026-08-19 (**UNBLOCKED — D48 ruled (a) by the operator 2026-08-19**). The
+comment work itself is fix-complete and verified in the tree (run 36: the opus fix re-derived
+every number independently, matched the orchestrator's measurement element-for-element; selftest
+12/12; the 893 positive control still moves 11/12 metrics). What remains is the SHIP, plus the
+planner-ruled re-pin change below.
+**Size: XS. Risk: comment-only + a deliberate re-pin.** **Parallel-safe FILLER** —
+`runs/819_single_asset/portfolio.py`, `.gitignore`, `tools/measure_leading_prefix.py`,
+`experiments/LEDGER.md` (one row's digest).
 
-## Scope (one item)
+## Scope (remaining)
 
-`build_close_aligned` admits bars only where `timestamp >= grid_start`, so 16 majors WITH real
-earlier history receive a 1-row backward fill at row 0 (outside FULL; no scored number moves).
-D44 ruled: the behaviour stays, the claim must exist and be true. Add a comment at the admission
-predicate naming: (a) the 1-row fill and its extent (16 assets, row 0 only); (b) its
-value-neutrality mechanism and its limit — row 0 == first admitted close exactly, so it is
-invisible to log-difference lookbacks **as long as the bfill invariant holds** (measured: the bar
-moves +0.9673047900277524 → +0.9672495154672209 only if the real earlier price is admitted);
-(c) that `tools/measure_leading_prefix.py`'s `_ADMIT` is a deliberate verbatim copy of the OLD
-predicate and must NOT be "fixed" to match any future edit here without a planner ruling —
-editing a measurement instrument to change its own answer is self-certification (D44).
+1. **The D48(a) carve:** add `!runs/819_single_asset/*.py` to `.gitignore` (source files ONLY —
+   zero artifacts: no npz, no JSON, no checkpoint enters git), then ship the already-verified
+   comment in the same commit.
+2. **The planner-ruled re-pin (D48 second item, ruled "correct and re-pin" 2026-08-19):**
+   correct the two "verbatim" overclaim strings in `tools/measure_leading_prefix.py` (`:115-118`
+   and the emitted `db.admission_predicate` value — `build_close_aligned` applies the
+   `% BAR_SEC == 0` lattice test in numpy AFTER the SQL, while `_ADMIT` folds a modulo term into
+   the SQL text; functionally equivalent, textually different) and the docstring granularity
+   conflation (`:36` — 14 of the 16 assets span 2–24 MINUTE rows; "1 row" is only true of the
+   downstream daily subsample). Regenerate the artifact, confirm it reproduces the pinned
+   NUMBERS, and RE-PIN the LEDGER `893/prefix-cells` digest in the same commit, recording the
+   OLD (`6bede1e9…`) AND NEW sha256 in the row. A repair tool refreshing its own pin pins nothing
+   (D39's rule) — this change is planner-supervised, not the instrument's owner row acting alone.
 
 ## Acceptance
 
-- (i) Every sentence of the new comment is mechanically checkable against the code and the 893
-  instrument's outputs.
-- (ii) `python -m trader selftest` green; zero behaviour change (comment-only diff).
+- (i) Every sentence of the shipped comment is mechanically checkable against the code and the
+  893 instrument's outputs (already verified in run 36 — re-confirm, don't redo).
+- (ii) `python -m trader selftest` green; zero behaviour change (comment + strings only).
 - (iii) The 893 positive-control regression test stays green.
+- (iv) `git ls-files runs/819_single_asset/` shows the `.py` sources and NOTHING else from that
+  tree; the LEDGER row names both digests.

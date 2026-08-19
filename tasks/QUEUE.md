@@ -3,16 +3,35 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-17 (planner, post factory run 35) — run 35 RATIFIED: 878 and 895(item 1) SHIPPED; 881 and
-891R HALTED on the 3-cycle rule, both correctly (D45/D46). All three run-35 decisions RULED same-day:
-D44 document-and-leave (→ TASK_896), D45 the capacity re-cut (→ TASK_881I + TASK_881D), D46 the
-operator-ratified mechanism swap (→ TASK_891 second re-cut). The 878 3-arm ablation is AUTHORIZED
-and scheduled (planner lane, workstation).**
-**Ready (physically ordered): 1 TASK_892 (action-EV audit — the research row) → 2 TASK_894
-(frame_symbols digest) → 3 TASK_881I (ingestion only) → 4 TASK_881D (protection + deleter).
-FILLER: TASK_891 (absolute-path re-cut), TASK_896. GATED: TASK_880 (D34+D35).**
+**2026-08-19 (planner, post factory run 36 + the pathfinder audit).** Run 36 RATIFIED: **TASK_891
+SHIPPED** (`task891-run-queue-venv-python`, tagged); **TASK_892 and TASK_881I HALTED on the
+3-cycle rule, both correctly** (D51/D50 — the failing layer isolated, the verified layer
+preserved in-tree with patch copies beside `lore/handoff_2026-08-19_factory_run_36.md`); TASK_896
+fix-complete. **All four run-36 decisions RULED same-day:** D48(a) (operator — track 819 sources,
+ship 896 + re-pin the 893 digest deliberately), D49(a) (operator — event-study estimator accepted
+at cost0, fee16 demoted; folded into **SPEC Amendment 1**, landed, hash `8408970d…`), D50
+(planner — 881I re-cut ships the verified ingestion; score-source enumeration is the new
+TASK_881S; the tool is `tools/ckpt_gc.py`, NOT ckpt_archive; 881D gains the manifest-corpus
+precondition — there is NO live corpus), D51 (planner — 892 re-cut keeps the trace layer, the
+banding layer lands with Amendment 1). **The pathfinder audit
+(`docs/pathfinder_audit_2026-08-19.md`) was operator-adopted:** its four 892 amendments are in
+Amendment 1; its G1/G3/G6 gaps are the new rows **TASK_897** (corrected 809 re-measure — the only
+gate-passing strategy in repo history was never honestly falsified), **TASK_898** (trend-decay
+aggregation + spot-legal variant — the fallback is measured dead in recent data), **TASK_899**
+(data backfill to present); its record corrections are applied (809 retracted at source, the
++0.97 bar caveated survivorship-tilted in pathway.md, the 887 alpha-ordering correction in the
+LEDGER). Operator standing guidance 2026-08-19: **idle GPUs are a failure mode — measurements
+schedule to gpu-server's GPUs; no CPU-heavy work on the workstation.** The MuZero line is NOT
+abandoned — the audit kills the current line's evidence, not the algorithm.
+**Ready (physically ordered): 1 TASK_892 (re-cut + Amendment 1 — the D47 pivot row) → 2 TASK_894
+(frame_symbols digest; serial with 892 — shared `eval_vector.py`) → 3 TASK_897 (corrected 809) →
+4 TASK_898 (trend decay + spot-legal) → 5 TASK_881I (D50 re-cut: ship the verified ingestion) →
+6 TASK_881S (score-source enumeration) → 7 TASK_881D (protection + deleter + corpus
+precondition). FILLER: TASK_896 (unblocked — carve + ship + re-pin), TASK_899 (data backfill,
+planner/server ops). GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 only** (the 857 smoke-assert — no 857 number quotable until answered).
-_Next takeable: **TASK_892** — every sequencing constraint discharged._
+_Next takeable: **TASK_892 (re-cut)** — the tree carries the verified trace layer; the row is the
+banding layer + the Amendment-1 surface._
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
@@ -26,12 +45,15 @@ factory startup reads this file; the lessons they carried are quoted as gates in
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_892_ACTION_EV_AUDIT.md` | S | **NEW 2026-08-16 — the research row the queue was missing.** 887 proved the collapse adaptive; this audit measures the decision the pivot hangs on: do the trained policies' non-HOLD actions carry ANY edge vs a matched-activity random null (cost0 + fee16, within-regime matched, block-bootstrap CIs, EDGE/ANTI-EDGE/NULL bands pre-registered in `experiments/892_action_ev/SPEC.md`). Eval-only, no training; verdict seeds D44. Sequencing SATISFIED (886/890 run 34, 878 run 35) — takeable now. |
-| 2 | `tasks/TASK_894_FRAME_SYMBOLS_DIGEST.md` | S | **NEW 2026-08-16 — 886's structural close.** Run 34 measured the hole: reversing `frame_symbols` with the fingerprint intact still certified and moved net@21 −1.7963 → −1.6575. Record a `frame_symbols_sha256` inside the checkpoint at SAVE time (889's surface), retro-stamp the 7 survivors, add the fifth conjunct to `_certification_verdict` — then the `NOT PROVEN` half of 886's sentence can be deleted. Sequenced after 878.
-| 3 | `tasks/TASK_881I_MANIFEST_INGESTION.md` | S | **NEW 2026-08-17 — D45 re-cut, first half.** Manifest ingestion ONLY: one function owns parse + SPEC-block strip (`(entries, spans)`), malformed line WITHDRAWS coverage, second block refuses, dangling entry refuses NON-ZERO. Parses/classifies/refuses — deletes NOTHING. Resume from tag `stash-881-halted-d45`. |
-| 4 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | **NEW 2026-08-17 — D45 re-cut, second half, sequenced after 881I.** The protection model + deleter, resumed from the stash half six opus judges verified (all six prior kills dead; re-run each, do not rebuild). The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
-| 5 | `tasks/TASK_891_RUN_QUEUE_VENV_PYTHON.md` (**SECOND RE-CUT per D46, operator-ratified 2026-08-17**) | XS/S | FILLER (parallel-safe). Absolute-path substitution ONLY — the shim dir is deleted, no PATH prepend, nothing job-writable in the trust path; leading bare `python`/`python3` → `<repo>/trader_env/bin/python`; everything else passthrough AND labelled; chained pythons a documented NOT-COVERED limit + one-time manifest sweep in scope. The verified three-tier honest contract survives verbatim. Resume from tag `stash-891r-halted-d46`. |
-| 6 | `tasks/TASK_896_819_FILL_COMMENT.md` | XS | **NEW 2026-08-17 — D44 execution (document-and-leave).** FILLER (parallel-safe). Comment-only: name the 819 prototype's 16-asset 1-row bfill, its value-neutrality mechanism and its limit, and pin that `measure_leading_prefix.py`'s `_ADMIT` must not be "fixed" unilaterally. |
+| 1 | `tasks/TASK_892_ACTION_EV_AUDIT.md` (**RE-CUT per D51**) | S | **SPEC Amendment 1 landed 2026-08-19, hash `8408970d…`** — D49(a) (event-study estimator at cost0, fee16 demoted to disclosed diagnostic), the interval-method calibration gate (block=21 equaled the dependence length; ≥93% coverage per stratum before the real leg), and the four pathfinder amendments: **OOS leg 2025-10-05→2026-03-31 is the BINDING read**, 887 A/D subjects added (never pooled), position-CHANGE-only co-primary, disclosures corrected. The tree carries the verified trace layer (patch `lore/handoff_2026-08-19_factory_run_36_892_cycle3.patch`); the row is the banding layer (guards = scale-relative tolerances, NEAR-case tests — never bit-identity) + the Amendment-1 surface. Verdict seeds **D47**. Real leg on gpu-server GPUs (operator's placement rule). |
+| 2 | `tasks/TASK_894_FRAME_SYMBOLS_DIGEST.md` | S | 886's structural close: save-time `frame_symbols_sha256`, retro-stamp the 7 survivors, fifth conjunct in `_certification_verdict`. **Serial with 892** — shared `eval_vector.py` (run 36 held it off for exactly this; the TASK_851 incident is the precedent). |
+| 3 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` | S | **NEW 2026-08-19 — pathfinder G1, operator-adopted.** The only gate-passing strategy in repo history (809's +5.08) was retracted for a broken estimator but never falsified. Re-run the best realistic cells on the honest per-decision estimator over the original OOS window AND the untouched 2025-04→2026-03 span, every grid cell recorded. CELL CLEARS ⇒ the path is execution engineering; ALL FAIL ⇒ the minute surface closes honestly. |
+| 4 | `tasks/TASK_898_TREND_DECAY_SPOT_LEGAL.md` | S | **NEW 2026-08-19 — pathfinder G3, operator-adopted.** Aggregate the fallback rule's measured decay (875 floors +3.90→+0.26; 820: −1.31 on truly-unseen data) and pre-register the long-flat/no-short spot-legal variant. Verdict rewrites `pathway.md:106` ("fixed rule stays the fallback" is currently false). |
+| 5 | `tasks/TASK_881I_MANIFEST_INGESTION.md` (**RE-CUT per D50**) | S | Ship the ingestion layer five lens-runs could not break (tree carries it; patch `lore/handoff_2026-08-19_factory_run_36_881I_cycle3.patch`). Re-prove, don't rebuild. **Tool correction: `tools/ckpt_gc.py`, NOT ckpt_archive.** Deletes NOTHING; the `--apply` freeze STANDS. |
+| 6 | `tasks/TASK_881S_SCORE_SOURCE_ENUMERATION.md` | XS/S | **NEW 2026-08-19 — D50's second half.** Every score source `--verify-manifests` claims to consult must be enumerated by the same code path that consults it (the `--log-glob <FIFO>` hang / silent-OK split); fallback tests must not construct the primary source; duplicate-refusal dedup. Sequenced after 881I. |
+| 7 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Sequenced after 881I (+881S awareness). **New D50 precondition: author the real `PROTECTED.txt` corpus — there is NO live corpus (0/56 files), so the protection model currently protects nothing.** The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
+| 8 | `tasks/TASK_896_819_FILL_COMMENT.md` | XS | FILLER (parallel-safe). **UNBLOCKED — D48(a) ruled 2026-08-19.** Comment work fix-complete and verified (run 36); remaining = the `.gitignore` carve (`!runs/819_single_asset/*.py`, sources only) + ship in the same commit + the planner-ruled verbatim-strings correction and deliberate re-pin of the 893 digest (old AND new sha256 in the LEDGER row). |
+| 9 | `tasks/TASK_899_DATA_BACKFILL.md` | XS/S | **NEW 2026-08-19 — pathfinder G6, operator-adopted.** FILLER (planner/server ops, not factory). Minute canon 2026-03-31→present and daily table 2026-07-04→present via the proven 858 machinery; seam-contiguity checks; the pulling habit documented. Data rot is the binding constraint on every future OOS claim. |
 
 
 _Sequencing (2026-08-08, supersedes the 2026-08-06 note below): **874 first** — XS, and it is the artifact 883 makes mandatory. **883 second** — it closes the fail-open that manufactured the 882 crisis, and every measurement the ladder is about to take runs through that harness. **877 third** — it shrinks the sparse-slot set, which is exactly the surface 878 then re-specifies (878's own out-of-scope says do 877 first). **878 fourth and alone** — it rewrites eval-core execution semantics with every parity gate in the repo riding on it. **881 last** — deliberately. It is real work and it is not urgent: unreadable ⇒ UNSCORED is fail-safe, the `--apply` freeze STANDS, srv holds 162 GB free. Four of the last five planner errors were boundary calls inside this one lane; ranking it last is the structural correction, not a demotion of the work._

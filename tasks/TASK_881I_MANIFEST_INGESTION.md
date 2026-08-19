@@ -1,48 +1,60 @@
-# TASK_881I — manifest ingestion, and ONLY manifest ingestion
+# TASK_881I — manifest ingestion, and ONLY manifest ingestion (RE-CUT per D50)
 
-**Status**: READY 2026-08-17 (planner; D45 re-cut, fifth application of the capacity-cut template
-— D33/D36/D38/D39 all shipped on the attempt after their cut).
-**Size: S. Risk: MEDIUM** — this is the layer every 881 cycle died in, isolated.
-**Sequenced before TASK_881D; disjoint from every other Ready row** (`tools/ckpt_archive.py`
-ingestion surface only).
-**Resume from tag `stash-881-halted-d45`** — but take ONLY the ingestion-relevant parts; the
-protection model and deleter in that stash are 881D's.
+**Status**: READY 2026-08-19 (planner; **D50 re-cut — the D33/D36/D38/D39/D45 template, sixth
+application**; every prior application shipped on the attempt after its cut).
+**Size: S. Risk: MEDIUM.**
+**TOOL CORRECTION (carried from run 36, verified first-hand): the 881 surface is
+`tools/ckpt_gc.py`, NOT `tools/ckpt_archive.py`** as this file and D45 previously wrote —
+ckpt_archive is TASK_880's remote archive tool under its own freeze.
+**Resume from the tree state** — the working tree CARRIES run 36 cycle-3's work; durable copy
+`lore/handoff_2026-08-19_factory_run_36_881I_cycle3.patch` (sha256 `f9c6b4f2…`). The
+`stash-881-halted-d45` tag is superseded as the resume point.
 
-## The rule this row enforces on itself
+## What is settled (D50 — five lens-runs could not break it; re-prove, don't rebuild)
 
-**It may PARSE, CLASSIFY and REFUSE — it deletes nothing.** The moment this row touches a
-deletion path it has re-welded the two layers that killed 881 three times. If a finding lands in
-the deleter, it is 881D's, and this row waits.
+The manifest-ingestion surface as cycle 3 left it: one `lstat`-based `classify_entry()` that
+never follows a link to decide a shape (one following `stat` types the END of a chain; ELOOP ⇒
+dangling); `_walk_scan_dirs` yielding `dirnames + filenames` UN-SPLIT so nothing downstream
+inherits a bad bucket; manifest-basename identity tested FIRST over every entry; shape checks
+before every `open()` on manifest, score-file and protect-file paths (a FIFO named
+`PROTECTED.txt` hung the tool forever before this); ten shapes × both basenames each refusing
+with a DELIBERATELY DISTINCT message; the delete-nothing fence (proven by contrast); canon
+functions byte-identical to HEAD (924 insertions, 0 deletions); the real tree reaching 56/56
+manifest basenames at exit 0; the argparse abbreviation class-closing test (`--c` restored to
+`--critical-free-gb`); 86 (+1 skip) / 106 tests; selftest 12/12.
 
-## Scope
+## The rule this row enforces on itself (unchanged)
 
-1. **One function owns both sides of the manifest.** Parsing and SPEC-block stripping are one
-   pass returning `(entries, spans)`: the strip can only ever remove exactly what the parse
-   consumed. A line that is neither consumed nor refusable is a refusal, never a silent skip.
-2. **A malformed line WITHDRAWS coverage** — the run dir it names is treated as unprotected-and-
-   unscoreable (fail-safe direction), never reported-and-ignored.
-3. **A second SPEC block is a refusal**, not a silent drop.
-4. **A dangling manifest entry refuses at NON-ZERO exit** (D45 planner note 3: today it refuses
-   at exit 0, so a cron caller cannot see that an operator's protection line is non-functional).
-5. **The three `experiments/828_stage3_train/PROTECTED.txt` entries that currently resolve
-   MISSING** (scratch disk unmounted) stay loudly named in every report; when the mount returns
-   they must be corrected or deleted — the tool's output must make that an operator-visible item,
-   not a footnote (D45 planner note 2).
+**It may PARSE, CLASSIFY and REFUSE — it deletes nothing.** The `--apply` freeze (D32/D34)
+STANDS.
+
+## Scope of this re-cut
+
+Ship the settled layer. That means: re-run the verified list above against the carried tree
+(every refusal independently rebuilt, the fence re-proven, suites green twice back-to-back),
+banner it, commit. **Score-source enumeration is explicitly OUT — it is TASK_881S.**
+
+## Accepted residuals (documented in run 36's handoff; not defects of this row)
+
+- `--verify-manifests` on DEFAULT `--roots` refuses on this workstation while scratch disk is
+  unmounted (`jax_ckpt_fast` dangles) — the intended loud signal; a cron caller on defaults sees
+  exit 2 until the mount returns.
+- A `protected:`/`covers:` line in SPEC.md PROSE is now a refusal — a documented foot-gun for
+  future SPEC authors, fail-safe in direction.
 
 ## Acceptance (gates)
 
-- (i) For every malformed-input class in the halted work's corpus (symlinked manifest FILE,
-  symlinked DIRECTORY incl. `--experiments-dir` pointed AT the symlink, torn `scores.jsonl`,
-  missing/symlinked/directory `--protect-file`): the same refusal behaviour as the verified
-  halted work, reproduced by rebuilding each input independently.
-- (ii) Parse-then-strip round-trip: stripping `spans` from the input yields a document that
-  re-parses to zero entries; stripping anything MORE is impossible by construction (the strip
-  consumes `spans`, not text).
-- (iii) Dangling entry → refusal, exit ≠ 0, entry named.
-- (iv) Every guard goes red when removed at its real drop site; mutations independently rebuilt;
-  no test stubs the mechanism under test; the documented CLI invocation is run, not imported.
+- (i) Every shape in the D50 verified list refuses identically, each malformed input
+  independently rebuilt (never taken on report).
+- (ii) The delete-nothing fence re-proven by contrast (with `--verify-manifests` all checkpoints
+  survive; without it the unprotected one is genuinely deleted).
+- (iii) Byte-identity of every non-ingestion code path vs HEAD.
+- (iv) Suites green TWICE back-to-back (run-36 rule: a single green no longer counts for rows
+  with a concurrency-shaped history).
 
 ## Out of scope
 
-The protection model, the deleter, `plan()`, `root_resolution()`, the TTL re-scan — all 881D.
-Any write or delete anywhere.
+Score-source enumeration (TASK_881S). The protection model, the deleter, `plan()`,
+`root_resolution()`, the TTL re-scan — all 881D. Authoring the real `PROTECTED.txt` corpus
+(881D's precondition — **there is no live manifest corpus at all**: 0 of 56 SPEC.md/PROTECTED.txt
+files carries a `protected:`/`covers:` block). Any write or delete anywhere.

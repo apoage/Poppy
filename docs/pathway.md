@@ -9,7 +9,12 @@ experiments."
 ## Definition of working (pre-registered, fixed)
 
 A reasoning trader WORKS when, on unseen years with honest costs (fee16/slip5), ≥3 seeds, it
-- beats the 819 linear trend book (net@21 Sharpe **+0.97** — the bar),
+- beats the 819 linear trend book (net@21 Sharpe **+0.97** — the bar; **survivorship-tilted,
+  caveat recorded 2026-08-19**: the same config on the point-in-time dead-coin-inclusive
+  276-asset universe reads **+0.56, CI[−0.13,+1.23] — straddling 0** (819 Phase 3, 2026-06-28;
+  `docs/pathfinder_audit_2026-08-19.md` §A). Every corridor floor/ceiling in the vector line is
+  measured on a coverage-ranked, survivor-tilted universe; the bar is quoted, never silently
+  treated as PIT-clean),
 - holds positions (no HOLD collapse; 821 died at 0/1670),
 - is BEAR-positive (BEAR22 in-window),
 then survives the gate ladder (all-regime → unseen → paper → live). Nothing promotes past a
