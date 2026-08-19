@@ -1,0 +1,2470 @@
+# TASK_881I cycle-3 tree state, HALTED on the 3-cycle rule (D50), 2026-08-19.
+# Could not be tagged (commit gate blocks git tag) nor stashed (would have swept
+# three other rows' concurrent work). Two parts below:
+#   1) a git diff for the TRACKED file tools/ckpt_gc.py
+#   2) the UNTRACKED test file, inlined verbatim after the marker
+# Apply: git apply <this file>  (part 1 only), then extract part 2 by hand.
+
+##### PART 1: git diff tools/ckpt_gc.py #####
+diff --git a/tools/ckpt_gc.py b/tools/ckpt_gc.py
+index 2adc53f..349f78e 100644
+--- a/tools/ckpt_gc.py
++++ b/tools/ckpt_gc.py
+@@ -37,8 +37,10 @@ import json
+ import os
+ import re
+ import shutil
++import stat
+ import sys
+ import time
++from typing import NamedTuple
+ 
+ CKPT_PATTERNS = (re.compile(r"^snapshot_ep\d+$"), re.compile(r"^ckpt(_.*)?$"),
+                  re.compile(r"^checkpoint_\d+$"))
+@@ -190,6 +192,906 @@ def plan(runs, scores_of, keep_best, keep_latest, under_floor, keep_unscored):
+     return deletions, summary
+ 
+ 
++# ======================================================================================
++# TASK_881I — MANIFEST INGESTION ONLY (D45 capacity re-cut of the halted TASK_881)
++# ======================================================================================
++# This section PARSES, CLASSIFIES and REFUSES. It deletes nothing, and it is never called
++# from `collect()` / `plan()` / the `--apply` delete loop above, which stay byte-identical to
++# what shipped before this row (canon parity). Everything below is reached only through
++# `--verify-manifests`, a separate, additive CLI mode that returns before any checkpoint is
++# ever discovered.
++#
++# TASK_881 (the halted work, tag `stash-881-halted-d45`) welded this ingestion to an explicit
++# protection MODEL (which run dirs are "covered", and therefore prunable) and a DELETER, and
++# died on its 3rd cycle inside the ingestion half: `_parse_spec_block` read only the FIRST
++# `protected:`/`covers:` block in a SPEC.md while a second, independently-looping
++# `_strip_spec_manifest_blocks` erased EVERY such block's text — so a checkpoint named only in
++# a second block lost both its protection and its citation, deleted at exit 0. D45 re-cut the
++# row so the fix (one function owns parse AND strip) ships on its own, before the protection
++# model and deleter are rebuilt on top of it (TASK_881D).
++#
++# The protection model, the deleter, `plan()`, `root_resolution()`, and the TTL re-scan are
++# TASK_881D's and are NOT touched or reimplemented here — this section does not decide what
++# survives, only what a manifest or score file actually SAYS, and whether that document can be
++# trusted at all.
++
++MANIFEST_BASENAMES = ("PROTECTED.txt", "SPEC.md")
++# The score-bearing basenames `_load_scores_strict` will try to open, named once so the enumeration
++# in `_find_score_dirs` cannot drift from the files actually read.
++SCORE_BASENAMES = ("scores.jsonl", "checkpoints_index.json")
++_MANIFEST_LINE_RE = re.compile(r"^(protect|covers):\s*(\S+)\s*$")
++# Best-effort, DIAGNOSTIC ONLY: used to name "the run dir a malformed line names" in a refusal
++# message. It never creates a protect/covers entry — a malformed line is never trusted.
++_PATHLIKE_HINT_RE = re.compile(r"([./A-Za-z0-9_-]+/[./A-Za-z0-9_-]+)")
++
++
++class ManifestEntry(NamedTuple):
++    kind: str          # "protect" | "covers"
++    path: str          # raw path text, exactly as written (not yet realpath'd)
++    source: str        # manifest file this entry came from
++    lineno: int         # 1-based line number (PROTECTED.txt) or block-header line (SPEC.md)
++
++
++class MalformedManifestLine(NamedTuple):
++    source: str
++    lineno: int
++    raw: str
++    hint_path: str | None   # best-effort path-like token in the bad line, diagnostic ONLY
++
++
++def parse_protected_txt(text: str, source: str
++                        ) -> tuple[list[ManifestEntry], list[tuple[int, int]],
++                                   list[MalformedManifestLine]]:
++    """Single pass over a PROTECTED.txt: the read that PRODUCES entries is the same read that
++    computes the character SPANS a strip may remove (scope item 1) — there is no second
++    function re-deriving "what counts as manifest content" that can drift from this one.
++
++    Recognized: ``protect: <path>`` / ``covers: <path>``, one directive per line; blank lines
++    and ``#`` comments are consumed (spanned, so a strip removes them too) but produce no entry.
++    Any OTHER non-blank line is MALFORMED: it is reported, NOT spanned (so a strip can never
++    make a malformed line disappear without a trace) and NEVER turned into an entry. TASK_881
++    required the directive, not just a path, so a mis-formatted line cannot accidentally protect
++    nothing while looking like it protects something; this row goes one step further (scope item
++    2, D45 planner note 2/3's spirit) and refuses to treat it as reported-and-ignored — see
++    ``load_manifests``, which turns any non-empty ``malformed`` into a refusal of the WHOLE file,
++    not a per-line skip.
++    """
++    entries: list[ManifestEntry] = []
++    spans: list[tuple[int, int]] = []
++    malformed: list[MalformedManifestLine] = []
++    pos = 0
++    for lineno, raw in enumerate(text.splitlines(keepends=True), 1):
++        start, end = pos, pos + len(raw)
++        pos = end
++        line = raw.strip()
++        if not line or line.startswith("#"):
++            spans.append((start, end))
++            continue
++        m = _MANIFEST_LINE_RE.match(line)
++        if m:
++            entries.append(ManifestEntry(m.group(1), m.group(2), source, lineno))
++            spans.append((start, end))
++            continue
++        hint = _PATHLIKE_HINT_RE.search(line)
++        malformed.append(MalformedManifestLine(source, lineno, raw.rstrip("\n"),
++                                                hint.group(1) if hint else None))
++    return entries, spans, malformed
++
++
++def parse_spec_manifest(text: str, source: str
++                        ) -> tuple[list[ManifestEntry], list[tuple[int, int]],
++                                   list[MalformedManifestLine]]:
++    """Single pass over a SPEC.md's ``protected:`` / ``covers:`` list blocks — the exact fix
++    D45 re-cut this row over.
++
++    Cycle-3's ``_parse_spec_block`` read entries with one function (``re.search``, first match
++    only per key) and ``_strip_spec_manifest_blocks`` computed what to remove with a SECOND,
++    independently-looping function (``while True: re.search(...)``) that kept going past the
++    first match. A SPEC.md with two ``protected:`` blocks therefore had its second block's
++    entries silently dropped by the parser while the stripper erased BOTH blocks' text from
++    what the advisory prose scanner would see — a checkpoint named only in the second block was
++    invisible to protection AND its citation removed before any prose scan ever ran. Deleted at
++    exit 0.
++
++    THE FIX: one walk finds every ``^protected:\\n`` / ``^covers:\\n`` header for each key.
++    Exactly one header per key is the well-formed case: its list lines become entries, and its
++    exact text (header + list lines) becomes the span a strip may remove — entries and spans
++    come from the SAME loop, so a strip can never remove more than this parse actually consumed
++    (scope item 1, gate ii). TWO OR MORE headers for the same key is a REFUSAL (scope item 3):
++    NO entries are produced for that key and NOTHING is spanned for it, so the ambiguity can
++    never be silently resolved by preferring one block over the other.
++
++    THE HEADER MATCH IS NEWLINE-OPTIONAL, and that matters. An earlier version required a
++    literal newline after the key (``^protected:[ \\t]*\\n``), so a file whose FINAL line is the
++    header and which lacks a trailing newline — a torn or truncated write, the same class the
++    ``scores.jsonl`` guard already treats as realistic, not a corruption exotic — matched
++    NOTHING: no entries, no malformed report, exit 0 saying OK. ``parse_protected_txt``'s
++    ``splitlines(keepends=True)`` has always been robust to a missing final newline; this parser
++    now is too, so the header is at least SEEN. Two further shapes are then refusals rather than
++    silent zero-coverage, per this row's own contract ("a line that is neither consumed nor
++    refusable is a refusal, never a silent skip"):
++
++    * a header line carrying INLINE content (``protected: runs/a``) — it reads as granting
++      coverage and grants none;
++    * a well-formed header with ZERO list items — a block that names nothing is indistinguishable
++      from a block whose items were lost to a truncated write, so it WITHDRAWS rather than
++      quietly granting nothing.
++
++    ACCEPTED, NOT A DEFECT (judged 2026-08-19, do not "fix"): a ``protected:`` / ``covers:``
++    header written inside SPEC.md PROSE, or inside a fenced code block, parses as a real block.
++    That is fail-SAFE in the only direction that matters here — it can only ADD entries, i.e.
++    make the (future, TASK_881D) deleter MORE conservative — and a bogus path so ingested does not
++    pass quietly: it lands in ``ManifestSet.dangling`` and hits ``load_manifests``'s loud
++    dangling-entry refusal at exit 2. Teaching this parser to skip fences would create the
++    opposite, unsafe failure: a real header ignored because something upstream looked like a fence.
++    """
++    entries: list[ManifestEntry] = []
++    spans: list[tuple[int, int]] = []
++    malformed: list[MalformedManifestLine] = []
++    for key in ("protected", "covers"):
++        kind = "protect" if key == "protected" else "covers"
++        # `(?:\n|\Z)`, not `\n`: a header on an unterminated final line must still be SEEN.
++        headers = list(re.finditer(rf"^{key}:(?P<rest>[^\n]*)(?:\n|\Z)", text, re.MULTILINE))
++        if not headers:
++            continue
++        if len(headers) > 1:
++            lines = [text.count("\n", 0, h.start()) + 1 for h in headers]
++            malformed.append(MalformedManifestLine(
++                source, lines[0],
++                f"duplicate '{key}:' block ({len(headers)} occurrences at lines {lines}) — "
++                f"refused, none parsed", None))
++            continue
++        h = headers[0]
++        start, end = h.start(), h.end()
++        block_lineno = text.count("\n", 0, start) + 1
++        inline = h.group("rest").strip()
++        if inline:
++            hint = _PATHLIKE_HINT_RE.search(inline)
++            malformed.append(MalformedManifestLine(
++                source, block_lineno,
++                f"'{key}:' header carries INLINE content {inline!r} — a manifest block header "
++                f"must stand alone above a '- <path>' list; refused, none parsed",
++                hint.group(1) if hint else None))
++            continue
++        block: list[ManifestEntry] = []
++        for line in text[h.end():].splitlines(keepends=True):
++            if not line.strip():
++                break
++            item = re.match(r"^\s*-\s*(\S+)", line)
++            if not item:
++                break
++            block.append(ManifestEntry(kind, item.group(1), source, block_lineno))
++            end += len(line)
++        if not block:
++            malformed.append(MalformedManifestLine(
++                source, block_lineno,
++                f"'{key}:' block is EMPTY — it names nothing, which is indistinguishable from a "
++                f"torn/truncated write that lost its '- <path>' items; refused, none parsed",
++                None))
++            continue
++        entries.extend(block)
++        spans.append((start, end))
++    return entries, spans, malformed
++
++
++def strip_spans(text: str, spans: list[tuple[int, int]]) -> str:
++    """Remove exactly the character ranges ``spans`` names, nothing else.
++
++    ``spans`` must come from the SAME parse call that produced them (``parse_protected_txt`` /
++    ``parse_spec_manifest``) — by construction this can only remove what that parse actually
++    consumed as manifest content (gate ii: stripping anything MORE is impossible, because
++    ``spans`` is the only channel span information travels through; there is no independent
++    second pass that could disagree with the parse about what counts as manifest content).
++    """
++    out = []
++    pos = 0
++    for start, end in sorted(spans):
++        if start < pos:
++            continue  # overlapping/out-of-order spans (should not occur) are never double-cut
++        out.append(text[pos:start])
++        pos = end
++    out.append(text[pos:])
++    return "".join(out)
++
++
++# --- entry SHAPE classification: the ROOT both link defects share -----------------------------
++# EVERY security-relevant decision in this section is made from an `lstat`-based classification
++# computed HERE, and NEVER from how `os.walk` bucketed an entry into `dirnames` / `filenames`.
++# `os.walk` splits entries with `DirEntry.is_dir()`, which FOLLOWS symlinks, so THE SAME NAME
++# lands in a different bucket depending on what its target happens to be — and two of this row's
++# cycles died on opposite sides of exactly that one mistake:
++#
++#   shape of `experiments/<id>/PROTECTED.txt`  os.walk bucket  what a link-following split got wrong
++#   ----------------------------------------  --------------  -------------------------------------
++#   regular file                              filenames       (the intended case: read it)
++#   symlink -> regular file                   filenames       correctly refused
++#   symlink -> DIRECTORY, live                DIRNAMES        CYCLE-3 BLOCKER: `load_manifests`
++#                                                             tested `fn in MANIFEST_BASENAMES`
++#                                                             over `filenames` ONLY, so the name
++#                                                             was never evaluated at all — silent
++#                                                             exit 0, output byte-identical to a
++#                                                             tree with NO manifest, i.e. an
++#                                                             operator's protection intent
++#                                                             dropped with zero signal
++#   symlink -> nonexistent, or a link cycle   filenames       CYCLE-1 BLOCKER, the mirror image:
++#                                                             symlink checks ran over `dirnames`
++#                                                             ONLY, so this was invisible too
++#   real DIRECTORY                            dirnames        walked into as a plain subdir, name
++#                                                             never evaluated: silent exit 0
++#   fifo / socket / device                    filenames       `open()` on a reader-less FIFO
++#                                                             BLOCKS FOREVER: the tool HUNG
++#                                                             (measured pre-fix: exit 124 under
++#                                                             `timeout 15`) instead of refusing
++#   symlink -> symlink -> anything            per FINAL target the chain has to be resolved, not
++#                                                             just its first hop
++#
++# The rule this section therefore enforces once, for the whole shape space rather than per shape:
++# manifest-basename identity is tested BEFORE and INDEPENDENTLY of the directory-vs-file split,
++# over EVERY entry `os.walk` returned (both lists, concatenated), and a manifest basename that is
++# not a real, regular, non-symlink file REFUSES — whatever its target is, and whichever list
++# `os.walk` happened to put it in.
++
++
++class EntryShape(NamedTuple):
++    """What a path REALLY is: one ``lstat`` (never follows) plus, for a symlink, one following
++    ``stat`` to learn the type at the END of the chain."""
++
++    path: str
++    is_link: bool
++    kind: str    # "file" | "dir" | "other" | "unstatable" | (links only) "dangling"
++
++    @property
++    def is_regular_file(self) -> bool:
++        """The ONLY shape a manifest may have: a real, regular, non-symlink file."""
++        return not self.is_link and self.kind == "file"
++
++
++def _kind_of_mode(mode: int) -> str:
++    if stat.S_ISDIR(mode):
++        return "dir"
++    if stat.S_ISREG(mode):
++        return "file"
++    return "other"
++
++
++def classify_entry(path: str) -> EntryShape:
++    """Classify ``path`` from its own ``lstat``, independently of any caller's bucketing.
++
++    ``kind`` describes the FINAL target for a symlink (``os.stat`` follows the whole chain, so
++    ``symlink -> symlink -> dir`` classifies as ``("dir", is_link=True)``) and the entry itself
++    otherwise. A link whose chain cannot be resolved — broken target, or a cycle, which fails with
++    ``ELOOP`` — is ``"dangling"``. ``"unstatable"`` means even the ``lstat`` failed: the entry
++    vanished mid-scan, or its parent became unreadable. That is reported, never assumed empty.
++    """
++    try:
++        st = os.lstat(path)
++    except OSError:
++        return EntryShape(path, False, "unstatable")
++    if not stat.S_ISLNK(st.st_mode):
++        return EntryShape(path, False, _kind_of_mode(st.st_mode))
++    try:
++        target_st = os.stat(path)        # follows the FULL chain; ENOENT/ELOOP -> dangling
++    except OSError:
++        return EntryShape(path, True, "dangling")
++    return EntryShape(path, True, _kind_of_mode(target_st.st_mode))
++
++
++_MANIFEST_SHAPE_WHY = ("a manifest is the input that can grant coverage to an irreversible "
++                       "deleter, so it must be a real, regular, non-symlink file at a real, "
++                       "tracked path")
++
++
++def manifest_shape_refusal(path: str) -> str | None:
++    """``None`` iff ``path`` may be opened and read as a manifest; otherwise the refusal message,
++    naming the shape actually found.
++
++    Called on EVERY entry whose basename is in ``MANIFEST_BASENAMES``, from EITHER of ``os.walk``'s
++    lists (see the shape table above) — that is what makes this a fix for the shape SPACE instead
++    of a patch for one shape. The symlink-to-FILE wording is preserved verbatim from the guard that
++    already shipped, so an existing refusal's message does not move; the symlink-to-DIRECTORY
++    wording is deliberately DISTINCT from ``load_manifests``'s "reached only by crossing a
++    SYMLINKED DIRECTORY" and from ``DanglingScanLink``'s "BROKEN SYMLINK", because conflating three
++    different diagnoses is how the previous cycles lost track of which shape was covered.
++    """
++    sh = classify_entry(path)
++    if sh.is_regular_file:
++        return None
++    if sh.is_link:
++        if sh.kind == "file":
++            return (f"{path}: manifest is a SYMLINK — REFUSED, not read (its target may be "
++                    f"untracked or outside the tree). Replace it with the real file.")
++        if sh.kind == "dir":
++            return (f"{path}: manifest basename is a SYMLINK TO A DIRECTORY — REFUSED, not read. "
++                    f"`os.walk` files this shape under `dirnames` (`is_dir()` follows the link), "
++                    f"so a filenames-only manifest check never evaluated the name at all and the "
++                    f"protection intent it declares was dropped at exit 0; {_MANIFEST_SHAPE_WHY}.")
++        if sh.kind == "dangling":
++            return (f"{path}: manifest is a SYMLINK whose target does not resolve (broken target, "
++                    f"or a link cycle) — REFUSED, not read; {_MANIFEST_SHAPE_WHY}.")
++        return (f"{path}: manifest is a SYMLINK to a non-regular file — REFUSED, never opened "
++                f"(opening a reader-less FIFO BLOCKS FOREVER); {_MANIFEST_SHAPE_WHY}.")
++    if sh.kind == "dir":
++        return (f"{path}: manifest basename is a real DIRECTORY, not a file — REFUSED. A directory "
++                f"named {os.path.basename(path)!r} is not a manifest, and `os.walk` would "
++                f"otherwise walk into it as an ordinary subdir without ever evaluating the name; "
++                f"{_MANIFEST_SHAPE_WHY}.")
++    if sh.kind == "unstatable":
++        return (f"{path}: manifest basename could not be lstat'd (it vanished mid-scan, or its "
++                f"parent became unreadable) — REFUSED rather than assumed empty; "
++                f"{_MANIFEST_SHAPE_WHY}.")
++    return (f"{path}: manifest basename is not a regular file (fifo/socket/device) — REFUSED, "
++            f"never opened: `open()` on a reader-less FIFO BLOCKS FOREVER, which HUNG this tool "
++            f"instead of refusing; {_MANIFEST_SHAPE_WHY}.")
++
++
++def _score_source_shape_reason(path: str) -> str | None:
++    """``None`` iff ``path`` is safe to OPEN as a score file; otherwise the reason (no path
++    prefix — callers add it).
++
++    Weaker than :func:`manifest_shape_refusal` ON PURPOSE, and the difference is the whole
++    argument: a score file cannot grant coverage, and canon's ``_load_scores`` happily reads one
++    through a symlink, so a live symlink to a regular file stays readable here (canon parity).
++    What is refused is what cannot be READ: a directory (``open`` would raise anyway, but say so
++    in the same vocabulary as everything else), a dangling link (``os.path.exists`` follows, so
++    the old test skipped it in silence), and above all a FIFO — ``open()`` on a reader-less FIFO
++    BLOCKS FOREVER, so the shape has to be rejected BEFORE the open, not around it.
++    """
++    sh = classify_entry(path)
++    if sh.kind in ("file", "unstatable"):
++        # "unstatable" here means "nothing (readable) is there" — not a score source at all, and
++        # never opened. Absence of a score file is normal (see the module docstring: missing data
++        # never causes a deletion decision), so it is not an error.
++        return None
++    if sh.kind == "dangling":
++        return "score file is a SYMLINK whose target does not resolve — unreadable, refused"
++    if sh.kind == "dir":
++        return "score file is a DIRECTORY, not a file — unreadable, refused"
++    return ("score file is not a regular file (fifo/socket/device) — refused, never opened "
++            "(`open()` on a reader-less FIFO BLOCKS FOREVER)")
++
++
++class UnusableScoreSource(OSError):
++    """A ``--roots`` entry named like a score file whose SHAPE makes it unreadable.
++
++    Same value-not-thrown pattern as :class:`DanglingScanLink`, for the same reason: it travels
++    the ``on_error`` channel so ``--verify-manifests`` refuses instead of silently treating the
++    run dir as unscored.
++    """
++
++    def __init__(self, path: str, reason: str):
++        OSError.__init__(self)
++        self.filename = path
++        self._msg = reason
++
++    def __str__(self) -> str:
++        return self._msg
++
++
++# --- dangling-symlink refusal -----------------------------------------------------------------
++# A symlink whose target does not resolve is the single most dangerous shape for this tool,
++# because it is INVISIBLE to every symlink check that inspects `os.walk`'s `dirnames`:
++# `os.walk` classifies entries with `DirEntry.is_dir()`, which FOLLOWS the link, so when the
++# target's stat fails the entry is reported as a FILE. A dangling `experiments/<id>` directory
++# link therefore never appears in `dirnames` at all, and a manifest that lived under it vanishes
++# with zero signal. This is not hypothetical on this repo: `jax_ckpt_fast` / `jax_ckpt_easy`
++# point at `/mnt/scratch/...`, which is not the current mount point, so both are
++# dangling right now. A dangling link WITHDRAWS coverage — it is a REFUSAL, never a silent skip.
++
++_DANGLING_LINK_WHY = ("its target does not resolve, so anything that lived under it — including "
++                      "a manifest that grants coverage — is INVISIBLE to this scan (an unmounted "
++                      "volume is the realistic cause). Fix or remove the link; a dangling link "
++                      "WITHDRAWS coverage rather than silently granting none")
++
++
++class DanglingScanLink(OSError):
++    """A symlink under (or AT) a scan root whose target does not resolve.
++
++    Constructed as a value, never thrown: it is handed to the walk's ``onerror`` channel so it
++    lands in ``load_manifests``'s ``errors`` list and refuses the whole scan, exactly like an
++    unreadable manifest does. ``__str__`` is overridden because ``OSError.__new__`` would
++    otherwise read the two constructor arguments as ``(errno, strerror)`` and render this as
++    ``[Errno None] None``.
++    """
++
++    def __init__(self, path: str, what: str = "BROKEN SYMLINK"):
++        OSError.__init__(self)
++        self.filename = path
++        self._msg = f"{what} — REFUSED: {_DANGLING_LINK_WHY}"
++
++    def __str__(self) -> str:
++        return self._msg
++
++
++def _is_dangling_link(path: str) -> bool:
++    """True for a symlink that does not resolve to anything (broken target, or a link cycle,
++    whose stat fails with ELOOP). Deliberately NOT true for a live symlink: those are already
++    handled by the ``via_symlink`` refusal in ``_walk_scan_dirs``, and this fix must not weaken or
++    duplicate that path.
++
++    Expressed through :func:`classify_entry` so there is exactly ONE lstat-based classifier in this
++    file: "dangling" is a shape in the table, not a separate ad-hoc test that could drift from it.
++    """
++    sh = classify_entry(path)
++    return sh.is_link and sh.kind == "dangling"
++
++
++def _unresolvable_link_on_path(path: str) -> str | None:
++    """The symlink component that makes ``path`` unusable as a directory, or ``None``.
++
++    Distinguishes "a plain directory that simply is not there" (fine — a host that has no
++    ``experiments/`` is not a refusal) from "a directory made unreachable by a symlink that does
++    not resolve to a directory" (a refusal). Walks up from ``path`` and stops at the first
++    component that IS a real directory, so an existing symlinked ANCESTOR (a legitimately
++    relocated repo) never false-positives.
++    """
++    p = os.path.abspath(path)
++    while True:
++        if os.path.islink(p) and not os.path.isdir(p):
++            return p
++        parent = os.path.dirname(p)
++        if parent == p or os.path.isdir(p):
++            return None
++        p = parent
++
++
++def _walk_scan_dirs(scan_dir: str, on_error):
++    """``os.walk`` that never silently omits a symlinked subdirectory, and marks a manifest
++    reached only by crossing a symlink (including a symlinked SCAN ROOT itself).
++
++    Plain ``os.walk(sd, followlinks=False)`` neither descends a symlinked subdirectory NOR
++    calls ``onerror`` for it — a symlinked ``experiments/<id>`` would make that experiment's
++    entire manifest invisible with ZERO signal, which for coverage that gates an irreversible
++    deleter reads as "nothing to protect". So symlinked directories ARE followed here, but each
++    real directory is walked at most once (keyed by ``realpath``), which is what makes a
++    self-referential symlink cycle terminate instead of looping forever.
++
++    Yields ``(dirpath, names, via_symlink)``, where ``names`` is EVERY entry ``os.walk`` listed in
++    that directory — ``dirnames`` and ``filenames`` CONCATENATED, deliberately handed over
++    UN-SPLIT. That is the root fix: the caller re-classifies each name with ``lstat``
++    (:func:`classify_entry`) instead of inheriting a split that was computed by following symlinks.
++    Yielding only ``filenames`` is what made a live ``PROTECTED.txt -> some/dir`` link invisible to
++    every manifest check, and yielding only ``dirnames`` to the symlink check is what made a
++    dangling one invisible; the two blockers were the same mistake, so neither list is trusted now.
++
++    ``via_symlink`` is True when this directory
++    was only reachable by crossing a symlink — including when the SCAN ROOT ITSELF resolves
++    elsewhere (``--experiments-dir`` pointed directly at a symlink): ``os.walk`` always lists
++    the top path it is handed even when that path is a link, so treating only DISCOVERED
++    symlinks as ``via_symlink`` would leave rooting the scan at the symlink itself as a bypass
++    of the whole check. ``load_manifests`` refuses to READ any manifest found this way — a
++    manifest is the authoritative signal that can grant coverage, and it must live at a real,
++    tracked path.
++
++    A DANGLING symlink is reported through ``on_error`` instead: it cannot be followed, and
++    ``os.walk`` does not even offer it in ``dirnames`` (see ``_is_dangling_link``), so the only
++    honest thing to say about it is that this scan is INCOMPLETE.
++    """
++    visited: set[str] = set()
++    _root_via_link = os.path.realpath(scan_dir) != os.path.abspath(scan_dir)
++    queue: list[tuple[str, bool]] = [(scan_dir, _root_via_link)]
++    while queue:
++        top, via_link = queue.pop(0)
++        top_rp = os.path.realpath(top)
++        if top_rp in visited:
++            continue
++        for dirpath, dirnames, filenames in os.walk(top, followlinks=False, onerror=on_error):
++            visited.add(os.path.realpath(dirpath))
++            # EVERY entry, captured BEFORE any directory-vs-file decision is acted on. Whatever
++            # else happens below, the caller sees every name in this directory.
++            names = list(dirnames) + list(filenames)
++            keep = []
++            for d in dirnames:
++                if d in (".git", "__pycache__"):
++                    continue
++                full = os.path.join(dirpath, d)
++                # `classify_entry`, not `os.path.islink` + trust-the-bucket: the DESCENT decision
++                # is made from lstat and the resolved target type, so a link is followed (and
++                # MARKED) only when it really leads to a directory, and never merely because
++                # `os.walk` said `is_dir()`.
++                shape = classify_entry(full)
++                if shape.is_link:
++                    if shape.kind == "dir":
++                        queue.append((full, True))
++                    # a link in `dirnames` that does NOT resolve to a directory is not descended;
++                    # it is still reported below (dangling) and, if it carries a manifest basename,
++                    # refused by `manifest_shape_refusal` in `load_manifests`.
++                    continue
++                keep.append(d)
++            dirnames[:] = keep
++            # os.walk mis-files a dangling DIRECTORY link into `filenames` (is_dir() follows the
++            # link and its stat fails), so the dirnames loop above can never see one. Scanning
++            # `names` rather than `filenames` here means this no longer DEPENDS on that mis-filing
++            # being in one particular direction.
++            for fn in names:
++                full = os.path.join(dirpath, fn)
++                if _is_dangling_link(full):
++                    on_error(DanglingScanLink(full))
++            yield dirpath, names, via_link
++
++
++class ManifestSet(NamedTuple):
++    protect: set[str]                  # realpath'd, EXISTING protect entries
++    covers: set[str]                   # realpath'd, EXISTING covers entries
++    dangling: set[str]                 # realpath'd entries (protect OR covers) that DO NOT EXIST
++    citations: dict[str, list[str]]    # realpath -> ["<kind>: <raw> <- <source>:<line>", ...]
++
++
++class ManifestScanIncomplete(OSError):
++    """A manifest under the scan dirs could not be trusted IN FULL — a symlinked manifest file
++    or directory, an unreadable file, a malformed PROTECTED.txt line, or a duplicate SPEC.md
++    block. The manifest set (``.partial``) is a SUBSET of the real one: never read as "this run
++    dir really has no manifest" without surfacing why.
++    """
++
++    def __init__(self, errors: list[str], partial: "ManifestSet"):
++        self.errors = list(errors)
++        self.partial = partial
++        head = "; ".join(self.errors[:3]) + (" …" if len(self.errors) > 3 else "")
++        super().__init__(f"manifest scan INCOMPLETE: {len(self.errors)} problem(s) under the "
++                         f"scan dirs ({head}) — the manifest set is a SUBSET of the real one")
++
++
++def load_manifests(scan_dirs: list[str]) -> ManifestSet:
++    """Scan ``scan_dirs`` (default: ``experiments``) for ``PROTECTED.txt`` / ``SPEC.md``
++    manifests and CLASSIFY every directive they contain.
++
++    Raises :class:`ManifestScanIncomplete` when ANY manifest could not be fully trusted:
++
++    * a manifest BASENAME that is anything other than a real, regular, non-symlink file — a
++      symlink to a file, a symlink to a DIRECTORY, a symlink to a dangling target or through a
++      cycle, a real directory, a fifo/socket/device — is REFUSED, not read, whichever of
++      ``os.walk``'s lists it appeared in (see the shape table above ``classify_entry`` and
++      ``manifest_shape_refusal``); likewise a manifest reached only by crossing a symlinked
++      DIRECTORY, including a symlinked scan root (see ``_walk_scan_dirs``). A manifest is the input
++      that can grant coverage to an irreversible deleter, and its target may be untracked or
++      outside the tree entirely;
++    * an OS-level read error (permissions, race);
++    * ANY malformed line / duplicate SPEC block in the file (scope items 1-3) — the WHOLE
++      file's directives are withdrawn, not just the offending line. A partially-trustworthy
++      manifest is not trustworthy: a malformed line is reported (never silently dropped) and it
++      poisons every directive in that file, because a manifest author who mis-formatted one
++      line has demonstrated the file was not reviewed the way the protection model requires.
++
++    A well-formed entry naming a path that DOES NOT EXIST is not an incompleteness (the manifest
++    was read in full and says something coherent) — it is a DANGLING entry, classified into
++    ``ManifestSet.dangling`` rather than ``.protect``/``.covers``, and reported immediately
++    (D45 planner note 3): it protects nothing, and withdraws coverage from any run dir it names
++    or lies under, in the fail-safe direction, never silently un-refused by a typo.
++    """
++    protect: set[str] = set()
++    covers: set[str] = set()
++    dangling: set[str] = set()
++    citations: dict[str, list[str]] = {}
++    errors: list[str] = []
++
++    def _walk_error(exc: OSError) -> None:
++        errors.append(f"{getattr(exc, 'filename', '?')}: {exc}")
++
++    def _classify(entry: ManifestEntry) -> None:
++        rp = os.path.realpath(entry.path)
++        bucket = protect if entry.kind == "protect" else covers
++        exists = os.path.exists(rp)
++        (bucket if exists else dangling).add(rp)
++        citations.setdefault(rp, []).append(f"{entry.kind}: {entry.path} <- "
++                                            f"{entry.source}:{entry.lineno}")
++        if not exists:
++            print(f"[ckpt_gc] MANIFEST ENTRY NAMES NOTHING: {entry.source}:{entry.lineno}: "
++                  f"'{entry.kind}: {entry.path}' resolves to {rp}, which does not exist — it "
++                  f"protects nothing, and withdraws coverage from any run dir it names or lies "
++                  f"under (fail-safe direction). Fix the path or delete the line.",
++                  file=sys.stderr)
++
++    for sd in scan_dirs:
++        if not os.path.isdir(sd):
++            # A scan dir that is simply absent is not a refusal (a host with no `experiments/`
++            # has nothing to say). A scan dir made unusable by a symlink that does not resolve
++            # IS: `os.path.isdir` follows links, so `--experiments-dir` pointed at a dangling
++            # link (or at a path underneath one) would otherwise be skipped here in exactly the
++            # same silent way `os.walk` skips one it finds mid-tree.
++            bad_link = _unresolvable_link_on_path(sd)
++            if bad_link is not None:
++                exc = DanglingScanLink(bad_link, "SCAN DIR UNUSABLE (BROKEN SYMLINK)")
++                where = "" if os.path.abspath(sd) == bad_link else f" [bad component: {bad_link}]"
++                errors.append(f"{sd}: {exc}{where}")
++            continue
++        for dirpath, names, via_symlink in _walk_scan_dirs(sd, _walk_error):
++            # `names` is dirnames+filenames UN-SPLIT (see `_walk_scan_dirs`), and the basename test
++            # below therefore runs BEFORE any directory-vs-file classification — the ordering IS
++            # the fix. A name in MANIFEST_BASENAMES reaches a refusal path whenever it is not a
++            # real, regular, non-symlink file, no matter which list `os.walk` put it in and no
++            # matter what its target is.
++            for fn in names:
++                if fn not in MANIFEST_BASENAMES:
++                    continue
++                fp = os.path.join(dirpath, fn)
++                if via_symlink:
++                    errors.append(
++                        f"{fp}: manifest reached only by crossing a SYMLINKED DIRECTORY — "
++                        f"REFUSED, not read (a manifest grants coverage to an irreversible "
++                        f"deleter and must live at a real, tracked path)")
++                    continue
++                shape_refusal = manifest_shape_refusal(fp)
++                if shape_refusal is not None:
++                    errors.append(shape_refusal)
++                    continue
++                try:
++                    with open(fp, errors="replace") as fh:
++                        text = fh.read()
++                except OSError as e:
++                    errors.append(f"{fp}: {e}")
++                    continue
++                ents, _spans, bad = (parse_protected_txt(text, fp) if fn == "PROTECTED.txt"
++                                     else parse_spec_manifest(text, fp))
++                if bad:
++                    for b in bad:
++                        named = f" (names {b.hint_path!r})" if b.hint_path else ""
++                        errors.append(f"{b.source}:{b.lineno}: malformed manifest content "
++                                      f"{b.raw!r}{named} — refused; none of this file's "
++                                      f"directives are trusted")
++                    continue  # scope item 2: a malformed line WITHDRAWS the whole file
++                for e in ents:
++                    _classify(e)
++
++    result = ManifestSet(protect, covers, dangling, citations)
++    if errors:
++        raise ManifestScanIncomplete(errors, result)
++    return result
++
++
++def load_protect_file(path: str | None) -> tuple[set[str], str | None]:
++    """Read ``--protect-file`` into a set of realpath'd entries -> ``(paths, error)``.
++
++    A missing, symlinked, or directory ``--protect-file`` is a REFUSAL (``error`` is not
++    ``None``), never silently read as an empty set — a named-but-unusable protect file must not
++    be indistinguishable from "nothing to protect". A symlink gets the same treatment
++    ``load_manifests`` gives a symlinked manifest, for the same reason: it is explicit, tracked
++    input that can grant coverage, and its target may not be.
++    """
++    if path is None:
++        return set(), None
++    if os.path.islink(path):
++        return set(), (f"{path}: --protect-file is a SYMLINK — refused, not read (its target "
++                       f"may be untracked or outside the tree)")
++    # Same lstat-first discipline as the manifest side: a shape that cannot be READ is rejected
++    # BEFORE the `open()` below. A DIRECTORY is left to `IsADirectoryError` (its message is already
++    # exact), but a fifo/socket must never reach `open()` at all — a reader-less FIFO blocks forever
++    # and the operator sees a hung cron job instead of a refusal.
++    if classify_entry(path).kind == "other":
++        return set(), (f"{path}: --protect-file is not a regular file (fifo/socket/device) — "
++                       f"refused, never opened (`open()` on a reader-less FIFO BLOCKS FOREVER)")
++    try:
++        with open(path) as fh:
++            return ({os.path.realpath(l.strip()) for l in fh
++                     if l.strip() and not l.startswith("#")}, None)
++    except IsADirectoryError:
++        return set(), f"{path}: --protect-file is a DIRECTORY, not a file — refused, not read"
++    except OSError as e:
++        return set(), f"{path}: --protect-file could not be read ({e})"
++
++
++class ScoreReadIncomplete(OSError):
++    """A score source (``checkpoints_index.json`` / ``scores.jsonl``) could not be read IN
++    FULL, so any resolved scores are a SUBSET. ``scores.jsonl`` is appended by potentially
++    concurrent writers with no file locking, so a torn row is a realistic outcome, not a
++    corruption exotic — this is the "torn ``scores.jsonl``" class in gate (i).
++    """
++
++    def __init__(self, run_dir: str, errors: list[str]):
++        self.run_dir = run_dir
++        self.errors = list(errors)
++        head = "; ".join(self.errors[:3]) + (" …" if len(self.errors) > 3 else "")
++        super().__init__(f"score read INCOMPLETE for {run_dir}: {len(self.errors)} unreadable "
++                         f"record(s) ({head}) — the resolved scores are a SUBSET")
++
++
++def _load_scores_strict(run_dir: str, score_regex: str | None, log_glob: str) -> dict[int, float]:
++    """Ingestion-only, STRICT sibling of ``_load_scores`` above: same three sources
++    (``checkpoints_index.json``, ``scores.jsonl``, and a log matched by ``--score-regex``), but a
++    torn or unparseable record RAISES :class:`ScoreReadIncomplete` instead of being silently
++    skipped — INCLUDING in the ``--score-regex`` branch, which until now kept canon's
++    ``except Exception: continue`` and so contradicted this sentence (see the comment at that
++    branch). A score source whose SHAPE makes it unreadable (directory, dangling link, fifo) is
++    refused BEFORE it is opened, via :func:`_score_source_shape_reason`.
++
++    Deliberately a SEPARATE function, not a modification of ``_load_scores``: the canon
++    (``plan()`` / ``--apply``) invariant is bit-identical behaviour, and ``_load_scores``'s
++    permissive skip-and-continue is exactly what the live deletion path still does. This
++    stricter reader is reached ONLY from ``--verify-manifests`` (see ``_run_manifest_check``);
++    wiring its refusal into an actual keep/delete decision is TASK_881D's, not this row's.
++    """
++    errors: list[str] = []
++    out: dict[int, float] = {}
++    idx = os.path.join(run_dir, "checkpoints_index.json")
++    idx_shape = _score_source_shape_reason(idx)
++    if idx_shape is not None:
++        errors.append(f"{idx}: {idx_shape}")
++    elif os.path.exists(idx):
++        try:
++            with open(idx) as fh:
++                rows = json.load(fh)
++            for r in rows if isinstance(rows, list) else rows.get("checkpoints", []):
++                if r.get("epoch") is not None and r.get("score") is not None:
++                    out[int(r["epoch"])] = float(r["score"])
++        except Exception as e:
++            errors.append(f"{idx}: {e}")
++    sj = os.path.join(run_dir, "scores.jsonl")
++    sj_shape = _score_source_shape_reason(sj)
++    if sj_shape is not None:
++        errors.append(f"{sj}: {sj_shape}")
++    elif os.path.exists(sj):
++        try:
++            with open(sj) as fh:
++                for lineno, line in enumerate(fh, 1):
++                    line = line.strip()
++                    if not line:
++                        continue
++                    try:
++                        d = json.loads(line)
++                        out[int(d["epoch"])] = float(d["score"])
++                    except Exception as e:
++                        errors.append(f"{sj}:{lineno}: unparseable score row ({e})")
++        except (OSError, ValueError) as e:
++            errors.append(f"{sj}: {e}")
++    if score_regex:
++        import glob as _glob
++        pat = re.compile(score_regex)
++        for lf in _glob.glob(os.path.join(run_dir, log_glob)) + _glob.glob(log_glob):
++            lf_shape = _score_source_shape_reason(lf)
++            if lf_shape is not None:
++                errors.append(f"{lf}: {lf_shape}")
++                continue
++            try:
++                with open(lf, errors="replace") as fh:
++                    for lineno, line in enumerate(fh, 1):
++                        m = pat.search(line)
++                        if not m:
++                            continue
++                        try:
++                            out[int(m.group("epoch"))] = float(m.group("score"))
++                        except (IndexError, TypeError, ValueError, re.error) as e:
++                            # THE DOCSTRING'S PROMISE, NOW KEPT. This branch used to be
++                            # `except Exception: continue` — a matched record whose `epoch`/`score`
++                            # groups did not coerce was silently DROPPED, exactly like canon's
++                            # permissive `_load_scores`, while the docstring above claimed this
++                            # reader RAISES on precisely that. A regex that matches a line and then
++                            # yields no usable epoch/score is either a torn log line or a
++                            # misconfigured `--score-regex`; both are "the resolved scores are a
++                            # SUBSET", which is what `ScoreReadIncomplete` exists to say. Safe to
++                            # make strict because this reader is reachable ONLY from
++                            # `_run_manifest_check` (`--verify-manifests`), never from canon.
++                            errors.append(f"{lf}:{lineno}: --score-regex matched but its "
++                                          f"epoch/score groups did not coerce ({e}): "
++                                          f"{line.strip()!r}")
++            except OSError as e:
++                errors.append(f"{lf}: {e}")
++    if errors:
++        raise ScoreReadIncomplete(run_dir, errors)
++    return out
++
++
++def _find_score_dirs(roots: list[str], on_error=None) -> list[str]:
++    """Directories under ``roots`` that carry a score-bearing file. Ingestion-only enumeration:
++    it does NOT classify anything as a checkpoint or a run (that is ``collect()``'s /
++    TASK_881D's job) — it only says where there is a score FILE to try to read, so
++    ``--verify-manifests`` can exercise the torn-score-file guard without any of the
++    discovery/keep/delete machinery above.
++
++    ``on_error`` (optional) is called with a :class:`DanglingScanLink` for every symlink under
++    ``roots`` whose target does not resolve, including a ROOT that is itself such a link. This
++    is the live shape on this repo: the default root ``jax_ckpt_fast`` points into
++    ``/mnt/scratch``, which is not the current mount point, so the whole root would
++    otherwise be dropped by the ``isdir`` test below without a word.
++    """
++    found = []
++    for root in roots:
++        if not os.path.isdir(root):
++            if on_error is not None:
++                bad_link = _unresolvable_link_on_path(root)
++                if bad_link is not None:
++                    on_error(DanglingScanLink(bad_link, "CHECKPOINT ROOT UNUSABLE "
++                                                        "(BROKEN SYMLINK)"))
++            continue
++        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
++            # Same root discipline as `_walk_scan_dirs`: capture EVERY entry first, then classify
++            # each one with lstat. The old `"scores.jsonl" in filenames` test inherited `os.walk`'s
++            # link-following split, so a LIVE symlink -> DIRECTORY named `scores.jsonl` landed in
++            # `dirnames` and the run dir silently stopped being score-bearing — the same blind spot
++            # as the manifest blocker, one layer down.
++            names = list(dirnames) + list(filenames)
++            dirnames[:] = [d for d in dirnames
++                           if not classify_entry(os.path.join(dirpath, d)).is_link]
++            has_score = False
++            for fn in names:
++                # a dangling DIRECTORY link is mis-filed as a file by os.walk, so the dirnames
++                # filter above can never see one; scanning `names` no longer depends on which way
++                # the mis-filing goes.
++                full = os.path.join(dirpath, fn)
++                if on_error is not None and _is_dangling_link(full):
++                    on_error(DanglingScanLink(full))
++                if fn not in SCORE_BASENAMES:
++                    continue
++                reason = _score_source_shape_reason(full)
++                if reason is not None:
++                    # Refused, not silently un-found: a name that says "scores live here" and
++                    # cannot be read as a score file must not resolve to "this run is unscored".
++                    if on_error is not None:
++                        on_error(UnusableScoreSource(full, reason))
++                    continue
++                has_score = True
++            if has_score:
++                found.append(dirpath)
++    return sorted(found)
++
++
++def _run_manifest_check(a) -> int:
++    """TASK_881I's CLI entry point (``--verify-manifests``): PARSE every manifest, protect-file,
++    and score file this tool would otherwise consult, CLASSIFY what each one says, and REFUSE
++    loudly on anything malformed — without discovering a single checkpoint, planning a single
++    deletion, or resolving a single checkpoint root (``collect()`` / ``plan()`` /
++    ``root_resolution()`` are never called from here).
++
++    Exits 0 only if every manifest, every protect-file line, and every score file found was
++    fully readable AND no manifest entry is dangling. Exits 2 (never 0) on any refusal — D45
++    planner note 3: the halted work's dangling-entry refusal was silently exit-0, indistinguishable
++    from a clean run to a cron caller. This function is the fix for exactly that gap; it does
++    not touch, and is never called from, the ``--apply`` delete loop above.
++    """
++    ok = True
++
++    protect_paths, protect_err = load_protect_file(a.protect_file)
++    if protect_err:
++        print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {protect_err}", file=sys.stderr)
++        ok = False
++    else:
++        print(f"[ckpt_gc] --protect-file: {len(protect_paths)} entrie(s) read")
++
++    scan_dirs = list(a.experiments_dir or [])
++    try:
++        manifests = load_manifests(scan_dirs)
++    except ManifestScanIncomplete as e:
++        print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {e}", file=sys.stderr)
++        for line in e.errors:
++            print(f"[ckpt_gc]   {line}", file=sys.stderr)
++        manifests = e.partial
++        ok = False
++
++    print(f"[ckpt_gc] manifests: {len(manifests.protect)} protect, {len(manifests.covers)} "
++          f"covers, {len(manifests.dangling)} dangling")
++    # This row exists to make manifest state operator-visible, so the classification is LISTED on
++    # every path, not only when something is dangling: a bare count cannot tell an operator
++    # whether the line they wrote is the line the tool read. One line per classified path, with
++    # the citation that produced it.
++    for kind, paths in (("protect", manifests.protect), ("covers", manifests.covers)):
++        for p in sorted(paths):
++            cites = ", ".join(manifests.citations.get(p, [])) or "(no citation)"
++            print(f"[ckpt_gc]   {kind:<7} {p}  <- {cites}")
++    if manifests.dangling:
++        ok = False
++        for d in sorted(manifests.dangling):
++            for c in manifests.citations.get(d, []):
++                print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: DANGLING ENTRY — {c} -> {d} does "
++                      f"not exist", file=sys.stderr)
++
++    def _root_error(exc: OSError) -> None:
++        nonlocal ok
++        print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: "
++              f"{getattr(exc, 'filename', '?')}: {exc}", file=sys.stderr)
++        ok = False
++
++    # NOTE: `a.roots` is passed WHOLE, not pre-filtered by `os.path.isdir` — that filter is
++    # exactly what silently drops a root which is a dangling symlink (`jax_ckpt_fast` today).
++    # `_find_score_dirs` applies the same filter internally, but reports the link first.
++    for sd in _find_score_dirs(list(a.roots), on_error=_root_error):
++        try:
++            _load_scores_strict(sd, a.score_regex, a.log_glob)
++        except ScoreReadIncomplete as e:
++            print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {e}", file=sys.stderr)
++            ok = False
++
++    print(f"[ckpt_gc] verify-manifests: {'OK' if ok else 'REFUSED'}")
++    return 0 if ok else 2
++
++
+ def main() -> int:
+     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+     ap.add_argument("--roots", nargs="+", default=["jax_ckpt_fast", "runs"])
+@@ -205,9 +1107,31 @@ def main() -> int:
+                     help=r"e.g. 'Epoch (?P<epoch>\d+).*reward_ma20[= ](?P<score>[-\d.]+)'")
+     ap.add_argument("--log-glob", default="*.log")
+     ap.add_argument("--protect-file", default=None, help="file of paths never to delete")
++    # NAMING CONSTRAINT (canon parity, not taste): argparse resolves unambiguous long-option
++    # PREFIXES, so adding an option can silently change what an existing abbreviation means. The
++    # first draft of this row called the mode `--check-manifests`, which made `--c` — previously
++    # an unambiguous alias for `--critical-free-gb` — an "ambiguous option" error. Both flags
++    # below therefore start with a letter no pre-881I long option uses ('e', 'v'), so every
++    # abbreviation that resolved at HEAD still resolves to the same option. Enforced by
++    # test_ckpt_881i_manifest_ingestion.py::test_head_option_abbreviations_still_resolve, which
++    # checks the whole class rather than this one instance — consult it before renaming or adding
++    # any flag here.
++    ap.add_argument("--experiments-dir", nargs="*", default=["experiments"],
++                    help="TASK_881I: dirs scanned for PROTECTED.txt/SPEC.md manifests by "
++                         "--verify-manifests. Ingestion only — has no effect on --apply.")
++    ap.add_argument("--verify-manifests", action="store_true",
++                    help="TASK_881I: PARSE and CLASSIFY every manifest (--experiments-dir), "
++                         "--protect-file, and score file (--roots) this tool would otherwise "
++                         "consult, and REFUSE (exit 2) on anything malformed, symlinked, torn, "
++                         "or dangling. Deletes and discovers NOTHING — returns before --apply's "
++                         "checkpoint discovery ever runs. Mutually exclusive in effect with "
++                         "--apply (this mode never reaches it).")
+     ap.add_argument("--apply", action="store_true", help="actually delete (default: dry run)")
+     a = ap.parse_args()
+ 
++    if a.verify_manifests:
++        return _run_manifest_check(a)
++
+     roots = [r for r in a.roots if os.path.isdir(r)]
+     if not roots:
+         print(f"[ckpt_gc] no existing roots among {a.roots} — nothing to do")
+
+##### PART 2: untracked file tools/tests/test_ckpt_881i_manifest_ingestion.py #####
+"""TASK_881I — manifest INGESTION only (D45 capacity re-cut of the halted TASK_881).
+
+Scope note: this row PARSES, CLASSIFIES and REFUSES; it deletes nothing. The protection model,
+the deleter, `plan()`, `root_resolution()` and the TTL re-scan are TASK_881D's and are not
+exercised here. Everything below runs against `tools/ckpt_gc.py`'s NEW `--verify-manifests` CLI
+mode, which returns before a single checkpoint is ever discovered.
+
+Every subprocess test RUNS the documented CLI invocation (`python tools/ckpt_gc.py
+--verify-manifests ...`) — gate (iv) requires this be run, not imported, so `_cli()` below always
+shells out to a real interpreter rather than calling `ckpt_gc.main()` in-process.
+
+Covered (gate references from TASK_881I):
+  (i)   each malformed-input class rebuilt independently: symlinked manifest FILE, symlinked
+        DIRECTORY (incl. --experiments-dir pointed AT the symlink), torn scores.jsonl,
+        missing/symlinked/directory --protect-file
+  (ii)  parse-then-strip round-trip property, on both manifest formats
+  (iii) a dangling manifest entry refuses at NON-ZERO exit, with the entry named
+  (iv)  duplicate SPEC.md block is a refusal, not a silent first-block read; a malformed
+        PROTECTED.txt line withdraws its whole file rather than being skipped
+
+Cycle-2 fix pass adds (each with a SOURCE-LEVEL mutation at the real drop site, see `_mutant`):
+  (1) a DANGLING (broken) symlink under or AT a scan root — `os.walk` mis-files these as FILES,
+      so they were invisible to every dirnames-only symlink check: exit 0, "OK"
+  (2) a SPEC.md `protected:`/`covers:` header on an unterminated final line (torn write), plus
+      the inline-content and empty-block shapes that header can degrade into
+  (3) argparse long-option ABBREVIATION preservation: adding a flag must not change what any
+      abbreviation that was unambiguous at HEAD resolves to
+  (4) the OK path LISTS what it classified, not just counts
+
+Cycle-3 fix pass (the ROOT of (1) above, read in the other direction) adds:
+  (5) THE SHAPE TABLE. A manifest BASENAME is evaluated BEFORE and INDEPENDENTLY of `os.walk`'s
+      link-following directory-vs-file split, over BOTH of its lists, and every shape that is not
+      a real regular non-symlink file REFUSES. The blocker: `PROTECTED.txt` as a LIVE symlink to a
+      DIRECTORY got `is_dir() == True`, landed in `dirnames`, and so was never tested against
+      `MANIFEST_BASENAMES` at all — silent exit 0, output byte-identical to a tree with no manifest
+      (asserted below as a distinguishability property, not just a returncode).
+  (6) the same discipline on the `--roots` score-source path, where a live symlink -> DIRECTORY
+      named `scores.jsonl` silently un-scored a run dir, and a FIFO named `scores.jsonl` HUNG the
+      tool on `open()` (measured pre-fix: exit 124 under `timeout 15`).
+  (7) `--score-regex` is now genuinely strict (the docstring's promise), and is EXERCISED — no test
+      covered that branch before.
+  (8) canon byte-identity vs HEAD, and behavioural `--apply` parity against the HEAD tool on a
+      scratch tree (never the repo's real `runs/`).
+"""
+import os
+import re
+import subprocess
+import sys
+
+import pytest
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CKPT_GC = os.path.join(REPO, "tools", "ckpt_gc.py")
+
+sys.path.insert(0, os.path.join(REPO, "tools"))
+import ckpt_gc as gc  # noqa: E402
+
+
+def _cli(*args, cwd, timeout=30):
+    """RUN the documented CLI invocation as a real subprocess — never imported for this call.
+    Gate (iv): "the documented CLI invocation is run, not imported"."""
+    return subprocess.run([sys.executable, CKPT_GC, *args], cwd=cwd,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _cli_script(script, *args, cwd, timeout=30):
+    """`_cli`, but against a mutated COPY of the tool (see `_mutant`)."""
+    return subprocess.run([sys.executable, script, *args], cwd=cwd,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _mutant(tmp_path, name, old, new):
+    """Write a copy of the REAL `tools/ckpt_gc.py` with `old` replaced by `new`, and return its
+    path so it can be RUN as a CLI.
+
+    This is how gate (iv)'s "every guard goes red when removed at its REAL drop site" is
+    discharged for the cycle-2 fixes: the guard is deleted from the actual shipped source line
+    rather than re-implemented in the test. Nothing is stubbed or monkeypatched — the mutant is a
+    whole, self-contained program (ckpt_gc imports stdlib only), so what it exercises is the same
+    code path the real invocation exercises, minus exactly one guard.
+
+    The uniqueness assertion is load-bearing: if a guard is later moved or reworded, this test
+    fails LOUDLY at the anchor instead of silently passing against a mutation that no longer
+    removes anything.
+    """
+    src = open(CKPT_GC).read()
+    assert src.count(old) == 1, (
+        f"mutation anchor for {name!r} matched {src.count(old)} times, expected exactly 1 — the "
+        f"guard moved or was reworded; update this anchor:\n{old}")
+    d = tmp_path / "_mutants"
+    d.mkdir(exist_ok=True)
+    p = d / f"ckpt_gc_{name}.py"
+    p.write_text(src.replace(old, new))
+    return str(p)
+
+
+# ============================================================================================
+# gate (ii) — parse-then-strip round trip, on both manifest formats
+# ============================================================================================
+
+def test_roundtrip_protected_txt():
+    text = ("# a comment\n"
+            "protect: runs/a/snapshot_ep10\n"
+            "\n"
+            "covers: runs/b\n")
+    entries, spans, malformed = gc.parse_protected_txt(text, "PROTECTED.txt")
+    assert not malformed
+    assert {(e.kind, e.path) for e in entries} == {
+        ("protect", "runs/a/snapshot_ep10"), ("covers", "runs/b")}
+    stripped = gc.strip_spans(text, spans)
+    assert stripped == ""  # every line was comment/blank/consumed directive
+    entries2, spans2, malformed2 = gc.parse_protected_txt(stripped, "PROTECTED.txt")
+    assert entries2 == []
+    assert malformed2 == []
+
+
+def test_roundtrip_protected_txt_preserves_unconsumed_malformed_line():
+    """Stripping never removes a line the parse could not account for — it is not "consumed",
+    so it is not spanned, so it survives the strip and is found again, identically, on re-parse.
+    This is the "stripping anything MORE is impossible by construction" half of gate (ii)."""
+    text = "protect: runs/a\nthis line is garbage\n"
+    entries, spans, malformed = gc.parse_protected_txt(text, "PROTECTED.txt")
+    assert len(malformed) == 1
+    stripped = gc.strip_spans(text, spans)
+    assert "this line is garbage" in stripped
+    entries2, spans2, malformed2 = gc.parse_protected_txt(stripped, "PROTECTED.txt")
+    assert entries2 == []
+    assert len(malformed2) == 1
+    assert malformed2[0].raw == "this line is garbage"
+
+
+def test_roundtrip_spec_md_single_block():
+    text = ("# SPEC\n\n"
+            "protected:\n"
+            "  - runs/a/snapshot_ep10\n"
+            "  - runs/a/snapshot_ep20\n"
+            "\n"
+            "some other prose mentioning runs/a/snapshot_ep10 again\n")
+    entries, spans, malformed = gc.parse_spec_manifest(text, "SPEC.md")
+    assert not malformed
+    assert {e.path for e in entries} == {"runs/a/snapshot_ep10", "runs/a/snapshot_ep20"}
+    stripped = gc.strip_spans(text, spans)
+    assert "protected:" not in stripped
+    assert "some other prose" in stripped   # only the block was removed, not the whole doc
+    entries2, spans2, malformed2 = gc.parse_spec_manifest(stripped, "SPEC.md")
+    assert entries2 == []
+    assert malformed2 == []
+
+
+# ============================================================================================
+# scope item 3 / gate (iv) — a second SPEC block is a refusal, not a silent first-block read
+# ============================================================================================
+
+def test_duplicate_spec_block_refuses_both_not_just_second():
+    text = ("protected:\n"
+            "  - runs/a/snapshot_ep10\n"
+            "\n"
+            "protected:\n"
+            "  - runs/b/snapshot_ep20\n")
+    entries, spans, malformed = gc.parse_spec_manifest(text, "SPEC.md")
+    # THE FIX under test: neither block's entries are trusted (not even the "first" one a
+    # single re.search would have silently accepted) -- this is what cycle-3 got wrong.
+    assert entries == []
+    assert spans == []
+    assert len(malformed) == 1
+    assert "duplicate" in malformed[0].raw
+
+
+def test_red_when_duplicate_guard_removed_at_its_real_drop_site():
+    """Gate (iv): mutate the REAL drop site (the `len(headers) > 1` check) and prove the test
+    goes RED. This directly exercises the exact defect D45 re-cut the row over: without this
+    guard, a second `protected:` block's entries are silently accepted from the FIRST block
+    only (cycle-3's behaviour) instead of refusing the whole key."""
+    import re as _re
+    text = ("protected:\n"
+            "  - runs/a/snapshot_ep10\n"
+            "\n"
+            "protected:\n"
+            "  - runs/b/snapshot_ep20\n")
+
+    def _mutated_parse_spec_manifest_no_dup_guard(text, source):
+        entries, spans, malformed = [], [], []
+        for key in ("protected", "covers"):
+            kind = "protect" if key == "protected" else "covers"
+            headers = list(_re.finditer(rf"^{key}:[ \t]*\n", text, _re.MULTILINE))
+            if not headers:
+                continue
+            # MUTATION: the `len(headers) > 1` refusal is removed -- always take the first,
+            # exactly like cycle-3's `_parse_spec_block` (`re.search`, not `re.finditer`).
+            h = headers[0]
+            start, end = h.start(), h.end()
+            for line in text[h.end():].splitlines(keepends=True):
+                if not line.strip():
+                    break
+                item = _re.match(r"^\s*-\s*(\S+)", line)
+                if not item:
+                    break
+                entries.append(gc.ManifestEntry(kind, item.group(1), source, 1))
+                end += len(line)
+            spans.append((start, end))
+        return entries, spans, malformed
+
+    mutated_entries, _spans, _malformed = _mutated_parse_spec_manifest_no_dup_guard(
+        text, "SPEC.md")
+    # Reproduce cycle-3's silent behaviour under the mutation...
+    assert {e.path for e in mutated_entries} == {"runs/a/snapshot_ep10"}
+    # ...and confirm the REAL function (guard intact) refuses instead of doing that.
+    real_entries, _s2, real_malformed = gc.parse_spec_manifest(text, "SPEC.md")
+    assert real_entries == []
+    assert len(real_malformed) == 1
+    # The assertion that would have been made against the SHIPPED function, if it behaved like
+    # the mutation, fails -- proving the test is actually pinned to the guard, not to a tautology.
+    with pytest.raises(AssertionError):
+        assert {e.path for e in real_entries} == {"runs/a/snapshot_ep10"}
+
+
+# ============================================================================================
+# scope item 1/2 — a malformed PROTECTED.txt line withdraws the WHOLE file's coverage
+# ============================================================================================
+
+def test_malformed_line_withdraws_whole_file_not_reported_and_ignored(tmp_path):
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    good_run = tmp_path / "runs" / "good"
+    good_run.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(
+        f"protect: {good_run}\n"
+        f"this is not a directive line\n")
+    with pytest.raises(gc.ManifestScanIncomplete) as ei:
+        gc.load_manifests([str(tmp_path / "experiments")])
+    # scope item 2: the run dir the WELL-FORMED line named is NOT protected -- the malformed
+    # sibling line withdrew the whole file's coverage, it was not "reported and ignored" while
+    # the good line still went through.
+    assert str(good_run) not in ei.value.partial.protect
+    assert any("malformed" in e for e in ei.value.errors)
+
+
+def test_red_when_whole_file_withdrawal_guard_removed_at_its_real_drop_site(tmp_path):
+    """Mutate the REAL drop site: the `if bad: ... continue` in `load_manifests` that withdraws
+    a whole file on any malformed line. Without it, `load_manifests` would fall back to
+    per-entry ingestion (the old "reported-and-ignored" behaviour this row replaces) and the
+    well-formed sibling line WOULD be trusted -- prove the shipped code does not do that."""
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    good_run = tmp_path / "runs" / "good"
+    good_run.mkdir(parents=True)
+    manifest_path = exp / "PROTECTED.txt"
+    manifest_path.write_text(
+        f"protect: {good_run}\n"
+        f"this is not a directive line\n")
+    text = manifest_path.read_text()
+
+    def _mutated_ingest_reported_and_ignored(text, source):
+        # MUTATION: reproduces the pre-881I behaviour -- valid lines are still trusted even
+        # when a sibling line is malformed (a warning, not a refusal).
+        entries, _spans, _bad = gc.parse_protected_txt(text, source)
+        return entries  # bad lines dropped with no withdrawal of the rest
+
+    mutated_entries = _mutated_ingest_reported_and_ignored(text, str(manifest_path))
+    assert any(e.path == str(good_run) for e in mutated_entries)  # old behaviour: trusted anyway
+
+    # The real, shipped function must NOT do that -- it withdraws the whole file.
+    with pytest.raises(gc.ManifestScanIncomplete) as ei:
+        gc.load_manifests([str(tmp_path / "experiments")])
+    assert str(good_run) not in ei.value.partial.protect
+
+
+# ============================================================================================
+# gate (iii) — dangling manifest entry -> refusal at NON-ZERO exit, entry named
+# ============================================================================================
+
+def test_dangling_entry_refuses_nonzero_and_names_the_entry(tmp_path):
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text("protect: runs/does_not_exist/snapshot_ep10\n")
+    (tmp_path / "runs").mkdir()
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "DANGLING ENTRY" in r.stderr
+    assert "does_not_exist" in r.stderr
+
+
+def test_red_when_dangling_exit_code_guard_removed_at_its_real_drop_site(tmp_path):
+    """Mutate the REAL drop site: `_run_manifest_check`'s `if manifests.dangling: ok = False`.
+    Without it, this reproduces the halted work's own documented bug (D45 planner note 3: "today
+    it refuses at exit 0") -- prove the shipped code does not do that."""
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text("protect: runs/does_not_exist/snapshot_ep10\n")
+    (tmp_path / "runs").mkdir()
+
+    class _Args:
+        protect_file = None
+        experiments_dir = ["experiments"]
+        roots = ["runs"]
+        score_regex = None
+        log_glob = "*.log"
+
+    cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        manifests = gc.load_manifests(["experiments"])
+        assert manifests.dangling  # the entry really is dangling
+        # MUTATION: reproduce "reported, never refused" -- the print still happens inside
+        # load_manifests (dangling is always printed to stderr), but the CALLER's exit code
+        # decision is what the bug was about.
+        mutated_ok = True  # <- this is the line the real `_run_manifest_check` does NOT have
+        mutated_exit = 0 if mutated_ok else 2
+        assert mutated_exit == 0   # reproduces the documented bug
+
+        # The real, shipped CLI must NOT do that.
+        real_exit = gc._run_manifest_check(_Args())
+        assert real_exit != 0
+    finally:
+        os.chdir(cwd)
+
+
+# ============================================================================================
+# gate (i) — each malformed-input class rebuilt independently
+# ============================================================================================
+
+def test_symlinked_manifest_file_refused(tmp_path):
+    real_dir = tmp_path / "untracked_manifest_holder"
+    real_dir.mkdir()
+    real_manifest = real_dir / "PROTECTED.txt"
+    real_manifest.write_text("covers: runs/anything\n")
+
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    (exp / "PROTECTED.txt").symlink_to(real_manifest)
+    (tmp_path / "runs").mkdir()
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SYMLINK" in r.stderr
+    assert "PROTECTED.txt" in r.stderr
+
+
+def test_symlinked_directory_refused_when_experiments_dir_points_at_symlink(tmp_path):
+    real_dir = tmp_path / "untracked" / "999_x"
+    real_dir.mkdir(parents=True)
+    (real_dir / "PROTECTED.txt").write_text("covers: runs/anything\n")
+    (tmp_path / "experiments").mkdir()
+    linked = tmp_path / "experiments" / "999_x"
+    linked.symlink_to(real_dir)
+    (tmp_path / "runs").mkdir()
+
+    # --experiments-dir pointed DIRECTLY at the symlinked child -- os.walk always lists the top
+    # path it is handed even when it is a link, so this is the bypass class D45/881 named
+    # explicitly (BLOCKER variant C in the halted work).
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments/999_x",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SYMLINKED DIRECTORY" in r.stderr
+
+    # Also: rooted at the parent, the symlinked CHILD directory must be refused too, not
+    # silently skipped with zero signal.
+    r2 = _cli("--roots", "runs", "--experiments-dir", "experiments",
+              "--verify-manifests", cwd=str(tmp_path))
+    assert r2.returncode != 0, r2.stdout + r2.stderr
+    assert "SYMLINKED DIRECTORY" in r2.stderr
+
+
+def test_torn_scores_jsonl_refused(tmp_path):
+    run = tmp_path / "runs" / "some_run"
+    run.mkdir(parents=True)
+    (run / "scores.jsonl").write_text(
+        '{"epoch": 1, "score": 0.5}\n'
+        '{"epoch": 2, "score": TORN\n')   # not valid JSON
+    (tmp_path / "experiments").mkdir()
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "score read INCOMPLETE" in r.stderr
+    assert "some_run" in r.stderr
+
+
+def test_missing_protect_file_refused(tmp_path):
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--protect-file", "does_not_exist.txt", "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "does_not_exist.txt" in r.stderr
+
+
+def test_symlinked_protect_file_refused(tmp_path):
+    real = tmp_path / "real_protect.txt"
+    real.write_text("runs/anything\n")
+    link = tmp_path / "protect.txt"
+    link.symlink_to(real)
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--protect-file", "protect.txt", "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SYMLINK" in r.stderr
+    assert "protect.txt" in r.stderr
+
+
+def test_directory_protect_file_refused(tmp_path):
+    (tmp_path / "a_directory").mkdir()
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--protect-file", "a_directory", "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "DIRECTORY" in r.stderr
+    assert "a_directory" in r.stderr
+
+
+# ============================================================================================
+# a clean tree still exits 0 -- the refusals above are not a blanket "always non-zero"
+# ============================================================================================
+
+def test_clean_tree_verify_manifests_exits_zero(tmp_path):
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    good_run = tmp_path / "runs" / "good"
+    good_run.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(f"protect: {good_run}\n")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "verify-manifests: OK" in r.stdout
+
+
+def test_verify_manifests_never_reaches_apply_delete_loop(tmp_path, monkeypatch):
+    """Gate: --verify-manifests must return before collect()/plan()/the delete loop -- prove it
+    by making collect() raise if it is ever called, then confirming --verify-manifests still
+    succeeds (it never called the poisoned function)."""
+    sys.path.insert(0, os.path.join(REPO, "tools"))
+
+    def _poison(*a, **kw):
+        raise AssertionError("collect() was called from --verify-manifests -- layers re-welded")
+    monkeypatch.setattr(gc, "collect", _poison)
+    monkeypatch.setattr(gc, "plan", _poison)
+
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    good_run = tmp_path / "runs" / "good"
+    good_run.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(f"protect: {good_run}\n")
+
+    class _Args:
+        protect_file = None
+        experiments_dir = [str(tmp_path / "experiments")]
+        roots = [str(tmp_path / "runs")]
+        score_regex = None
+        log_glob = "*.log"
+
+    assert gc._run_manifest_check(_Args()) == 0
+
+
+# ============================================================================================
+# CYCLE-2 FIX 1 — a DANGLING (broken) symlink is a REFUSAL, never a silent skip
+#
+# Why this was invisible: `os.walk` classifies entries with `DirEntry.is_dir()`, which FOLLOWS
+# the link. For a dangling target the stat fails, `is_dir()` returns False, and the entry is
+# reported in `filenames` — so `_walk_scan_dirs`'s symlink loop over `dirnames` never saw it, and
+# `load_manifests`'s `os.path.isdir(sd)` test (also link-following) skipped a dangling scan ROOT
+# the same way. Both shapes exited 0 with "0 protect, 0 covers, 0 dangling".
+#
+# Not hypothetical on this repo: `jax_ckpt_fast` / `jax_ckpt_easy` (the DEFAULT `--roots`) point
+# at /mnt/scratch, which is not the current mount point, so both dangle right now.
+# ============================================================================================
+
+def test_dangling_symlinked_experiment_dir_refuses(tmp_path):
+    """A dangling `experiments/<id>` link. Rebuilt independently of every other input class."""
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments" / "999_x").symlink_to("../nonexistent_target")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "BROKEN SYMLINK" in r.stderr
+    assert "999_x" in r.stderr
+    assert "verify-manifests: REFUSED" in r.stdout
+
+
+def test_red_when_dangling_walk_guard_removed_at_its_real_drop_site(tmp_path):
+    """Delete the guard from the REAL source line in `_walk_scan_dirs` and prove the dangling
+    link goes back to being completely invisible (exit 0, "OK")."""
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments" / "999_x").symlink_to("../nonexistent_target")
+
+    mutant = _mutant(
+        tmp_path, "no_walk_dangling_guard",
+        "                if _is_dangling_link(full):\n"
+        "                    on_error(DanglingScanLink(full))",
+        "                if False:\n"
+        "                    on_error(DanglingScanLink(full))")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr        # the bug, reproduced at the drop site
+    assert "verify-manifests: OK" in m.stdout
+    assert "0 protect, 0 covers, 0 dangling" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr        # the shipped tool does not do that
+
+
+def test_dangling_scan_root_refuses(tmp_path):
+    """`--experiments-dir` pointed AT a dangling link — the second shape, rebuilt separately."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments_link").symlink_to("./nonexistent_dir")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments_link",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SCAN DIR UNUSABLE" in r.stderr
+    assert "experiments_link" in r.stderr
+
+
+def test_dangling_scan_root_ancestor_refuses(tmp_path):
+    """...and a scan dir that lies UNDERNEATH a dangling link: `os.path.islink` on the scan dir
+    itself is False there (its own lstat fails), so the bad component has to be found by walking
+    up. Rebuilt independently."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "elink").symlink_to("./nonexistent_dir")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "elink/999_x",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SCAN DIR UNUSABLE" in r.stderr
+    assert "elink" in r.stderr
+
+
+def test_red_when_dangling_scan_root_guard_removed_at_its_real_drop_site(tmp_path):
+    """Delete the `_unresolvable_link_on_path` call from the REAL source line in
+    `load_manifests` and prove a dangling scan root is silently skipped again."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments_link").symlink_to("./nonexistent_dir")
+
+    mutant = _mutant(
+        tmp_path, "no_scan_root_dangling_guard",
+        "            bad_link = _unresolvable_link_on_path(sd)",
+        "            bad_link = None")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments_link",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments_link",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_absent_scan_root_is_not_a_refusal(tmp_path):
+    """CONTROL for the two guards above: a scan dir that is simply ABSENT (no symlink involved)
+    must stay a silent no-op. A host with no `experiments/` has nothing to say, and the fix must
+    not convert that into a refusal."""
+    (tmp_path / "runs").mkdir()
+    r = _cli("--roots", "runs", "--experiments-dir", "no_such_dir",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "verify-manifests: OK" in r.stdout
+
+
+def test_live_symlinked_experiment_dir_still_refuses_with_its_own_message(tmp_path):
+    """CONTROL: the pre-existing LIVE-symlink refusal must not be weakened or absorbed by the
+    new dangling-link path — it keeps its own distinct diagnosis at exit 2."""
+    real_dir = tmp_path / "untracked" / "999_x"
+    real_dir.mkdir(parents=True)
+    (real_dir / "PROTECTED.txt").write_text("covers: runs/anything\n")
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "experiments" / "999_x").symlink_to(real_dir)
+    (tmp_path / "runs").mkdir()
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "SYMLINKED DIRECTORY" in r.stderr
+    assert "BROKEN SYMLINK" not in r.stderr   # a LIVE link is not diagnosed as a broken one
+
+
+def test_dangling_checkpoint_root_refuses(tmp_path):
+    """The live `jax_ckpt_fast` shape: a `--roots` entry that is a dangling link. `main()`'s
+    `[r for r in a.roots if os.path.isdir(r)]` filter drops it without a word; the ingestion
+    check must not."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "jax_ckpt_fast").symlink_to("/mnt/scratch/trader_checkpoints/nope")
+
+    r = _cli("--roots", "jax_ckpt_fast", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "CHECKPOINT ROOT UNUSABLE" in r.stderr
+    assert "jax_ckpt_fast" in r.stderr
+
+
+def test_red_when_dangling_checkpoint_root_guard_removed_at_its_real_drop_site(tmp_path):
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "jax_ckpt_fast").symlink_to("/mnt/scratch/trader_checkpoints/nope")
+
+    mutant = _mutant(
+        tmp_path, "no_ckpt_root_dangling_guard",
+        "                bad_link = _unresolvable_link_on_path(root)",
+        "                bad_link = None")
+
+    m = _cli_script(mutant, "--roots", "jax_ckpt_fast", "runs", "--experiments-dir",
+                    "experiments", "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "jax_ckpt_fast", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+
+
+# ============================================================================================
+# CYCLE-2 FIX 2 — a SPEC.md manifest header on an unterminated final line must be SEEN
+#
+# The header regex required a literal `\n`, so `printf 'protected:' > SPEC.md` matched nothing,
+# `headers == []`, `if not headers: continue` — no entries, no malformed report, exit 0 "OK".
+# `PROTECTED.txt`'s parser was already robust to a missing final newline via
+# `splitlines(keepends=True)`; this parser now is too.
+# ============================================================================================
+
+def test_spec_header_without_trailing_newline_refuses(tmp_path):
+    """The panel's exact reproduction: `printf 'protected:' > SPEC.md`."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    (tmp_path / "runs").mkdir()
+    (exp / "SPEC.md").write_bytes(b"protected:")      # NO trailing newline
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "EMPTY" in r.stderr
+    assert "SPEC.md" in r.stderr
+
+
+def test_spec_header_with_trailing_newline_still_parses(tmp_path):
+    """CONTROL: the newline-optional regex must not change the well-formed case."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    good = tmp_path / "runs" / "good"
+    good.mkdir(parents=True)
+    (exp / "SPEC.md").write_text("protected:\n  - runs/good\n")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 protect" in r.stdout
+
+
+def test_spec_header_unterminated_but_complete_list_still_parses(tmp_path):
+    """A file whose FINAL line is a complete list item and which lacks a trailing newline must
+    still yield that entry — the newline-optionality is about the header, and the item loop's
+    `splitlines(keepends=True)` has always handled this. Proves the fix did not trade one
+    truncation blind spot for another."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    good = tmp_path / "runs" / "good"
+    good.mkdir(parents=True)
+    (exp / "SPEC.md").write_bytes(b"protected:\n  - runs/good")   # NO trailing newline
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 protect" in r.stdout
+
+
+def test_red_when_header_newline_optionality_removed_at_its_real_drop_site(tmp_path):
+    """Revert exactly the `(?:\\n|\\Z)` alternation to a bare `\\n` on the REAL source line, and
+    prove the torn header goes back to being silently invisible at exit 0."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    (tmp_path / "runs").mkdir()
+    (exp / "SPEC.md").write_bytes(b"protected:")
+
+    mutant = _mutant(
+        tmp_path, "header_requires_newline",
+        r'rf"^{key}:(?P<rest>[^\n]*)(?:\n|\Z)"',
+        r'rf"^{key}:(?P<rest>[^\n]*)\n"')
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_red_when_empty_block_guard_removed_at_its_real_drop_site(tmp_path):
+    """The header being SEEN is only half the fix: a header that names nothing must also refuse,
+    since it is indistinguishable from a write that lost its items. Remove the guard at its real
+    source line and the torn file is accepted as "no coverage requested" at exit 0."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    (tmp_path / "runs").mkdir()
+    (exp / "SPEC.md").write_bytes(b"protected:")
+
+    mutant = _mutant(tmp_path, "no_empty_block_guard",
+                     "        if not block:", "        if False and not block:")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_spec_header_with_inline_content_refuses(tmp_path):
+    """`protected: runs/good` reads as granting coverage and grants none."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    (tmp_path / "runs" / "good").mkdir(parents=True)
+    (exp / "SPEC.md").write_text("protected: runs/good\n")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "INLINE content" in r.stderr
+
+
+def test_red_when_inline_header_guard_removed_at_its_real_drop_site(tmp_path):
+    """The input is chosen so removing this guard changes the OUTCOME, not just the message: with
+    a following list item present, the mutant silently DROPS the inline path (`runs/good`) and
+    exits 0 having protected only `runs/also` — coverage lost at exit 0, the exact failure mode
+    this row exists to close."""
+    exp = tmp_path / "experiments" / "999_z"
+    exp.mkdir(parents=True)
+    (tmp_path / "runs" / "good").mkdir(parents=True)
+    (tmp_path / "runs" / "also").mkdir(parents=True)
+    (exp / "SPEC.md").write_text("protected: runs/good\n  - runs/also\n")
+
+    mutant = _mutant(tmp_path, "no_inline_header_guard",
+                     "        if inline:", "        if False and inline:")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "1 protect" in m.stdout          # only runs/also
+    assert "runs/good" not in m.stdout      # the inline path silently vanished
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "INLINE content" in r.stderr
+
+
+def test_spec_parse_unterminated_header_roundtrip():
+    """Gate (ii) still holds for the newline-optional match: a refused block spans NOTHING, so
+    the strip cannot make the torn header disappear without a trace."""
+    entries, spans, malformed = gc.parse_spec_manifest("protected:", "SPEC.md")
+    assert entries == []
+    assert spans == []                                   # refused => not consumed => not spanned
+    assert len(malformed) == 1
+    assert gc.strip_spans("protected:", spans) == "protected:"
+
+
+# ============================================================================================
+# CYCLE-2 FIX 3 — argparse long-option ABBREVIATION preservation (canon parity)
+#
+# `argparse` resolves unambiguous long-option PREFIXES, so ADDING an option can silently change
+# what an existing abbreviation means. The first draft of this row named the mode
+# `--check-manifests`, which turned `--c` — an unambiguous alias for `--critical-free-gb` at HEAD
+# — into "ambiguous option: --c could match --critical-free-gb, --check-manifests". It failed
+# closed (exit 2, deleted nothing) and no repo caller uses abbreviations, but the config
+# invariant is that canon paths stay bit-identical, so it is closed here as a CLASS: the test
+# below checks every abbreviation that resolved at HEAD, not just the one that broke.
+#
+# `allow_abbrev=False` is deliberately NOT the fix: it does not restore `--c`, it only makes it
+# an unrecognised argument instead of an ambiguous one, and it is itself a behaviour change to
+# every other abbreviation. The fix is a flag NAME that collides with nothing.
+# ============================================================================================
+
+# The long options as of HEAD (the commit this row builds on), i.e. before `--experiments-dir`
+# and `--verify-manifests` existed. Regenerate with:
+#     git show HEAD:tools/ckpt_gc.py | grep -o 'ap.add_argument("--[a-z-]*"'
+# "value" = takes an argument; "flag" = store_true; "help" = argparse's own -h/--help.
+HEAD_LONG_OPTIONS = {
+    "--help": "help",
+    "--roots": "value",
+    "--keep-best": "value",
+    "--keep-latest": "value",
+    "--keep-unscored": "value",
+    "--min-free-gb": "value",
+    "--critical-free-gb": "value",
+    "--score-regex": "value",
+    "--log-glob": "value",
+    "--protect-file": "value",
+    "--apply": "flag",
+}
+
+
+def _unambiguous_prefixes(options):
+    """{prefix -> the single option it resolves to} for every prefix of every option that is
+    unambiguous within `options`. This is argparse's own `_get_option_tuples` rule."""
+    out = {}
+    for opt in options:
+        for n in range(3, len(opt) + 1):          # "--" plus at least one character
+            pref = opt[:n]
+            matches = [o for o in options if o.startswith(pref)]
+            if len(matches) == 1:
+                out[pref] = opt
+    return out
+
+
+def _candidate_long_options():
+    """Every long option the SHIPPED CLI actually defines, read out of its real `--help` usage
+    block (not out of the source, and not out of the help bodies, which mention flag names in
+    prose). Run, not imported."""
+    r = _cli("--help", cwd=REPO)
+    assert r.returncode == 0, r.stdout + r.stderr
+    usage = r.stdout.split("\n\n", 1)[0]
+    assert usage.startswith("usage:"), r.stdout
+    opts = set(re.findall(r"--[a-z][a-z0-9-]*", usage))
+    opts.add("--help")            # argparse's usage prints the short form `-h` only
+    return opts
+
+
+def test_head_option_abbreviations_still_resolve():
+    """THE CLASS-CLOSING TEST. For every prefix that was unambiguous at HEAD, assert the shipped
+    parser still resolves it to the SAME option — so no future flag can silently steal an
+    abbreviation the way `--check-manifests` stole `--c`.
+
+    Two layers, because either alone is weak:
+      * set-theoretic, exhaustive and free: every unambiguous HEAD prefix must still map to the
+        same option within the CANDIDATE option set;
+      * behavioural, on the real CLI: each option's MINIMAL abbreviation is actually run, and
+        argparse's own error text is read back to see which full option it resolved to. This is
+        what validates the model above against argparse rather than against our reading of it.
+    """
+    candidate = _candidate_long_options()
+    assert HEAD_LONG_OPTIONS.keys() <= candidate, "a HEAD option disappeared"
+
+    head_prefixes = _unambiguous_prefixes(set(HEAD_LONG_OPTIONS))
+    cand_prefixes = _unambiguous_prefixes(candidate)
+    stolen = {p: (opt, cand_prefixes.get(p)) for p, opt in head_prefixes.items()
+              if cand_prefixes.get(p) != opt}
+    assert not stolen, (
+        "these abbreviations were unambiguous at HEAD and no longer resolve to the same option "
+        f"(None = now ambiguous): {stolen}")
+
+    # Behavioural half: the MINIMAL abbreviation of every HEAD option, run for real.
+    minimal = {}
+    for pref, opt in head_prefixes.items():
+        if opt not in minimal or len(pref) < len(minimal[opt]):
+            minimal[opt] = pref
+    assert set(minimal) == set(HEAD_LONG_OPTIONS)
+
+    for opt, kind in sorted(HEAD_LONG_OPTIONS.items()):
+        pref = minimal[opt]
+        if kind == "help":
+            r = _cli(pref, cwd=REPO)
+            assert r.returncode == 0 and r.stdout.startswith("usage:"), \
+                f"{pref} no longer resolves to {opt}: {r.stdout + r.stderr}"
+            continue
+        # A value-taking option given NO value, or a store_true given "=x", makes argparse name
+        # the option it RESOLVED to in its error text — which is exactly what we need to read.
+        r = _cli(pref, cwd=REPO) if kind == "value" else _cli(pref + "=x", cwd=REPO)
+        assert "ambiguous option" not in r.stderr, f"{pref} became ambiguous: {r.stderr}"
+        assert f"argument {opt}:" in r.stderr, \
+            f"{pref} no longer resolves to {opt}: {r.stderr}"
+
+
+def test_c_abbreviation_resolves_to_critical_free_gb():
+    """The reported instance, pinned on its own so a regression is unmistakable in the report."""
+    r = _cli("--c", cwd=REPO)
+    assert "ambiguous option" not in r.stderr, r.stderr
+    assert "argument --critical-free-gb:" in r.stderr, r.stderr
+
+
+def test_red_when_the_colliding_flag_name_is_restored_at_its_real_drop_site(tmp_path):
+    """Rename the flag back to `--check-manifests` on the REAL `add_argument` line and prove
+    `--c` breaks again — the guard here IS the chosen name, so the name is what gets mutated."""
+    mutant = _mutant(tmp_path, "colliding_flag_name",
+                     'ap.add_argument("--verify-manifests", action="store_true",',
+                     'ap.add_argument("--check-manifests", action="store_true",')
+
+    m = _cli_script(mutant, "--c", cwd=REPO)
+    assert "ambiguous option: --c" in m.stderr, m.stderr      # the regression, reproduced
+
+    r = _cli("--c", cwd=REPO)
+    assert "ambiguous option" not in r.stderr, r.stderr
+
+
+# ============================================================================================
+# CYCLE-2 FIX 4 — the OK path LISTS what it classified, not just counts
+#
+# This row exists to make manifest state operator-visible; `ManifestSet.citations` was built and
+# then printed only for dangling entries, so a clean run could not tell an operator whether the
+# line they wrote is the line the tool read.
+# ============================================================================================
+
+def test_ok_path_lists_classified_entries_with_citations(tmp_path):
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    p_run = tmp_path / "runs" / "protected_one"
+    c_run = tmp_path / "runs" / "covered_one"
+    p_run.mkdir(parents=True)
+    c_run.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(f"protect: {p_run}\ncovers: {c_run}\n")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 protect, 1 covers, 0 dangling" in r.stdout
+    # the paths themselves, the kind, and the citation that produced each one
+    assert str(p_run) in r.stdout and str(c_run) in r.stdout
+    assert "protect" in r.stdout and "covers" in r.stdout
+    assert "PROTECTED.txt:1" in r.stdout and "PROTECTED.txt:2" in r.stdout
+
+
+def test_red_when_ok_path_listing_removed_at_its_real_drop_site(tmp_path):
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True)
+    p_run = tmp_path / "runs" / "protected_one"
+    p_run.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(f"protect: {p_run}\n")
+
+    mutant = _mutant(
+        tmp_path, "no_ok_path_listing",
+        '    for kind, paths in (("protect", manifests.protect), ("covers", manifests.covers)):',
+        "    for kind, paths in ():")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tmp_path))
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "1 protect" in m.stdout                 # the count was always there...
+    assert str(p_run) not in m.stdout              # ...but the path was not
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments",
+             "--verify-manifests", cwd=str(tmp_path))
+    assert str(p_run) in r.stdout
+
+
+# ============================================================================================
+# CYCLE-3 FIX 5 — THE SHAPE TABLE: manifest-basename identity is evaluated BEFORE, and
+# INDEPENDENTLY of, `os.walk`'s link-following directory-vs-file split
+#
+# Cycle 1 and cycle 3 died on the SAME mistake read in opposite directions: `os.walk` buckets
+# entries with `DirEntry.is_dir()`, which FOLLOWS symlinks, so the same name lands in `dirnames`
+# or `filenames` depending on what its target happens to be —
+#   * a DANGLING link-to-dir gets is_dir() == False -> `filenames` -> invisible to a dirnames-only
+#     symlink check                                                             (cycle-1 blocker)
+#   * a LIVE link-to-dir gets is_dir() == True -> `dirnames` -> invisible to `load_manifests`'s
+#     `fn in MANIFEST_BASENAMES` test, which only ever ran over `filenames`      (cycle-3 blocker)
+# so the fix is not per-shape: nothing that matters may be decided downstream of a link-following
+# classification. `classify_entry` (lstat + one following stat) is the only classifier now, and
+# `_walk_scan_dirs` hands the caller BOTH lists concatenated so there is no split left to inherit.
+# ============================================================================================
+
+# Every shape a manifest basename can have -> (builder, what the tool must do).
+# `_build_manifest_shape` constructs each one on the real filesystem; nothing here is stubbed or
+# monkeypatched, and each shape is built independently of the others (gate (i)).
+def _build_manifest_shape(tmp_path, shape, basename="PROTECTED.txt"):
+    """Build `<tmp_path>/experiments/999_x/<basename>` with the given SHAPE. Returns its path."""
+    exp = tmp_path / "experiments" / "999_x"
+    exp.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "runs" / "x").mkdir(parents=True, exist_ok=True)
+    target = exp / basename
+    body = "covers: runs/x\n"
+    if shape == "regular_file":
+        target.write_text(body)
+    elif shape == "link_to_file":
+        real = tmp_path / "real_manifest.txt"
+        real.write_text(body)
+        target.symlink_to(real)
+    elif shape == "link_to_dir":
+        real = tmp_path / "real_target_dir"
+        real.mkdir(exist_ok=True)
+        target.symlink_to(real)
+    elif shape == "link_dangling":
+        target.symlink_to(tmp_path / "no_such_target")
+    elif shape == "real_dir":
+        target.mkdir()
+    elif shape == "link_chain_to_file":
+        real = tmp_path / "real_manifest.txt"
+        real.write_text(body)
+        mid = tmp_path / "mid_link"
+        mid.symlink_to(real)
+        target.symlink_to(mid)
+    elif shape == "link_chain_to_dir":
+        real = tmp_path / "real_target_dir"
+        real.mkdir(exist_ok=True)
+        mid = tmp_path / "mid_link"
+        mid.symlink_to(real)
+        target.symlink_to(mid)
+    elif shape == "link_cycle":
+        target.symlink_to(target)          # ELOOP: resolves to nothing
+    elif shape == "fifo":
+        os.mkfifo(target)
+    else:
+        raise AssertionError(f"unknown shape {shape!r}")
+    return target
+
+
+# (shape, expected `classify_entry` result, a substring the refusal must contain or None for "read")
+MANIFEST_SHAPE_TABLE = [
+    ("regular_file",      (False, "file"),     None),
+    ("link_to_file",      (True,  "file"),     "manifest is a SYMLINK — REFUSED"),
+    ("link_to_dir",       (True,  "dir"),      "SYMLINK TO A DIRECTORY"),
+    ("link_dangling",     (True,  "dangling"), "target does not resolve"),
+    ("real_dir",          (False, "dir"),      "real DIRECTORY, not a file"),
+    ("link_chain_to_file", (True, "file"),     "manifest is a SYMLINK — REFUSED"),
+    ("link_chain_to_dir", (True,  "dir"),      "SYMLINK TO A DIRECTORY"),
+    ("link_cycle",        (True,  "dangling"), "target does not resolve"),
+    ("fifo",              (False, "other"),    "not a regular file"),
+]
+
+
+@pytest.mark.parametrize("shape,expected,_refusal", MANIFEST_SHAPE_TABLE,
+                         ids=[s for s, _e, _r in MANIFEST_SHAPE_TABLE])
+def test_classify_entry_matches_the_documented_shape_table(tmp_path, shape, expected, _refusal):
+    """The classifier is pinned to the table the source comment documents — including that a link
+    CHAIN classifies by its FINAL target and that a cycle (ELOOP) is "dangling", not "dir"."""
+    p = _build_manifest_shape(tmp_path, shape)
+    sh = gc.classify_entry(str(p))
+    assert (sh.is_link, sh.kind) == expected
+    assert sh.is_regular_file == (expected == (False, "file"))
+
+
+@pytest.mark.parametrize("shape,_expected,refusal", MANIFEST_SHAPE_TABLE,
+                         ids=[s for s, _e, _r in MANIFEST_SHAPE_TABLE])
+@pytest.mark.parametrize("basename", ["PROTECTED.txt", "SPEC.md"])
+def test_every_manifest_basename_shape_reaches_its_verdict_via_the_real_cli(
+        tmp_path, shape, _expected, refusal, basename):
+    """THE CLASS-CLOSING TEST, run through the documented CLI for BOTH manifest basenames: a name
+    in MANIFEST_BASENAMES either is a real regular file (read) or REFUSES at exit 2 — regardless of
+    which of `os.walk`'s lists it landed in and regardless of what its target is.
+
+    The `timeout` is load-bearing for the `fifo` row: pre-fix, `open()` on a reader-less FIFO
+    blocked forever and the tool HUNG rather than refusing (measured: exit 124 under `timeout 15`).
+    A hang here surfaces as `subprocess.TimeoutExpired`, i.e. a failure, not a pass.
+    """
+    if basename == "SPEC.md" and shape == "regular_file":
+        pytest.skip("a bare 'covers:' line is PROTECTED.txt syntax; SPEC.md's read path is "
+                    "covered by the block round-trip tests above")
+    _build_manifest_shape(tmp_path, shape, basename=basename)
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)
+    if refusal is None:
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "1 covers" in r.stdout
+    else:
+        assert r.returncode == 2, r.stdout + r.stderr
+        assert refusal in r.stderr, r.stderr
+        assert basename in r.stderr
+        assert "verify-manifests: REFUSED" in r.stdout
+
+
+def test_live_symlinked_manifest_to_directory_is_no_longer_indistinguishable_from_no_manifest(
+        tmp_path):
+    """The BLOCKER, stated the way it was diagnosed: the operator's control was that a tree with a
+    symlink-to-DIRECTORY manifest produced output BYTE-IDENTICAL to a tree with no manifest at all,
+    so "nothing to protect" and "a protection intent I silently dropped" could not be told apart.
+    Assert the distinguishability property directly, not just the exit code."""
+    a = tmp_path / "a"
+    (a / "experiments" / "999_x").mkdir(parents=True)
+    (a / "runs" / "should_have_been_protected").mkdir(parents=True)
+    (a / "real_target_dir").mkdir()
+    (a / "experiments" / "999_x" / "PROTECTED.txt").symlink_to(a / "real_target_dir")
+
+    b = tmp_path / "b"                                  # the control: NO manifest at all
+    (b / "experiments" / "999_x").mkdir(parents=True)
+    (b / "runs" / "should_have_been_protected").mkdir(parents=True)
+
+    ra = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+              cwd=str(a), timeout=20)
+    rb = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+              cwd=str(b), timeout=20)
+
+    assert rb.returncode == 0 and "verify-manifests: OK" in rb.stdout   # control unchanged
+    assert ra.returncode == 2, ra.stdout + ra.stderr
+    assert (ra.stdout, ra.stderr) != (rb.stdout, rb.stderr), \
+        "a dropped protection intent is still byte-identical to having no manifest"
+
+
+def test_red_when_the_unsplit_yield_is_reverted_at_its_real_drop_site(tmp_path):
+    """MUTATION 1, the root one: put `_walk_scan_dirs` back to yielding only `filenames`, i.e.
+    re-inherit `os.walk`'s link-following split. Both the LIVE symlink-to-directory manifest AND a
+    real directory named `PROTECTED.txt` become completely invisible again — exit 0, "0 protect,
+    0 covers, 0 dangling", the exact reported blocker."""
+    mutant = _mutant(tmp_path, "walk_yields_only_filenames",
+                     "            yield dirpath, names, via_link",
+                     "            yield dirpath, filenames, via_link")
+
+    for shape in ("link_to_dir", "real_dir"):
+        tree = tmp_path / f"tree_{shape}"
+        _build_manifest_shape(tree, shape)
+
+        m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                        "--verify-manifests", cwd=str(tree), timeout=20)
+        assert m.returncode == 0, m.stdout + m.stderr          # the blocker, reproduced
+        assert "verify-manifests: OK" in m.stdout
+        assert "0 protect, 0 covers, 0 dangling" in m.stdout
+
+        r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+                 cwd=str(tree), timeout=20)
+        assert r.returncode == 2, r.stdout + r.stderr           # the shipped tool refuses
+        assert "PROTECTED.txt" in r.stderr
+
+
+def test_red_when_the_manifest_shape_guard_is_removed_at_its_real_drop_site(tmp_path):
+    """MUTATION 2: drop `manifest_shape_refusal` from `load_manifests`'s real call site. The
+    symlinked manifest is then READ and its coverage GRANTED from an untracked target, at exit 0 —
+    the guard is what stops that, and the mutation proves it is the guard doing the work rather
+    than some downstream accident."""
+    mutant = _mutant(tmp_path, "no_manifest_shape_guard",
+                     "                shape_refusal = manifest_shape_refusal(fp)",
+                     "                shape_refusal = None")
+    tree = tmp_path / "tree"
+    _build_manifest_shape(tree, "link_to_file")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tree), timeout=20)
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "1 covers" in m.stdout            # coverage granted from a symlinked manifest
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "manifest is a SYMLINK — REFUSED" in r.stderr
+
+
+def test_red_when_the_manifest_shape_guard_is_removed_a_fifo_manifest_HANGS(tmp_path):
+    """MUTATION 2, second input, and the sharpest red available: with the shape guard gone, a FIFO
+    named `PROTECTED.txt` reaches `open()`, which blocks forever waiting for a writer — the mutant
+    HANGS (TimeoutExpired) instead of refusing. Independently rebuilt input; same real drop site."""
+    mutant = _mutant(tmp_path, "no_manifest_shape_guard_fifo",
+                     "                shape_refusal = manifest_shape_refusal(fp)",
+                     "                shape_refusal = None")
+    tree = tmp_path / "tree"
+    _build_manifest_shape(tree, "fifo")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tree), timeout=8)
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "BLOCKS FOREVER" in r.stderr
+
+
+def test_control_symlinked_experiment_dir_message_is_not_conflated_with_the_new_shapes(tmp_path):
+    """CONTROL, re-verified this cycle: a LIVE symlinked `experiments/<id>` DIRECTORY keeps its own
+    distinct SYMLINKED-DIRECTORY diagnosis, and is never rendered as BROKEN SYMLINK nor as the new
+    "SYMLINK TO A DIRECTORY" manifest-basename message. Three shapes, three messages."""
+    real = tmp_path / "untracked" / "999_x"
+    real.mkdir(parents=True)
+    (real / "PROTECTED.txt").write_text("covers: runs/x\n")
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "experiments" / "999_x").symlink_to(real)
+    (tmp_path / "runs" / "x").mkdir(parents=True)
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "crossing a SYMLINKED DIRECTORY" in r.stderr
+    assert "BROKEN SYMLINK" not in r.stderr
+    assert "SYMLINK TO A DIRECTORY" not in r.stderr
+
+
+def test_control_real_self_referential_cycle_terminates(tmp_path):
+    """CONTROL: the repo's real `experiments/832_linear_imprint/ckpt_smoke/ckpt_smoke` shape — a
+    LIVE symlink pointing at its own parent directory — must still terminate. Rebuilt here rather
+    than run against the repo (the fence: this suite never touches the real tree)."""
+    exp = tmp_path / "experiments" / "832_linear_imprint" / "ckpt_smoke"
+    exp.mkdir(parents=True)
+    (exp / "ckpt_smoke").symlink_to(exp)                       # absolute self-reference
+    (tmp_path / "experiments" / "832_linear_imprint" / "PROTECTED.txt").write_text(
+        "covers: runs/x\n")
+    (tmp_path / "runs" / "x").mkdir(parents=True)
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)          # a hang would raise TimeoutExpired
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 covers" in r.stdout
+
+
+# ============================================================================================
+# CYCLE-3 FIX 6 — the same discipline on the `--roots` score-source path
+# ============================================================================================
+
+def test_symlinked_dir_named_scores_jsonl_refuses_instead_of_silently_unscoring(tmp_path):
+    """A LIVE symlink -> DIRECTORY named `scores.jsonl` lands in `dirnames`, so the old
+    `"scores.jsonl" in filenames` test could not see it: the run dir silently stopped being
+    score-bearing. Same blind spot as the manifest blocker, one layer down."""
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "sneaky").mkdir()
+    (tmp_path / "runs" / "r1" / "scores.jsonl").symlink_to(tmp_path / "sneaky")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "score file is a DIRECTORY" in r.stderr
+    assert "scores.jsonl" in r.stderr
+
+
+def test_red_when_the_score_dir_split_fix_is_reverted_at_its_real_drop_site(tmp_path):
+    """MUTATION 3: put `_find_score_dirs` back to enumerating only `filenames`. The symlinked-dir
+    score file becomes invisible again and the run dir is silently reported as having nothing to
+    read — exit 0."""
+    mutant = _mutant(
+        tmp_path, "score_dirs_only_filenames",
+        "            # as the manifest blocker, one layer down.\n"
+        "            names = list(dirnames) + list(filenames)",
+        "            # as the manifest blocker, one layer down.\n"
+        "            names = list(filenames)")
+
+    tree = tmp_path / "tree"
+    (tree / "runs" / "r1").mkdir(parents=True)
+    (tree / "experiments").mkdir()
+    (tree / "sneaky").mkdir()
+    (tree / "runs" / "r1" / "scores.jsonl").symlink_to(tree / "sneaky")
+
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tree), timeout=20)
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+def test_fifo_named_scores_jsonl_refuses_instead_of_hanging(tmp_path):
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    (tmp_path / "experiments").mkdir()
+    os.mkfifo(tmp_path / "runs" / "r1" / "scores.jsonl")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "BLOCKS FOREVER" in r.stderr
+
+
+def test_red_when_the_score_source_shape_guard_is_removed_the_open_HANGS(tmp_path):
+    """MUTATION 4, at the real open site: remove `_load_scores_strict`'s shape check for
+    `scores.jsonl`. The FIFO is then opened and the tool blocks forever.
+
+    The tree gives the dir a VALID `checkpoints_index.json` as well, so `_find_score_dirs` still
+    reports it as score-bearing with its own guard intact — this isolates the guard at the open
+    site rather than leaning on the enumeration one."""
+    mutant = _mutant(tmp_path, "no_strict_score_shape_guard",
+                     "    sj_shape = _score_source_shape_reason(sj)",
+                     "    sj_shape = None")
+    tree = tmp_path / "tree"
+    (tree / "runs" / "r1").mkdir(parents=True)
+    (tree / "experiments").mkdir()
+    (tree / "runs" / "r1" / "checkpoints_index.json").write_text('[{"epoch": 1, "score": 0.5}]')
+    os.mkfifo(tree / "runs" / "r1" / "scores.jsonl")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--verify-manifests", cwd=str(tree), timeout=8)
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+def test_control_symlinked_regular_score_file_is_still_read(tmp_path):
+    """CONTROL and canon-parity boundary: a score file reached through a symlink to a REGULAR file
+    stays readable. Canon's `_load_scores` reads those, a score file cannot grant coverage, and
+    this row must not tighten a canon-shared policy under the cover of a link fix."""
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    (tmp_path / "experiments").mkdir()
+    (tmp_path / "real_scores.jsonl").write_text('{"epoch": 1, "score": 0.5}\n')
+    (tmp_path / "runs" / "r1" / "scores.jsonl").symlink_to(tmp_path / "real_scores.jsonl")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
+             cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_control_fifo_protect_file_refuses_instead_of_hanging(tmp_path):
+    """`--protect-file` completes the gate-(i) shape set (missing / symlinked / directory were
+    already covered): a FIFO must be refused BEFORE `open()`, not hung on."""
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "experiments").mkdir()
+    os.mkfifo(tmp_path / "p.txt")
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--protect-file", "p.txt",
+             "--verify-manifests", cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "not a regular file" in r.stderr
+
+
+def test_red_when_the_protect_file_shape_guard_is_removed_at_its_real_drop_site(tmp_path):
+    """MUTATION 5: remove the `--protect-file` shape check; the FIFO reaches `open()` and hangs."""
+    mutant = _mutant(tmp_path, "no_protect_file_shape_guard",
+                     '    if classify_entry(path).kind == "other":',
+                     '    if False:')
+    tree = tmp_path / "tree"
+    (tree / "runs").mkdir(parents=True)
+    (tree / "experiments").mkdir()
+    os.mkfifo(tree / "p.txt")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--protect-file", "p.txt", "--verify-manifests", cwd=str(tree), timeout=8)
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--protect-file", "p.txt",
+             "--verify-manifests", cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+# ============================================================================================
+# CYCLE-3 FIX 7 — `--score-regex` is genuinely strict, and is actually EXERCISED
+#
+# `_load_scores_strict`'s docstring promised "a torn or unparseable record RAISES
+# ScoreReadIncomplete instead of being silently skipped", but its `--score-regex` branch did
+# `except Exception: continue` — exactly canon's permissive skip — and no test touched the branch.
+# ============================================================================================
+
+_REGEX = r"Epoch (?P<epoch>\d+) reward (?P<score>[-\w.]+)"
+
+
+def _score_regex_tree(tmp_path, log_body):
+    (tmp_path / "runs" / "r1").mkdir(parents=True)
+    (tmp_path / "experiments").mkdir()
+    # a VALID scores.jsonl so `_find_score_dirs` reports the dir; the regex branch runs anyway
+    (tmp_path / "runs" / "r1" / "scores.jsonl").write_text('{"epoch": 1, "score": 0.5}\n')
+    (tmp_path / "runs" / "r1" / "train.log").write_text(log_body)
+    return tmp_path
+
+
+def test_score_regex_clean_log_is_read_and_exits_zero(tmp_path):
+    """CONTROL first: the branch is genuinely exercised on a well-formed log — without this, the
+    strictness test below could pass against a branch that never runs."""
+    _score_regex_tree(tmp_path, "Epoch 5 reward 0.75\nEpoch 6 reward 0.80\n")
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--score-regex", _REGEX,
+             "--log-glob", "*.log", "--verify-manifests", cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "verify-manifests: OK" in r.stdout
+
+    # ...and prove in-process that those two epochs really were resolved by that branch.
+    cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        assert gc._load_scores_strict("runs/r1", _REGEX, "*.log") == {1: 0.5, 5: 0.75, 6: 0.80}
+    finally:
+        os.chdir(cwd)
+
+
+def test_score_regex_matched_but_uncoercible_record_refuses(tmp_path):
+    """A line the regex MATCHES whose `score` group cannot coerce is a torn record, not a
+    non-match: the docstring's promise, now kept."""
+    _score_regex_tree(tmp_path, "Epoch 5 reward 0.75\nEpoch 6 reward TORN\n")
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--score-regex", _REGEX,
+             "--log-glob", "*.log", "--verify-manifests", cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "score read INCOMPLETE" in r.stderr
+    assert "--score-regex matched but its epoch/score groups did not coerce" in r.stderr
+    assert "train.log:2" in r.stderr
+
+
+def test_score_regex_without_the_named_groups_refuses(tmp_path):
+    """A `--score-regex` that matches but defines no `epoch`/`score` groups used to be swallowed by
+    the same `except Exception`, so a misconfigured regex read as "this run is unscored"."""
+    _score_regex_tree(tmp_path, "Epoch 5 reward 0.75\n")
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--score-regex", "Epoch",
+             "--log-glob", "*.log", "--verify-manifests", cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "did not coerce" in r.stderr
+
+
+def test_red_when_the_score_regex_strictness_is_reverted_at_its_real_drop_site(tmp_path):
+    """MUTATION 6: put the `except Exception: continue` skip back at its real drop site. The torn
+    record is silently dropped and the tool exits 0 — the docstring's claim without the code."""
+    mutant = _mutant(
+        tmp_path, "score_regex_permissive_again",
+        '                            errors.append(f"{lf}:{lineno}: --score-regex matched but its "\n'
+        '                                          f"epoch/score groups did not coerce ({e}): "\n'
+        '                                          f"{line.strip()!r}")',
+        "                            continue")
+
+    tree = _score_regex_tree(tmp_path / "tree", "Epoch 5 reward 0.75\nEpoch 6 reward TORN\n")
+    m = _cli_script(mutant, "--roots", "runs", "--experiments-dir", "experiments",
+                    "--score-regex", _REGEX, "--log-glob", "*.log", "--verify-manifests",
+                    cwd=str(tree), timeout=20)
+    assert m.returncode == 0, m.stdout + m.stderr
+    assert "verify-manifests: OK" in m.stdout
+
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--score-regex", _REGEX,
+             "--log-glob", "*.log", "--verify-manifests", cwd=str(tree), timeout=20)
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+# ============================================================================================
+# CYCLE-3 FIX 8 — THE FENCE, re-proven: canon byte-identity + behavioural `--apply` parity
+#
+# The invariant (config: "canon paths stay bit-identical") is checked two ways, because either
+# alone is weak: textually against HEAD, and behaviourally by running BOTH tools `--apply` on
+# identical scratch trees and comparing what survives. Never the repo's real `runs/`.
+# ============================================================================================
+
+CANON_FUNCTIONS = ("_is_ckpt_dir", "_safe_target", "_du", "_epoch_of", "_load_scores", "free_gb",
+                   "collect", "plan")
+
+
+def _head_source():
+    r = subprocess.run(["git", "show", "HEAD:tools/ckpt_gc.py"], cwd=REPO,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _func_source(src, name):
+    """The exact text of a top-level `def <name>` block, from `def` to the next top-level line."""
+    lines = src.splitlines(keepends=True)
+    start = next(i for i, l in enumerate(lines) if l.startswith(f"def {name}("))
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith((" ", "\t", "\n"))):
+        end += 1
+    return "".join(lines[start:end]).rstrip() + "\n"
+
+
+def test_canon_functions_are_byte_identical_to_head():
+    """Every canon function's source text, compared byte-for-byte with HEAD."""
+    head, now = _head_source(), open(CKPT_GC).read()
+    for name in CANON_FUNCTIONS:
+        assert _func_source(now, name) == _func_source(head, name), \
+            f"canon function {name}() is not byte-identical to HEAD"
+
+
+def test_diff_against_head_removes_no_content_line():
+    """The whole 881I diff is a PURE INSERTION: no line that exists at HEAD was removed or
+    rewritten (which is what makes the canon claim checkable at a glance)."""
+    r = subprocess.run(["git", "diff", "-U0", "HEAD", "--", "tools/ckpt_gc.py"], cwd=REPO,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    removed = [l for l in r.stdout.splitlines()
+               if l.startswith("-") and not l.startswith("---")]
+    assert removed == [], f"881I removed/rewrote HEAD lines: {removed}"
+
+
+def _apply_tree(root):
+    """A scratch run tree with scored + unscored checkpoints, built so `plan()` has real work."""
+    run = root / "runs" / "some_run"
+    run.mkdir(parents=True)
+    for ep in (10, 20, 30, 40, 50):
+        d = run / f"snapshot_ep{ep}"
+        d.mkdir()
+        (d / "checkpoint_0").write_text("x" * 100)
+        os.utime(d, (1_700_000_000 + ep, 1_700_000_000 + ep))
+    (run / "scores.jsonl").write_text("".join(
+        f'{{"epoch": {ep}, "score": {s}}}\n' for ep, s in
+        ((10, 0.9), (20, 0.1), (30, 0.5), (40, 0.2), (50, 0.7))))
+    (root / "experiments").mkdir()
+    return root
+
+
+def _survivors(root):
+    return sorted(p.name for p in (root / "runs" / "some_run").iterdir())
+
+
+def test_apply_behaviour_is_parity_with_head_on_a_scratch_tree(tmp_path):
+    """Behavioural parity: HEAD's tool and this one, both `--apply`, on byte-identical scratch
+    trees. Same survivors, same stdout (bar the timestamp/free-space line). Scratch only — this
+    never runs against the repo's `runs/`, which holds the +0.9914 anchor."""
+    head_tool = tmp_path / "head_ckpt_gc.py"
+    head_tool.write_text(_head_source())
+
+    a, b = _apply_tree(tmp_path / "a"), _apply_tree(tmp_path / "b")
+    assert _survivors(a) == _survivors(b)
+
+    ra = _cli_script(str(head_tool), "--roots", "runs", "--keep-best", "2", "--apply",
+                     cwd=str(a), timeout=30)
+    rb = _cli("--roots", "runs", "--keep-best", "2", "--apply", cwd=str(b), timeout=30)
+
+    assert ra.returncode == rb.returncode == 0, ra.stdout + ra.stderr + rb.stdout + rb.stderr
+    assert _survivors(a) == _survivors(b), f"HEAD kept {_survivors(a)}, now keeps {_survivors(b)}"
+    assert "snapshot_ep20" not in _survivors(b)      # something really was deleted
+
+    def _norm(out, root):
+        return [l for l in out.replace(str(root), "<ROOT>").splitlines()
+                if "free=" not in l and "free now" not in l]
+    assert _norm(ra.stdout, a) == _norm(rb.stdout, b)
+
+
+def test_verify_manifests_returns_before_any_root_resolution_or_deletion(tmp_path):
+    """The fence, re-proven at the CLI (the in-process version above monkeypatches; this one runs
+    the real program): `--verify-manifests` on a tree that `--apply` would prune deletes NOTHING
+    and reports no deletion at all."""
+    tree = _apply_tree(tmp_path / "t")
+    before = _survivors(tree)
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--keep-best", "2",
+             "--verify-manifests", "--apply", cwd=str(tree), timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _survivors(tree) == before
+    assert "would delete" not in r.stdout and "DELETE" not in r.stdout
+    assert "reclaim" not in r.stdout
