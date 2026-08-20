@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+smoke_ckpt*/
+# TASK_892 fix pass (finding 4): every default scratch write this experiment makes lands here.
+_scratch/
+# Belt and braces — a trace/report written into this tracked dir by hand is still scratch, and
+# an artifact nobody thinks of as an edit is exactly the run-34 pattern this closes.
+trace_*.json
+report_*.json

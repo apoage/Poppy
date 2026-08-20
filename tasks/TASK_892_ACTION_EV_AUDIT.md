@@ -1,3 +1,33 @@
+> **STATUS (2026-08-20): SHIPPED as `task892-action-ev-instrument`** — factory run 37, 2 cycles
+> (build=sonnet, fix=opus), three-lens panel (correctness / fail-closed / regression).
+> **This shipped the INSTRUMENT, not a verdict.** The EDGE / ANTI-EDGE / NULL ruling is the planner's
+> **D47**, seeded by a real leg that remains planner-scheduled on gpu-server.
+> Suite **130/130 PASS twice back-to-back** (25 gates; 21 → 93 → 120 → 130 across the re-cut),
+> selftest 12/12, gate (i) default-OFF byte-identity re-proven in a real HEAD worktree (0 diffs),
+> 10 mutation-reverts at real drop sites.
+> **Gate (viii) settled by measurement:** the pre-registered block bootstrap clears 93% at NO stratum
+> (block length equals the dependence length, so no sample size fixes it); the calibrated-width
+> remedy clears it at EVERY stratum down to 2 blocks. `CALIBRATION_TABLE` = 8 entries, all achieved,
+> validated overlapping coverage 0.940–0.975, k falling 3.495 (2 blocks) → 1.376 (80). Verified
+> end-to-end: EDGE at 20/80 blocks, **NULL on a real effect at 5 blocks** (honest under-powered read),
+> NULL on a true null with no false EDGE, all near-degenerate cases excluded. **So the OOS binding leg
+> (116 decisions ≈ 5 blocks) will most likely read a WIDE NULL — publishable per SPEC, not a failure.**
+> **DECISIONS NEEDED FROM THE PLANNER:**
+> 1. **Ratify or reject the ABSOLUTE 1bp zero-width floor** against D51's "tolerance relative to the
+>    data's own scale". The deviation is deliberate: `ci_width` is homogeneous of degree 1 in the input
+>    scale (measured independently twice), so a relative-to-self test is mathematically unable to
+>    separate a genuinely-tiny-real effect from an artificially-shrunk one. D51 is a planner ruling.
+> 2. **A higher-precision calibration re-run is REQUIRED before the real leg** — the shipped table is a
+>    cheap in-loop pass (200+200 trials, n_boot=400, 8 counts, MC SE ~1.5–2.5pp), disclosed in
+>    `CALIBRATION_PRECISION_DISCLOSURE`, not implied complete by the table's presence.
+> 3. **`REPORT_SCHEMA` was NOT bumped** despite five additive report keys (additive only, no external
+>    consumer) — planner call if v4 is wanted.
+> **OPEN ITEMS shipped as disclosed, not closed:** `assert_never_pooled` has no live caller (no
+> aggregator exists) and every report says so, including that an untagged/MISTAGGED subject would not
+> trip it; `capped`/`k_cap` is effectively dead code though the refusal is intact; and
+> `runs/887_confirm/` holds **no checkpoints on this workstation**, so the 887 A/D subject class is
+> wired and fixture-smoked but has never been exercised against a real subject.
+
 # TASK_892 — action-EV audit: does any policy on this recipe have positive-EV actions?
 
 **Status**: READY 2026-08-19 (**RE-CUT per D51**, planner, after factory run 36's 3-cycle halt).

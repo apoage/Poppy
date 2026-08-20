@@ -3,6 +3,79 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-20 — TASK_892 — the action-EV instrument, calibrated: it can now band, and it refuses to when it cannot
+
+- **What shipped.** The D51 re-cut of `experiments/892_action_ev/` under SPEC Amendment 1: the
+  banding/exclusion layer rebuilt, a new two-scenario calibration harness (`calibration.py`), the
+  Amendment-1 measurement surface, and the `eval_vector.py` null operator
+  (`--decision-rule random-matched` + `--marginals-sidecar`, both OFF by default and byte-identical
+  when off). **This ships an INSTRUMENT, not a verdict** — the EDGE / ANTI-EDGE / NULL ruling is the
+  planner's **D47**, seeded by a real leg that stays planner-scheduled on gpu-server.
+- **The interval method was the whole problem, and it is now measured rather than assumed.** The
+  pre-registered block bootstrap (block=21, the horizon) clears the 93% coverage bar at **no stratum**:
+  measured overlapping coverage is ~0.77 at 5 blocks and ~0.85–0.88 at 30, against a plateau that maxes
+  near 88.8% and is flat from 30 to 40 blocks — because the block length EQUALS the dependence length,
+  so no sample size fixes it. Amendment 1's remedy (iii), a calibrated-width correction, clears it at
+  **every** stratum down to 2 blocks. `CALIBRATION_TABLE` ships 8 entries, all `achieved`, with
+  validated overlapping coverage **0.940–0.975** against the 0.93 target, k falling monotonically from
+  3.495 at 2 blocks to 1.376 at 80. Two independently-built calibrations (the row's harness and the
+  orchestrator's own probe) agreed on the shape, and the required k proved **invariant across three
+  dependence models** — Gaussian rolling-sum, AR(1) φ=0.909, and fat-tailed t3 — even though the raw
+  interval width varies ~3.5× between them.
+- **What that buys, stated honestly: the instrument now bands real signal AND refuses when it cannot.**
+  Verified end to end: a healthy signal reads EDGE at 20 and 80 blocks; **the same real effect at 5
+  blocks reads NULL**, because k≈2.06 widens the interval past resolution; a true null reads NULL with
+  no false EDGE; and every near-degenerate case is excluded. So the **OOS binding leg (116 decisions ≈
+  5 blocks) will most likely return a wide NULL** — a publishable band per SPEC, not a failure, and
+  predicted in writing before the table existed.
+- **The cycle-3 BLOCKER, and why the guard is an ABSOLUTE floor.** `zero_width` was
+  `not (float(hi) > float(lo))` — bit-exact, so 1e-9-jittered near-duplicates read **EDGE** at a CI
+  width of 2e-10. It is now `(ci_hi - ci_lo) <= 1e-4`: one basis point, the instrument's own smallest
+  cost-relevant unit since `cost = (fee_bps+slip_bps)/1e4`. **This deviates from D51's wording ("a
+  tolerance relative to the data's own scale") deliberately and it is flagged for planner
+  ratification**: `ci_width` is homogeneous of degree 1 in the input scale (measured independently
+  twice — `ci_width/jitter` is constant across four orders of magnitude), so a test built from the
+  sample's own dispersion is mathematically unable to separate a genuinely-tiny-real effect from an
+  artificially-shrunk one. It satisfies D51's spirit — the guard fires on the NEAR case and its test
+  constructs the near case — while departing from its letter. No over-exclusion: at realistic scale
+  (80 blocks, std=0.01) the width is 1.8e-3, three orders above the floor.
+- **A fail-open in the fee-tier gate, of exactly the class this file had already fixed once.**
+  `tier_bp` was read as `.get("tier_bp", 0)` while absent from `REQUIRED_TRACE_PROVENANCE`, so deleting
+  one JSON key flipped a genuine fee16/slip5 trace from mandatory `DIAGNOSTIC-ONLY` to a citable
+  **EDGE** with identical numbers and no instrument_fail — falsifying the module's own claim that
+  D49(a) is enforced "in CODE … regardless of caller discipline". The same file already read
+  `budget_conservation_violations` by hard subscript for precisely this reason. Now the whole cost
+  triple (`tier_bp`, `fee_bps`, `slip_bps`) is hard-required with a per-field reason, and the fix
+  closed a **sibling** defect nobody had asked about: a document labelled `tier_bp=0` while carrying
+  real fee16/slip5 costs was being graded as the cost0 primary. `is_fee_tier` now compares the triple,
+  not the label.
+- **"Structurally impossible" was downgraded to what is true.** `assert_never_pooled` is called by
+  nothing in the module — no aggregator exists — so rather than wiring a speculative guard, the claim
+  was corrected: every report now carries `never_pooled_enforcement: "OPEN ITEM"` plus a disclosure
+  naming the real gap (an untagged or MISTAGGED subject would not trip the guard either, since
+  `subject_class` is optional and `None` is filtered out of the class set; and hand-combining Deltas
+  outside the module bypasses everything). A gate reads the module's **own AST** for live call sites and
+  holds claim-vs-wiring coherent in BOTH directions — the moment an aggregator wires it in, the gate
+  goes red and demands the wording be upgraded.
+- **Verification.** Acceptance suite **130/130 PASS twice back-to-back** (21 gates → 93 → 120 → 130
+  across the re-cut), 25 named gates including the new (leg), (fee-tier), (subject-class),
+  (co-primary); `python -m trader selftest` 12/12; three-lens panel (**correctness: no findings** —
+  with an exact partition proof for the co-primary split, `market_return` proven undirected, a
+  50,000-triple brute-force of the closed-form k, and calibrate/validate proven non-circular;
+  **regression: no BLOCKER-level regression**, and it closed the abbreviation gap the row had
+  self-reported; **fail-closed:** the `tier_bp` finding above). Gate (i) default-OFF byte-identity
+  re-proven in a real HEAD worktree, 0 diffs. Every finding was reproduced first-hand by the
+  orchestrator before briefing and every fix re-verified first-hand after.
+- **Remainders → planner.** The **D47 verdict itself** (this row ships the instrument only). **Ratify
+  or reject the absolute zero-width floor** against D51's wording. The calibration table is a
+  deliberately cheap in-loop pass (200+200 trials, n_boot=400, 8 block counts; MC SE ~1.5–2.5pp) and
+  `CALIBRATION_PRECISION_DISCLOSURE` states that **a higher-precision re-run is REQUIRED before the
+  real leg** — planner-scheduled, not implied by the table's presence. `REPORT_SCHEMA` was **not**
+  bumped despite five additive report keys (deliberate: additive only, no external consumer — planner
+  call if v4 is wanted). `capped`/`k_cap` is effectively dead code (the refusal itself is intact).
+  `runs/887_confirm/` holds **no checkpoints on this workstation**, so the 887 A/D subject class is
+  wired and fixture-smoked but has never been exercised against a real subject.
+
 ## 2026-08-20 — TASK_881I — manifest ingestion ships, and the ACCEPT path is closed too
 
 - **What shipped.** `tools/ckpt_gc.py` gains `--verify-manifests` (+ `--experiments-dir`): it PARSES and

@@ -135,7 +135,7 @@ FEE_BPS, SLIP_BPS = 16.0, 5.0
 HOLD = 1
 N_ACTIONS_PER_ASSET = 5
 HOLD_COLLAPSE_PCT = 99.0      # the 821 failure signature: pct_hold pinned >99
-DECISION_RULES = ("argmax", "threshold", "top-m")   # TASK_856: policy-replay decision rules
+DECISION_RULES = ("argmax", "threshold", "top-m", "random-matched")   # TASK_856 (+TASK_892)
 
 # TASK_861 — chosen-vector collection (the search-teacher imprint's target stream).
 # TIER PIN: the 832 imprint recipe injects the COST-HONEST trajectory (imprint.py
@@ -145,6 +145,10 @@ DECISION_RULES = ("argmax", "threshold", "top-m")   # TASK_856: policy-replay de
 # accidental cross-tier imprint.
 COLLECT_TIER_BP = 21
 CHOSEN_VECTORS_SCHEMA = "861/chosen-vectors/v1"
+
+# TASK_892 — the --marginals-sidecar sidecar consumed by --decision-rule random-matched (the
+# matched-activity null operator for the action-EV audit). See load_action_marginals below.
+ACTION_MARGINALS_SCHEMA = "892/action-marginals/v1"
 
 # 830/E0-REAL official corridor, net@21 [floor +0.424, ceil +29.698], engine ref +0.751
 # (gross +0.753 / +0.956 / +31.367). Provenance: experiments/LEDGER.md row 830/E0-REAL +
@@ -237,6 +241,12 @@ def load_imprint_module():
 #                point of the probe: extract ~M trades/step even when the argmax collapses to
 #                100% HOLD); the rest HOLD. Assigning the full argmax would re-collapse to HOLD
 #                on the collapsed ep300 checkpoints and make top-m == argmax (vacuous).
+#   * random-matched (TASK_892, the action-EV audit's matched-activity NULL operator): draws
+#                EACH asset's action i.i.d. from that same asset's marginal action distribution
+#                in a --marginals-sidecar sidecar (recorded from a PRIOR policy walk, not this
+#                one) — no probs, no model forward, no obs. See load_action_marginals /
+#                random_matched_actions below and evaluate_checkpoint's dispatch on
+#                args.decision_rule; _apply_decision_rule (a probs-decoder) never handles it.
 
 def _apply_decision_rule(probs, rule, tau, m, n_assets):
     """Map per-asset action MARGINALS (probs: (N, A, 5), softmax over the 5 actions) to a
@@ -245,6 +255,13 @@ def _apply_decision_rule(probs, rule, tau, m, n_assets):
     tests exercise it directly."""
     if rule not in DECISION_RULES:
         raise ValueError(f"unknown decision rule: {rule!r} (choices: {DECISION_RULES})")
+    if rule == "random-matched":
+        # TASK_892: this rule has no probs-based decoding — it draws from a fixed per-asset
+        # marginal sidecar, dispatched directly by evaluate_checkpoint (see
+        # random_matched_actions) BEFORE any obs/model call is made. Reaching this branch means
+        # a caller routed 'random-matched' through the probs path by mistake.
+        raise ValueError("'random-matched' is decoded by random_matched_actions, not "
+                          "_apply_decision_rule (it never receives model probs)")
     N = probs.shape[0]
     hold_vec = np.full((N, n_assets), HOLD, dtype=np.int32)
     # Mask HOLD out with a sentinel below any real probability so the argmax/max pick a
@@ -299,6 +316,83 @@ def policy_decision_actions(model, params, obs_np, n_assets, rule, tau, m, block
         probs.append(np.asarray(p, dtype=np.float64))
     probs = np.concatenate(probs, axis=0)                               # (N, A, 5)
     return _apply_decision_rule(probs, rule, tau, m, n_assets)
+
+
+# =============================================================================
+# TASK_892 — the matched-activity NULL operator (action-EV audit)
+# =============================================================================
+# 887 proved the hold collapse is adaptive; what it could not tell is whether the policy's
+# non-HOLD actions carry edge the policy fails to FIND, or no edge at all. The distinguishing
+# measurement (experiments/892_action_ev/SPEC.md) compares realized forward returns after a
+# policy's non-HOLD decisions against a null that sees the SAME states at the SAME costs and
+# trades at the SAME per-asset rate/mix — matched BY CONSTRUCTION, not by post-hoc reweighting.
+# 'random-matched' is that null: per decision, each asset's action is drawn i.i.d. from that
+# asset's own marginal distribution in a --marginals-sidecar sidecar (recorded from a PRIOR
+# policy walk — never this walk's own probs, which is what would make it "matched"). It reads
+# no obs, no price, no model output and no env state, so it is trivially PATH-INDEPENDENT
+# (gate iii): the draw depends only on (marginals, n_decisions, n_assets, seed).
+
+def load_action_marginals(path, col_symbols):
+    """TASK_892: load and validate the --marginals-sidecar sidecar for --decision-rule
+    random-matched (schema ACTION_MARGINALS_SCHEMA; producer:
+    experiments/892_action_ev/build_action_marginals.py). FAIL LOUD — never a silent fallback —
+    if the sidecar was not recorded on THIS walk's realized universe: a mismatched sidecar would
+    draw the null from the wrong asset's distribution while the artifact still claims a
+    matched-activity comparison (the same fail-closed posture 883R/886 apply to universe
+    identity, applied here to the null's own input)."""
+    if not path:
+        raise RuntimeError(
+            "--decision-rule random-matched requires --marginals-sidecar <sidecar.json> (a "
+            "per-asset marginal action distribution recorded from a prior policy walk); none "
+            "was given.")
+    with open(path) as fh:
+        doc = json.load(fh)
+    if doc.get("schema") != ACTION_MARGINALS_SCHEMA:
+        raise RuntimeError(
+            f"--marginals-sidecar {path!r}: schema {doc.get('schema')!r} != expected "
+            f"{ACTION_MARGINALS_SCHEMA!r}; refusing to guess at an undeclared sidecar format.")
+    want = list(col_symbols)
+    got = doc.get("symbols")
+    if got != want:
+        raise RuntimeError(
+            f"--marginals-sidecar {path!r} was recorded on a DIFFERENT universe/frame than "
+            f"this walk (order-exact compare): sidecar symbols={got!r} vs realized panel "
+            f"symbols={want!r}. A mismatched sidecar silently invalidates the matched-activity "
+            f"comparison (gate ii); refusing rather than proceeding on a universe the sidecar "
+            f"was never measured on.")
+    marginals = np.asarray(doc.get("marginals"), dtype=np.float64)
+    expected_shape = (len(want), N_ACTIONS_PER_ASSET)
+    if marginals.shape != expected_shape:
+        raise RuntimeError(
+            f"--marginals-sidecar {path!r}: marginals shape {marginals.shape} != expected "
+            f"{expected_shape} (n_assets x {N_ACTIONS_PER_ASSET} action codes).")
+    row_sums = marginals.sum(axis=1)
+    if not np.all(np.isfinite(marginals)) or np.any(marginals < 0) or not np.allclose(
+            row_sums, 1.0, atol=1e-6):
+        raise RuntimeError(
+            f"--marginals-sidecar {path!r}: rows must be finite, non-negative and sum to 1 "
+            f"per asset (max |row_sum-1| = {float(np.max(np.abs(row_sums - 1.0))):.3g}).")
+    return marginals
+
+
+def random_matched_actions(marginals, n_decisions, n_assets, seed):
+    """TASK_892: draw the (n_decisions, n_assets) null action grid. Each asset column is an
+    i.i.d. draw from that asset's row of ``marginals`` (validated by load_action_marginals),
+    via one ``numpy.random.default_rng(seed)`` consumed asset-by-asset in a fixed loop order —
+    a fixed seed reproduces the identical grid bit-for-bit (gate iii: same seed -> bit-identical
+    null walk); a different seed draws a different walk from the SAME marginals. No obs, price,
+    model or env state is read, so the draw is path-independent by construction."""
+    marginals = np.asarray(marginals, dtype=np.float64)
+    if marginals.shape[0] != n_assets:
+        raise RuntimeError(
+            f"random_matched_actions: marginals cover {marginals.shape[0]} assets but this "
+            f"walk has n_assets={n_assets}.")
+    rng = np.random.default_rng(int(seed))
+    codes = np.arange(N_ACTIONS_PER_ASSET)
+    out = np.empty((int(n_decisions), n_assets), dtype=np.int32)
+    for a in range(n_assets):
+        out[:, a] = rng.choice(codes, size=int(n_decisions), p=marginals[a])
+    return out
 
 
 def operator_net_dependent(args):
@@ -2584,6 +2678,15 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
     issues no extra env/model call and changes no control flow, so a collecting walk is
     numerically IDENTICAL to a non-collecting one (acceptance ii).
 
+    TASK_892: ``collect`` may OPT IN to a third recorder key, ``"allocated_fraction"`` — the
+    REALIZED capital allocation ``1 - cash/PV`` after each step, read off the env's own
+    post-step state (``compute_portfolio_value`` is ``cash + Σ position_values + reserved``, so
+    this fraction IS Σ(committed capital)/PV, whatever allocation semantics the config selected:
+    ``position_size_pct`` on the canon path, ``vector_weight_unit``/``vector_weight_max`` on the
+    TASK_840 weight path). Recorded ONLY when the caller pre-created that key, so the 861
+    two-key collection (and every non-collecting walk) is untouched and byte-identical. Still a
+    pure recorder: no RNG, no extra env/model call, no control flow.
+
     TASK_868 (D31 a2): ``open_gate`` (N, A) bool, default None = pre-868 behaviour. Where
     ``open_gate[k]`` is False the slot printed nothing inside decision k's bar (a frozen,
     forward-filled price), so the search's legal mask is restricted to HOLD for that
@@ -2726,6 +2829,16 @@ def rollout(params, search_obj, prices, env_cfg, state0, n_assets, n_decisions,
         if collect is not None:
             collect["chosen_vectors"].append(av.astype(np.int32).tolist())
             collect["realized_book"].append(sd.astype(np.int32).tolist())
+            # TASK_892: OPT-IN third key (absent => this branch never runs => the 861
+            # collection and every scored walk stay byte-identical). `pv` above is the env's
+            # own post-step PV; `state.cash` is the same state that produced it, so
+            # 1 - cash/PV is the REALIZED committed-capital fraction of the walk — the only
+            # honest input to a budget/conservation check under EITHER allocation semantics
+            # (a config field like position_size_pct is DEAD CODE under the weight path,
+            # experiments/882_instrument_reconciliation/test_instrument_agreement.py:19).
+            if "allocated_fraction" in collect:
+                _cash = float(np.asarray(state.cash).reshape(-1)[0])
+                collect["allocated_fraction"].append(1.0 - _cash / max(pv, 1e-10))
         pvs[k + 1] = pv
         # TASK_878 fix pass (MAJOR-2) — ATTEMPT vs OUTCOME, decided per metric (scope 2):
         #   hold_count / trades_per_asset / pct_hold_* / activity  -> OUTCOME (``xv``). These
@@ -3310,13 +3423,23 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
         # decisions. Cheap numpy book-sign pass; abort if book_warm > window_size.
         _tgt, book_warm_op = book_target_signs(prices)
         guard_book_warm(book_warm_op, warm)
-        obs_all = imp.encode_training_obs(prices, warm, n_decisions, env_cfg0)
-        # TASK_856: decision rule over the policy marginals. 'argmax' (default) delegates
-        # VERBATIM to imprint.policy_argmax_actions (byte-identical to HEAD); 'threshold'/
-        # 'top-m' re-decode the same softmax marginals.
-        policy_actions = policy_decision_actions(
-            model, params, obs_all, int(env_cfg0.n_assets),
-            args.decision_rule, args.decision_tau, args.decision_m)
+        if args.decision_rule == "random-matched":
+            # TASK_892: the matched-activity NULL operator. Skips the obs encoder and the
+            # checkpoint's own forward pass entirely — the null never reads this policy's
+            # weights, only a PRIOR walk's recorded per-asset marginals (--marginals-sidecar),
+            # so 'argmax'/'threshold'/'top-m' (below) stay byte-identical to HEAD (gate i) and
+            # this branch is reachable ONLY by explicitly requesting the new rule.
+            marginals = load_action_marginals(args.action_marginals, col_symbols)
+            policy_actions = random_matched_actions(
+                marginals, n_decisions, int(env_cfg0.n_assets), args.eval_seed)
+        else:
+            obs_all = imp.encode_training_obs(prices, warm, n_decisions, env_cfg0)
+            # TASK_856: decision rule over the policy marginals. 'argmax' (default) delegates
+            # VERBATIM to imprint.policy_argmax_actions (byte-identical to HEAD); 'threshold'/
+            # 'top-m' re-decode the same softmax marginals.
+            policy_actions = policy_decision_actions(
+                model, params, obs_all, int(env_cfg0.n_assets),
+                args.decision_rule, args.decision_tau, args.decision_m)
         # ---- TASK_878 fix pass (BLOCKER): the two force-HOLD concerns, kept STRICTLY
         # separate. They were previously entangled, and each was gated on a condition that
         # had nothing to do with it, so BOTH could be off at once.
@@ -3674,32 +3797,8 @@ def evaluate_checkpoint(label, model, params, search_obj, panel, args, corridor,
     # recorded in the checkpoint's own provenance AND agreeing with the loaded weights, the
     # panel realized exactly what was requested, and zero padded slots.
     if universe_pin is not None:
-        # TASK_886 scope 2/3/4 — layer the EARNED, mechanism-typed fields onto 883R's record.
-        # ADDITIVE: nothing 883R shipped (pin_source/certified/pin_path/... below) is removed
-        # or renamed — the 883R regression suite pins those verbatim; mechanism/provenance_path/
-        # sha256/provenance_param_fingerprint were already added by enforce_universe_pin.
-        _realized_matches = _realized_matches_requested(universe_requested, col_symbols)
-        universe_pin = dict(universe_pin)          # copy — never mutate the caller's record
-        universe_pin["n_slots"] = int(panel_info["n_assets"])
-        # n_padded: slots build_panel could not fill with a real symbol. It cannot be non-zero
-        # on any run that could be certified — the framed path keeps zero-coverage slots
-        # INACTIVE in place (the 853 mechanic) and the explicit path is refused outright by
-        # _assert_realized_panel_universe when a requested symbol drops — so in practice it is
-        # a DISCLOSURE for the uncertifiable (unpinned) case. Made a live conjunct of
-        # _certification_verdict anyway: "cannot happen elsewhere" is an argument, and the
-        # certification predicate should not rest on one.
-        universe_pin["n_padded"] = max(
-            0, int(panel_info["n_assets"]) - int(panel_info["n_loaded_symbols"]))
-        universe_pin["realized_matches_requested"] = _realized_matches
-        universe_pin["verified"], universe_pin["verified_reason"] = _certification_verdict(
-            universe_pin, _realized_matches, checkpoint_load)
-        # ONE FACT, ONE VALUE. 883R's `certified` and the top-level `universe_pinned` used to be
-        # hardcoded False beside a computed `verified` — D36 scoped that freeze as lasting
-        # "until the certification row lands", and 886 IS that row, so leaving them pinned would
-        # ship an artifact that contradicts itself in its own JSON. They now carry the SAME
-        # boolean as `verified`; `certified` is kept as the 883R-era spelling purely so the
-        # committed artifact schema keeps every key it had (nothing renamed, nothing removed).
-        universe_pin["certified"] = universe_pin["verified"]
+        universe_pin = finalize_universe_pin_record(
+            universe_pin, panel_info, col_symbols, universe_requested, checkpoint_load)
         result["universe_pinned"] = universe_pin["verified"]
         result["universe_pin"] = universe_pin
     # TASK_856 scope 1: decision-rule provenance. Flag-gated (default 'argmax' adds NOTHING =>
@@ -4842,6 +4941,46 @@ def _realized_matches_requested(requested, realized_symbols):
 CERTIFIABLE_MECHANISMS = ("checkpoint-provenance", "explicit-symbols", "periods-file")
 
 
+def finalize_universe_pin_record(universe_pin, panel_info, col_symbols, universe_requested,
+                                 checkpoint_load):
+    """TASK_886 scope 2/3/4 — layer the EARNED, mechanism-typed fields onto 883R's record and
+    return the finished copy. ADDITIVE: nothing 883R shipped (pin_source/certified/pin_path/...)
+    is removed or renamed — the 883R regression suite pins those verbatim; mechanism/
+    provenance_path/sha256/provenance_param_fingerprint were already added by
+    ``enforce_universe_pin``.
+
+    TASK_892: EXTRACTED VERBATIM out of ``evaluate_checkpoint`` (which now calls it) so a second
+    consumer of the mechanism-typed record — ``experiments/892_action_ev/trace.py``, scope 2's
+    "first consumer" of 886's record — cannot re-derive a SECOND, drifting definition of what a
+    finished record contains. One definition, two callers; the 886/883R suites grade it through
+    ``evaluate_checkpoint`` exactly as before.
+
+    ``n_padded``: slots ``build_panel`` could not fill with a real symbol. It cannot be non-zero
+    on any run that could be certified — the framed path keeps zero-coverage slots INACTIVE in
+    place (the 853 mechanic) and the explicit path is refused outright by
+    ``_assert_realized_panel_universe`` when a requested symbol drops — so in practice it is a
+    DISCLOSURE for the uncertifiable (unpinned) case. Made a live conjunct of
+    ``_certification_verdict`` anyway: "cannot happen elsewhere" is an argument, and the
+    certification predicate should not rest on one.
+
+    ONE FACT, ONE VALUE: 883R's ``certified`` and the top-level ``universe_pinned`` used to be
+    hardcoded False beside a computed ``verified`` — D36 scoped that freeze as lasting "until the
+    certification row lands", and 886 IS that row, so leaving them pinned would ship an artifact
+    that contradicts itself in its own JSON. They carry the SAME boolean as ``verified``;
+    ``certified`` is kept as the 883R-era spelling purely so the committed artifact schema keeps
+    every key it had (nothing renamed, nothing removed)."""
+    realized_matches = _realized_matches_requested(universe_requested, col_symbols)
+    universe_pin = dict(universe_pin)          # copy — never mutate the caller's record
+    universe_pin["n_slots"] = int(panel_info["n_assets"])
+    universe_pin["n_padded"] = max(
+        0, int(panel_info["n_assets"]) - int(panel_info["n_loaded_symbols"]))
+    universe_pin["realized_matches_requested"] = realized_matches
+    universe_pin["verified"], universe_pin["verified_reason"] = _certification_verdict(
+        universe_pin, realized_matches, checkpoint_load)
+    universe_pin["certified"] = universe_pin["verified"]
+    return universe_pin
+
+
 def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
     """TASK_886 scope 4 — ``(verified, verified_reason)``. The ONE place that decides whether
     this program is allowed to say a number was measured on a KNOWN universe.
@@ -5394,7 +5533,14 @@ def _assert_realized_panel_universe(requested, panel):
         f"INACTIVE in place (flat-zero, HOLD-only) instead of dropping them.")
 
 
-def main():
+def build_argparser():
+    """TASK_892 fix pass: the ArgumentParser construction, factored out of ``main()`` so
+    ``experiments/892_action_ev/trace.py`` can obtain a fully-populated, self-consistent
+    ``args`` Namespace via this module's OWN parser (every default in one place, no drift)
+    instead of hand-rolling a Namespace and chasing every ``getattr(args, ...)`` this file's
+    functions read. Pure extraction — identical ArgumentParser object, identical defaults,
+    identical --help text; ``main()`` below is the only caller and is otherwise unchanged
+    (byte-identical CLI behavior, acceptance gate i)."""
     ap = argparse.ArgumentParser(
         description="Stage-4 faithful vector eval harness (TASK_835)")
     ap.add_argument("--db", default=FIXTURE_DB,
@@ -5499,7 +5645,32 @@ def main():
                          "iff its marginal mass > --decision-tau; 'top-m' acts on the "
                          "--decision-m assets per step with the highest non-HOLD mass (forcing "
                          "each onto its BEST NON-HOLD action, so they always trade), HOLD "
-                         "elsewhere")
+                         "elsewhere; 'random-matched' (TASK_892, the action-EV audit's null "
+                         "operator) draws each asset's action i.i.d. from a --marginals-sidecar "
+                         "sidecar (a PRIOR walk's per-asset marginals) — reads no obs/model/"
+                         "price, seeded + path-independent via --eval-seed")
+    # TASK_892 fix pass (finding 8 — ARGPARSE ABBREVIATION COLLISION). This flag was originally
+    # spelled `--action-marginals`, which BROKE an abbreviation that was valid at HEAD:
+    # `--allow-unpinned-universe` was HEAD's ONLY `--a*` option, so `--a` resolved to it
+    # unambiguously; adding a second `--a*` option turned `--a` into
+    # `SystemExit(2) ambiguous option: --a could match --allow-unpinned-universe,
+    # --action-marginals` — a silent change to the DEFAULT-OFF CLI surface, which the project's
+    # canon-parity invariant forbids. `--marginals-sidecar` was chosen because no prefix of it was
+    # an unambiguous abbreviation at HEAD (`--m`/`--ma` were already ambiguous via
+    # --max-decisions/--max-positions/--min-cash-threshold/..., and nothing at HEAD started with
+    # `--mar`). `allow_abbrev=False` was deliberately NOT used: it would not restore `--a` and is
+    # itself an unverified change to every other option's behaviour. `dest` is deliberately kept
+    # as `action_marginals` (the concept's name, and what the sidecar schema is called).
+    # test_action_ev_892.py's gate (abbrev) is the CLASS-CLOSING regression: it enumerates every
+    # HEAD long option, computes its minimal unique abbreviation AS OF HEAD, and asserts each one
+    # still resolves to the same option in the shipped parser.
+    ap.add_argument("--marginals-sidecar", default=None, dest="action_marginals",
+                    help="TASK_892: sidecar JSON (schema 892/action-marginals/v1) of per-asset "
+                         "action marginal distributions, required by --decision-rule "
+                         "random-matched; produced by "
+                         "experiments/892_action_ev/build_action_marginals.py from a prior "
+                         "policy walk. Fail-loud if its recorded symbol order doesn't match "
+                         "this walk's realized panel order-exact")
     ap.add_argument("--decision-tau", type=float, default=0.5, dest="decision_tau",
                     help="TASK_856: threshold rule mass cutoff (act iff best non-HOLD marginal "
                          "mass > tau; 'threshold' rule only)")
@@ -5624,6 +5795,11 @@ def main():
     ap.add_argument("--out-dir", default=None,
                     help="output dir (default: this experiment dir for fixture runs, "
                          "runs/835_stage4 otherwise)")
+    return ap
+
+
+def main():
+    ap = build_argparser()
     args = ap.parse_args()
 
     if args.max_decisions is not None and args.max_decisions < 0:
@@ -5667,6 +5843,35 @@ def main():
     #      weight env (imprint.py:479-482 precedent; the D17 OOS read always passes it).
     _validate_eval_date(args.start, "start")
     _validate_eval_date(args.end, "end")
+    # TASK_892: the null operator's own input must be given, and only when it's meaningful —
+    # fail-loud before any panel build (the 865/878 coherence-check precedent), not a silent
+    # no-op flag either direction.
+    if args.decision_rule == "random-matched" and not args.action_marginals:
+        ap.error("--decision-rule random-matched requires --marginals-sidecar <sidecar.json> "
+                 "(a prior policy walk's per-asset marginal action distribution); none given.")
+    if args.action_marginals and args.decision_rule != "random-matched":
+        ap.error(f"--marginals-sidecar is only meaningful with --decision-rule random-matched "
+                 f"(got --decision-rule {args.decision_rule!r}); drop one or the other.")
+    # TASK_892 fix pass (finding 9): the decision-rule dispatch — INCLUDING the random-matched
+    # branch and load_action_marginals' fail-loud sidecar validation — lives inside
+    # evaluate_checkpoint's `if args.operator == "policy-argmax":`. Under any other operator the
+    # rule was silently IGNORED: measured, `--smoke --decision-rule random-matched
+    # --marginals-sidecar /nonexistent/does_not_exist.json` exited 0 with a full, plausible
+    # Stage-4 report and LEDGER row produced by the ORDINARY search operator, never opening the
+    # sidecar at all. For an instrument whose whole purpose is the matched-null comparison that
+    # seeds a pivot ruling, a forgotten `--operator policy-argmax` must not degrade into an
+    # ordinary eval that LOOKS complete. Refuse here, before any panel build.
+    # SCOPED DELIBERATELY: the same silent-ignore pre-exists for argmax/threshold/top-m under a
+    # non-policy-argmax operator. That is a pre-existing pattern and is NOT changed here (none of
+    # those can swallow an external FILE argument); only TASK_892's own flags are closed.
+    if ((args.decision_rule == "random-matched" or args.action_marginals)
+            and args.operator != "policy-argmax"):
+        ap.error(
+            f"--decision-rule random-matched / --marginals-sidecar are honoured ONLY by "
+            f"--operator policy-argmax (the decision-rule dispatch lives on that path); got "
+            f"--operator {args.operator!r}, under which the rule AND its sidecar would be "
+            f"silently ignored while a complete-looking ordinary eval was written. Pass "
+            f"--operator policy-argmax, or drop the null-operator flags.")
     if args.teacher_floor and not args.vector_weight_rebalance:
         raise RuntimeError(
             "--teacher-floor requires --vector-weight-rebalance so the weight-native ladder "
