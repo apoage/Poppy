@@ -7,8 +7,9 @@ no live manifest corpus at all** — 0 of 56 SPEC.md/PROTECTED.txt files carries
 `protected:`/`covers:` block, so the protection model currently protects NOTHING and its first
 real exercise would be whatever an operator writes after it ships. **Scope item 0 below authors
 the corpus.** Also carried: the tool is `tools/ckpt_gc.py`, NOT `tools/ckpt_archive.py`.
-**Sequenced AFTER TASK_881I** — it consumes
-881I's ingestion as a settled input and does not re-open it.
+**Sequenced AFTER TASK_881I (shipped run 37) — AND BLOCKED UNTIL TASK_881G SHIPS (D53,
+2026-08-20):** the corpus this row's scope item 0 authors must be written against a grammar that
+exists in writing; today the MD032 form refuses and the accepted grammar is documented nowhere.
 **Size: M. Risk: HIGH in consequence** — this row owns the `--apply` path of a tool that deletes
 checkpoints. The D32/D34 `--apply` freeze STANDS until this ships AND 880's D35 gate opens.
 **Resume from the tree state after 881I ships** (the `stash-881-halted-d45` tag is superseded;

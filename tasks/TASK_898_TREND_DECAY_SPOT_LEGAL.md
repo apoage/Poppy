@@ -5,8 +5,10 @@
 **Size: S. Risk: LOW to run, HIGH in consequence** — `docs/pathway.md:106` says the fixed rule
 "stays the fallback shippable at every rung"; the record says that is currently FALSE, scattered
 across three rows nobody aggregated.
-**Eval-only on the existing daily table. Runs on gpu-server** (light CPU, per the operator's
-2026-08-19 compute-placement rule).
+**Eval-only on the existing daily table. Runs on gpu-server per D54 (2026-08-20):**
+workstation-only inputs (the 819 broad panel npz / daily-table extract) are STAGED to srv as
+part of the launch (byte-verified, read-only); if a specific input cannot be staged, the launch
+note says why and runs data-local as the documented exception.
 
 ## Thesis
 

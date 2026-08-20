@@ -106,3 +106,21 @@ operator's 2026-08-19 compute-placement guidance). Any verdict past INSTRUMENT G
 EDGE/ANTI-EDGE/NULL ruling is the planner's, seeded as **D47** with the LEDGER row. The
 env-accounting/PV-exact estimator (D49(b)) — not required unless a future ruling makes fee16
 load-bearing. Training anything.
+
+## Planner resolution of the shipped banner's three items (2026-08-20)
+
+1. **1bp zero-width floor → RATIFIED as D52** (planner): the relative-to-self test is degenerate
+   for `ci_width` (homogeneity of degree 1, measured twice); D51's rule is amended to allow a
+   stated absolute floor in the quantity's natural units where the relative test is degenerate.
+2. **Higher-precision calibration re-run → PRECONDITION of the real leg.** The shipped
+   `CALIBRATION_TABLE` is the cheap in-loop pass (MC SE ~1.5–2.5pp); before the real leg launches,
+   the calibration harness re-runs at high precision against the REAL strata's block counts, and
+   the launch note records the new table. Expected shape is known (the OOS binding leg's ~5 blocks
+   will read a wide NULL — publishable per SPEC, not a failure).
+3. **`REPORT_SCHEMA` NOT bumped — ruled no-bump** (planner): five additive keys, no external
+   consumer; a version nobody parses is decoration. If a second consumer ever lands, bump then.
+
+Real-leg launch checklist (planner-scheduled, gpu-server GPUs per the operator's placement rule):
+the high-precision calibration re-run; the 887 A/D ep300 subjects staged from srv (they are
+srv-resident — `runs/887_confirm/` holds no checkpoints on this workstation — so the srv
+placement of the leg is also the data-local one); LEDGER row + D47 ruling on the verdict.

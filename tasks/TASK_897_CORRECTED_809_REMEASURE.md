@@ -5,9 +5,10 @@
 **Size: S. Risk: LOW to run, HIGH in consequence** — its verdict either re-opens the minute
 surface (execution-engineering path) or closes it honestly, on an estimator that cannot lie the
 way 809's did.
-**Eval-only, no training. Runs on gpu-server** (operator's 2026-08-19 compute-placement rule:
-idle GPUs are a failure mode; nothing CPU-heavy on the workstation — this is light CPU on the
-server).
+**Eval-only, no training. Runs on gpu-server per D54 (2026-08-20):** workstation-only inputs —
+the 809 lineage code under gitignored `runs/809_decision_rule_rescue/`, the minute-table extract —
+are STAGED to srv as part of the launch (byte-verified copies, read-only use). If a specific
+input cannot be staged, the launch note says why and runs data-local as the documented exception.
 
 ## Thesis
 
