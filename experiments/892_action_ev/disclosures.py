@@ -27,7 +27,9 @@ READ_THIS_FIRST = (
     "the cost half of that difference is exactly nil, so the primary band is unaffected by it; "
     "the SECONDARY fee16/slip5 sign-persistence read is BIASED OPTIMISTIC (see "
     "pre_registration_deviations[0].bias_direction). Do not cite this artifact's numbers as the "
-    "pre-registered quantity. SPEC.md was deliberately NOT amended."
+    "pre-registered quantity. SPEC.md was subsequently AMENDED to accept this estimator for the "
+    "cost0 primary read (Amendment 1, 2026-08-19, D49(a), planner act, body sha256 8408970d…); "
+    "the fee16/slip5 read is a disclosed, non-binding diagnostic under that ruling."
 )
 
 PRE_REGISTRATION_DEVIATIONS = [

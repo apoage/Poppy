@@ -42,8 +42,9 @@ banding at the top level, in every per-regime bucket, AND in the [A1] co-primary
 
 EVERY REPORT CARRIES ITS PRE-REGISTRATION DEVIATIONS INLINE, FIRST
 (``disclosures.READ_THIS_FIRST`` / ``pre_registration_deviations``): the delivered forward-return
-estimator is NOT the quantity SPEC.md pre-registers, and SPEC.md is deliberately NOT amended to
-match the build. Read that block before citing any number here.
+estimator is NOT the quantity SPEC.md pre-registers verbatim; SPEC Amendment 1 (2026-08-19,
+D49(a)) accepts it for the cost0 primary read and demotes the fee16/slip5 read to a disclosed
+non-binding diagnostic. Read that block before citing any number here.
 """
 import argparse
 import json
