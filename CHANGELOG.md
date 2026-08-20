@@ -3,6 +3,69 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-20 — TASK_881I — manifest ingestion ships, and the ACCEPT path is closed too
+
+- **What shipped.** `tools/ckpt_gc.py` gains `--verify-manifests` (+ `--experiments-dir`): it PARSES and
+  CLASSIFIES every manifest (`PROTECTED.txt`/`SPEC.md`), protect-file and score file the tool would
+  consult, and REFUSES at exit 2 on anything malformed, symlinked, torn, dangling, blank or
+  wrong-shaped. **It deletes NOTHING** — the mode returns before `--apply`'s checkpoint discovery ever
+  runs, and the `--apply` freeze (D32/D34) STANDS. Diff vs HEAD is a **pure insertion, 1430 / 0**: all
+  8 canon functions (`_is_ckpt_dir`, `_safe_target`, `_du`, `_epoch_of`, `_load_scores`, `free_gb`,
+  `collect`, `plan`) byte-identical, and `main()`'s only delta is two `add_argument` calls plus a
+  3-line early return, with everything from `roots = [...]` onward character-for-character unchanged.
+- **D50's "settled" was scoped to the REFUSE path — the ACCEPT path had never been attacked.** Five
+  earlier lens-runs could not break the refusals, but nothing exercised a manifest that *parses*,
+  because 0 of the 56 real manifest-basename files carries a `protected:`/`covers:` block. A fresh
+  fail-closed lens went at the accept path and found four silent-OK holes, every one of them
+  PRE-EXISTING and every one the row's signature class: an **unanchored item regex** so
+  `- runs/a runs/b` granted ONE protection at exit 0 while `strip_spans` erased the token the parse
+  never consumed (the identical shape in `PROTECTED.txt` refused, because that regex was anchored — the
+  two parsers disagreed and the anchored one was right); **near-miss headers** (indented, UTF-8 BOM,
+  UTF-16, `PROTECTED:`) producing no entries and no refusal while the new counts said the file was
+  read; **`--roots` of the wrong shape** returning a full green on a tree whose score file was provably
+  torn; and **`--experiments-dir` blank** scanning nothing and reporting OK. All four closed.
+- **The claim was the defect, twice over.** Cycle 2's fix hoisted the item regex to module level and
+  called it "the new single point of truth" without anchoring it; the file's own docstrings asserted
+  that "a strip can never remove more than this parse actually consumed" and that a partially consumed
+  block "WITHDRAWS rather than quietly granting a subset" — both false at the LINE level. And the
+  `nargs` comment asserted the list was "non-empty by construction", which was true of the list and
+  false of its content. The guards now match the claims, and the claims were rewritten where they
+  didn't.
+- **Design call on `#`, deliberately not the convenient one.** A `#` inside a manifest block is
+  REFUSED, not treated as a comment: `PROTECTED.txt` is plain text whose grammar defines `#` as a
+  comment, but `SPEC.md` is **Markdown**, where a leading `#` is a HEADING — real content. Supporting
+  it would mean putting it in `spans`, and `spans` is the channel `strip_spans` deletes through, so an
+  in-block comment would buy a parser that can silently ERASE A HEADING. Refusing costs an author one
+  blank line, and the refusal message says so.
+- **Two subtleties worth recording.** The blank-line straddle look-ahead deliberately kept the LOOSE
+  recognizer — anchoring it too would have moved the subset hole one layer up, so
+  `protected:\n- a\n\n- b c\n` would have granted `a` alone; pinned by its own control test. And
+  `--roots ''` is refused *inside* `_find_score_dirs` rather than at argparse, because `--roots` is a
+  HEAD flag read by canon `main()` and a parse-time rejection would have changed `--apply` behaviour
+  for `--roots ''` and broken the byte-identity gate; `--experiments-dir`, added by this row and never
+  read by canon, got the parse-time check instead.
+- **Verification.** Suite **162 passed / 1 skipped, twice back-to-back** (86+1 → 114+1 → 162+1 across
+  three cycles, +76 tests); with the TASK_876 suite 182 passed / 1 skipped twice; `python -m trader
+  selftest` 12/12. **10 mutation-reverts**, each at its real drop site with the pristine sha restored
+  and re-verified after each. Delete-nothing fence re-proven BY CONTRAST (with the flag all 5
+  checkpoints survive; without it only `ep10`/`ep50` remain). Non-over-refusal proven on the real
+  corpus: **56 manifest files read, 0 refused, exit 0**, identical to the pre-change baseline, plus a
+  test asserting the near-header detector finds zero hits across all 56. Every finding was reproduced
+  first-hand by the orchestrator with a control before briefing, and every fix re-verified first-hand
+  after.
+- **Remainders → planner (grammar decisions deliberately NOT taken).** MD032's `protected:` /
+  blank / list form is still refused (only the misleading message was corrected — whether a manifest
+  grammar should accept it is a spec call, and it is the first shape 881D's corpus author will type); a
+  trailing comment on an item is now refused as a consequence of anchoring; the near-header detector
+  fires inside fenced code; a near-miss header withdraws a whole file even beside a valid block. Left
+  as NITs: `---` ingests as item `--`, nested scan dirs double-count, `load_protect_file` turns an
+  indented `#` into an entry, `str.splitlines()` line-number drift. Also escalated: an explicitly
+  passed NONEXISTENT `--experiments-dir` still exits 0 (a deliberate tested control) while an
+  explicitly passed nonexistent `--protect-file` refuses — the same operator error with opposite
+  outcomes. And D50's own precondition for 881D is worse than "unmet": 0 of 56 files carry a block AND
+  a manifest `PROTECTED.txt` refuses both plausible syntaxes, so the grammar it DOES accept is
+  undocumented anywhere an author would look.
+
 ## 2026-08-19 — TASK_891 — the run_queue claims exactly one spelling, and now the claim is true
 
 - **What shipped.** D46's ratified mechanism, unchanged: a leading bare `python`/`python3` token is
