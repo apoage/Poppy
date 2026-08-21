@@ -299,6 +299,18 @@ def digest_pins_naming(path):
 # than as a string literal in each writer/reader.
 PROVENANCE_FINGERPRINT_FIELD = "param_fingerprint"
 
+# TASK_894 scope 1 — the field `trainer.save_checkpoint` writes (into `trainer_metadata.json`
+# AND its per-leaf `trainer_metadata_<step>.json` sibling) when the save happened under a
+# PINNED frame, and the field `tools/stamp_checkpoint_fingerprints.py` retro-stamps from a
+# checkpoint's own tracked frame-provenance document. `_certification_verdict`
+# (`eval_vector.py`) reads it as the checkpoint's OWN INDEPENDENT record of the slot order it
+# was written under — independent of the frame-provenance JSON document that sits beside it,
+# because `param_fingerprint` (above) hashes parameter shape/dtype/bytes and has ZERO
+# dependence on symbol names (measured, TASK_886: reversing `frame_symbols` in a checkpoint's
+# own provenance with the fingerprint intact still certified). One name, defined once, so a
+# save-time writer, the retro-stamp and the certification reader can never independently drift.
+FRAME_SYMBOLS_SHA256_FIELD = "frame_symbols_sha256"
+
 
 def provenance_path_for(ckpt_path):
     """``frame_provenance_<stem>.json`` beside ``ckpt_path`` (``ckpt_`` stripped off the
@@ -733,6 +745,37 @@ def param_fingerprint(params):
         h.update(str(arr.dtype).encode("utf-8"))
         h.update(np.ascontiguousarray(arr).tobytes())
     return h.hexdigest()
+
+
+# ASCII Unit Separator (0x1F) — a control character no ticker symbol observed anywhere in this
+# repo's asset tables contains. A printable separator (","/"|"/" ") could turn two DIFFERENT
+# ordered lists into the SAME joined string if a symbol ever contained it (e.g. ["AB", "C"] and
+# ["A", "BC"] joined on "" collide; even "," is not obviously safe against a future asset name).
+# Fixed here so a save-time writer and a certification-time reader can never independently pick
+# a different separator and silently disagree about what the digest means.
+_FRAME_SYMBOLS_DIGEST_SEP = "\x1f"
+
+
+def frame_symbols_digest(symbols):
+    """Deterministic sha256 over an ORDERED symbol list (TASK_894 scope 1).
+
+    THE digest `trainer.save_checkpoint` records (as `FRAME_SYMBOLS_SHA256_FIELD`) when a save
+    happens under a pinned frame, and the one `tools/stamp_checkpoint_fingerprints.py` derives
+    from a checkpoint's own tracked frame-provenance document when retro-stamping. Reused,
+    never re-derived, by `eval_vector.py`'s certification predicate, so all three sites agree on
+    what "the digest of this ordered list" means.
+
+    CANONICAL ENCODING (documented once, here). Each symbol, in the order given — never sorted;
+    sorting would destroy the very thing this digest exists to protect — UTF-8 encoded, joined
+    by a single `_FRAME_SYMBOLS_DIGEST_SEP` byte with no trailing separator and no JSON
+    wrapping. `str(s)` normalises any non-string leaf (there should never be one) into the same
+    byte sequence a JSON string would encode to, rather than raising deep inside `.encode()`.
+
+    Read-only: never mutates, sorts or reorders `symbols`. `list(symbols)` twice on the same
+    ordered input always fingerprints identically; a reversed or otherwise reordered list never
+    does (this is the whole point — `param_fingerprint` above cannot see order at all)."""
+    blob = _FRAME_SYMBOLS_DIGEST_SEP.join(str(s) for s in symbols)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 class CheckpointRefusalError(RuntimeError):

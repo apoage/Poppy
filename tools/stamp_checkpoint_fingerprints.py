@@ -2,6 +2,15 @@
 """TASK_889 (D39 scope 4) — retro-stamp ``vector_action`` + ``param_fingerprint`` into
 surviving checkpoints' ``trainer_metadata.json`` AND their frame-provenance documents.
 
+TASK_894 scope 2 ADDITION: also stamps ``frame_symbols_sha256`` into ``trainer_metadata.json`` —
+DERIVED from the checkpoint's own tracked frame-provenance document (never guessed, never
+written into the provenance document itself; see ``_derive_frame_symbols_sha256``). This is the
+checkpoint's own INDEPENDENT record of the slot order it was written under, closing the hole
+named in TASK_886's own certification contract: ``param_fingerprint`` has zero dependence on
+symbol names, so it cannot see a tampered ``frame_symbols`` order. A RECORDED digest that
+disagrees with the one just derived REFUSES and writes nothing, the same discipline as the
+``param_fingerprint`` disagreement check below.
+
 NAMING (operator correction, 2026-08-12, binding): this operation is a **retro-stamp**, never
 a "backfill". In this repo *backfill* already means TASK_858's append-only INGEST of historical
 minute bars, and *back-fill* in the data sense is a FORBIDDEN look-ahead. This operation touches
@@ -466,6 +475,33 @@ def _read_json_sidecar(path, what):
     return doc, None
 
 
+def _derive_frame_symbols_sha256(prov, prov_path):
+    """``(digest_or_None, source)`` — TASK_894 scope 2. NEVER GUESSED: the digest is DERIVED
+    from ``prov``'s own recorded ``frame_symbols``/``symbols`` order (the checkpoint's tracked
+    frame-provenance document, already located by ``_locate_provenance``), using the SAME
+    ``checkpoint_io.frame_symbols_digest`` a save-time write and the certification reader both
+    use — never a second, drifting definition. ``source`` is a human-readable sentence naming
+    exactly where the value came from (or why there is none), so the tool's own printed output
+    states the derivation rather than leaving it to be inferred (the task's own acceptance gate
+    demands this).
+
+    ``(None, ...)`` when there is nothing to derive from: no provenance document at all, or one
+    that carries no readable ordered symbol list. Nothing is synthesized for either case — a
+    checkpoint with no provenance simply stays without a ``frame_symbols_sha256``, exactly like
+    one that predates TASK_894."""
+    if prov is None:
+        return None, ("no tracked frame-provenance document beside this checkpoint — nothing "
+                      "to derive a frame_symbols_sha256 from")
+    frame = prov.get("frame_symbols", prov.get("symbols"))
+    if not (isinstance(frame, list) and frame and all(isinstance(s, str) for s in frame)):
+        return None, (f"{_display_path(prov_path)} carries no usable ordered 'frame_symbols' "
+                      f"(or 'symbols') list (got {type(frame).__name__ if frame is not None else None})"
+                      f" — nothing to derive a frame_symbols_sha256 from")
+    return (checkpoint_io.frame_symbols_digest(frame),
+            f"DERIVED from {_display_path(prov_path)}'s own recorded frame_symbols "
+            f"({len(frame)} symbols)")
+
+
 def stamp_one(ckpt_arg, n_assets, vector_action_assert=None, apply=False):
     """Returns a result dict; never raises for a MISSING checkpoint or missing/unreadable
     metadata (both are reported, not fatal — "a checkpoint you do not have cannot be graded").
@@ -540,6 +576,14 @@ def stamp_one(ckpt_arg, n_assets, vector_action_assert=None, apply=False):
     fp = evidence["param_fingerprint"]
     field = checkpoint_io.PROVENANCE_FINGERPRINT_FIELD
 
+    # TASK_894 scope 2: DERIVED from this checkpoint's own tracked frame-provenance document —
+    # never a hardcode, never a guess (the same discipline `resolve_vector_action` uses for
+    # architecture). `None` when there is nothing to derive from; the derivation is named in
+    # `frame_symbols_sha256_source` for the printed report.
+    frame_symbols_sha256, frame_symbols_sha256_source = _derive_frame_symbols_sha256(
+        prov, prov_path)
+    digest_field = checkpoint_io.FRAME_SYMBOLS_SHA256_FIELD
+
     # The document must DESCRIBE the weights just loaded, or nothing is merged into it.
     # `provenance_path_for` is documented non-injective (`.../ckpt_foo` and `.../foo` land on
     # the same file) and `imprint.write_frame_provenance` defends that with a differing-document
@@ -577,10 +621,34 @@ def stamp_one(ckpt_arg, n_assets, vector_action_assert=None, apply=False):
                 f"  Nothing written, in either sidecar — see the trainer_metadata.json check "
                 f"above for what a disagreement here means.")
 
+    # TASK_894 scope 2, same discipline as the param_fingerprint check above: a RECORDED
+    # frame_symbols_sha256 that DISAGREES with the one just DERIVED from the tracked
+    # provenance is exactly the "this checkpoint's provenance changed underneath its own
+    # recorded evidence" signal this tool exists to surface — REFUSE and write NOTHING for
+    # this checkpoint, in dry run or --apply alike. An ABSENT recorded digest is not a
+    # disagreement (nothing to disagree with yet); only two present-and-different values are.
+    recorded_frame_sha = meta.get(digest_field)
+    if (frame_symbols_sha256 is not None and recorded_frame_sha is not None
+            and recorded_frame_sha != frame_symbols_sha256):
+        raise RuntimeError(
+            f"REFUSING to stamp {_display_path(meta_path)}: its recorded {digest_field}="
+            f"{recorded_frame_sha!r} disagrees with {frame_symbols_sha256!r}, derived from "
+            f"{_display_path(prov_path)}'s own recorded frame_symbols.\n"
+            f"  Nothing written, in either sidecar: either this checkpoint's tracked "
+            f"provenance changed underneath its own previously-recorded digest, or that digest "
+            f"was written from a different frame — both are worth stopping the run for, never "
+            f"worth silently overwriting.")
+
     writes = []
-    if meta.get(field) != fp or meta.get("vector_action") != vector_action:
-        writes.append((meta_path, {**meta, field: fp, "vector_action": vector_action},
-                       "trainer_metadata.json"))
+    meta_updates = {}
+    if meta.get(field) != fp:
+        meta_updates[field] = fp
+    if meta.get("vector_action") != vector_action:
+        meta_updates["vector_action"] = vector_action
+    if frame_symbols_sha256 is not None and recorded_frame_sha != frame_symbols_sha256:
+        meta_updates[digest_field] = frame_symbols_sha256
+    if meta_updates:
+        writes.append((meta_path, {**meta, **meta_updates}, "trainer_metadata.json"))
     if prov is not None and prov.get(field) != fp:
         writes.append((prov_path, {**prov, field: fp}, os.path.basename(prov_path)))
     # Digest pins are computed for the files that are ACTUALLY going to change.
@@ -593,6 +661,8 @@ def stamp_one(ckpt_arg, n_assets, vector_action_assert=None, apply=False):
             "resolved_path": _display_path(evidence["resolved_path"]),
             "step": evidence["step"], "param_fingerprint": fp, "vector_action": vector_action,
             "vector_action_source": vector_action_source,
+            "frame_symbols_sha256": frame_symbols_sha256,
+            "frame_symbols_sha256_source": frame_symbols_sha256_source,
             "wrote": [label for _p, _d, label in writes],
             "provenance": _display_path(prov_path) if prov is not None else None,
             "provenance_note": prov_reason,
@@ -673,6 +743,10 @@ def main():
               f"vector_action={result['vector_action']} "
               f"param_fingerprint={result['param_fingerprint'][:16]}...{note}")
         print(f"  vector_action came from: {result['vector_action_source']}")
+        # TASK_894 scope 2: the derivation is NAMED, every time — present or absent.
+        _fss = result.get("frame_symbols_sha256")
+        print(f"  frame_symbols_sha256: {(_fss[:16] + '...') if _fss else None}")
+        print(f"  frame_symbols_sha256 came from: {result['frame_symbols_sha256_source']}")
         if result.get("provenance_note"):
             print(f"  NOTE: {result['provenance_note']}")
         for digest in result.get("invalidated_digest_pins") or []:

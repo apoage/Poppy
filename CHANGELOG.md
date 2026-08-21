@@ -3,6 +3,63 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_894 — the slot order recorded INSIDE the checkpoint: `frame_symbols_sha256`
+
+- **What shipped.** The structural close of TASK_886's `NOT PROVEN: slot order` half. A checkpoint
+  saved under a pinned frame now records a `frame_symbols_sha256` (sha256 over the ordered symbol
+  list, ASCII unit-separator `\x1f`, documented encoding) in the same save-time record TASK_889 owns;
+  `tools/stamp_checkpoint_fingerprints.py` can retro-stamp it, derived from each checkpoint's own
+  tracked frame-provenance document with the derivation named in its output; `_certification_verdict`
+  gains a conjunct binding the provenance's `frame_symbols` order to that recorded digest; and the
+  `NOT PROVEN: slot order` sentence is deleted from the emitted row **only** when the digest genuinely
+  matched.
+- **The hole it closes, measured.** Run 34 reversed `frame_symbols` in a checkpoint's own provenance
+  with `param_fingerprint` intact and still certified `verified: true`, moving net@21 −1.7963 →
+  −1.6575 — because `param_fingerprint` hashes shape/dtype/bytes with zero dependence on symbol
+  names. That exact forgery was rebuilt through the real CLI by three independent agents: it now
+  **REFUSES** for a stamped checkpoint and still certifies-with-`NOT PROVEN` for an unstamped one.
+- **Default behaviour for every pre-894 checkpoint is unchanged, and that was proven, not asserted.**
+  The digest read is tri-state — `None` (no record) / `True` / `False` — the conjunct is `is not
+  False`, and the emission narrows only on `is True`. Every degradation path (missing file, wrong
+  type, unreadable sidecar, empty value) was traced to `None`, never to a false pass: absence means
+  "no record", never "we tried and could not tell". A pre-894 checkpoint's ledger row was diffed
+  against a real HEAD-control worktree and came back **byte-identical, zero differences**.
+- **Gate (ii) shipped on an ACCEPTED PROXY and is recorded as such.** The spec asks for byte-identity
+  vs HEAD on every scored field for all 7 real checkpoints. What was actually run: a direct read
+  proving none of the 7 carries the new key, one real HEAD-worktree A/B on a pre-894 checkpoint
+  (zero differences), and an exhaustive trace showing `None` is inert in every consumer. Two judges
+  independently flagged this as a substitution for the literal gate text rather than the gate itself.
+  **If the literal 7-checkpoint A/B is wanted, it needs authorizing as a scheduled run.**
+- **Fix pass — two MINORs from the panel, both closed with mutation evidence.** (1) Three assertions
+  in `test_universe_pin_883.py`/`886.py` had been widened to a bare prefix `"UNIVERSE CERTIFIED
+  (TASK_886"`, which is a substring of BOTH the old and the narrowed sentence — so they would have
+  stayed green even if the new positive-narrowing path silently never fired. Tightened to the exact
+  expected sentence and proven to bite: under a forced-`None` mutation the tightened form goes RED
+  where the prefix form measurably stayed GREEN. (2) The digest read took the run-dir-**shared**
+  `trainer_metadata.json`, not the per-leaf `trainer_metadata_<step>.json` TASK_889 added precisely
+  because the shared sidecar describes a different save for every non-newest leaf — inert today, a
+  landmine for the next multi-leaf caller. Now prefers per-leaf, falls back to shared, and **refuses
+  loudly when both exist and disagree** (new `(leaf-shared-disagree)` gate). That fix also exposed
+  that the existing `(i-unstamped)` gate had been stripping only the shared sidecar, so it had
+  stopped simulating an unstamped checkpoint at all; it now strips both.
+- **Necessary consequence, disclosed not hidden.** Because `imprint.py` now stamps on every pinned
+  run, the certified sentence changes for every freshly-trained checkpoint, which forced updates to
+  886's own gates — `(order-tamper-a)` and `(pin-sync)` flip from certifying to asserting **REFUSAL**,
+  because the hole they were built to demonstrate is now closed for stamped checkpoints. A regression
+  lens interrogated each edit and confirmed it was forced by real new behaviour rather than bent to
+  match the code.
+- **Remainders.** (a) The retro-stamp tool writes the digest only into the shared sidecar, never
+  per-leaf — harmless today (per-leaf stays absent, so the fallback is exact), but a future
+  multi-leaf retro-stamp path must write per-leaf too. (b) Stripping the digest from BOTH sidecars
+  downgrades a `PROVEN` checkpoint back to `NOT PROVEN`-but-`verified: true` with no signal — by
+  design, identical to the pre-894 baseline, named here because it is the one place absence is
+  deliberately silent. (c) Out of scope and untouched: moving the `.sha256` pins somewhere
+  git-tracked (886 remainder (2), a planner call).
+- **Pre-existing and NOT caused by this row:** `tools/test_stamp_checkpoint_fingerprints_889.py` has
+  2 standing failures, confirmed identical at HEAD `730c629` in a detached worktree — a local
+  `runs/832_e5/ckpt_imprint_full/trainer_metadata.json` (mtime 2026-08-14) already records
+  `vector_action`, contradicting that one test's own precondition.
+
 ## 2026-08-21 — TASK_900 — the three standing red tests in `tools/tests`, diagnosed and fixed
 
 - **What shipped.** All three pre-existing failures dispositioned by FIX (the spec's first-choice

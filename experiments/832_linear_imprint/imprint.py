@@ -2714,7 +2714,16 @@ def run(args, out_path, tag, provenance_sink=None):
     # deterministic in its seed/recipe, so re-running the same command must overwrite rather
     # than abort with `Destination .../checkpoint_<step> already exists`. There is no newer
     # checkpoint here for overwrite=False to protect.
-    trainer.save_checkpoint(ckpt_path, overwrite=True)
+    # TASK_894 scope 1: this save's OWN structural record of the slot order it happened under
+    # — `frame` is None on the unpinned path (byte-identical: no `frame_symbols` argument =>
+    # no `frame_symbols_sha256` key), and a dict with `frame["frame_symbols"]` on the pinned
+    # path (TASK_863/874). Passed straight through to `trainer.save_checkpoint`, never
+    # re-derived: the same list `build_frame_provenance` below records in the sibling
+    # provenance document, so the checkpoint's own digest and the provenance it sits beside
+    # start out describing the identical order.
+    trainer.save_checkpoint(
+        ckpt_path, overwrite=True,
+        frame_symbols=(list(frame["frame_symbols"]) if frame is not None else None))
     # TASK_888 (D38 scope 4 / fix-pass M5): captured HERE, from the params that were just
     # written, so the frame provenance emitted at the end of this function binds to THOSE
     # weights and not to whatever `trainer.state` happens to hold by then.

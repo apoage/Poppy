@@ -1718,7 +1718,7 @@ class MuZeroTrainer:
         return history
 
     def save_checkpoint(self, path: str, keep: int = 3, keep_every_n_steps: int = None,
-                        overwrite: bool = False):
+                        overwrite: bool = False, frame_symbols=None):
         """Save model checkpoint with additional metadata.
 
         Args:
@@ -1729,6 +1729,22 @@ class MuZeroTrainer:
             overwrite: forwarded to flax. **Defaults to False** — the TASK_876 D32 ruling.
                 Leave it False on any TRAINING path. Pass True only from a caller that
                 re-writes a fixed, ephemeral output/smoke directory (see below).
+            frame_symbols: the ORDERED training-universe symbol list this save is happening
+                under, or ``None`` (default — TASK_894 scope 1). When given, its canonical
+                digest (``checkpoint_io.frame_symbols_digest``) is recorded as
+                ``frame_symbols_sha256`` in the same save-time record this method already
+                owns (``trainer_metadata.json`` and its per-leaf
+                ``trainer_metadata_<step>.json`` sibling), alongside the architecture fields.
+                When ``None`` (no pinned frame at save time — the ordinary
+                ``train_jax_fast.py`` path, warm starts, probes) the key is **absent**, never
+                written as ``null`` and never guessed from anything else on ``self``: an
+                old checkpoint predating this argument, and every caller that does not pass
+                it, therefore keeps writing the byte-identical metadata document it always
+                has. This is the structural close TASK_886 named as its own remainder (1):
+                the checkpoint's OWN record of the slot order it was trained under,
+                independent of the frame-provenance JSON document that sits beside it (a
+                document `_certification_verdict` in ``eval_vector.py`` can no longer be
+                fooled by tampering with alone — see its fifth conjunct).
 
         Returns the VERIFIED on-disk checkpoint path.
 
@@ -1789,6 +1805,8 @@ class MuZeroTrainer:
         try:
             # Save additional trainer metadata (BUG_019 fix + architecture info)
             from .checkpoint_io import param_fingerprint as _param_fingerprint
+            from .checkpoint_io import frame_symbols_digest as _frame_symbols_digest
+            from .checkpoint_io import FRAME_SYMBOLS_SHA256_FIELD as _FRAME_SYMBOLS_SHA256_FIELD
             metadata = {
                 'entropy_coef': float(self.entropy_coef),
                 'step_count': int(self.state.step_count),
@@ -1818,6 +1836,12 @@ class MuZeroTrainer:
                 # fingerprint — and now its recorded architecture — auditable without one.
                 'param_fingerprint': _param_fingerprint(self.state.params),
             }
+            # TASK_894 scope 1: recorded ONLY when this save happened under a PINNED frame —
+            # absent, never null, never guessed, when `frame_symbols` is None (no pinned frame
+            # at save time: train_jax_fast.py's canon unpinned path, warm starts, probes). See
+            # this method's docstring for why this key is the structural close TASK_886 named.
+            if frame_symbols is not None:
+                metadata[_FRAME_SYMBOLS_SHA256_FIELD] = _frame_symbols_digest(frame_symbols)
             metadata_path = os.path.join(path, 'trainer_metadata.json')
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f)

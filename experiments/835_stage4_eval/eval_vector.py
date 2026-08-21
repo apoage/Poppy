@@ -3927,28 +3927,57 @@ def make_ledger_row(r):
             # What the pin ACTUALLY catches is an ASYMMETRIC change: a document that moved while
             # its pin did not. Say that, and name the two gaps it leaves.
             _pin_file = _up.get("checkpoint_provenance_sha256_pin")
-            _order_note = (
-                f"its frame_symbols order additionally matches the committed sha256 pin at "
-                f"{_pin_file}, which catches a document that changed WITHOUT its pin changing "
-                f"(corruption, a partial sync, a stale document, a hand-edit that forgot the "
-                f"pin); that pin is NOT independently trusted — it is a sibling file behind the "
-                f"same write permission as the document, so it does NOT defend against a writer "
-                f"who updates BOTH, and it still does not bind the order to the weights"
-                if _pin_file else
-                "NO committed sha256 pin sits beside that document, so a tampered or corrupted "
-                "frame_symbols order that leaves param_fingerprint intact would NOT be detected "
-                "here")
-            universe_caveat = (
-                f" UNIVERSE CERTIFIED (TASK_886): mechanism={_mech!r}. PROVEN: the parameters "
-                f"actually LOADED are the ones this checkpoint's own provenance was written for "
-                f"(param_fingerprint match); the requested universe agrees order-exact with that "
-                f"provenance; the panel build_panel actually RETURNED is order-exact the "
-                f"requested one (realized_matches_requested=true); zero padded slots. NOT "
-                f"PROVEN: that the provenance's recorded frame_symbols ORDER is the order these "
-                f"weights were trained under — param_fingerprint hashes parameter "
-                f"shape/dtype/bytes and has NO dependence on symbol names, so that order is "
-                f"SELF-ATTESTING; {_order_note}. Comparable ONLY against runs certified under "
-                f"the SAME mechanism.")
+            # TASK_894 scope 4: the claim is only narrowed when the mechanism actually binds.
+            # `is True` (not truthiness) — an ABSENT/None `frame_symbols_digest_verified` (every
+            # pre-894 checkpoint, or one saved without a pinned frame) keeps today's sentence
+            # byte-identical, below; only a checkpoint whose OWN save-time record was checked
+            # and AGREED earns the narrower claim.
+            if _up.get("frame_symbols_digest_verified") is True:
+                # The independent .sha256 pin (D39) is still worth naming when one exists: it
+                # guards the WHOLE provenance document (any field, not just frame_symbols)
+                # against an asymmetric change, which the frame_symbols_sha256 digest does not
+                # claim to do — mentioning it is additional honest information, never a second
+                # claim about the order (that claim is already PROVEN above).
+                _pin_note = (
+                    f" This document's frame_symbols order additionally matches the committed "
+                    f"sha256 pin at {_pin_file}."
+                    if _pin_file else
+                    " NO committed sha256 pin sits beside this document.")
+                universe_caveat = (
+                    f" UNIVERSE CERTIFIED (TASK_886/894): mechanism={_mech!r}. PROVEN: the "
+                    f"parameters actually LOADED are the ones this checkpoint's own provenance "
+                    f"was written for (param_fingerprint match); the requested universe agrees "
+                    f"order-exact with that provenance; the panel build_panel actually RETURNED "
+                    f"is order-exact the requested one (realized_matches_requested=true); zero "
+                    f"padded slots; AND this document's recorded frame_symbols ORDER "
+                    f"digest-matches the frame_symbols_sha256 this checkpoint recorded FOR "
+                    f"ITSELF at save time (TASK_894) — a SEPARATE file from this provenance "
+                    f"document, so the slot order is bound to the weights actually trained, not "
+                    f"merely self-attested.{_pin_note} Comparable ONLY against runs certified "
+                    f"under the SAME mechanism.")
+            else:
+                _order_note = (
+                    f"its frame_symbols order additionally matches the committed sha256 pin at "
+                    f"{_pin_file}, which catches a document that changed WITHOUT its pin changing "
+                    f"(corruption, a partial sync, a stale document, a hand-edit that forgot the "
+                    f"pin); that pin is NOT independently trusted — it is a sibling file behind the "
+                    f"same write permission as the document, so it does NOT defend against a writer "
+                    f"who updates BOTH, and it still does not bind the order to the weights"
+                    if _pin_file else
+                    "NO committed sha256 pin sits beside that document, so a tampered or corrupted "
+                    "frame_symbols order that leaves param_fingerprint intact would NOT be detected "
+                    "here")
+                universe_caveat = (
+                    f" UNIVERSE CERTIFIED (TASK_886): mechanism={_mech!r}. PROVEN: the parameters "
+                    f"actually LOADED are the ones this checkpoint's own provenance was written for "
+                    f"(param_fingerprint match); the requested universe agrees order-exact with that "
+                    f"provenance; the panel build_panel actually RETURNED is order-exact the "
+                    f"requested one (realized_matches_requested=true); zero padded slots. NOT "
+                    f"PROVEN: that the provenance's recorded frame_symbols ORDER is the order these "
+                    f"weights were trained under — param_fingerprint hashes parameter "
+                    f"shape/dtype/bytes and has NO dependence on symbol names, so that order is "
+                    f"SELF-ATTESTING; {_order_note}. Comparable ONLY against runs certified under "
+                    f"the SAME mechanism.")
         else:
             # 886 fix pass (MINOR): both call sites pass a FRESHLY BUILT record, so
             # `verified_reason` is always present today. Fed a HISTORICAL pre-886 `universe_pin`
@@ -4985,7 +5014,7 @@ def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
     """TASK_886 scope 4 — ``(verified, verified_reason)``. The ONE place that decides whether
     this program is allowed to say a number was measured on a KNOWN universe.
 
-    FIVE conjuncts, all required, all about what HAPPENED rather than what was asked for:
+    SIX conjuncts, all required, all about what HAPPENED rather than what was asked for:
 
     0. the record names a mechanism that CAN be certified (``CERTIFIABLE_MECHANISMS``) — an
        unpinned run (``mechanism: "none"``, the ``--allow-unpinned-universe`` hatch) requested no
@@ -4998,7 +5027,24 @@ def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
        order-exact (scope 2);
     3. the provenance's recorded parameter fingerprint equals the fingerprint of the parameters
        actually LOADED (BLOCKER 3b);
-    4. the panel carries zero padded slots (``n_padded == 0``).
+    4. the panel carries zero padded slots (``n_padded == 0``);
+    5. (TASK_894) the provenance document's OWN recorded ``frame_symbols`` order digest-matches
+       the digest this checkpoint recorded FOR ITSELF at save time
+       (``frame_symbols_digest_verified``) — UNLESS that checkpoint records no digest at all
+       (``None``: pre-894, or no pinned frame at save time), in which case this conjunct is
+       VACUOUSLY satisfied so every checkpoint that predates this field grades exactly as it did
+       before. It can only ever REFUSE a certification that was previously reachable, never
+       block one that was not.
+
+    CONJUNCT (5) IS WHAT CLOSES THE HOLE (3) LEAVES OPEN (TASK_894). ``param_fingerprint`` (3)
+    hashes parameter shape/dtype/bytes and has ZERO dependence on symbol names — it proves WHICH
+    WEIGHTS loaded, never the slot ORDER they were trained under. Measured (TASK_886): reversing
+    a checkpoint's own provenance's ``frame_symbols`` with its ``param_fingerprint`` left intact
+    still satisfied conjuncts (0)-(4) and certified. ``frame_symbols_digest_verified`` reads that
+    order against a SEPARATE file — the checkpoint's own ``trainer_metadata.json``, written at
+    save time (or retro-stamped from the checkpoint's own tracked provenance) — so the SAME
+    forgery now fails here: the tampered document's order no longer digest-matches the
+    checkpoint's own independent record of what it was actually trained under.
 
     CONJUNCTS (0) AND THE ``order_exact`` HALF OF (1) ARE LIVE CONJUNCTS, NOT NARRATION (886 fix
     pass, MAJOR 1). Both used to be enforced only by NON-LOCAL COUPLING to this function's single
@@ -5064,7 +5110,13 @@ def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
         n_padded_ok = int(universe_pin["n_padded"]) == 0
     except (KeyError, TypeError, ValueError):
         n_padded_ok = False
-    if mechanism_ok and prov_ok and realized_matches and param_bound and n_padded_ok:
+    # TASK_894 (5): `is not False` — both `True` (recorded and agrees) and `None` (nothing
+    # recorded to disagree with, the vacuous pre-894 state) pass; only an explicit, RECORDED
+    # disagreement (`False`) blocks. This is what makes the conjunct able to REFUSE a forgery
+    # without ever blocking a checkpoint that predates it.
+    frame_digest_ok = universe_pin.get("frame_symbols_digest_verified") is not False
+    if (mechanism_ok and prov_ok and realized_matches and param_bound and n_padded_ok
+            and frame_digest_ok):
         return True, "certified"
     if mechanism == "none":
         # --allow-unpinned-universe: nothing was REQUESTED, so nothing can be certified. Said
@@ -5086,6 +5138,14 @@ def _certification_verdict(universe_pin, realized_matches, checkpoint_load):
         return False, "provenance predates fingerprint binding"
     if not param_bound:
         return False, "provenance parameter fingerprint does not match the loaded parameters"
+    if not frame_digest_ok:
+        # TASK_894: reached only when a checkpoint DOES record a frame_symbols_sha256 (else this
+        # conjunct is vacuously True and never gets here) and it DISAGREES with the digest of
+        # this provenance document's own recorded frame_symbols order.
+        return False, ("provenance's recorded frame_symbols order does not match this "
+                       "checkpoint's own save-time frame_symbols_sha256 (TASK_894) — the order "
+                       "was tampered with, or this provenance was written for a different "
+                       "training run")
     # Last, because it is the conjunct hardest to reach today: everything above holds and the
     # panel still carries slots build_panel could not fill with a real symbol.
     return False, "panel carries padded slots (n_padded != 0, or not recorded)"
@@ -5123,11 +5183,118 @@ def _assert_provenance_binds_loaded_params(ckpt_path, universe_pin, checkpoint_l
         f"the checkpoint actually being graded.")
 
 
+def _read_frame_symbols_sha256_sidecar(meta_path, what):
+    """Read ``checkpoint_io.FRAME_SYMBOLS_SHA256_FIELD`` off ONE sidecar JSON file — ``None``
+    on any absent/unopenable/unreadable/malformed/missing-key case, never a raise. Shared by
+    both sidecars ``_checkpoint_recorded_frame_symbols_sha256`` reads (the run-dir-wide
+    ``trainer_metadata.json`` and the per-leaf ``trainer_metadata_<step>.json``) so the
+    degrade-to-None discipline cannot drift between the two call sites."""
+    if not os.path.exists(meta_path):
+        return None
+    if checkpoint_io.unsafe_to_open_defect(
+            meta_path, checkpoint_io.SIDECAR_MAX_BYTES, what) is not None:
+        return None
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    v = meta.get(checkpoint_io.FRAME_SYMBOLS_SHA256_FIELD)
+    return v if isinstance(v, str) and v.strip() else None
+
+
+def _leaf_step_from_dir(leaf_dir):
+    """The ``<step>`` in a ``checkpoint_<step>`` orbax leaf directory name (flax's own naming —
+    see ``checkpoint_io.leaf_metadata_path_for``'s docstring), or ``None`` when ``leaf_dir`` is
+    ``None`` or its basename does not follow that convention. Strict ASCII-digit stem, the same
+    guard ``trainer.py``'s orphan sweep uses (TASK_889 fix pass 3): ``str.isdigit()`` alone is
+    True for Unicode digit characters ``int()`` cannot parse, which would raise here instead of
+    degrading to ``None``."""
+    if leaf_dir is None:
+        return None
+    name = os.path.basename(leaf_dir)
+    prefix = "checkpoint_"
+    if not name.startswith(prefix):
+        return None
+    stem = name[len(prefix):]
+    return int(stem) if stem.isascii() and stem.isdigit() else None
+
+
+def _checkpoint_recorded_frame_symbols_sha256(ckpt_path):
+    """TASK_894 scope 3 — the checkpoint's OWN recorded ``frame_symbols_sha256``
+    (``trainer_metadata.json``/``trainer_metadata_<step>.json``, written by
+    ``trainer.save_checkpoint`` under a pinned frame, or retro-stamped by
+    ``tools/stamp_checkpoint_fingerprints.py``), or ``None`` when there is nothing recorded to
+    read.
+
+    FIX PASS (correctness, MINOR/latent): PREFERS the PER-LEAF record
+    (``trainer_metadata_<step>.json``, TASK_889) over the run-dir-SHARED one
+    (``trainer_metadata.json``) whenever the resolved leaf's step is known and that per-leaf
+    file exists. Pre-fix this read ONLY the shared sidecar, which TASK_889
+    (``trainer.py:1851-1862``) documents as describing the MOST RECENT save in a run dir that
+    normally holds several ``checkpoint_<step>`` leaves — "for every leaf that is not the
+    newest, the shared sidecar describes a DIFFERENT save". Inert TODAY (the only writer of
+    this digest, ``imprint.py``, writes one leaf per ``ckpt_path`` with ``overwrite=True``, so
+    shared and per-leaf always describe the SAME save — verified by the byte-identity gates in
+    ``test_frame_symbols_digest_894.py``), but a future multi-leaf ``keep=N`` caller would
+    otherwise silently validate an OLDER leaf against the NEWEST save's digest — the exact
+    per-leaf-vs-shared confusion TASK_889 already closed for ``param_fingerprint``/architecture,
+    left open here until this fix.
+
+    FAIL-CLOSED ON DISAGREEMENT: if BOTH the per-leaf and shared records exist and name
+    DIFFERENT digests, this raises ``RuntimeError`` (this module's uniform refusal type) rather
+    than silently preferring one or returning a vacuous ``None`` — never a silent pass. An
+    ABSENT record on either side is not a disagreement; only two PRESENT, DIFFERENT values are.
+
+    ABSENCE (of BOTH records) DEGRADES SILENTLY, BY DESIGN. A checkpoint saved without a pinned
+    frame, one that predates TASK_894, or sidecars that are missing/unreadable/malformed all
+    read back ``None`` here — never a warning, never a raise — because
+    ``_certification_verdict``'s fifth conjunct treats an absent recorded digest as VACUOUS
+    (today's pre-894 behaviour, unchanged): the same "cannot verify, so this conjunct simply
+    does not fire" shape ``param_fingerprint`` had before TASK_888/889 gave it an emitter.
+    Mirrors ``check_checkpoint_arch``'s own missing/corrupt ``trainer_metadata.json`` handling
+    one function up in this module.
+
+    Looked up beside the RESOLVED run dir/leaf (``checkpoint_io.resolve_checkpoint_dirs``) — the
+    same resolution every other checkpoint-identity question in this module goes through, never
+    a re-derivation from the raw argv string (TASK_886/888's Hole 1) — and read through the same
+    ``stat``-before-``open`` discipline (``checkpoint_io.unsafe_to_open_defect``) every other
+    run-dir sidecar read in this program uses."""
+    run_dir, leaf = checkpoint_io.resolve_checkpoint_dirs(ckpt_path)
+    shared_digest = _read_frame_symbols_sha256_sidecar(
+        os.path.join(run_dir, "trainer_metadata.json"),
+        "a checkpoint's trainer_metadata.json")
+
+    leaf_step = _leaf_step_from_dir(leaf)
+    leaf_digest = None
+    if leaf_step is not None:
+        leaf_digest = _read_frame_symbols_sha256_sidecar(
+            checkpoint_io.leaf_metadata_path_for(run_dir, leaf_step),
+            "a checkpoint's per-leaf trainer_metadata_<step>.json")
+
+    if leaf_digest is not None and shared_digest is not None and leaf_digest != shared_digest:
+        raise RuntimeError(
+            f"REFUSING checkpoint {_display_path(ckpt_path)}: its per-leaf "
+            f"trainer_metadata_{leaf_step}.json records "
+            f"{checkpoint_io.FRAME_SYMBOLS_SHA256_FIELD}={leaf_digest!r} but the run dir's "
+            f"shared trainer_metadata.json records {shared_digest!r} for what should be the "
+            f"SAME save — these two sidecars disagree about the frame_symbols order this leaf "
+            f"was trained under.\n"
+            f"  TASK_889/894: the shared sidecar always describes the MOST RECENT save in a "
+            f"multi-leaf run dir, so a disagreement here means this leaf is NOT the newest "
+            f"save recorded there. Grading it against the wrong record would be exactly the "
+            f"silent leaf/record mismatch TASK_889 already closed for param_fingerprint and "
+            f"architecture — refusing rather than picking one silently.")
+    return leaf_digest if leaf_digest is not None else shared_digest
+
+
 def _cross_check_own_provenance(ckpt, frame, flag, given_label, given_line, fix_line):
     """Order-exact cross-check of the universe THIS RUN will build (``frame``) against the
     checkpoint's OWN recorded training frame (TASK_874's ``frame_provenance_<stem>.json``
     sibling). Returns ``(own_path, own_found, order_exact, recorded_param_fingerprint,
-    sha256_pin_file)``; REFUSES on disagreement.
+    sha256_pin_file, frame_symbols_digest_verified)``; REFUSES on disagreement.
 
     TASK_886 (fix pass, BLOCKER): the document is also checked against its committed
     ``*.sha256`` pin when one sits beside it (``_assert_provenance_matches_sha256_pin``) — the
@@ -5144,11 +5311,29 @@ def _cross_check_own_provenance(ckpt, frame, flag, given_label, given_line, fix_
     TASK_886 (BLOCKER 3): the document must also NAME this checkpoint
     (``_recorded_checkpoint_mismatch``), and the fingerprint it records for the weights it was
     written for is returned so ``evaluate_checkpoint`` can bind the positive claim to the
-    parameters actually LOADED instead of to a neighbouring JSON."""
+    parameters actually LOADED instead of to a neighbouring JSON.
+
+    ``frame_symbols_digest_verified`` (TASK_894 scope 3) — a TRI-STATE, not a bool:
+      * ``None`` — this checkpoint records NO ``frame_symbols_sha256`` (pre-894, or no pinned
+        frame at save time). VACUOUS: ``_certification_verdict``'s fifth conjunct treats this
+        exactly like today's behaviour, so a pre-894 checkpoint's certification is unaffected.
+      * ``True`` — the checkpoint's own recorded digest agrees with
+        ``checkpoint_io.frame_symbols_digest(own_frame)`` — the SLOT ORDER this document
+        records is bound to what the checkpoint itself was saved under, not merely
+        self-attested.
+      * ``False`` — recorded but DISAGREES. This is exactly the run-34 forgery shape (a
+        reversed ``frame_symbols`` with ``param_fingerprint`` left intact): before TASK_894 this
+        was undetectable; now the checkpoint's OWN save-time record — a SEPARATE file from this
+        provenance document — still carries the digest of the order it was actually trained
+        under, so the tamper is caught even when the provenance's `own_doc["checkpoint"]` name
+        and its `param_fingerprint` both still agree.
+    Computed from ``own_frame`` (this document's OWN recorded order), not from ``frame`` (what
+    THIS run asked for) — a checkpoint's provenance can misrepresent itself independent of
+    whatever the operator happened to pass in."""
     own_path = _own_provenance_path_for(ckpt)
     own_frame, own_doc = _read_provenance_frame(own_path, ckpt)
     if own_frame is None:
-        return own_path, False, None, None, None
+        return own_path, False, None, None, None, None
     # BEFORE anything is believed about the document's CONTENT: if a committed pin exists, the
     # document must match it. A tampered frame_symbols order with an intact param_fingerprint is
     # otherwise undetectable here, and this cross-check is the thing that would bless it.
@@ -5177,9 +5362,18 @@ def _cross_check_own_provenance(ckpt, frame, flag, given_label, given_line, fix_
             f"emits — TASK_874).")
     recorded_fp = (own_doc or {}).get(checkpoint_io.PROVENANCE_FINGERPRINT_FIELD)
     recorded_fp = recorded_fp if isinstance(recorded_fp, str) and recorded_fp.strip() else None
+    # TASK_894 scope 3: the checkpoint's OWN save-time digest of `own_frame` — a SEPARATE file
+    # from `own_doc` (trainer_metadata.json vs frame_provenance_*.json), so a tamper of THIS
+    # document's frame_symbols leaves that other file's recorded digest disagreeing with the
+    # newly-tampered order, even though `recorded_fp` above (sourced from THIS same tampered
+    # document) is untouched and still "agrees" with the weights.
+    recorded_digest = _checkpoint_recorded_frame_symbols_sha256(ckpt)
+    frame_symbols_digest_verified = (
+        None if recorded_digest is None
+        else checkpoint_io.frame_symbols_digest(own_frame) == recorded_digest)
     mismatch = _first_frame_mismatch(frame, own_frame)
     if mismatch is None:
-        return own_path, True, True, recorded_fp, own_pin
+        return own_path, True, True, recorded_fp, own_pin, frame_symbols_digest_verified
     idx, sym_given, sym_own = mismatch
     raise RuntimeError(
         f"{flag}: REFUSING a pin/checkpoint universe MISMATCH.\n"
@@ -5328,7 +5522,8 @@ def enforce_universe_pin(ckpts, args):
         _periods_file_sha = _sha256_file(args.periods_file) if _from_periods_file else None
         info = {}
         for c in ckpts:
-            own_path, own_found, order_exact, own_fp, own_pin = _cross_check_own_provenance(
+            (own_path, own_found, order_exact, own_fp, own_pin,
+             frame_digest_verified) = _cross_check_own_provenance(
                 c, explicit, "--symbols/--periods-file assets", "explicit",
                 f"universe given: EXPLICIT {len(explicit)}-symbol order from "
                 f"--symbols/--periods-file assets",
@@ -5362,6 +5557,11 @@ def enforce_universe_pin(ckpts, args):
                 # a reader must be able to tell a document whose frame_symbols order is
                 # independently pinned from one that merely attests to itself.
                 "checkpoint_provenance_sha256_pin": own_pin,
+                # TASK_894 scope 3: tri-state (None/True/False — see _cross_check_own_provenance's
+                # docstring). None (vacuous) for every checkpoint that predates this task or was
+                # saved without a pinned frame — `_certification_verdict`'s fifth conjunct treats
+                # that identically to today's behaviour, so certification stays unaffected.
+                "frame_symbols_digest_verified": frame_digest_verified,
             }
         # `--allow-unpinned-universe` is INERT here by design: it is the hatch for "no pin at
         # all", and a named order-exact universe IS a pin request. The artifact records what
@@ -5419,7 +5619,11 @@ def enforce_universe_pin(ckpts, args):
                      # missing key/null as its own third state.
                      "mechanism": "none", "provenance_path": None, "sha256": None,
                      "provenance_param_fingerprint": None,
-                     "checkpoint_provenance_sha256_pin": None}
+                     "checkpoint_provenance_sha256_pin": None,
+                     # TASK_894 scope 3: nothing was requested, so there is nothing whose order
+                     # could be digest-verified — vacuous, same as every other per-checkpoint
+                     # field in this unpinned record.
+                     "frame_symbols_digest_verified": None}
                  for c in ckpts},
                 None)
 
@@ -5450,7 +5654,8 @@ def enforce_universe_pin(ckpts, args):
     pin_sha = _sha256_file(pin_path)
     info = {}
     for c in ckpts:
-        own_path, own_found, order_exact, own_fp, own_pin = _cross_check_own_provenance(
+        (own_path, own_found, order_exact, own_fp, own_pin,
+         frame_digest_verified) = _cross_check_own_provenance(
             c, pin_frame, "--panel-frame-from-checkpoint", "pin",
             f"pin given: {_display_path(pin_path)}",
             f"FIX: pass the checkpoint's own provenance "
@@ -5471,6 +5676,8 @@ def enforce_universe_pin(ckpts, args):
             "provenance_path": _display_path(pin_path), "sha256": pin_sha,
             "provenance_param_fingerprint": own_fp,
             "checkpoint_provenance_sha256_pin": own_pin,
+            # TASK_894 scope 3 — see _cross_check_own_provenance's docstring for the tri-state.
+            "frame_symbols_digest_verified": frame_digest_verified,
         }
     return info, ("--panel-frame-from-checkpoint", pin_frame)
 

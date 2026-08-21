@@ -20,6 +20,18 @@ retro-stamp + 888R/889 discharged the premise that made `verified: true` unreach
 made the tool unable to LIE (it can only refuse or disclaim); this row makes it able to
 CERTIFY — and only against evidence.
 
+UPDATED BY TASK_894 (the remainder this row's own module docstring named: "record a
+frame_symbols digest INSIDE the checkpoint at SAVE time"). `_certification_verdict` gained a
+SIXTH conjunct reading a checkpoint's own `trainer_metadata.json` frame_symbols_sha256 — a
+SEPARATE file from the frame-provenance document these gates tamper with. Because
+`imprint.py`'s save now records that digest UNCONDITIONALLY under a pinned frame, every
+checkpoint THIS file trains is "stamped", and gates (3b+)/(pin-ok) below earn the narrower
+"(TASK_886/894)"/"PROVEN" sentence instead of the original "(TASK_886)"/"NOT PROVEN" one; gates
+(order-tamper-a)/(pin-sync) — which used to demonstrate that reversing `frame_symbols` with
+`param_fingerprint` intact was UNDETECTABLE — now demonstrate the opposite: TASK_894 closes
+exactly that hole, so both REFUSE. See `test_frame_symbols_digest_894.py` for the dedicated
+before/after suite (stamped vs. unstamped, on the identical tamper).
+
 WHAT "CERTIFIED" MEANS HERE. `verified: true` requires FOUR things:
   1. the checkpoint's OWN provenance was found (from the RESOLVED checkpoint dir, so every
      spelling reaches the same verdict) and agreed order-exact with the requested universe;
@@ -525,7 +537,14 @@ def main():
               and up.get("verified_reason") == "certified"
               and up.get("provenance_param_fingerprint") == fp1
               and doc.get("checkpoint_load", {}).get("param_fingerprint") == fp1
-              and "UNIVERSE CERTIFIED (TASK_886)" in row
+              # UPDATED BY TASK_894: this checkpoint is trained under a PINNED frame via
+              # imprint.py, which (post-894) unconditionally records a frame_symbols_sha256 at
+              # save time, so graded against its own untampered provenance it earns the
+              # NARROWER "(TASK_886/894)" sentence. EXACT match (fix pass, MINOR): this run is
+              # stamped-under-pin, so the "/894" sentence must be the one actually emitted — a
+              # bare prefix match would still pass if TASK_894's positive-narrowing path
+              # silently never fired (e.g. the digest reader always returning None).
+              and "UNIVERSE CERTIFIED (TASK_886/894)" in row
               and "mechanism='checkpoint-provenance'" in row
               and "UNIVERSE NOT CERTIFIED" not in row
               and "UNIVERSE UNVERIFIED" not in row)
@@ -682,9 +701,14 @@ def main():
             with open(own_prov, "w") as fh:
                 json.dump(d, fh)
 
-        print("[886] gate (order-tamper-a) — frame_symbols REVERSED with param_fingerprint "
-              "intact and NO committed sha256 pin: undetectable here, so the CERTIFIED sentence "
-              "must not claim the order is bound ...")
+        print("[886] gate (order-tamper-a) — SUPERSEDED BY TASK_894: frame_symbols REVERSED "
+              "with param_fingerprint intact used to be undetectable here; this checkpoint was "
+              "trained AFTER TASK_894 shipped, so imprint.py's save recorded a "
+              "frame_symbols_sha256 into trainer_metadata.json — a SEPARATE file from this "
+              "tampered provenance document — and the tamper now REFUSES instead of "
+              "certifying-with-a-caveat. (test_frame_symbols_digest_894.py's gates "
+              "(i-stamped)/(i-unstamped) prove both the closed and the still-open case "
+              "directly; this leg keeps 886's OWN suite honest about the closure.) ...")
         _tamper_prov()
         try:
             r = _run([EVAL_PY] + BASE + ["--checkpoint", ckpt,
@@ -692,34 +716,30 @@ def main():
                                          "--panel-frame-source", "minute",
                                          "--tag", "gtampa", "--out-dir", work])
             doc_t = _one_doc(work, "gtampa")
+            up_t = (doc_t or {}).get("universe_pin", {})
             row_t = (doc_t or {}).get("ledger_row", "")
             doc_clean = _one_doc(work, "g3bpos")
             ok = (r.returncode == 0 and doc_t is not None
-                  # it DOES still certify — nothing in this program can see the tamper ...
-                  and doc_t["universe_pin"].get("verified") is True
-                  and doc_t["universe_pin"].get("checkpoint_provenance_sha256_pin") is None
-                  # ... and the number really did move, which is why the sentence matters
+                  # the number really did move (the tamper is real) ...
                   and doc_t["tiers"]["21"]["sharpe_full"]
                   != doc_clean["tiers"]["21"]["sharpe_full"]
-                  # ... so the pasted sentence must name the gap, and must NOT carry the
-                  # retired overclaim.
-                  and "NOT PROVEN" in row_t
-                  and "SELF-ATTESTING" in row_t
-                  and "NO committed sha256 pin" in row_t
-                  and "slot identity is bound to the checkpoint actually LOADED" not in row_t
+                  # ... but TASK_894's independent save-time record now catches it: REFUSED,
+                  # not silently certified with a caveat.
+                  and up_t.get("verified") is False
+                  and up_t.get("frame_symbols_digest_verified") is False
+                  and "TASK_894" in (up_t.get("verified_reason") or "")
+                  and "UNIVERSE NOT CERTIFIED (TASK_886)" in row_t
                   and row_t.count("UNIVERSE ") == 1)
         finally:
             _restore_prov()
-        print(f"    [{'PASS' if ok else 'FAIL'}] gate (order-tamper-a) certified sentence names "
-              f"the unproven half instead of claiming it")
+        print(f"    [{'PASS' if ok else 'FAIL'}] gate (order-tamper-a) TASK_894 now REFUSES "
+              f"this forgery for a stamped checkpoint")
         if not ok:
             failures.append(
                 f"gate (order-tamper-a): a reversed frame_symbols order with an intact "
-                f"param_fingerprint must still complete (it is undetectable without a pin) but "
-                f"the CERTIFIED sentence must say the order is SELF-ATTESTING / NOT PROVEN and "
-                f"must not claim slot identity is bound. returncode={r.returncode} "
-                f"universe_pin={(doc_t or {}).get('universe_pin')}\nledger_row={row_t}\n"
-                f"stderr tail:\n{r.stderr[-1500:]}")
+                f"param_fingerprint must now REFUSE for this TASK_894-stamped checkpoint, "
+                f"naming TASK_894, with the number having moved. returncode={r.returncode} "
+                f"universe_pin={up_t}\nledger_row={row_t}\nstderr tail:\n{r.stderr[-1500:]}")
 
         print("[886] gate (order-tamper-b) — the SAME tamper with a committed sha256 pin beside "
               "the document must REFUSE, naming the pin and both digests ...")
@@ -767,9 +787,11 @@ def main():
                   and "matches the committed sha256 pin" in row_p
                   and "NO committed sha256 pin" not in row_p
                   and os.path.basename(pin_file) in row_p
-                  # the honest limitation is stated in BOTH pin states — the pin bounds the
-                  # DOCUMENT, it still does not bind the order to the WEIGHTS.
-                  and "NOT PROVEN" in row_p and "SELF-ATTESTING" in row_p
+                  # UPDATED BY TASK_894: this checkpoint is STAMPED and UNTAMPERED, so the
+                  # order is now PROVEN outright (scope 4 deletes "NOT PROVEN"/SELF-ATTESTING
+                  # for exactly this state) rather than merely self-attested-and-pinned.
+                  and "UNIVERSE CERTIFIED (TASK_886/894)" in row_p
+                  and "NOT PROVEN" not in row_p and "SELF-ATTESTING" not in row_p
                   and row_p.count("UNIVERSE ") == 1)
         finally:
             pass
@@ -814,9 +836,11 @@ def main():
         # HONEST post-fix behaviour: the run DOES certify (nothing here can see it), the number
         # DOES move, and the pasted sentence must therefore describe what the pin actually
         # catches (an asymmetric change) and name the gap instead of claiming it closed.
-        print("[886] gate (pin-sync) — frame_symbols REVERSED *and* the committed sha256 pin "
-              "recomputed to match: undetectable, so the CERTIFIED sentence must not claim "
-              "tampering is ruled out ...")
+        print("[886] gate (pin-sync) — SUPERSEDED BY TASK_894: frame_symbols REVERSED *and* "
+              "the committed sha256 pin recomputed to match used to be undetectable; this "
+              "checkpoint's own save-time frame_symbols_sha256 lives in a THIRD file "
+              "(trainer_metadata.json) the tamperer never touched, so 'updating both' the "
+              "document and its sha256 pin is no longer enough — TASK_894 still REFUSES ...")
         _tamper_prov()
         with open(own_prov, "rb") as fh:
             tampered_sha = hashlib.sha256(fh.read()).hexdigest()
@@ -828,36 +852,31 @@ def main():
                                          "--panel-frame-source", "minute",
                                          "--tag", "gpinsync", "--out-dir", work])
             doc_s = _one_doc(work, "gpinsync")
+            up_s = (doc_s or {}).get("universe_pin", {})
             row_s = (doc_s or {}).get("ledger_row", "")
             doc_clean = _one_doc(work, "g3bpos")
             ok = (r.returncode == 0 and doc_s is not None
-                  # the pin was found, matched, and recorded — and it caught NOTHING ...
-                  and doc_s["universe_pin"].get("verified") is True
-                  and doc_s["universe_pin"].get("checkpoint_provenance_sha256_pin") is not None
-                  # ... while the number really did move, exactly as in (order-tamper-a)
+                  # the number really did move (the tamper is real) ...
                   and doc_s["tiers"]["21"]["sharpe_full"]
                   != doc_clean["tiers"]["21"]["sharpe_full"]
-                  # ... so the pasted sentence must state the check's ACTUAL reach, and must
-                  # never carry the retired "ruled out" overclaim.
-                  and "ruled out" not in row_s
-                  and "changed WITHOUT its pin changing" in row_s
-                  and "does NOT defend against a writer who updates BOTH" in row_s
-                  and "NOT PROVEN" in row_s and "SELF-ATTESTING" in row_s
+                  # ... but the pin's own synchronized-update blind spot no longer matters:
+                  # TASK_894's independent save-time digest still catches it.
+                  and up_s.get("verified") is False
+                  and up_s.get("frame_symbols_digest_verified") is False
+                  and "TASK_894" in (up_s.get("verified_reason") or "")
+                  and "UNIVERSE NOT CERTIFIED (TASK_886)" in row_s
                   and row_s.count("UNIVERSE ") == 1)
         finally:
             _restore_prov()
             os.remove(pin_file)
-        print(f"    [{'PASS' if ok else 'FAIL'}] gate (pin-sync) synchronized tamper certifies "
-              f"but the sentence describes what the pin ACTUALLY catches")
+        print(f"    [{'PASS' if ok else 'FAIL'}] gate (pin-sync) TASK_894 still REFUSES a "
+              f"synchronized document+pin tamper")
         if not ok:
             failures.append(
                 f"gate (pin-sync): a reversed frame_symbols order WITH the sha256 pin "
-                f"recomputed to match must still complete (nothing here can detect it) but the "
-                f"CERTIFIED sentence must say the pin only catches a document that changed "
-                f"WITHOUT its pin changing, must say it does NOT defend against a writer who "
-                f"updates BOTH, and must not claim tampering is 'ruled out'. "
-                f"returncode={r.returncode} universe_pin={(doc_s or {}).get('universe_pin')}\n"
-                f"ledger_row={row_s}\nstderr tail:\n{r.stderr[-1500:]}")
+                f"recomputed to match must still REFUSE for this TASK_894-stamped checkpoint, "
+                f"naming TASK_894, with the number having moved. returncode={r.returncode} "
+                f"universe_pin={up_s}\nledger_row={row_s}\nstderr tail:\n{r.stderr[-1500:]}")
 
         # ---- gate (pin-fifo): a NON-REGULAR *.sha256 must not be opened ---------------------
         # 886 fix pass, cycle-3 BLOCKER 1 — D38's cycle-2 hang-guard defect class, recreated in

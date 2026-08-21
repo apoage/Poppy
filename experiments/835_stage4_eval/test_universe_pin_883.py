@@ -368,7 +368,15 @@ def main():
               and doc.get("universe_pin", {}).get("pin_path") is not None
               and doc.get("universe_pin", {}).get("pin_sha256") is not None
               and doc.get("universe_pin", {}).get("n_frame_symbols") == N_ASSETS
-              and "UNIVERSE CERTIFIED (TASK_886)" in (doc or {}).get("ledger_row", "")
+              # UPDATED BY TASK_894: this checkpoint is trained under a PINNED frame via
+              # imprint.py, which (post-894) unconditionally records a frame_symbols_sha256 at
+              # save time — so graded against its own untampered provenance it earns the
+              # NARROWER "(TASK_886/894)" sentence (scope 4 deletes the "NOT PROVEN: slot
+              # order" half once the mechanism actually binds), not the bare "(TASK_886)" one.
+              # EXACT match (fix pass, MINOR): this run is stamped-under-pin, so the "/894"
+              # sentence must be the one actually emitted — a bare prefix match would still
+              # pass if TASK_894's positive-narrowing path silently never fired.
+              and "UNIVERSE CERTIFIED (TASK_886/894)" in (doc or {}).get("ledger_row", "")
               and "'checkpoint-provenance'" in doc.get("ledger_row", ""))
         print(f"    [{'PASS' if ok else 'FAIL'}] gate (iv)")
         if not ok:
@@ -473,7 +481,10 @@ def main():
               and up.get("n_frame_symbols") == N_ASSETS
               and up.get("verified_against_checkpoint_provenance") is True
               and up.get("order_exact") is True
-              and "UNIVERSE CERTIFIED (TASK_886)" in (doc or {}).get("ledger_row", "")
+              # UPDATED BY TASK_894 — see gate (iv)'s identical comment: this checkpoint is
+              # trained under a PINNED frame, so post-894 it is stamped and earns the narrower
+              # "(TASK_886/894)" sentence. EXACT match (fix pass, MINOR) — see gate (iv).
+              and "UNIVERSE CERTIFIED (TASK_886/894)" in (doc or {}).get("ledger_row", "")
               and "'explicit-symbols'" in doc.get("ledger_row", ""))
         print(f"    [{'PASS' if ok else 'FAIL'}] gate (vi-a) explicit symbols AGREEING with the "
               f"checkpoint's own provenance, graded against the SAME freshly-trained weights, "

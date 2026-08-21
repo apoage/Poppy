@@ -497,12 +497,17 @@ def test_b2_fingerprint_disagreement_refuses_and_writes_nothing(st):
         prov_path = os.path.join(parent, "frame_provenance_x.json")
         _write_provenance(prov_path, ckpt)
 
-        # First stamp: real, clean write. trainer_metadata.json is ALREADY correct (TASK_889
-        # scope 1/2 write it at save time), so only the hand-built provenance fixture (which
-        # never carries a fingerprint) needs one.
+        # First stamp: real, clean write. trainer_metadata.json's param_fingerprint/vector_action
+        # are ALREADY correct (TASK_889 scope 1/2 write them at save time), but the hand-built
+        # provenance fixture's frame_symbols (["A/USD", "B/USD"]) has no counterpart YET in
+        # trainer_metadata.json — `_tiny_checkpoint` saves with no pinned frame — so TASK_894
+        # scope 2 derives one from the provenance and writes it there too, alongside the
+        # provenance sidecar (which never carried a fingerprint).
         result = st.stamp_one(ckpt, n_assets=2, vector_action_assert=None, apply=True)
-        _check("setup: first stamp writes the provenance sidecar (metadata is already correct "
-               "from save time)", result["wrote"] == ["frame_provenance_x.json"], str(result))
+        _check("setup: first stamp writes the provenance sidecar AND derives+writes this "
+               "checkpoint's own frame_symbols_sha256 (TASK_894 scope 2)",
+               result["wrote"] == ["trainer_metadata.json", "frame_provenance_x.json"],
+               str(result))
         meta_path = os.path.join(ckpt, "trainer_metadata.json")
         prov_before = _sha256(prov_path)
 
