@@ -22,8 +22,9 @@ any row; they erode every suite's signal). 892's shipped-banner items resolved i
 TASK_896 (carve + ship + re-pin), TASK_899 (data backfill), TASK_900 (standing reds). GATED:
 TASK_880 (D34+D35).**
 **OPEN decisions: D43 only** (the 857 smoke-assert — no 857 number quotable until answered).
-_Next takeable: **TASK_894**. In parallel the planner can schedule the 892 REAL LEG once its
-calibration precondition clears — it needs no factory._
+_Next takeable: **TASK_894**. **The 892 REAL LEG is DONE (2026-08-21): ANTI-EDGE on 3/3 primaries
+on the binding OOS leg — verdict in the LEDGER (`892/action-ev`), the pivot ruling is D47. The
+queue's rows 2 and 3 (897, 898) are now the program's live edge-structure front.**_
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
