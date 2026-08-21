@@ -1,3 +1,38 @@
+> **STATUS (2026-08-22): SHIPPED as `task894-frame-symbols-digest` (8388c24).**
+> All four scope items landed; gates (i), (iii), (iv), (v) PASS. The run-34 forgery — reversed
+> `frame_symbols` with `param_fingerprint` intact — now **REFUSES** for a stamped checkpoint and still
+> certifies-with-`NOT PROVEN` for an unstamped one, rebuilt through the real CLI by three independent
+> agents. `NOT PROVEN: slot order` is deleted from the emitted row only when the digest genuinely
+> matched (`is True`), so the claim narrows only where the mechanism binds.
+>
+> **Gate (ii) shipped on an ACCEPTED PROXY, not its literal text — remainder for the planner.** The
+> spec asks for byte-identity vs HEAD on every scored field for all 7 real checkpoints pre-stamp.
+> What was run: a direct read proving none of the 7 carries the new key, ONE real HEAD-control-
+> worktree A/B on a pre-894 checkpoint (result artifacts diffed to **zero** differences), and an
+> exhaustive trace showing the vacuous `None` is inert in every consumer. Two judges independently
+> called this a substitution. **If the literal 7-checkpoint A/B is wanted it needs authorizing as a
+> scheduled run** — it was not run inside the factory loop.
+>
+> **Remainders (none blocking, none opened as rows):** (a) the retro-stamp tool writes the digest only
+> into the shared `trainer_metadata.json`, never per-leaf — exact today because per-leaf stays absent,
+> but a future multi-leaf retro-stamp path must write per-leaf too; (b) stripping the digest from BOTH
+> sidecars downgrades a `PROVEN` checkpoint to `NOT PROVEN`-but-`verified: true` with no signal — by
+> design, identical to the pre-894 baseline, named because it is the one place absence is deliberately
+> silent; (c) `\x1f` could in principle collide a symbol containing the separator against a
+> differently-sliced list — no upstream loader produces such a symbol; (d) 886 remainder (2), moving
+> the `.sha256` pins somewhere git-tracked, remains out of scope and unstarted.
+>
+> **Consequence disclosed, not hidden:** `imprint.py` now stamps on every pinned run, so the certified
+> sentence changes for every freshly-trained checkpoint. That forced 886's `(order-tamper-a)` and
+> `(pin-sync)` gates to flip from certifying to asserting REFUSAL — the hole they demonstrated is
+> closed for stamped checkpoints. A regression lens interrogated each edit and confirmed it was forced
+> by real behaviour rather than bent to fit the code.
+>
+> **Pre-existing, NOT caused by this row:** `tools/test_stamp_checkpoint_fingerprints_889.py` carries 2
+> standing failures, confirmed identical at HEAD `730c629` in a detached worktree (a local
+> `runs/832_e5/ckpt_imprint_full/trainer_metadata.json`, mtime 2026-08-14, already records
+> `vector_action` against that test's own precondition). Not a queue row; flagged for the planner.
+
 # TASK_894 — record the slot order INSIDE the checkpoint: the save-time `frame_symbols` digest
 
 **Status**: READY 2026-08-16 (planner; TASK_886's remainder (1), named in its shipped banner and
