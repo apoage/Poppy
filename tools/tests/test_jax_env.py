@@ -310,7 +310,9 @@ class TestLimitOrders:
         new_state, _, _, _ = step(state, action, simple_prices, simple_config)
         assert new_state.order_active[0]
         assert new_state.order_side[0] == 1  # Buy order
-        assert new_state.order_reserved[0] > 0  # Cash reserved
+        # Env moved to LAZY EXECUTION (TASK_124, 2026-01-30): no cash is
+        # reserved at placement time, funds are checked at fill time instead.
+        assert new_state.order_reserved[0] == 0.0  # No cash reserved (lazy)
 
     def test_limit_sell_places_order(self, simple_config, simple_prices):
         """Limit sell should place order."""
@@ -377,7 +379,9 @@ class TestLimitOrders:
         state, _, _, _ = step(state, action, simple_prices, config)
         reserved = float(state.order_reserved[0])
         assert state.order_active[0]
-        assert reserved > 0
+        # LAZY EXECUTION (TASK_124, 2026-01-30): placing an order never
+        # reserves cash, so reserved stays 0 for the life of the order.
+        assert reserved == 0.0
 
         # Step past TTL
         for _ in range(10):

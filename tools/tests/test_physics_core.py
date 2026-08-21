@@ -1,3 +1,4 @@
+import flax
 import jax
 import jax.numpy as jnp
 from mcts_trader.jax_agent.prediction.physics_core import DifferentiableMarketPhysics

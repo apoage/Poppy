@@ -3,6 +3,35 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-21 — TASK_900 — the three standing red tests in `tools/tests`, diagnosed and fixed
+
+- **What shipped.** All three pre-existing failures dispositioned by FIX (the spec's first-choice
+  outcome; no deletions, no quarantines). `tools/tests` now runs **423 passed, 1 skipped, 0 failed**
+  — up from 420 passed / 3 failed at HEAD. The one remaining skip carries a reason string, as
+  acceptance (i) requires.
+- **`test_physics_core.py::test_physics_signals`** — `NameError: name 'flax' is not defined`.
+  The module imported `flax` only inside its `if __name__ == "__main__":` guard, which pytest never
+  executes, so the test NameError'd on every collection. Fixed by a module-scope `import flax`.
+  A plain test-file bug; `physics_core.py` itself was never implicated.
+- **`test_jax_env.py::TestLimitOrders::test_limit_buy_places_order` and `::test_limit_order_expiration`**
+  — both asserted `order_reserved > 0` after placing a limit order. **The tests were stale, not the
+  tool.** `git show 1702a18` (TASK_124, 2026-01-30) deliberately moved the env from cash-reservation
+  to LAZY EXECUTION: it replaced the `total_reserve` write with `0.0`, deleted the corresponding cash
+  debit, and documented the new contract in-code ("Does NOT reserve cash. Funds checked at fill
+  time"). The sibling `test_limit_sell_places_order` has asserted `== 0.0` since then and passed
+  throughout. Assertions updated to `== 0.0` with the commit cited inline.
+- **Why this is not an assertion weakened to buy a green** — the disposition was attacked on that
+  exact hypothesis by an independent correctness lens and survived: the commit was verified
+  first-hand rather than taken on trust, and `fill_limit_orders` was confirmed to pair "no
+  reservation at placement" with a real cumulative afford-check at fill time
+  (`can_afford_cumulative`, `can_afford_short`), which cancels unfundable orders instead of
+  overdrawing. No STOP condition fired: none of the three was a tool regression.
+- **Remainder (NIT, out of scope, no row opened).** `compute_portfolio_value` still adds
+  `order_reserved` back for active buy orders — now provably always `0.0`, so vestigial arithmetic
+  rather than a consumer that is silently wrong. Also noted and untouched: an unregistered
+  `@pytest.mark.slow` at `tools/tests/test_jax_env.py:583` emits a `PytestUnknownMarkWarning` on
+  every run; a `markers=` entry in pytest config would silence it.
+
 ## 2026-08-20 — TASK_892 — the action-EV instrument, calibrated: it can now band, and it refuses to when it cannot
 
 - **What shipped.** The D51 re-cut of `experiments/892_action_ev/` under SPEC Amendment 1: the
