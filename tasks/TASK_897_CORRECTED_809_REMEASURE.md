@@ -1,3 +1,36 @@
+> **STATUS (2026-08-22): INSTRUMENT SHIPPED as `task897-corrected-809-estimator` (c8a406c). THE
+> VERDICT IS NOT IN — the real leg is planner-scheduled on gpu-server per D54.**
+> Gates (i), (ii), (iv) PASS. Gate (iii) is **PARTIAL and disclosed** (see below). Two BLOCKERs were
+> found by review and closed: the leading pre-trade interval was being counted as a *decision* (one
+> real bet gave `n_decisions=2`, `sharpe=+22.93`, `CI=[22.93,22.93]` — a trivially-true "CI lo > 0"
+> that defeated `sharpe()`'s own `size<2` guard), and `recompute_best.py` printed **"PASS"** for a
+> cell with `pnl=-1.0` because its gate omitted the band's `PnL > 0` criterion.
+>
+> **TWO THINGS THE PLANNER MUST RULE BEFORE THE SRV RUN IS WORTH LAUNCHING — both seeded as
+> decision rows:**
+> **(1) The CI is measured-UNCALIBRATED, so the pre-registered band cannot be read as written.**
+> Coverage through the real code path is **0.530 at n_dec=100** under overlapping dependence
+> (nominal 0.95), 0.865–0.868 at n=500–1000, and block length is capped at 20 so longer dependence is
+> uncapturable **at any n**. The `CELL CLEARS` band requires `CI lo > 0`; that criterion is not
+> readable off this instrument as delivered. Fields are named `ci_lo_UNCALIBRATED` /
+> `ci_hi_UNCALIBRATED` so nothing can consume them silently.
+> **(2) Gate (iii) contradicts this row's own Out-of-scope.** Gate (iii) requires the 877 alias fold
+> applied; Out-of-scope forbids modifying the 809 lineage beyond the estimator fix. The fold is NOT
+> applied — `probe.py`/`backtest.py`/`decide.py` contain zero alias references and predate TASK_877,
+> and `load_universe_trainlocked` matches symbols by exact string. The artifact previously claimed
+> the opposite; that claim is retracted and the gap is stated instead, with a test that re-reads the
+> lineage source so the wording cannot drift back into being false.
+>
+> **Launch notes for the srv leg.** Stage `runs/809_decision_rule_rescue/` + `experiments/897_corrected_809/`
+> + the minute-table extract; run `sweep_gated_maker.py --attainable-maker-fee-bp <operator's tiers>`.
+> **Do NOT pass `--skip-inherited-ic-check`** — it exists only for non-canonical-scale verification.
+> `recompute_best.py`'s repair lives under gitignored `runs/`, so staging it is a manual step that the
+> clean-tree gate cannot see.
+>
+> **Remainders:** the maker-fill model (OHLC-touch + flat adverse selection) is still never validated
+> against a real order — unchanged from 809, explicitly out of scope, and still the load-bearing
+> assumption. `recompute_best.py` prints its banner at module import time.
+
 # TASK_897 — the corrected 809 re-measurement: was the only gate-passing strategy ever falsified?
 
 **Status**: READY 2026-08-19 (planner; seeded by the pathfinder audit
