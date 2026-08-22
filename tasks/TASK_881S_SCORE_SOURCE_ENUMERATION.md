@@ -1,3 +1,48 @@
+> **STATUS (2026-08-22): SHIPPED as `task881s-score-source-enumeration` (05254a2).**
+> Gates (i)–(iv) PASS. D50 is closed: `--verify-manifests … --score-regex … --log-glob <FIFO>` went
+> from `verify-manifests: OK` **exit 0** to **exit 2, one refusal, no hang**, while the real path
+> still hangs at EXIT=124 — so the guard covers the genuine danger, not a rehearsal of it.
+> `tools/tests`: **460 passed, 1 skipped, 0 failed** (orchestrator-run first-hand).
+>
+> **Took 3 cycles, and the reason is worth keeping.** The row's own dedup requirement (scope item 3)
+> was **pattern-matched twice before it was implemented**. Cycle 1 mirrored only the first of canon's
+> two glob terms, so D50 reproduced one layer down through the bare CWD-relative term. Cycle 2
+> guarded on `os.path.isabs` — a spelling test standing in for the real invariant — and a reviewer
+> broke it with a relative `../shared.log`, which is directory-independent by traversal without being
+> absolute (5 refusals for one physical file). Cycle 3 implemented the invariant itself:
+> **resolved-path collision**. The lesson generalises past this row — a guard written as a syntactic
+> test for one spelling of a property is not a guard on that property.
+> **Also: the cycle-1 repro test asserted substring presence and exit code but never a COUNT**, which
+> is exactly why a per-directory inflation shipped under a passing test. Count assertions were added.
+>
+> **Gate (iv):** pure insertion — 249 added, **0** removed or rewritten vs the 881I-shipped tree
+> (`bf1f8d5`), independently verified by two judges. The delete path stays unreachable and the
+> `--apply` freeze is untouched.
+>
+> **MAJOR-A — pre-existing, deliberately NOT closed here, and now reproducible on demand.** With N
+> score dirs that each carry a valid `scores.jsonl` plus one shared absolute `--log-glob`, the tool
+> prints N refusal lines for one physical file. It reproduces identically at `bf1f8d5`, so it is not
+> a regression from this row, and closing it requires editing pre-existing `_load_scores_strict`
+> lines that gate (iv) forbids. Two tests ship with it: one pinning today's counts, one running the
+> same tree against `git show bf1f8d5:tools/ckpt_gc.py` so "pre-existing" is **measured, not
+> asserted**. Both go red if it is ever fixed. **Candidate for 881D or a row permitted to touch the
+> reader.**
+>
+> **Remainders — 3 MINORs, all count-inflation, all fail-closed (exit codes correct, nothing
+> suppressed). The 3-cycle halt rule was reached, so these are named rather than fixed:**
+> (1) a dangling `--log-glob` symlink is now reported **twice** where HEAD reported once — the same
+> duplicate-refusal class this row closes for `MANIFEST_BASENAMES`, moving the other way on the score
+> side; (2) `realpath` folds two DISTINCT dangling symlinks sharing a missing target into one
+> candidate and does NOT fold hardlinks to a single inode, so the "one physical file, one candidate"
+> docstring over-claims one way and under-claims the other — keying on `(st_dev, st_ino)` closes it;
+> (3) `--log-glob ''` matches every walked directory and emits one refusal each (several hundred
+> lines on this repo) — `--experiments-dir` refuses a blank at parse time, `--log-glob` has no
+> equivalent.
+>
+> **Note for 881G/881D:** `--verify-manifests` now opens and line-reads every `*.log` under `--roots`
+> (448 files on this repo, previously 0). Widened IO surface, and the pre-existing uncoercible-record
+> echo is unclipped.
+
 # TASK_881S — score-source enumeration in `ckpt_gc --verify-manifests`
 
 **Status**: READY 2026-08-19 (planner; seeded by D50 — the layer run 36's three 881I cycles never
