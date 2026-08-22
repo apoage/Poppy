@@ -3,6 +3,94 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_903 — the constant-provenance question, pointed at 892 and 875 — and 875's numbers verified
+
+- **What shipped.** `experiments/892_action_ev/test_903_constant_provenance.py` (gate-(i) enumeration
+  as executable code, 8 constants / 9 gates) + `PROVENANCE_AUDIT_903.md` + a worktree-isolation demo.
+  **No verdict changed**, and both load-bearing verdicts now rest on numbers that were actually
+  re-derived rather than assumed.
+- **875's walk-forward numbers REPRODUCE EXACTLY.** The audit initially classified them
+  PROVENANCE-UNRECOVERABLE-FROM-WORKSTATION — which was true of the workstation and stated as though it
+  were true of the numbers. The artifacts were simply on the other host: `gpu-server:runs/875_wf/`,
+  1.4 GB. Re-derived read-only via `grade_correct.py` (**no re-run of the 8h57m battery**): all five
+  folds' medians and floors, all 15 seeds, f5's terminal PVs (59,860/83,721/67,056), zero bankruptcies,
+  full step counts, and the `folds graded: 5/5 | above own floor: 1` tally all match the LEDGER row.
+  **"No OOS edge" rests on numbers that reproduce.** Superseded classification kept visible per D39.
+- **The canonical-looking artifact is empty, and that is the provenance hazard.**
+  `runs/875_wf/WF_SUMMARY.json` ships as `[]` — a documented silent fake-null
+  (`NOTE_summary_key_mismatch.md`: `orch_wf875.sh` read `sharpe`/`teacher.floor_inenv`; the schema keys
+  are `sharpe_full`/`tiers["21"]["teacher_floor_inenv"]`). Anyone auditing the file named like the
+  summary gets nothing. The real chain is the raw per-seed JSONs + `grade_correct.py`.
+- **892-C4 — a "REQUIRED" precondition the real leg never satisfied.**
+  `runs/892_action_ev/calibration_real_leg.json` (2000-trial) exists but was never wired in;
+  `report.py:1082` embeds the old 200/400-trial table in every shipped report. **Non-material, and
+  checked rather than asserted:** recomputed across every calibrated field for all three seeds — no
+  sign change, no zero-crossing, no band change. **ANTI-EDGE holds; D47 untouched.**
+- **A skipped gate can no longer certify a finding it did not make.** The instrument used to exit 0
+  with a hardcoded summary asserting every classification — including gates that had SKIPPED. Now:
+  `0` = every gate ran and passed, `1` = a check failed, `2` = nothing failed but a gate skipped
+  fail-closed. **A skip never exits 0**, and the summary is built only from gates that ran. Verified
+  both ways on srv: 9/9 → exit 0; without the srv-only artifacts → exit 2, naming what it establishes
+  nothing about.
+- **A destructive mechanism removed.** The gate used to run `walkforward.py smoke` against the LIVE
+  tree and then `git checkout --` whatever `git diff` reported afterwards — demonstrated to silently
+  destroy unrelated uncommitted work at exit 0, even when the smoke run itself failed. Replaced with a
+  throwaway `git worktree` + a fail-closed pre-check; strace-verified the symlinked fixture is never
+  written (54 syscalls, all `O_RDONLY|O_NOFOLLOW`, inode unchanged).
+- **Remainders → planner.** `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with
+  fixture-derived content, unguarded (`walkforward.py:1080-1147`). Content-idempotent **today** (only
+  `generated` stamps move), so it is a latent landmine, not present damage — it arms the moment the
+  `SPEC.md:60-72` real-db re-materialization is committed. Also: none of `runs/875_wf/`,
+  `grade_correct.py` or `orch_wf875.sh` has ever been committed — a load-bearing verdict's evidence
+  lives on one host, gitignored (D48's class).
+
+## 2026-08-22 — TASK_897 — D59 resume: the read-write DB handle closed, and a gate bypass with it
+
+- **What shipped.** D59(a): `probe.report_bar_frequency` — the harness's FIRST data touch on every run
+  — no longer opens `--db-path` READ-WRITE-CREATE. `_ReadOnlySqlite3ForProbe` stands in for
+  `probe.sqlite3` around that one call (rebinding the NAME, not the attribute: `probe.sqlite3` and
+  `alias_read_layer.sqlite3` are the same cached module object, so mutating `.connect` in place
+  recurses infinitely — measured), restored in `finally`, mirroring the existing `decide.CFG` pattern.
+  `runs/806_predictability_probe/probe.py` stays **byte-untouched** (md5 `ab8e94b0…`, mtime
+  2026-06-26) per the 809-lineage doctrine — checked explicitly, since `runs/` is gitignored and
+  `git status` is blind to it.
+- **A protected-DB gate bypass, found and closed.** A leading `//localhost` is accepted by sqlite's URI
+  parser as an ignored authority and stripped — so any belt reasoning about the raw string reasons
+  about a different file than sqlite opens. Measured against a decoy: `assert_db_path_allowed('<decoy>')`
+  REFUSED but `assert_db_path_allowed('//localhost<decoy>')` **PASSED**, and `_connect_ro` then opened
+  the protected decoy. `normalize_db_path` now runs once and feeds both the quote and the open, and the
+  gate refuses a leading `//` outright. **Mutation-proven on gpu-server in both directions:** remove
+  BOTH belts and the breach reproduces (`PASSED GATE`); restore and it refuses. Either belt alone still
+  refuses.
+- **A test whose stated red-case was false, retracted.**
+  `test_the_normalized_path_is_the_file_sqlite_opens` claimed dropping `normalize_db_path` from
+  `_connect_ro` would turn it red. Mutation-tested: it stayed **GREEN**, because sqlite performs the
+  identical authority-stripping itself. It pins that the normalization is a correct mirror of
+  `sqlite3ParseUri`; it does NOT pin that `_connect_ro` calls it. The docstring now says so.
+- **The FIFO machinery was built and then REMOVED, on operator call.** A `mode=ro` URI open on a FIFO
+  hangs where the pre-fix bare connect failed fast, and cycles 2–3 added an `S_ISREG` guard,
+  a file-kind helper and subprocess-timeout tests to chase it — FIFO → symlink-to-FIFO →
+  `//localhost`-prefixed FIFO. That is **TASK_891's recorded failure mode** (chasing total coverage of
+  an unbounded input space) reappearing, and complexity inside a fail-closed guard is itself risk.
+  `--db-path` is an operator-supplied path to a real database on a scheduled run. The hang is now a
+  **documented limitation, not a defence** — stated at `_connect_ro`, at the harness docstring, and in
+  the tests.
+- **The read-only claim, caveated where it was over-broad.** `mode=ro` guarantees no write to the DB
+  file, but on a **WAL** source a read still creates `-shm`/`-wal` sidecars. Not live —
+  `trading_data.db` is `journal_mode=delete` (verified by reading its 100-byte header rather than
+  opening it with sqlite, which would itself create what it was checking for).
+- **Byte-identity, stated honestly.** The 144-cell fixture A/B differs only on the wall-clock
+  `Runtime:` line — but every cell records ZERO decisions (≤6 assets present per bar vs the grid's
+  `k≥16` floor), so that proves STRUCTURAL identity only. The numeric proof is `bar_sec` equality, plus
+  a regression judge's off-grid non-NaN A/B measuring **0 field mismatches**. Note the smoke grid is
+  144 cells; the full pre-registered grid is **864**.
+- **Remainders → TASK_902** (all pre-existing, none introduced here): `run_sweep`/`_run_sweep_inner`
+  never call `assert_db_path_allowed` (only `main()` does); the guard returns the *unresolved* string
+  (TOCTOU); refusal messages echo unbounded raw input; a FIFO `<db>-journal` sidecar wedges the harness
+  (hangs identically pre-fix); and the artifact never states it ran the reduced 144-cell smoke grid.
+  **The srv leg is NOT launched** — planner-scheduled, and the operator's attainable Kraken maker-fee
+  tiers must be recorded BEFORE the verdict is read (gate iv).
+
 ## 2026-08-22 — TASK_896 — D48 execution: the 819 prototype's fill named honestly, and its source committed
 
 - **What shipped.** The D48(a) carve (the 819 single-asset prototype's `.py` sources enter git for the
