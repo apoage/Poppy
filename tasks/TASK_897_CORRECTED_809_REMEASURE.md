@@ -101,3 +101,26 @@ estimator, not of evidence. This row computes the honest number.
 Live orders, paper trading, venue changes, any modification of the 809 lineage code beyond what
 the estimator fix requires. Validating the maker-fill model against real orders (that is the
 CELL CLEARS follow-up, not this row).
+
+## Launch notes (planner, 2026-08-22)
+
+**D55 (ruled (a)) — calibration gate before the srv leg.** The factory measured the
+pre-registered CI at coverage 0.530 (nominal 0.95) with the block cap at 20 — the D49 structural
+defect. Before any cell is read: run the 892 calibration METHOD (not its table — different
+statistic, different block regime) against this path with the block cap raised; record the
+certified method, measured coverage, and chosen block length in the artifact. The CELL CLEARS
+band stands unchanged; the interval must earn the right to feed it.
+
+**D56 (ruled (a)) — blast radius MEASURED, and it is nonzero.** Query against
+`trading_data.db` (read-only, 2026-08-22): of the 291-symbol 809 candidate universe, 19 slots
+have twin spelling-variant ids; **6 are MATERIAL — the 868 identity-split class** (`/USDC/USD`,
+`/USDC/USDT`, `/USDCGBP`, `/USDTAUD`, `/USDTCHF`, `/USDTEUR`): the exact-spelling id misses
+70k–203k minute rows per window vs the union (33–51% of the window's rows — holed series under
+the 809 loader's exact-spelling read). The other 13 twins carry zero missing rows. No XBT/BTC or
+XDG/DOGE twin shows a coverage gap. **Method, per the ruling:** 897's runner applies the canon
+alias union (`mcts_trader/data/asset_aliases.py`, the 868/877 normalization + agreement gate +
+evidence floor) as a READ-TIME layer for BOTH the universe ranking and the panel build — the 809
+lineage is not edited (out-of-scope stands); the 6 affected slots are disclosed per-cell, and
+any slot whose universe-rank changes under the union read is named in the artifact (the
+universe itself is computed from bar counts, so the union read can change the top-64, not just
+patch holes in it).

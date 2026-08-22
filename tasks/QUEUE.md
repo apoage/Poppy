@@ -3,28 +3,35 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-20 (planner, post factory run 37).** Run 37 RATIFIED: **TASK_881I SHIPPED**
-(`task881i-manifest-ingestion`, bf1f8d5 — refuse AND accept paths closed; pure insertion 1430/0)
-and **TASK_892's INSTRUMENT SHIPPED** (`task892-action-ev-instrument`, ea0b354 — calibrated: the
-block bootstrap clears 93% at no stratum, the calibrated-width remedy clears every stratum down
-to 2 blocks; the verdict is the planner's D47, real leg planner-scheduled on srv with a
-high-precision calibration re-run as its precondition). **Three rulings taken 2026-08-20:** D52
-(the absolute 1bp CI floor ratified; D51's rule amended — the relative form is degenerate under
-homogeneity), D53 (the manifest grammar gets written down and the canonical MD032 form accepted —
-new row **TASK_881G**, which BLOCKS 881D; the nonexistent-explicit-path asymmetry ruled
-refuse-both), D54 (897/898 run on gpu-server; workstation-only inputs are STAGED, byte-verified).
-Also seeded: **TASK_900** (three standing red tests in `tools/tests` — pre-existing, unrelated to
-any row; they erode every suite's signal). 892's shipped-banner items resolved in its task file
-(floor ratified; calibration re-run = real-leg precondition; REPORT_SCHEMA no-bump).
-**Ready (physically ordered): 1 TASK_894 (frame_symbols digest) → 2 TASK_897 (corrected 809) →
-3 TASK_898 (trend decay + spot-legal) → 4 TASK_881S (score-source enumeration) → 5 TASK_881G
-(manifest grammar) → 6 TASK_881D (protection + deleter + corpus; blocked until 881G). FILLER:
-TASK_896 (carve + ship + re-pin), TASK_899 (data backfill), TASK_900 (standing reds). GATED:
-TASK_880 (D34+D35).**
-**OPEN decisions: D43 only** (the 857 smoke-assert — no 857 number quotable until answered).
-_Next takeable: **TASK_894**. **The 892 REAL LEG is DONE (2026-08-21): ANTI-EDGE on 3/3 primaries
-on the binding OOS leg — verdict in the LEDGER (`892/action-ev`), the pivot ruling is D47. The
-queue's rows 2 and 3 (897, 898) are now the program's live edge-structure front.**_
+**2026-08-22 (planner, post factory run 38 — the seven-ship run).** Run 38 RATIFIED: **TASK_900,
+TASK_894, TASK_897 (instrument), TASK_881S, TASK_898 (instrument), TASK_881G, TASK_896 ALL
+SHIPPED.** Notables carried: 898's instrument caught a verdict-changing confound pre-launch (the
+spot-legal variant silently de-leverages to 43%/27.6% gross exposure — a leverage-matched series
+now ships with it; FULL reads +0.321 unmatched vs −1.308 matched, so the variant must be read on
+the matched series); 881G's gate (i) failed the DOC (46 cases authored from the doc alone — a
+reusable test shape for load-bearing docs); 896's re-pin was verified by an independent
+1,218-key diff (old `6bede1e9…` beside new `330484f5…` in the LEDGER). **Two rulings taken
+2026-08-22:** D55(a) — 897's interval gets 892's calibration method (raised block cap) before
+any cell is read, the band stands; D56(a) — blast radius MEASURED by the planner: **6 MATERIAL
+slots** (the 868 identity-split class; exact-spelling reads miss 33–51% of window rows), so
+897's runner applies the canon alias union at READ time for universe ranking AND panel build,
+809 lineage untouched. **The 892 real leg is graded: ANTI-EDGE (D47)** — the queue's
+measurement rows (897, 898) are the program's live edge-structure front.
+**Ready (physically ordered): 1 TASK_881D (protection + deleter + corpus; UNBLOCKED by 881G) →
+2 TASK_897 calibration adaptation (small instrument step per D55, then its srv leg is
+planner-scheduled). FILLER: TASK_899 (data backfill — planner/server ops). GATED: TASK_880
+(D34+D35; the D35 gate opens after 881D ships + real score files the new reader resolves).**
+**Planner-scheduled, no factory needed: TASK_898's real leg** (instrument shipped; stage the
+daily-table inputs to srv per D54 and launch) **and TASK_897's srv leg** (after the calibration
+step). **OPEN decisions: D43 only.**
+_Next takeable: **TASK_881D** — the last big infrastructure row; its corpus authors against
+881G's written grammar, and the D32/D34 `--apply` freeze conversation finally happens with a
+live corpus._
+
+| # | Task | Size | Note |
+|---|------|------|------|
+| 1 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | **UNBLOCKED (881G shipped run 38).** Scope item 0: author the real `PROTECTED.txt` corpus against 881G's written grammar (the doc is the spec, tested). The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
+| 2 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (calibration step) | XS/S | Instrument shipped run 38; the D55 step remains: run 892's calibration METHOD against 897's statistic with the block cap raised, certify coverage, record in the launch note. Then the srv leg is planner-scheduled. D56 measured: canon alias union applied at read time (6 MATERIAL slots disclosed per-cell). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
@@ -38,15 +45,6 @@ factory startup reads this file; the lessons they carried are quoted as gates in
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_894_FRAME_SYMBOLS_DIGEST.md` | S | 886's structural close: save-time `frame_symbols_sha256`, retro-stamp the 7 survivors, fifth conjunct in `_certification_verdict`. `eval_vector.py` is free (892's instrument shipped run 37) — takeable now. |
-| 2 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` | S | Pathfinder G1. The only gate-passing strategy in repo history (809's +5.08) was retracted for a broken estimator but never falsified. Honest per-decision estimator, original OOS window + untouched 2025-04→2026-03 span, every grid cell recorded. Runs on srv per D54 — workstation-only inputs staged byte-verified at launch. |
-| 3 | `tasks/TASK_898_TREND_DECAY_SPOT_LEGAL.md` | S | Pathfinder G3. Aggregate the fallback rule's measured decay (875 floors +3.90→+0.26; 820: −1.31 on truly-unseen data) + pre-register the long-flat/no-short spot-legal variant. Verdict rewrites `pathway.md:106`. Runs on srv per D54. |
-| 4 | `tasks/TASK_881S_SCORE_SOURCE_ENUMERATION.md` | XS/S | D50's second half; 881I shipped run 37, so takeable. Every score source `--verify-manifests` claims to consult must be enumerated by the same code path that consults it; fallback tests must not construct the primary source; duplicate-refusal dedup. Serial with 881G (same file). |
-| 5 | `tasks/TASK_881G_MANIFEST_GRAMMAR.md` | S | **NEW 2026-08-20 — D53.** Write the accepted manifest grammar DOWN, accept the canonical MD032 form, one parser one grammar, accept-path remainders + the refuse-both asymmetry ruling. **BLOCKS 881D.** Widening the accept path is the dangerous direction — every acceptance mutation-tested. |
-| 6 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | **BLOCKED until 881G ships** (the corpus must be authored against a written grammar). Scope item 0: author the real `PROTECTED.txt` corpus (none exists — 0/56 files). The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. |
-| 7 | `tasks/TASK_896_819_FILL_COMMENT.md` | XS | FILLER (parallel-safe). Comment verified (run 36); remaining = the `.gitignore` carve + ship + the planner-ruled verbatim correction and deliberate 893 re-pin (old AND new sha256 in the LEDGER row). |
-| 8 | `tasks/TASK_899_DATA_BACKFILL.md` | XS/S | FILLER (planner/server ops, not factory). Minute canon + daily table to present via the 858 machinery; seam-contiguity checks; the pulling habit documented. |
-| 9 | `tasks/TASK_900_STANDING_RED_TESTS.md` | XS | **NEW 2026-08-20.** FILLER. Three pre-existing red tests in `tools/tests` — fix, delete-with-reason, or quarantine-with-owner; no fourth outcome. A red that turns out real stops the row and seeds a decision. |
 
 
 _Sequencing (2026-08-08, supersedes the 2026-08-06 note below): **874 first** — XS, and it is the artifact 883 makes mandatory. **883 second** — it closes the fail-open that manufactured the 882 crisis, and every measurement the ladder is about to take runs through that harness. **877 third** — it shrinks the sparse-slot set, which is exactly the surface 878 then re-specifies (878's own out-of-scope says do 877 first). **878 fourth and alone** — it rewrites eval-core execution semantics with every parity gate in the repo riding on it. **881 last** — deliberately. It is real work and it is not urgent: unreadable ⇒ UNSCORED is fail-safe, the `--apply` freeze STANDS, srv holds 162 GB free. Four of the last five planner errors were boundary calls inside this one lane; ranking it last is the structural correction, not a demotion of the work._
