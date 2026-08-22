@@ -78,3 +78,67 @@ work. **TASK_880** stays GATED (D34+D35).
   per-directory inflation under a passing test.** That is exactly how 881S's MAJOR got in.
 - Escalation to `opus` was used on 897, 898, 881S (×2) and 881G. Every one of those rows had a
   BLOCKER or MAJOR that the sonnet cycle produced and the opus cycle closed.
+
+---
+
+# Run 38b — the D55/D56 adaptation (2026-08-22, later same day)
+
+Planner ruled D55(a) and D56(a); the factory took the follow-up row. **HALTED on the 3-cycle
+rule.** Work is green and stashed at `stash@{0}`; **D57** seeded. Tree clean, nothing pushed.
+
+## What is DONE and worth keeping (in the stash, 116 tests + selftest 12/12)
+
+**D56(a) — the alias read-layer is VERIFIED CLEAN and independently reusable.**
+`alias_read_layer.py` applies the canon 868/877 union (`resolve_requested_symbols` +
+`alias_agreement_gate` + evidence floor — not hand-rolled) as a READ-TIME layer for **both** the
+universe ranking and the panel build, with the 809 lineage byte-untouched. A flow-verifier ran
+`rank_universe_with_alias_union` over the **full 291-candidate pool** and measured **zero rank
+changes** — the 6 material twins carry zero rows in the train window, so the identity split lands
+in OOS only and cannot move the top-64. Per-slot row counts reproduced against the real DB exactly
+(window a: 0% missing; window b: `/USDTEUR` 56.1%, `/USDTAUD` 56.0%, `/USDC/USDT` 55.2%,
+`/USDTCHF` 53.4%, `/USDCGBP` 51.3%, `/USDC/USD` 37.7%). A genuinely disagreeing overlap raises
+`AliasDisagreementError` rather than averaging.
+
+**D55(a) — the calibration re-keying is a strict tightening**, three cycles deep: k keyed to the
+real `(block, n_dec)` pairing with 67 strata generated from `block_for`'s own step function (one at
+every block transition); coverage re-measured **at the borrowed pairings**, not only at the strata;
+a certified ceiling that refuses rather than extrapolates; `apply_ci_calibration` hardened with a
+superset invariant plus a zero-width refusal and 15 dedicated tests; and
+`CI_UNCALIBRATED_DISCLOSURE` made an f-string over `MAX_BLOCK_DEFAULT`, pinned by a test asserting
+the **live** cap so it cannot go stale again. Three false shipped strings retracted with their
+arithmetic recomputed.
+
+## What halted it (D57)
+
+Cycle 3 added a dependence guard — τ = integrated autocorrelation time, refuse when τ > block,
+fail closed on unmeasurable — and the artifact claims "the condition is now MEASURED per cell
+rather than assumed". **It is measured only inside the ACF family it was calibrated on.** A block
+bootstrap needs `block ≳ correlation RANGE`; **τ mixes range with amplitude**, so the comparison
+quantity is wrong out-of-family:
+
+- `0.2·AR1(φ=.99)` — a persistent component worth **4% of variance**, population τ = 8.6, genuinely
+  below block 60 — reads **τ=1**, certifies **100%**, covers **0.805**. At φ=.999: **0.376**, below
+  the 0.530 that raised D55.
+- On **real** minute data, every per-decision series at H ∈ {1,5,20}, long-only and long/short,
+  reads **τ = 1–2 against block 60**. A non-degenerate sweep refused **0/864**; an adversarial
+  out-of-family fixture still certified **90%**.
+- Containment check on the real long/short H=1 series: 97 disjoint 1000-decision chunks contained
+  the grand Sharpe in **0.639**, while the guard certified **100%**.
+
+So the guard is not conservative — it is **inert exactly where it will be used**, and would switch
+D55(a)'s protection off for the whole srv leg under a paragraph the artifact renders as legitimacy.
+That is a question about what the interval may *claim* — the same kind of question D55 itself was —
+so it went to the planner rather than a fourth cycle.
+
+**D57 recommends (a):** narrow the claim, ship the rest, keep the `CI lo > 0` qualifier until a
+range-based probe exists. (b) build that probe as its own row, validated **out**-of-family. (c)
+refuse certification wholesale and publish every cell qualified, leaving `Sharpe >= 1.0` and
+`PnL > 0` readable.
+
+## Process note worth keeping
+
+Three separate defects this run were of one shape: **a claim in a shipped string that the code does
+not back** — "the matched-dependence worst case" (it is the easiest point), "500 was not a stratum
+at all" (it is one), and now "the condition is MEASURED" (only in-family). Each shipped verbatim
+into the artifact at the exact spot a reader checks legitimacy. The 881G gate-(i) shape — have an
+isolated agent author from the doc alone, then run it — is the cheap general test for this class.
