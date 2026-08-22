@@ -3,6 +3,67 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_881G — the manifest grammar: written down, then made true
+
+- **What shipped.** The accepted manifest grammar now exists in writing — one doc block, identical in
+  `tools/ckpt_gc.py`'s module docstring and in `TASK_881D_PROTECTION_DELETER.md`'s corpus
+  precondition — plus the code to match it: the canonical **MD032 form** (`protected:` / blank line /
+  list) is accepted, the two ingestion paths share one item grammar, the D53 nonexistent-path
+  asymmetry is closed, and 881I's accept-path remainders are each either accepted-deliberately or
+  refused-loudly, with the doc saying which. **This unblocks TASK_881D.**
+- **Gate (i) executed, and FAILED the doc — which is the gate working.** An isolated agent authored
+  46 cases from the doc alone, never reading the parser; a second ran them through the real CLI.
+  **40 AGREE, 3 SURPRISE, 3 UNDERSPECIFIED — every one a doc defect, the tool self-consistent
+  throughout.** What a reader hit at the first realistic shapes: a **dangling entry actually exits
+  2** (the doc's "not malformed / does not poison the file" language is about intra-file poisoning
+  and never said so); **"a fenced header can only ever ADD protection" is false** when the closing
+  fence immediately follows the last item — it withdraws the *whole file* as INTERRUPTED, and one
+  blank line before the fence makes it accept, which is exactly the shape a documentation author
+  types; EMPTY-vs-INTERRUPTED was undecided; the **item micro-grammar** (leading indent, no space
+  after the dash, trailing whitespace — all accepted, in deliberate asymmetry with the strictly
+  column-0 header) was unwritten; whitespace-only-counts-as-blank was unwritten; and **entry paths
+  resolve via `realpath` against the process CWD, not the manifest's own directory** — unwritten, and
+  it made a verifier's entire first pass falsely refuse. All six amended, each re-verified against
+  actual tool behaviour rather than against the amendment's word.
+- **A BLOCKER in the scan-dir collapse: it SUPPRESSED a shipped refusal.** The nested/duplicate
+  `--experiments-dir` collapse ran on `realpath` *before* `load_manifests`, erasing the very input
+  `_walk_scan_dirs` needs to raise the symlinked-scan-root refusal — `--experiments-dir experiments
+  experiments_link` went **exit 2 → exit 0**. 881I had pinned that refusal as a control it must not
+  weaken; it survived only because no test ever passed *two* scan dirs. Fixed by letting only paths
+  where `abspath == realpath` participate — the identical predicate `_walk_scan_dirs` uses, so the
+  two cannot disagree — and the two-scan-dir case is now covered in three argument orders.
+- **A MAJOR: the collapse's stated invariant was false, and a protection vanished at exit 0.** The
+  doc claimed "nothing under a collapsed directory goes un-scanned — its kept ancestor's walk already
+  reaches it". The walk prunes `.git` and `__pycache__` from descent, so it does not: a manifest
+  under `experiments/__pycache__/` went **1 protect → 0 protect, silently, exit 0**. That is the
+  wrongly-*withdrawn* direction — in 881D's world it makes a manifest-protected checkpoint deletable.
+  A dropped dir must now be provably *reached*, not merely contained, and a test fails if the mirror
+  of the prune list ever drifts from the real walk (verified by mutating each side independently).
+- **A MAJOR: the new MD032 acceptance emitted a misaligned span.** The gap-skip never added the
+  blank bytes to the span end, so `strip_spans` cut **inside** the last item line — round-tripping
+  one shape left a live `- runs/b` behind, another left the fragment `/b`. That falsified
+  `strip_spans`' own contract and broke 881I's parse-then-strip round-trip **on the exact shape gate
+  (v) says 881D's corpus will use** — the same "the parse and the span disagree about what was
+  consumed" class D53 was re-cut over. It shipped because the new suite discarded spans entirely.
+  Fixed, with strip round-trips over five gap widths.
+- **How the final gate was passed.** A **720-case** old-vs-new parse differential (diffs only in the
+  two intended classes: 92 MD032 refuse→accept, 15 thematic-break accept→refuse); a **60,000-body**
+  parse/span fuzz (zero boundary violations, zero phantom entries, grant-monotonicity holds); a
+  **242-combination** collapse-vs-no-collapse CLI differential (zero verdict differences); and a
+  drift-detection mutation proving the prune-list mirror test is not a constant compared to itself.
+  Real corpus unchanged: 57 manifests read, 0 refused, exit 0, byte-identical to HEAD.
+- **Two doc-accuracy MINORs were found at the final gate and fixed rather than carried**, because
+  that block *is* 881D's corpus precondition and the doc's own header says "if it is not written
+  here, it is not accepted": the delete-path `--protect-file` paragraph was false for two of the
+  three shapes it named (a **directory crashes** at exit 1, a **live symlink is read and honoured**,
+  a **fifo hangs** — only missing/dangling is "silently empty at exit 0"), and the collapse's
+  reachability claim is proven only against the walk's *name-based* prune list, not past an I/O error
+  (a non-listable intermediate does drop a protection — loudly, at exit 2, so no verdict changes).
+- **Gate (iv):** the delete-nothing fence and every 881I/881S refusal re-proven; canon functions
+  byte-identical; `--apply` freeze untouched and unreachable from `--verify-manifests`. Seven removed
+  lines, all whitelisted and each occurring exactly once at HEAD. `tools/tests`: **529 passed, 1
+  skipped, 0 failed.**
+
 ## 2026-08-22 — TASK_898 — trend-decay + the spot-legal variant: the instrument, and the confound it caught
 
 - **What shipped: the INSTRUMENT, not the verdict.** `experiments/898_trend_decay/` — `SPEC.md`

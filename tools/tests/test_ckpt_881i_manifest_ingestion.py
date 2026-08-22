@@ -308,6 +308,12 @@ def test_red_when_dangling_exit_code_guard_removed_at_its_real_drop_site(tmp_pat
     class _Args:
         protect_file = None
         experiments_dir = ["experiments"]
+        # 881G: part of `_run_manifest_check`'s input contract since D53 (`main()` sets it right
+        # after `parse_args`). Read fail-CLOSED — a plain attribute access, so a namespace missing
+        # it raises instead of silently replaying the pre-D53 no-op — hence it is spelled out here.
+        # False, because this test names a scan dir that EXISTS: the explicit-nonexistent guard is
+        # not what it is about and its verdict is unchanged either way.
+        experiments_dir_explicit = False
         roots = ["runs"]
         score_regex = None
         log_glob = "*.log"
@@ -464,6 +470,7 @@ def test_verify_manifests_never_reaches_apply_delete_loop(tmp_path, monkeypatch)
     class _Args:
         protect_file = None
         experiments_dir = [str(tmp_path / "experiments")]
+        experiments_dir_explicit = False   # 881G/D53 contract; see the note at the other `_Args`
         roots = [str(tmp_path / "runs")]
         score_regex = None
         log_glob = "*.log"
@@ -570,15 +577,13 @@ def test_red_when_dangling_scan_root_guard_removed_at_its_real_drop_site(tmp_pat
     assert r.returncode != 0, r.stdout + r.stderr
 
 
-def test_absent_scan_root_is_not_a_refusal(tmp_path):
-    """CONTROL for the two guards above: a scan dir that is simply ABSENT (no symlink involved)
-    must stay a silent no-op. A host with no `experiments/` has nothing to say, and the fix must
-    not convert that into a refusal."""
-    (tmp_path / "runs").mkdir()
-    r = _cli("--roots", "runs", "--experiments-dir", "no_such_dir",
-             "--verify-manifests", cwd=str(tmp_path))
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "verify-manifests: OK" in r.stdout
+    # `test_absent_scan_root_is_not_a_refusal` (this shape, EXPLICITLY-named nonexistent
+    # `--experiments-dir`, silent exit 0) is DELETED here per D53/TASK_881G scope item 5: an
+    # explicitly-passed nonexistent path now REFUSES on `--experiments-dir` too (closing the
+    # asymmetry with `--protect-file`, which already refused this shape). Its replacement —
+    # `test_explicit_nonexistent_experiments_dir_now_refuses` plus the DEFAULT-omitted control
+    # that keeps the OLD silent-no-op behaviour for THAT case — lives in
+    # test_ckpt_881g_manifest_grammar.py.
 
 
 def test_live_symlinked_experiment_dir_still_refuses_with_its_own_message(tmp_path):
@@ -1497,14 +1502,50 @@ def test_canon_functions_are_byte_identical_to_head():
 
 
 def test_diff_against_head_removes_no_content_line():
-    """The whole 881I diff is a PURE INSERTION: no line that exists at HEAD was removed or
-    rewritten (which is what makes the canon claim checkable at a glance)."""
+    """881I's and 881S's OWN diffs were pure insertions: no line that existed at HEAD was removed
+    or rewritten. TASK_881G's task file states a DIFFERENT gate (iv) for ITSELF: "byte-identity
+    OUTSIDE THE INGESTION SURFACE" — 881G is explicitly scoped to WIDEN the manifest-ingestion
+    accept path, which `test_canon_functions_are_byte_identical_to_head` (above) already proves
+    exactly, function-by-function, for the CANON claim that actually matters. This test is
+    narrowed to match: a HEAD line may be removed/rewritten ONLY if it is one of the specific,
+    named 881G rewrites below (each documented in TASK_881G_MANIFEST_GRAMMAR.md and in the
+    MANIFEST GRAMMAR section of this module's own docstring) — an UNRELATED accidental deletion
+    anywhere else in the file still fails this test loudly."""
+    # `load_protect_file`'s indented-`#`-comment bug (881G scope item 4 NIT): the RAW-line check
+    # let a line like `  # comment` through, because the string that starts with `#` is the
+    # STRIPPED one, not the raw one. This is the ONE line 881G's own scope requires REWRITING
+    # rather than only adding around.
+    #
+    # The other two are 881G's ESCALATED-CYCLE corrections, both inside the ingestion surface and
+    # both required because the HEAD text was WRONG rather than merely incomplete:
+    #  * `parse_spec_manifest`'s "a header inside a fence ... can only ADD entries" paragraph. The
+    #    claim is true of the ENTRIES and FALSE of the FILE: a closing backtick-fence line
+    #    immediately after the last item is a non-item line inside a started list, so the natural
+    #    fenced example WITHDRAWS the whole file (gate (i) SURPRISE 2; see
+    #    test_ckpt_881g_manifest_grammar.py::test_doc2_*).
+    #  * the manifest-scan print's `scan_dirs_requested` term. `_dedupe_nested_scan_dirs` rewrites
+    #    `scan_dirs` BEFORE `load_manifests` fills `stats`, so reading "requested" from the
+    #    collapsed list told an operator who named two dirs "1 of 1". It now reads the
+    #    pre-collapse count (`test_scan_line_counts_the_scan_dirs_the_operator_named`).
+    _881G_KNOWN_REWRITES = (
+        '                     if l.strip() and not l.startswith("#")}, None)',
+        '    That is fail-SAFE in the only direction that matters here — it can only ADD entries, '
+        'i.e.',
+        '    make the (future, TASK_881D) deleter MORE conservative — and a bogus path so ingested '
+        'does not',
+        "    pass quietly: it lands in ``ManifestSet.dangling`` and hits ``load_manifests``'s loud",
+        '    dangling-entry refusal at exit 2. Teaching this parser to skip fences would create the',
+        '    opposite, unsafe failure: a real header ignored because something upstream looked like '
+        'a fence.',
+        '          f"{scan_stats.get(\'scan_dirs_requested\', len(scan_dirs))} scan dir(s) visited, "',
+    )
     r = subprocess.run(["git", "diff", "-U0", "HEAD", "--", "tools/ckpt_gc.py"], cwd=REPO,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    removed = [l for l in r.stdout.splitlines()
+    removed = [l[1:] for l in r.stdout.splitlines()
                if l.startswith("-") and not l.startswith("---")]
-    assert removed == [], f"881I removed/rewrote HEAD lines: {removed}"
+    unexpected = [l for l in removed if l not in _881G_KNOWN_REWRITES]
+    assert unexpected == [], f"removed/rewrote an UNEXPECTED HEAD line: {unexpected}"
 
 
 def _apply_tree(root):
@@ -1862,9 +1903,13 @@ def test_red_when_the_scan_dir_shape_guard_is_removed_at_its_real_drop_site(tmp_
 
 
 def test_control_the_three_scan_dir_verdicts_stay_distinct(tmp_path):
-    """ABSENT -> silent no-op at exit 0 (the row's stated control, a host with no `experiments/`
-    has nothing to say); DANGLING LINK -> "SCAN DIR UNUSABLE (BROKEN SYMLINK)"; WRONG SHAPE ->
-    "NOT A DIRECTORY". The new guard is the third one ONLY, and does not absorb the other two."""
+    """DANGLING LINK -> "SCAN DIR UNUSABLE (BROKEN SYMLINK)"; WRONG SHAPE -> "NOT A DIRECTORY";
+    EXPLICITLY-NAMED ABSENT -> its own D53/881G refusal ("EXPLICITLY given a path that DOES NOT
+    EXIST"). Updated for D53 (TASK_881G): the ABSENT case used to be the row's stated silent
+    no-op control (a host with no `experiments/` has nothing to say) when EXPLICITLY named; that
+    control now applies only to the flag OMITTED entirely (see
+    test_ckpt_881g_manifest_grammar.py). The three verdicts stay distinct from EACH OTHER either
+    way, which is what this test actually pins."""
     (tmp_path / "runs").mkdir()
     (tmp_path / "experiments_link").symlink_to("./nonexistent_dir")
 
@@ -1873,12 +1918,14 @@ def test_control_the_three_scan_dir_verdicts_stay_distinct(tmp_path):
     assert link.returncode != 0, link.stdout + link.stderr
     assert "SCAN DIR UNUSABLE" in link.stderr
     assert "NOT A DIRECTORY" not in link.stderr
+    assert "DOES NOT EXIST" not in link.stderr
 
     absent = _cli("--roots", "runs", "--experiments-dir", "no_such_dir", "--verify-manifests",
                   cwd=str(tmp_path))
-    assert absent.returncode == 0, absent.stdout + absent.stderr
-    assert "verify-manifests: OK" in absent.stdout
+    assert absent.returncode != 0, absent.stdout + absent.stderr
+    assert "DOES NOT EXIST" in absent.stderr
     assert "NOT A DIRECTORY" not in absent.stderr
+    assert "SCAN DIR UNUSABLE" not in absent.stderr
 
 
 # ============================================================================================
@@ -2471,15 +2518,13 @@ def test_the_blank_flag_inconsistency_inside_one_invocation_is_gone(tmp_path):
     assert ed.returncode == 2, ed.stdout + ed.stderr
 
 
-def test_control_a_named_but_absent_scan_dir_is_still_not_a_refusal(tmp_path):
-    """The stated control this fix must not disturb (`test_absent_scan_root_is_not_a_refusal`
-    passes a REAL name): the guard rejects a value that names NOTHING, never a value that names
-    something which is not there."""
-    root = _spec_tree(tmp_path, _TWO_ITEM_LIST)
-    r = _cli("--roots", "runs", "--experiments-dir", "no_such_dir", "--verify-manifests",
-             cwd=str(root))
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "verify-manifests: OK" in r.stdout
+# `test_control_a_named_but_absent_scan_dir_is_still_not_a_refusal` asserted the SAME premise
+# `test_absent_scan_root_is_not_a_refusal` did (an explicitly-named nonexistent
+# `--experiments-dir` exits 0) and is deleted for the same D53/TASK_881G reason — see the comment
+# left in its place above. The blank-vs-named distinction this test's docstring cared about (the
+# `_scan_dir_arg` guard rejects a BLANK value, never a value that merely names something absent)
+# is unaffected and still covered by `test_the_blank_flag_inconsistency_inside_one_invocation_is_
+# gone` / `test_red_when_the_blank_scan_dir_type_is_removed_at_its_real_drop_site` below.
 
 
 def test_red_when_the_blank_scan_dir_type_is_removed_at_its_real_drop_site(tmp_path):
@@ -2580,25 +2625,15 @@ def test_red_when_the_accurate_link_diagnosis_is_reverted_at_its_real_drop_site(
 
 
 # ============================================================================================
-# MINOR 6 (message only, by explicit instruction) — the MD032 shape `protected:\n\n- item` keeps
-# being REFUSED, but stops being told to "close the gap"
-#
-# The blank-line branch did not require `block` to be non-empty, so a blank line immediately after
-# the header was judged a SPLIT — advising the author to close a gap that markdownlint MD032
-# REQUIRES (a list surrounded by blank lines), i.e. straight into a lint violation. Whether that
-# form should PARSE is a grammar/SPEC decision 881D's corpus depends on and is the planner's call;
-# it is deliberately NOT decided here. Only the wording moves.
+# SUPERSEDED BY TASK_881G/D53 — the MD032 shape `protected:\n\n- item` was deliberately left
+# REFUSED by 881I/881S ("whether that form should PARSE is ... the planner's call — deliberately
+# NOT decided here"). D53 decided it: MD032 (a list surrounded by blank lines, the canonical
+# markdownlint form and the first shape a corpus author will type) now PARSES. See
+# test_ckpt_881g_manifest_grammar.py::test_md032_shape_now_accepts for the acceptance test and
+# its mutation, and `parse_spec_manifest`'s docstring / this module's MANIFEST GRAMMAR section
+# for the decision itself. `test_control_a_real_split_still_says_SPLIT` immediately below is
+# UNCHANGED (that shape has a consumed item ABOVE the gap, so it is still a SPLIT, not MD032).
 # ============================================================================================
-
-def test_md032_shape_is_still_refused_but_with_an_accurate_message(tmp_path):
-    root = _spec_tree(tmp_path, "protected:\n\n- runs/a\n- runs/b\n")
-    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--verify-manifests",
-             cwd=str(root))
-    assert r.returncode == 2, r.stdout + r.stderr           # ACCEPTANCE UNCHANGED
-    assert "0 protect, 0 covers, 0 dangling" in r.stdout
-    assert "is EMPTY" in r.stderr, r.stderr                 # the accurate wording
-    assert "Close the gap" not in r.stderr                  # the lint-violating advice is gone
-    assert "SPLIT" not in r.stderr
 
 
 def test_control_a_real_split_still_says_SPLIT(tmp_path):

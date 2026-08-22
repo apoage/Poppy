@@ -29,6 +29,270 @@ SAFETY (all enforced, not documented-and-hoped)
 * deletion is move-to-``.gc-trash-<pid>`` then rmtree, so a partial delete cannot leave a
   half-checkpoint that looks loadable
 * every action is logged with score + reason + bytes
+
+MANIFEST GRAMMAR (TASK_881G, D53) — what a ``PROTECTED.txt`` and a SPEC.md ``protected:``/
+``covers:`` block ACCEPT and REFUSE, written down because before this row the accepted grammar
+existed nowhere an author would look (0 of 56 real manifest files under this repo ever exercised
+it). If a shape is not written here, it is not accepted. The mirrored copy of this section lives
+in ``tasks/TASK_881D_PROTECTION_DELETER.md``'s corpus precondition; the implementation this doc
+describes is ``parse_protected_txt`` / ``parse_spec_manifest`` / ``load_manifests`` /
+``load_protect_file``, below.
+
+MANIFEST BASENAMES: exactly ``PROTECTED.txt`` and ``SPEC.md`` (``MANIFEST_BASENAMES``). Either
+name, anywhere under a scanned directory, is read as a manifest. Both share the SAME per-line
+ITEM grammar (below, "one path, one line, `$`-anchored"); PROTECTED.txt additionally supports a
+plain ``#`` comment line and SPEC.md does not — SPEC.md is Markdown, where a leading ``#`` is
+heading TEXT, and that divergence is deliberate, not a bug (see the SPEC.md bullets below).
+
+WHOLE-FILE PRECONDITIONS, identical for both basenames, checked before either parser ever runs:
+
+* the basename must be a real, regular, non-symlink file at a real, tracked path. A symlink (to
+  a file OR to a directory), a real directory, a fifo/socket/device, or a manifest reached only
+  by crossing a symlinked ANCESTOR directory (including a symlinked scan root) is REFUSED, never
+  read — ten distinct messages by shape, see ``manifest_shape_refusal``.
+* the file must decode as UTF-8 with no byte-order mark and no NUL byte. A BOM (UTF-8/16/32,
+  either endianness), a raw NUL byte, or an invalid UTF-8 sequence is REFUSED, never parsed — see
+  ``_read_manifest_text``.
+* ANY malformed line, anywhere in the file, WITHDRAWS THE WHOLE FILE's directives — not just the
+  offending line. A file that is 90% well-formed and 10% malformed protects NOTHING; the
+  malformed line is reported (never silently dropped), but nothing in that file is trusted.
+* a well-formed entry naming a path that does not exist on disk is NOT malformed — it is
+  DANGLING (``ManifestSet.dangling``): it protects nothing and is reported on its own, but it
+  does not poison the rest of the file the way a malformed LINE does. "NOT malformed" is a
+  statement about INTRA-FILE poisoning ONLY — the file's other entries still parse and still
+  grant — and it is NOT an acceptance: a dangling entry makes ``--verify-manifests`` print
+  ``DANGLING ENTRY`` and EXIT 2, never 0, exactly like a refusal (see ``_run_manifest_check``).
+  Both statements are true at once, and reading only the first one is how an author concludes a
+  typo'd path will pass the check.
+* ENTRY PATHS ARE RESOLVED AGAINST THE PROCESS'S CWD, NOT against the manifest's own directory.
+  Every entry — in either basename, in ``--protect-file``, relative or absolute — goes through
+  ``os.path.realpath(<the text as written>)``, which is relative to wherever the tool was
+  INVOKED from. So ``- runs/a`` inside ``experiments/999_z/SPEC.md`` names ``$CWD/runs/a``, NOT
+  ``experiments/999_z/runs/a``; from another CWD the same manifest names something else, and
+  usually something DANGLING. Manifests are authored for, and this tool is run from, the repo
+  root.
+
+PROTECTED.txt GRAMMAR — one directive per line:
+
+* ``protect: <path>`` or ``covers: <path>`` — exactly one directive keyword, a colon, and a
+  single-token path, optional surrounding whitespace, nothing else on the line. ACCEPTED::
+
+      protect: runs/some_run/snapshot_ep10
+      covers: runs/other_run
+
+* WHITESPACE AROUND THE DIRECTIVE IS FREE, and this is the same micro-grammar the SPEC.md item
+  form uses (below): the line is STRIPPED before it is matched, so leading indentation
+  (``  protect: runs/a``) and trailing whitespace are ACCEPTED, and the space after the colon is
+  optional (``protect:runs/a`` is ACCEPTED). What is NOT free is the number of tokens after the
+  colon — exactly one.
+* a blank line — ACCEPTED, produces no entry. A line of nothing but SPACES or TABS counts as
+  blank here exactly as an empty one does (the test is on the STRIPPED line).
+* a line whose STRIPPED form starts with ``#`` (any leading indentation before the ``#`` is fine
+  — the test is on the stripped line, not the raw one) — ACCEPTED as a comment, produces no
+  entry.
+* anything else is MALFORMED (whole file withdrawn) — including: ``protect:``/``covers:``
+  followed by TWO tokens (``protect: a b``, the unanchored subset-grant shape D53 closed on both
+  formats); a bare ``protect:`` with no path; an unrecognized directive word; or plain prose.
+
+SPEC.md BLOCK GRAMMAR — a ``protected:`` or ``covers:`` block:
+
+* the header is column-0, lower-case, exact: ``protected:`` or ``covers:``, optionally followed
+  on the SAME line by nothing but whitespace up to end-of-line or end-of-file (a torn/truncated
+  final line with no trailing newline is still recognized as a header).
+* immediately after the header — with EITHER zero blank lines OR one-or-more blank lines before
+  the first item — a list of items, one path per line, each written ``- <path>`` (a single
+  ``-``, optional whitespace, exactly one non-whitespace token, nothing else on the line). BOTH
+  of the following are ACCEPTED and equivalent (the second is the canonical MD032 form — a list
+  must be surrounded by blank lines — and is the FIRST shape an author who runs a markdown
+  linter will type; accepting it is what D53 required)::
+
+      protected:
+      - runs/some_run/snapshot_ep10
+      - runs/other_run
+
+      protected:
+
+      - runs/some_run/snapshot_ep10
+      - runs/other_run
+
+* THE ITEM MICRO-GRAMMAR IS DELIBERATELY FORGIVING, in deliberate ASYMMETRY with the strictly
+  column-0, lower-case, exact HEADER above it. An item line is matched STRIPPED-EQUIVALENTLY, so
+  all three of these are ACCEPTED and name exactly the path they appear to:
+
+  - LEADING INDENTATION before the dash (``  - runs/a``) — Markdown nests lists, and an author
+    writing a nested list is not making the mistake an indented HEADER makes (an indented header
+    is a NEAR-MISS refusal, see the last bullet of this section);
+  - NO whitespace between the dash and the path (``-runs/a``);
+  - TRAILING whitespace after the path (``- runs/a   ``).
+
+  The asymmetry is on purpose: an indented/odd HEADER can silently withdraw a whole declared
+  block, so it refuses; an odd but unambiguous ITEM inside an already-matched block cannot go
+  anywhere but into that block, so it is read. What an item may NEVER do is name a second token
+  (see the INTERRUPTED bullet below) — that is the one thing whitespace cannot buy.
+* A LINE OF NOTHING BUT SPACES OR TABS IS A BLANK LINE, uniformly, in ALL THREE places where
+  this section says "blank": the MD032 gap between a header and its first item, the SPLIT gap
+  after at least one item, and the blank line that legitimately ENDS a list. There is no shape
+  where a whitespace-only line behaves differently from an empty one.
+* once at least one item has been consumed, a blank line followed by more PROSE, a heading, or
+  end-of-file legitimately ENDS the block (the every-day case: block, blank line, prose resumes).
+  ACCEPTED.
+* once at least one item has been consumed, a blank line followed by ANOTHER ``- <path>`` item —
+  the list resuming after a gap — is REFUSED (a hole inside a list is indistinguishable from a
+  torn write that lost the items in between). This is the only place a leading-vs-mid-list blank
+  line matters: BEFORE the first item, a gap is the MD032 fence above; AFTER at least one item, a
+  gap is a SPLIT.
+* a header carrying inline content (``protected: runs/a``) — REFUSED, whole file withdrawn.
+* a header with ZERO items (nothing recognizable as an item follows before the block ends) —
+  REFUSED as EMPTY, whole file withdrawn — indistinguishable from a truncated write that lost its
+  items.
+* WHICH REFUSAL WINS WHEN BOTH COULD APPLY (EMPTY vs INTERRUPTED): the INTERRUPTED diagnosis
+  requires at least ONE already-consumed item to have been interrupted. So a non-item, non-blank
+  line that is the FIRST content after the header — ``protected:`` / ``hello`` / ``- runs/a`` —
+  refuses as EMPTY ("it names nothing"), not as INTERRUPTED, even though a later well-formed item
+  follows it. Both are exit-2 whole-file withdrawals with the same effect; only the message
+  differs. The ONE exception is an attempted item naming more than one token (``- a b``), which
+  refuses wherever it sits, first line or not, under its OWN distinct message ("list item at line
+  N carries MORE THAN ONE token") — because that line unambiguously IS an attempted item and
+  "names nothing" would be a false thing to say about it.
+* TWO OR MORE headers for the SAME key in one file (two ``protected:`` blocks, or two
+  ``covers:`` blocks) — REFUSED (duplicate), whole file withdrawn. ``protected:`` and ``covers:``
+  are independent keys — one of each in the same file is fine.
+* an item line naming MORE THAN ONE token (``- runs/a runs/b``, or ``- runs/a # note`` — a
+  TRAILING COMMENT on an item is this same shape) — REFUSED (the INTERRUPTED-list class, under
+  its own distinct message: "list item at line N carries MORE THAN ONE token"), whole file
+  withdrawn. Put each path on its own line; trailing comments on an item are not supported.
+* any OTHER non-blank, non-item line inside a started list — a stray word, a ``*`` bullet, a bare
+  ``-`` with no path, or a ``#`` line — is NOT a comment here (unlike PROTECTED.txt: a leading
+  ``#`` is Markdown heading TEXT, and "supporting" it would mean a strip erasing real document
+  content) — REFUSED as INTERRUPTED, whole file withdrawn. Put comments and prose after a blank
+  line that ends the list.
+* a line that is ENTIRELY two-or-more ``-`` characters (a markdown THEMATIC BREAK / horizontal
+  rule, e.g. ``---``) is NEVER treated as a list item, even though its first character reads as
+  a bullet marker — it falls through to whichever of the two bullets above applies (INTERRUPTED
+  if items were already consumed with no gap before it, EMPTY if nothing was consumed yet).
+  RESIDUAL, NAMED HERE, NOT CLOSED: a thematic break on the far side of a blank line AFTER at
+  least one item has already been consumed still reads as "resumes the list" and refuses as
+  SPLIT rather than as a clean terminator — the DIRECTION (refuse; never silently ingest a bogus
+  ``--`` entry) is unchanged, only the wording of that one sub-case is imprecise.
+* a header that misses column-0/lower-case/exact spelling by ANYTHING — indentation, a
+  capitalized ``PROTECTED:``, a leading ``>``/``*``/``-``, or a byte-order mark — is a NEAR-MISS:
+  REFUSED (never a silent skip), whole file withdrawn, EVEN when the same file also carries a
+  well-formed block elsewhere, and EVEN when the near-miss text sits inside a fenced code block.
+  Both of those are ACCEPTED-DELIBERATELY as consequences of the SAME rule, not oversights: this
+  parser does not try to detect Markdown fences at all (a WELL-FORMED header inside a fence is
+  ALSO read as a real block — see ``parse_spec_manifest``'s own docstring), and a
+  malformed/near-miss line anywhere in a file poisons that whole file's trust regardless of what
+  else the file contains.
+* FENCES ARE NOT INVISIBLE, THEY ARE UNSEEN — and the difference bites in the most natural shape
+  an author writes. Because no fence is detected, the CLOSING BACKTICK-FENCE LINE of a fenced
+  EXAMPLE is just another line, and if it comes IMMEDIATELY after the last item it is a non-item
+  line inside a started list: the whole file is REFUSED as INTERRUPTED. So "a header inside a
+  fence can only ADD protection" is FALSE as written — it can also WITHDRAW the entire file.
+  REFUSED::
+
+      ```
+      protected:
+      - runs/a
+      ```
+
+  ACCEPTED (one blank line TERMINATES the list before the closing fence; the block inside the
+  example parses as a real block and its entries are real)::
+
+      ```
+      protected:
+      - runs/a
+
+      ```
+
+  The practical rule for a document that must both illustrate and be ingested: leave a blank line
+  after the last item of any example block, and expect every path you write in an example to be
+  ingested as a real entry (a nonexistent one lands in DANGLING and exits 2).
+
+``--protect-file`` GRAMMAR — AS READ BY ``--verify-manifests`` (``load_protect_file``), which is
+the ONLY reader this section describes; the legacy delete path reads the same file differently and
+is stated at the end of this paragraph. A flat list — NOT the PROTECTED.txt directive grammar; no
+``protect:``/``covers:`` prefix: one path per line, realpath'd. A blank (stripped) line, or a
+line whose STRIPPED form starts with ``#`` (leading indentation before the ``#`` does not exempt
+it from being a comment — an 881G fix; the shipped behaviour tested only the RAW line's first
+character, so an indented ``  # comment`` line was realpath'd and ingested as a bogus protected
+path), is skipped. Anything else is one path, trusted verbatim (no malformed-line concept here —
+this file has no directive syntax to get wrong). A missing, symlinked, or non-regular-file
+(directory, fifo/socket/device) ``--protect-file``, WHEN THE FLAG IS GIVEN, is REFUSED — true
+since before this row and unchanged by it.
+
+NOT TRUE OF THE DELETE PATH (dry-run / ``--apply``), stated because this section is 881D's corpus
+precondition and a doc that over-promised here would become a false spec: ``main()``'s deletion
+loop does NOT call ``load_protect_file``. It reads the file inline, guarded by ``os.path.exists``:
+every non-blank line is realpath'd, ``#`` is NOT a comment there, and the four shapes
+``--verify-manifests`` refuses do NOT all fail the same way here. A MISSING ``--protect-file``, or
+one that is a DANGLING SYMLINK (``os.path.exists`` follows a symlink and reports False once its
+target is gone), is silently treated as EMPTY at exit 0 rather than refused — the
+named-but-unusable input this row's whole discipline exists to refuse. A DIRECTORY is not caught
+at all: ``open()`` raises ``IsADirectoryError``, uncaught, so the process CRASHES with a traceback
+at exit 1 — a crash, not "empty at exit 0". A LIVE SYMLINK to a real file is not refused either:
+``os.path.exists`` and ``open()`` both follow it transparently, so the target IS read and its
+entries ARE honoured — an unrefused ACCEPT, the opposite failure mode from the missing/dangling
+case. A FIFO ``--protect-file`` is worse than either: ``open()`` on a reader-less FIFO in read mode
+BLOCKS FOREVER, the same hang ``load_protect_file``'s own docstring warns about three screens
+above. That inline read is canon (bit-identical to HEAD by this row's own gate, so 881G does not
+change it); UNIFYING the two readers, i.e. routing the deleter through ``load_protect_file`` so a
+missing protect file cannot silently un-protect anything before a deletion, is TASK_881D's, and
+until then the safe operating rule is: run ``--verify-manifests`` FIRST and act on its exit code,
+because the delete path will not repeat its refusals.
+
+``--experiments-dir`` SEMANTICS:
+
+* the flag OMITTED uses the default ``["experiments"]``; if that default does not exist, it is
+  a silent no-op (a host with no ``experiments/`` at all has nothing to say) — unchanged
+  residual.
+* the flag EXPLICITLY GIVEN a value that does not exist is now REFUSED (D53: this was the
+  documented asymmetry with ``--protect-file``, which has always refused an explicit nonexistent
+  path). "Explicitly given" is detected from whether argparse actually consumed a value for this
+  flag, not from comparing the resolved value against the default string, so an abbreviated
+  spelling (e.g. ``--exp``) is detected identically to the literal flag name.
+* TWO OR MORE ``--experiments-dir`` values where one resolves (realpath) to the same directory as
+  another, or to a directory NESTED inside another, are collapsed to the outer/first one before
+  scanning — never a refusal: a duplicate or nested request is an operator redundancy, not an
+  operator error, and walking the same real subtree twice would double-count every stat
+  ``load_manifests`` reports (dirs walked, manifest files read) for the SAME manifests — the
+  "nested scan dirs double-counted" NIT this row closes. The collapse is REPORTED on stdout
+  ("N nested/duplicate scan dir(s) collapsed …"), and the scan line keeps counting the dirs the
+  OPERATOR named ("1 of 2 scan dir(s) visited"), never the post-collapse list.
+* A COLLAPSE IS A COUNTING FIX AND MAY NEVER CHANGE A VERDICT, so it happens ONLY when both of
+  these hold — otherwise BOTH dirs are kept and the duplicate stat is simply tolerated:
+
+  - NEITHER dir is reached by crossing a SYMLINK (``realpath != abspath``). A symlinked scan dir
+    is not a redundancy: it is the input that produces 881I's "manifest reached only by crossing
+    a SYMLINKED DIRECTORY" REFUSAL, and collapsing it on realpath before the scan ERASED that
+    refusal (measured: ``--experiments-dir experiments experiments_link`` exit 2 -> exit 0). A
+    symlinked scan dir is therefore never dropped, and never absorbs another dir's scan either.
+  - THE SURVIVING DIR'S WALK PROVABLY REACHES the dropped one. Being underneath it is not enough:
+    the walk does not descend into ``.git`` or ``__pycache__``, so ``--experiments-dir
+    experiments experiments/__pycache__`` really does need both dirs (measured: collapsing it
+    silently dropped a manifest, "1 protect" -> "0 protect", at exit 0 — a WITHDRAWN protection,
+    the dangerous direction, not a double count).
+
+  With those two conditions, the surviving dir's walk is PROVEN to reach the dropped directory
+  against the walk's own name-based prune list (:data:`_WALK_PRUNED_DIRNAMES`, checked by
+  :func:`_walk_reaches`) — not against every possible I/O outcome. Reachability cannot be proven
+  past an I/O error: a non-listable intermediate directory (measured — an ancestor directory at
+  mode 111, so the surviving walk's own ``os.walk`` cannot list it) still stops the surviving walk
+  cold, and the collapse still drops the nested dir it can no longer reach, "1 protect" ->
+  "0 protect" on the very same host. That is NOT a silent withdrawal, though: the
+  ``PermissionError`` raises :class:`ManifestScanIncomplete` and the whole run REFUSES at exit 2
+  ("Permission denied" printed, on both the collapsed and the uncollapsed invocation), so no
+  verdict ever changes and the fail-closed direction holds — but "nothing under a collapsed
+  directory goes un-scanned" is not literally true; only "nothing goes un-scanned without the
+  scan itself loudly refusing" is.
+
+KNOWN RESIDUAL, NAMED AND NOT CLOSED BY THIS ROW (fail-safe in direction — a diagnostic
+imprecision, never a silent mis-accept): line-number DRIFT between the two parsers on a manifest
+that contains an exotic Unicode line separator (``\\v``, ``\\f``, ``\\x1c``-``\\x1e``, ``\\x85``,
+U+2028, U+2029). PROTECTED.txt's line counter is ``str.splitlines()`` (which breaks on all of
+those); SPEC.md's is a plain ``\\n`` count. A manifest using one of those bytes could get a
+different line number reported by each parser for the "same" position. Not reachable on the real
+corpus (0 of 56 files use any of these bytes) and never changes an accept/refuse decision, only
+the number in a message.
 """
 from __future__ import annotations
 
@@ -249,6 +513,21 @@ _SPEC_BULLET_RE = re.compile(r"^\s*-\s*(\S+)")
 # message. It never creates a protect/covers entry — a malformed line is never trusted.
 _PATHLIKE_HINT_RE = re.compile(r"([./A-Za-z0-9_-]+/[./A-Za-z0-9_-]+)")
 
+_THEMATIC_BREAK_RE = re.compile(r"^-{2,}$")
+# A markdown THEMATIC BREAK (horizontal rule), e.g. ``---``/``----``. It superficially matches
+# `_SPEC_BULLET_RE` (the leading `-` reads as the bullet marker, the remaining dashes as a
+# one-token "path"), and without this guard `---` silently ingested as an item naming the
+# literal path `--` — almost always landing in `ManifestSet.dangling` (fail-safe in EFFECT, since
+# a path made of bare dashes essentially never exists) but never a parse anyone reviewed. 881G
+# ingestion NIT (D53): a line that IS ENTIRELY two-or-more dashes is never a list item, at either
+# of `_is_thematic_break`'s two call sites in `parse_spec_manifest`.
+
+
+def _is_thematic_break(line: str) -> bool:
+    """True for a line that is a markdown thematic break, never a ``- <path>`` item — see
+    :data:`_THEMATIC_BREAK_RE`."""
+    return bool(_THEMATIC_BREAK_RE.match(line.strip()))
+
 
 class ManifestEntry(NamedTuple):
     kind: str          # "protect" | "covers"
@@ -380,11 +659,19 @@ def parse_spec_manifest(text: str, source: str
 
     ACCEPTED, NOT A DEFECT (judged 2026-08-19, do not "fix"): a ``protected:`` / ``covers:``
     header written inside SPEC.md PROSE, or inside a fenced code block, parses as a real block.
-    That is fail-SAFE in the only direction that matters here — it can only ADD entries, i.e.
-    make the (future, TASK_881D) deleter MORE conservative — and a bogus path so ingested does not
-    pass quietly: it lands in ``ManifestSet.dangling`` and hits ``load_manifests``'s loud
-    dangling-entry refusal at exit 2. Teaching this parser to skip fences would create the
-    opposite, unsafe failure: a real header ignored because something upstream looked like a fence.
+    That is fail-SAFE in the only direction that matters here — the ENTRIES it produces can only
+    ADD, i.e. make the (future, TASK_881D) deleter MORE conservative — and a bogus path so
+    ingested does not pass quietly: it lands in ``ManifestSet.dangling`` and hits
+    ``load_manifests``'s loud dangling-entry refusal at exit 2. Teaching this parser to skip
+    fences would create the opposite, unsafe failure: a real header ignored because something
+    upstream looked like a fence.
+
+    CORRECTED (881G gate (i), from a reader who followed the doc): "can only ADD" is true of the
+    ENTRIES and FALSE of the FILE. Fences are not detected, so a closing backtick-fence line
+    sitting IMMEDIATELY after the example's last item is a non-item line inside a started list and
+    REFUSES THE WHOLE FILE as INTERRUPTED — the natural way to write a fenced example withdraws
+    everything the file grants. One blank line before the closing fence terminates the list and
+    the file parses. The module docstring's grammar section states this shape with both examples.
     """
     entries: list[ManifestEntry] = []
     spans: list[tuple[int, int]] = []
@@ -499,6 +786,37 @@ def parse_spec_manifest(text: str, source: str
                 # true: under this grammar the block names nothing. WHETHER the MD032 form should
                 # PARSE is a grammar/SPEC decision that 881D's corpus depends on, and it is the
                 # planner's call — deliberately NOT decided here.
+                #
+                # DECIDED (881G, D53): the MD032 form PARSES. When `block` is still empty, a
+                # leading blank-line run is not a hole in an existing list — there is no list yet
+                # to split — it is the mandatory list-fence markdownlint MD032 requires. If the
+                # far side resumes with a genuine `- <path>` item (never a thematic break —
+                # `_is_thematic_break` excludes `---`/`--`/etc., which would otherwise silently
+                # ingest as an item naming the trailing dashes), skip the gap and keep consuming;
+                # otherwise (prose, a heading, or EOF) this is genuinely an empty block, exactly
+                # as before. Gated on `not block` so it can never reach — and never changes — the
+                # SPLIT check immediately below, which keeps refusing a gap once the list has
+                # actually started.
+                if (not block and j < len(item_lines)
+                        and _SPEC_BULLET_RE.match(item_lines[j])
+                        and not _is_thematic_break(item_lines[j])):
+                    # THE SKIPPED GAP IS PART OF THE SPAN. `end` is the running right edge of
+                    # "what this parse consumed", and every OTHER consumed line advances it (see
+                    # `end += len(line)` at the bottom of this loop). Jumping `i` to `j` without
+                    # advancing `end` left the span SHORT by exactly the gap's byte length, so its
+                    # right edge landed INSIDE the last item line and `strip_spans` cut mid-item:
+                    # `protected:\n\n\n\n- runs/a\n- runs/b\n` stripped to the fragment `/b\n`,
+                    # and with a wider gap the last item SURVIVED the strip entirely. That
+                    # falsifies `strip_spans`' own contract ("can only remove what that parse
+                    # actually consumed" — it removed something else) on the exact shape 881D's
+                    # corpus will use, and it is the same parse-and-span-disagree class D53 was
+                    # re-cut over, arriving through the new accept path instead of the old one.
+                    # The blank run is consumed BY this block (it is the MD032 list fence, not
+                    # free text between two blocks), so it belongs inside the span: a strip
+                    # removes the header, its fence, and its items, and nothing else.
+                    end += sum(len(_gap_line) for _gap_line in item_lines[i:j])
+                    i = j
+                    continue
                 if j < len(item_lines) and block and _SPEC_BULLET_RE.match(item_lines[j]):
                     interrupted = MalformedManifestLine(
                         source, item_lineno,
@@ -511,6 +829,15 @@ def parse_spec_manifest(text: str, source: str
                 break
             bullet = _SPEC_BULLET_RE.match(line)
             item = _SPEC_ITEM_RE.match(line) if bullet else None
+            if bullet is not None and item is not None and _is_thematic_break(line):
+                # 881G ingestion NIT (D53): `---`/`--`/… matches BOTH `_SPEC_BULLET_RE` and
+                # `_SPEC_ITEM_RE` (the trailing dashes read as a single "token"), so without this
+                # it silently became an item naming the literal path `--`. Neither `bullet` nor
+                # `item` is trusted for this shape — it falls through to the SAME
+                # interruption/empty-block handling as any other non-item line, immediately
+                # below (local to this iteration only; the blank-line resume checks above guard
+                # against the same shape independently, at their own call sites).
+                bullet = item = None
             if bullet is not None and item is None:
                 # AN ATTEMPTED ITEM THAT NAMES MORE THAN ONE TOKEN — the line-level twin of every
                 # block-level refusal above. `- runs/keep_a runs/keep_b` matched the old unanchored
@@ -899,6 +1226,18 @@ def _unusable_scan_link_error(bad_link: str, dangling_what: str, live_what: str)
     return UnusableScanLink(bad_link, live_what, kind)
 
 
+_WALK_PRUNED_DIRNAMES = (".git", "__pycache__")
+# THE DESCENT FILTER, NAMED. `_walk_scan_dirs` below does NOT descend into a subdirectory with one
+# of these names (`if d in (".git", "__pycache__")`, left byte-identical to HEAD deliberately —
+# this row does not rewrite it), so a directory whose path from a scan root crosses one of these
+# names is NOT reached by that root's walk, even though it lies underneath it. That is invisible to
+# anything reasoning about the tree by path prefix alone, and `_dedupe_nested_scan_dirs` is exactly
+# such a reasoner: it may collapse an operator-named scan dir into an ancestor ONLY when the
+# ancestor's walk really reaches it. Consulted there through this name, and pinned against drift by
+# `test_the_dedup_prune_list_mirrors_the_real_walk` in the 881G suite — if the literal below ever
+# gains or loses an entry, that test fails rather than the collapse silently over-reaching.
+
+
 def _walk_scan_dirs(scan_dir: str, on_error):
     """``os.walk`` that never silently omits a symlinked subdirectory, and marks a manifest
     reached only by crossing a symlink (including a symlinked SCAN ROOT itself).
@@ -1226,8 +1565,13 @@ def load_protect_file(path: str | None) -> tuple[set[str], str | None]:
                        f"refused, never opened (`open()` on a reader-less FIFO BLOCKS FOREVER)")
     try:
         with open(path) as fh:
+            # 881G ingestion NIT (D53): `not l.strip().startswith("#")`, not `not
+            # l.startswith("#")` — the RAW-line check let an INDENTED comment (`  # comment`)
+            # through, because the string that starts with `#` is the STRIPPED one; the raw one
+            # starts with whitespace. That mismatch realpath'd the comment text itself into a
+            # bogus protected-path entry. Blank lines already strip first for the same check.
             return ({os.path.realpath(l.strip()) for l in fh
-                     if l.strip() and not l.startswith("#")}, None)
+                     if l.strip() and not l.strip().startswith("#")}, None)
     except IsADirectoryError:
         return set(), f"{path}: --protect-file is a DIRECTORY, not a file — refused, not read"
     except OSError as e:
@@ -1636,6 +1980,91 @@ def _load_bare_log_glob_scores_strict(score_regex: str | None, log_glob: str) ->
             list(dict.fromkeys(e.errors))) from None
 
 
+def _walk_reaches(ancestor_rp: str, rp: str) -> bool:
+    """Would a ``_walk_scan_dirs`` rooted at ``ancestor_rp`` actually REACH ``rp``?
+
+    Path containment is NOT the same question, and that gap is what makes this function exist: the
+    walk does not descend into :data:`_WALK_PRUNED_DIRNAMES`, so ``experiments/__pycache__`` lies
+    UNDER ``experiments`` and is never visited from it. Both arguments must already be realpaths.
+    """
+    if rp == ancestor_rp:
+        return True
+    if not rp.startswith(ancestor_rp + os.sep):
+        return False
+    return not any(part in _WALK_PRUNED_DIRNAMES
+                   for part in rp[len(ancestor_rp) + 1:].split(os.sep))
+
+
+def _dedupe_nested_scan_dirs(scan_dirs: list[str]) -> tuple[list[str], list[str]]:
+    """Collapse ``scan_dirs`` so a duplicate or NESTED ``--experiments-dir`` request walks each
+    real subtree exactly once, instead of double-counting it (881G ingestion NIT, D53): two
+    requested dirs that resolve (``os.path.realpath``) to the SAME directory, or where one
+    resolves to a directory INSIDE another, name the same manifests twice — every stat
+    :func:`load_manifests` reports (dirs walked, manifest files read) would otherwise double for
+    no real defect, the same class of inflated count TASK_881S closed on the score-source side.
+
+    Returns ``(kept, dropped)`` in the ORIGINAL order. A dropped dir is dropped ONLY when the
+    surviving dir's walk is PROVEN to reach it against the walk's own name-based prune list
+    (:func:`_walk_reaches`) — not against every possible I/O outcome, so "nothing goes un-scanned"
+    holds only up to the first I/O error the walk hits (a non-listable intermediate directory
+    still drops the nested dir's coverage; see the module docstring's "MANIFEST GRAMMAR" section
+    for the measured case and why it is a loud refusal, not a silent one). That is
+    ACCEPTED-DELIBERATELY, never a refusal, because a redundant request is an operator REDUNDANCY,
+    not the operator ERROR a nonexistent path is (see the D53 refusal in
+    :func:`_run_manifest_check`, which this function's output is never fed through — only EXISTING
+    directories participate here; an absent one is that other check's business).
+
+    TWO CONDITIONS GATE EVERY COLLAPSE, because an unconditional one is not a de-duplication, it is
+    a SILENT WITHDRAWAL OF A PROTECTION — the dangerous direction this row's own gate names, and
+    both holes were shipped by the first cut of this function:
+
+    * ONLY REAL PATHS PARTICIPATE, as a candidate to drop AND as an ancestor to keep. A scan dir
+      whose ``realpath`` differs from its ``abspath`` is reached by crossing a SYMLINK, and that is
+      not a redundancy — it is the input ``_walk_scan_dirs``' ``_root_via_link`` turns into 881I's
+      "manifest reached only by crossing a SYMLINKED DIRECTORY" REFUSAL. Collapsing it on realpath
+      BEFORE :func:`load_manifests` ever runs ERASED that refusal: ``--experiments-dir experiments
+      experiments_link`` (and the same shape with a link to a subdirectory INSIDE the tree) refused
+      at exit 2 before this row and passed at exit 0 after it. A shipped refusal must not be
+      weakened by a counting fix; a symlinked scan dir is now never collapsed and never absorbs
+      another dir's scan.
+    * THE SURVIVOR'S WALK MUST REACH THE DROPPED DIR (:func:`_walk_reaches`). Path containment
+      alone is not reachability — ``_walk_scan_dirs`` prunes :data:`_WALK_PRUNED_DIRNAMES` from its
+      descent, so ``--experiments-dir experiments experiments/__pycache__`` walked the second dir
+      explicitly before this row (1 manifest read, 1 protect) and, once collapsed into
+      ``experiments``, read NOTHING and printed "0 protect" at exit 0. Under 881D that silently
+      makes a manifest-protected checkpoint deletable, which is the WITHDRAWAL direction, not the
+      double-count this optimisation exists to fix. When the walk does not reach it, BOTH dirs are
+      kept: a duplicated stat is a cosmetic defect, a dropped protection is not.
+    """
+    entries = [(os.path.abspath(d), os.path.realpath(d))
+               for d in scan_dirs if os.path.isdir(d)]
+    # Index -> realpath, for the REAL (non-symlinked) entries only; see the docstring.
+    real = [(idx, rp) for idx, (ap, rp) in enumerate(entries) if ap == rp]
+    redundant_idx: set[int] = set()
+    for idx, rp in real:
+        for other_idx, other_rp in real:
+            if other_idx == idx:
+                continue
+            if rp == other_rp and other_idx > idx:
+                continue    # an exact duplicate is absorbed by its FIRST occurrence, not a later
+            if rp != other_rp and not rp.startswith(other_rp + os.sep):
+                continue    # unrelated subtree
+            if not _walk_reaches(other_rp, rp):
+                continue    # nested BY PATH but not reached BY THE WALK -> keep both
+            redundant_idx.add(idx)
+            break
+    kept: list[str] = []
+    dropped: list[str] = []
+    ex_idx = 0
+    for d in scan_dirs:
+        if os.path.isdir(d):
+            (dropped if ex_idx in redundant_idx else kept).append(d)
+            ex_idx += 1
+        else:
+            kept.append(d)
+    return kept, dropped
+
+
 def _run_manifest_check(a) -> int:
     """TASK_881I's CLI entry point (``--verify-manifests``): PARSE every manifest, protect-file,
     and score file this tool would otherwise consult, CLASSIFY what each one says, and REFUSE
@@ -1668,6 +2097,43 @@ def _run_manifest_check(a) -> int:
     # exit 0 — verbatim the failure `nargs="+"` was written to prevent, via the spelling a cron job
     # actually produces.)
     scan_dirs = list(a.experiments_dir)
+    # D53 (881G): an EXPLICITLY-passed nonexistent `--experiments-dir` now REFUSES, closing the
+    # asymmetry with `--protect-file` (which has always refused an explicit nonexistent path,
+    # see `load_protect_file` above) — same operator error, same outcome now on both flags.
+    # `test_absent_scan_root_is_not_a_refusal` exercised exactly this shape at exit 0 and is
+    # deleted; its replacement lives in test_ckpt_881g_manifest_grammar.py. The DEFAULT (flag
+    # omitted) staying a silent no-op is UNCHANGED: a host with no `experiments/` at all still
+    # has nothing to say — only an operator-NAMED nonexistent path is a refusal.
+    # `a.experiments_dir_explicit`, NOT `getattr(a, ..., False)`: a fail-closed guard must not
+    # DEFAULT to the behaviour it was written to remove. The getattr spelling made a namespace
+    # missing this attribute (a hand-built one in a test, a future second call site) silently
+    # replay the pre-D53 no-op — an explicitly-named nonexistent scan dir back to exit 0 — with no
+    # signal at all. A plain attribute access raises AttributeError instead: loud, at the call
+    # site, on the caller that forgot to set it. `main()` sets it unconditionally, immediately
+    # after `parse_args`, so the only way to reach this without it is a caller that is wrong.
+    if a.experiments_dir_explicit:
+        for _sd in scan_dirs:
+            # `_sd.strip()`: a BLANK value is a different shape with its own dedicated,
+            # already-loud guard (`_scan_dir_arg`, at parse time) — this check must not race it
+            # or double-diagnose the same input under a second message.
+            if (_sd.strip() and not os.path.isdir(_sd)
+                    and classify_entry(_sd).kind == "unstatable"):
+                print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {_sd}: --experiments-dir was "
+                      f"EXPLICITLY given a path that DOES NOT EXIST — refused. A named scan dir "
+                      f"that names nothing must not be indistinguishable from a clean scan "
+                      f"reporting zero manifests at exit 0.", file=sys.stderr)
+                ok = False
+    # How many scan dirs the OPERATOR named, captured BEFORE the collapse rewrites the list. The
+    # scan line below reports "<visited> of <requested>", and reading `requested` off the collapsed
+    # list turned an operator's two named dirs into "1 of 1 scan dir(s) visited" — a count that
+    # silently agrees with itself and can no longer be checked against the command line. It now
+    # reads "1 of 2", with the collapse line immediately above it accounting for the difference.
+    _n_scan_dirs_requested = len(scan_dirs)
+    scan_dirs, _dropped_nested = _dedupe_nested_scan_dirs(scan_dirs)
+    if _dropped_nested:
+        print(f"[ckpt_gc] --experiments-dir: {len(_dropped_nested)} nested/duplicate scan dir(s) "
+              f"collapsed into an already-scanned directory (each real subtree is walked exactly "
+              f"once): {', '.join(sorted(_dropped_nested))}")
     scan_stats: dict = {}
     try:
         manifests = load_manifests(scan_dirs, stats=scan_stats)
@@ -1684,7 +2150,7 @@ def _run_manifest_check(a) -> int:
     # identical lines for opposite situations. The counts separate them, and they are the cheapest
     # possible check on a scan that silently narrowed.
     print(f"[ckpt_gc] manifest scan: {scan_stats.get('scan_dirs_visited', 0)} of "
-          f"{scan_stats.get('scan_dirs_requested', len(scan_dirs))} scan dir(s) visited, "
+          f"{_n_scan_dirs_requested} scan dir(s) visited, "
           f"{scan_stats.get('dirs_walked', 0)} dir(s) walked, "
           f"{scan_stats.get('manifest_files_read', 0)} manifest file(s) read, "
           f"{scan_stats.get('manifest_files_refused', 0)} refused before read")
@@ -1883,6 +2349,23 @@ def main() -> int:
                          "--apply (this mode never reaches it).")
     ap.add_argument("--apply", action="store_true", help="actually delete (default: dry run)")
     a = ap.parse_args()
+
+    # D53 (881G): detect whether `--experiments-dir` was EXPLICITLY given, without touching the
+    # frozen `ap.add_argument("--experiments-dir", ..., default=["experiments"], ...)` line above
+    # (verbatim-matched by test_red_when_experiments_dir_nargs_is_reverted_at_its_real_drop_site).
+    # A second, throwaway parser that declares ONLY this one option resolves the SAME argparse
+    # abbreviation rules against the SAME argv, so an abbreviated spelling (e.g. `--exp foo`) is
+    # detected identically to the full flag name — sniffing `sys.argv` for a literal substring
+    # would miss that.
+    # `nargs="*"`, no `type=`, deliberately looser than the real flag's own `nargs="+"` +
+    # `type=_scan_dir_arg`: this sentinel exists ONLY to answer "was the flag present at all", so
+    # it must never itself raise on a shape (a bare flag, a blank value) the REAL parser's own
+    # guards are responsible for diagnosing — those guards already ran, above, on `ap`, before
+    # this sentinel is ever reached, and this line must not race them with a second opinion.
+    _edp = argparse.ArgumentParser(add_help=False)
+    _edp.add_argument("--experiments-dir", nargs="*", default=None)
+    _edns, _ = _edp.parse_known_args()
+    a.experiments_dir_explicit = _edns.experiments_dir is not None
 
     if a.verify_manifests:
         return _run_manifest_check(a)
