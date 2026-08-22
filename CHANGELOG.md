@@ -3,6 +3,68 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_897 — the corrected 809 estimator: an instrument that cannot lie the way 809's did
+
+- **What shipped: the INSTRUMENT, not the verdict.** `experiments/897_corrected_809/` — `honest_estimator.py`
+  (per-decision, non-overlapping-hold accounting annualized by realized decisions-per-year),
+  `sweep_gated_maker.py` (the `gated_maker` grid harness + artifact writer), `ci_coverage_probe.py`,
+  and three test modules. The CELL CLEARS / ALL FAIL / MIXED ruling comes from a planner-scheduled
+  gpu-server run per **D54** and is deliberately never computed here.
+- **The 809 trap, made visible.** The retracted +5.08 came from annualizing per-bar returns by
+  ×√525600 over overlapping holds. On the worked example the two methods differ by exactly
+  `sqrt(mean_hold_bars)` — 887.92 (honest) vs 2174.95 (trap) on identical bars — and a mutation
+  re-introducing per-bar annualization is caught by test.
+- **Two BLOCKERs found by review and closed.** (1) The first implementation counted the leading
+  pre-trade interval as a *decision*, so ONE real bet produced `n_decisions=2`,
+  `sharpe=+22.93`, `CI=[22.93, 22.93]` — a trivially-true "CI lo > 0" that also defeated `sharpe()`'s
+  own `size < 2 → nan` guard. A judge re-derived the arithmetic independently and **overturned the
+  implementer's stated reasoning**: keeping that segment inflates `decisions_per_year`, the same
+  direction as the trap, not the opposite. Fixed; the exploit now returns `n_decisions=1`,
+  `sharpe=nan`, `CI=[nan, nan]`. (2) `recompute_best.py`'s single-cell gate omitted the band's
+  `PnL > 0` criterion and printed **"PASS"** for a constructed volatility-drag cell with `pnl = -1.0`
+  — a 100% capital loss. Fixed, and the qualifier now shares the token's line so a log-scraper
+  cannot harvest a bare pass.
+- **The confidence interval is UNCALIBRATED, and that is now measured rather than assumed.** A
+  coverage probe through the real code path gives **0.530 at n_dec=100** under overlapping
+  dependence against a nominal 0.95, and 0.865–0.868 at n=500–1000. Because block length is capped
+  at 20, dependence longer than 20 decisions is uncapturable **at any n** — D49's "the remedy is the
+  block length or the interval method, never more data", re-measured on this path. TASK_892's
+  `CALIBRATION_TABLE` was deliberately NOT reused: it calibrates a delta-of-means at fixed block 21,
+  not a Sharpe ratio at blocks 2–20, and importing `k` across both a statistic change and a
+  block-length regime change is the same unvalidated reuse that produced the trap. The fields are
+  named `ci_lo_UNCALIBRATED` / `ci_hi_UNCALIBRATED` so no call site can use them silently.
+  **Consequence: the pre-registered band's "CI lo > 0" criterion cannot be read off this artifact as
+  delivered** — seeded as a decision row, not papered over.
+- **A false provenance claim was caught and retracted.** The artifact asserted the 877 XBT/BTC alias
+  fold "applies transitively" through the lineage. Verified false: `probe.py`, `backtest.py` and
+  `decide.py` contain zero references to the alias machinery, `load_universe_trainlocked` matches
+  symbols by exact string, and that lineage predates TASK_877 entirely. The artifact now states the
+  fold is NOT applied and names the consequence (a feed carried under twin spelling-variant rows is
+  read under one spelling only). The fold was deliberately **not** implemented — the spec's gate
+  (iii) requires it while its own Out-of-scope forbids touching the lineage, and that conflict is a
+  planner call. A test re-reads the lineage source each run so the wording cannot drift back into
+  being false.
+- **Refusals.** `--attainable-maker-fee-bp` (gate (iv)) has no default at either of two independent
+  layers and refuses before any data is touched; `--db-path` no longer defaults to the real 24GB
+  `trading_data.db` and refuses any path resolving to it without an explicit scheduled-run flag
+  (held against relative, `..`-traversal, symlink, trailing-slash and `file:` URI vectors).
+- **Gate (ii) is enforced by construction:** deliberate fault injection at all three tiers produced
+  `72 dropped + 36 dropped + 12 failed + 96 ok = 216 = expected` — failures materialize as recorded
+  rows with reasons, never as omissions. This closes G8(a)'s hole, where 809's own per-cell data was
+  lost and only the OPT corner survived.
+- **Verification honesty:** the first cycle's end-to-end run was degenerate (6 fixture assets against
+  k∈{16,32}, so the book was always empty and every metric took a NaN-guarded branch). A reviewer
+  built a synthetic non-degenerate input instead; the arithmetic is now genuinely exercised —
+  `mean_hold` up to 4.3 bars with `Sh_decision` diverging from `Sh_per_bar` as it should.
+- **Also fixed:** window rows were labelled from hardcoded constants regardless of `--window-a`/
+  `--window-b`, so an overridden run's own metadata line contradicted the dates beside it. Labels are
+  now derived from the dates in use, with the two default labels proven byte-identical.
+- **What remains for the planner:** stage the lineage + `experiments/897_corrected_809/` to
+  gpu-server and run the sweep with the operator's attainable maker-fee tiers. Do NOT pass
+  `--skip-inherited-ic-check` on the real launch — it exists only for non-canonical-scale
+  verification. `runs/809_decision_rule_rescue/recompute_best.py`'s repair lives under gitignored
+  `runs/`, so staging it is a manual step invisible to the clean-tree gate.
+
 ## 2026-08-22 — TASK_894 — the slot order recorded INSIDE the checkpoint: `frame_symbols_sha256`
 
 - **What shipped.** The structural close of TASK_886's `NOT PROVEN: slot order` half. A checkpoint
