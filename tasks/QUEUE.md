@@ -3,35 +3,32 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-22 (planner, post factory run 38 — the seven-ship run).** Run 38 RATIFIED: **TASK_900,
-TASK_894, TASK_897 (instrument), TASK_881S, TASK_898 (instrument), TASK_881G, TASK_896 ALL
-SHIPPED.** Notables carried: 898's instrument caught a verdict-changing confound pre-launch (the
-spot-legal variant silently de-leverages to 43%/27.6% gross exposure — a leverage-matched series
-now ships with it; FULL reads +0.321 unmatched vs −1.308 matched, so the variant must be read on
-the matched series); 881G's gate (i) failed the DOC (46 cases authored from the doc alone — a
-reusable test shape for load-bearing docs); 896's re-pin was verified by an independent
-1,218-key diff (old `6bede1e9…` beside new `330484f5…` in the LEDGER). **Two rulings taken
-2026-08-22:** D55(a) — 897's interval gets 892's calibration method (raised block cap) before
-any cell is read, the band stands; D56(a) — blast radius MEASURED by the planner: **6 MATERIAL
-slots** (the 868 identity-split class; exact-spelling reads miss 33–51% of window rows), so
-897's runner applies the canon alias union at READ time for universe ranking AND panel build,
-809 lineage untouched. **The 892 real leg is graded: ANTI-EDGE (D47)** — the queue's
-measurement rows (897, 898) are the program's live edge-structure front.
-**Ready (physically ordered): 1 TASK_881D (protection + deleter + corpus; UNBLOCKED by 881G) →
-2 TASK_897 calibration adaptation (small instrument step per D55, then its srv leg is
-planner-scheduled). FILLER: TASK_899 (data backfill — planner/server ops). GATED: TASK_880
-(D34+D35; the D35 gate opens after 881D ships + real score files the new reader resolves).**
-**Planner-scheduled, no factory needed: TASK_898's real leg** (instrument shipped; stage the
-daily-table inputs to srv per D54 and launch) **and TASK_897's srv leg** (after the calibration
-step). **OPEN decisions: D43 only.**
-_Next takeable: **TASK_881D** — the last big infrastructure row; its corpus authors against
-881G's written grammar, and the D32/D34 `--apply` freeze conversation finally happens with a
-live corpus._
+**2026-08-22 (planner, post run 38b + the 898 verdict).** Run 38b (897's D55/D56 adaptation)
+HALTED correctly on the 3-cycle rule (D57): the τ dependence guard is inert out-of-family —
+the D56(a) alias read-layer and the D55(a) calibration re-keying are GREEN in `stash@{0}` (116
+tests). **D57 ruled (a) same day: narrow the claim and ship** — the srv leg's verdict reads on
+**Sharpe ≥ 1.0 and PnL > 0** with `CI lo > 0` recorded UNAVAILABLE-because-uncalibratable;
+**TASK_901** (range-based dependence probe, out-of-family validated) upgrades the third conjunct
+retroactively from the same artifacts. **898 GRADED: BOTH DEAD** (`f7e812f`) — `pathway.md:106`
+struck, the program has no positive-expectancy fallback; **897's minute-surface answer is now
+the only live edge thread.** D56(a) measured zero of 291 universe ranks moved by the alias
+union. **898's real leg and this week's operations also settled a harness fact: the planner lane
+runs on claude-kimi and the factory on claude-code — the pipes are NOT wired; coordination is
+repo-files only (this file, DECISIONS, banners, lore), and planner-scheduled runs go via
+ssh/tmux on gpu-server.**
+**Ready (physically ordered): 1 TASK_897 calibration resume (pop `stash@{0}`, narrow the τ
+claim, ship; then the srv leg is planner-scheduled on the two readable conjuncts) → 2 TASK_881D
+(protection + deleter + corpus; unblocked) → 3 TASK_901 (range-based dependence probe). FILLER:
+TASK_899 (data backfill — planner/server ops, WAITING on the Q2-2026 dump; only the
+already-ingested Q4_2025/Q1_2026 zips are in Downloads). GATED: TASK_880 (D34+D35).**
+**OPEN decisions: D43 only.**
+_Next takeable: **TASK_897's resume** — green work in the stash, the narrowing is the row._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | **UNBLOCKED (881G shipped run 38).** Scope item 0: author the real `PROTECTED.txt` corpus against 881G's written grammar (the doc is the spec, tested). The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
-| 2 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (calibration step) | XS/S | Instrument shipped run 38; the D55 step remains: run 892's calibration METHOD against 897's statistic with the block cap raised, certify coverage, record in the launch note. Then the srv leg is planner-scheduled. D56 measured: canon alias union applied at read time (6 MATERIAL slots disclosed per-cell). |
+| 1 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (calibration RESUME per D57) | XS/S | Green work in `stash@{0}` (116 tests; D56(a) alias layer + D55(a) calibration re-keying verified). The row: pop, NARROW the τ claim (the guard must say it is expected NOT to bite on this data), ship. Then the srv leg is planner-scheduled — verdict reads Sharpe ≥ 1.0 & PnL > 0, `CI lo > 0` UNAVAILABLE (TASK_901 upgrades it retroactively). |
+| 2 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
+| 3 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | **NEW 2026-08-22 — D57(b).** The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). When it ships, 897's third conjunct is re-read from the same artifacts — no srv re-run. |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.

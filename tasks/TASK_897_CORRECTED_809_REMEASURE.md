@@ -124,3 +124,18 @@ lineage is not edited (out-of-scope stands); the 6 affected slots are disclosed 
 any slot whose universe-rank changes under the union read is named in the artifact (the
 universe itself is computed from bar counts, so the union read can change the top-64, not just
 patch holes in it).
+
+**D57 (ruled (a), 2026-08-22) — the srv leg's verdict reads on the two readable conjuncts.** The
+τ dependence guard was measured inert out-of-family (valid only inside its calibration family;
+τ = 1–2 < block 60 on every real per-decision series — it would certify ~100% where containment
+measured 0.639). The guard ships with its claim narrowed (it must say it is expected NOT to bite
+here). The band's third conjunct, `CI lo > 0`, is **UNAVAILABLE-because-uncalibratable** on this
+leg; every interval carries the `UNCALIBRATED` qualifier and the verdict reads on **Sharpe ≥ 1.0
+and PnL > 0** plus per-cell point estimates. If a cell clears the two readable conjuncts at an
+attainable maker tier, the next step is fill-model validation via small live limit orders — the
+backtest CI was always advisory to that gate. **TASK_901** (the range-based dependence probe,
+out-of-family validated) upgrades the third conjunct retroactively FROM THE SAME ARTIFACTS.
+The stashed D55/D56 work (stash@{0}, 116 tests green) resumes under the narrowed claim. D56(a)
+bonus finding: the alias union changes ZERO of 291 universe ranks (the 6 material twins carry 0
+train-window rows — the identity split is OOS-only), and window-b missing fractions measured:
+/USDTEUR 56.1%, /USDTAUD 56.0%, /USDC/USDT 55.2%, /USDTCHF 53.4%, /USDCGBP 51.3%, /USDC/USD 37.7%.
