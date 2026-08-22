@@ -3,6 +3,42 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_896 — D48 execution: the 819 prototype's fill named honestly, and its source committed
+
+- **What shipped.** The D48(a) carve (the 819 single-asset prototype's `.py` sources enter git for the
+  first time — **9 files, zero artifacts**), the already-verified D44 fill comment that lives in
+  `runs/819_single_asset/portfolio.py`, the planner-ruled correction of two "verbatim" overclaims in
+  `tools/measure_leading_prefix.py`, and the `893/prefix-cells` LEDGER re-pin carrying **both** the old
+  and new sha256.
+- **The overclaim that was corrected.** The instrument asserted its `_ADMIT` predicate was "verbatim in
+  SQL" relative to `build_close_aligned`. It is not: `build_close_aligned` applies the
+  `% BAR_SEC == 0` lattice test in **numpy, after** the SQL, while `_ADMIT` folds a modulo term **into
+  the SQL text** — functionally equivalent, textually different. Also corrected: the docstring's "1 row"
+  granularity claim. **14 of the 16 majors span 2–24 MINUTE rows** (GRT 24, KAVA 22, MANA 19, ZEC 16,
+  EOS 15 …); only KSM and CRV are genuine 1-row fills, and "1 row" was only ever true of the downstream
+  *daily* subsample.
+- **The re-pin is legitimate because the numbers did not move, and that was verified independently.** A
+  reviewer re-ran the OLD pre-change instrument against the real 24GB `trading_data.db` and diffed all
+  **1,218 flattened JSON keys** itself rather than trusting the implementer's self-reported diff:
+  exactly **one** content difference, `db.admission_predicate` — the corrected string. Every count,
+  every `remeasure_FULL_and_BEAR22` metric and every positive-control number is byte-identical. Per
+  **D39** (a repair tool refreshing its own pin pins nothing) the LEDGER row keeps the **old** digest
+  `6bede1e9…` visible beside the new `330484f5…`, both recomputed from the files on disk, and the row's
+  finding prose is byte-identical — the re-pin does not quietly restate the result.
+- **The comment's own claims were re-derived, not re-asserted.** All 16 majors' leading-fill minute
+  counts were recomputed directly from the DB — **16/16 exact matches**. The "10 majors admitted exactly
+  at grid_start" claim was checked by querying unrestricted `MIN(timestamp)` per asset: all ten have
+  real pre-grid_start history (16–2643 days earlier), so they are genuinely excluded-but-present rather
+  than coincidentally at row 0. One number is explicitly **taken on trust and says so** — the second
+  counterfactual, which the comment itself discloses is not recomputable from the committed artifacts.
+- **A MINOR in the carve, caught by testing rather than reading, and fixed.** The `.gitignore` comment
+  claimed the carve used "the same named-file-only pattern as 868/869/877 above". It did not — it was an
+  extension wildcard, and a reviewer proved the difference concretely by planting a generated `.py`
+  that became stageable **with no `.gitignore` edit at all**, where the sibling carves require a named
+  line per file. Same class of defect this row exists to correct, so the carve is now a **per-filename
+  allowlist** of the 9 sources: still exactly 9 tracked, 0 non-`.py`, and a newly created `.py` in that
+  tree now stays ignored. Adding a file there costs a reviewed line again.
+
 ## 2026-08-22 — TASK_881G — the manifest grammar: written down, then made true
 
 - **What shipped.** The accepted manifest grammar now exists in writing — one doc block, identical in

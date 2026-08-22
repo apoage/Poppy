@@ -33,7 +33,10 @@ so the daily panel is a *minute-subsample*, and `ts_d` is sampled at the 816 gri
   * `build_close_aligned` admits a raw bar only if
     `timestamp >= grid_ts[0] AND timestamp < grid_ts[-1]+60 AND (timestamp-grid_ts[0]) % 60 == 0`.
     Bars BEFORE `grid_ts[0]` exist in the DB for several majors and are simply not admitted, so
-    those assets still get a (1-row) leading backward fill even though they are not "new listings".
+    those assets still get a leading backward fill even though they are not "new listings" —
+    measured on the 1-MINUTE panel this spans 2-24 rows for 14 of the 16 such majors (only KSM
+    and CRV are genuine 1-row fills); "1 row" is a property of the DOWNSTREAM daily subsample
+    (`close_1m[::1440]`), not of this predicate.
   * The bfill's SOURCE row is a MINUTE row (e.g. SOL's first admitted print, 2021-06-17 15:32
     UTC). K-subsampling almost never lands on it, so the source row is NOT present in the daily
     panel. The leading bit-identical run in a daily column is therefore made up ENTIRELY of
@@ -112,9 +115,12 @@ BAR_SEC = 60
 DEFAULT_DB = str(REPO_ROOT / "fixtures" / "trading_fixture.db")
 OUT_DIR = REPO_ROOT / "runs" / "893_prefix_cells"
 
-# `build_close_aligned`'s admission predicate, verbatim in SQL. A bar outside the grid window,
-# or off the minute lattice anchored at grid_start, was never written into the 1-min panel and
-# therefore cannot be the source of (or an escape from) the leading backward fill.
+# FUNCTIONALLY EQUIVALENT to `build_close_aligned`'s admission predicate, NOT textually
+# identical to it: `build_close_aligned` applies the `% BAR_SEC == 0` lattice test in numpy
+# AFTER the SQL fetch, while this folds an equivalent modulo term into the SQL text itself. A
+# bar outside the grid window, or off the minute lattice anchored at grid_start, was never
+# written into the 1-min panel and therefore cannot be the source of (or an escape from) the
+# leading backward fill.
 _ADMIT = ("asset_id=? AND timestamp>=? AND timestamp<? AND (timestamp-?)%60=0")
 
 
@@ -611,9 +617,12 @@ def main(argv=None):
                      "positions, never the re-measurement."),
             "reaches_back_to_panel_start": db_reaches_back,
             "admission_predicate": ("timestamp >= grid_start AND timestamp < grid_end AND "
-                                    "(timestamp - grid_start) % 60 == 0  (verbatim from "
-                                    "build_close_aligned; bars before grid_start were NOT "
-                                    "admitted and do not prevent a leading backward fill)"),
+                                    "(timestamp - grid_start) % 60 == 0  (FUNCTIONALLY "
+                                    "EQUIVALENT to build_close_aligned's admission, not "
+                                    "textually identical: that function applies the modulo "
+                                    "lattice test in numpy AFTER the SQL, this folds it into "
+                                    "the SQL text; bars before grid_start were NOT admitted "
+                                    "and do not prevent a leading backward fill)"),
         },
         "full_regime_rows": [full_lo, full_hi],
         "counts": {

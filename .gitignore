@@ -78,6 +78,21 @@ runs/869_rebase_wave_semantics/tz_demo/*
 !runs/877_xbt_alias_fold/
 runs/877_xbt_alias_fold/*
 !runs/877_xbt_alias_fold/test_xbt_alias_fold.py
+# TASK_896/D48(a): the 819 single-asset prototype's SOURCE is a COMMITTED runs/-side
+# deliverable (the D44 fill comment lives in portfolio.py). Un-ignore ONLY these named .py
+# sources — the same PER-FILENAME allowlist the 868/869/877 carves above use, deliberately
+# NOT a `*.py` wildcard: with a wildcard a newly created .py in this tree becomes stageable
+# with no .gitignore edit at all, so nobody reviews it. Adding a file here must cost a line.
+# Zero artifacts: no npz, no JSON, no checkpoint from this tree may ever be staged.
+!runs/819_single_asset/cap_aggregate.py
+!runs/819_single_asset/cap_common.py
+!runs/819_single_asset/cap_gbm.py
+!runs/819_single_asset/cap_mlp.py
+!runs/819_single_asset/cap_ridge.py
+!runs/819_single_asset/cap_seq.py
+!runs/819_single_asset/portfolio.py
+!runs/819_single_asset/powered.py
+!runs/819_single_asset/single_asset.py
 wandb/
 output/
 
