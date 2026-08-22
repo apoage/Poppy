@@ -1,3 +1,48 @@
+> **STATUS (2026-08-22): SHIPPED as `task881g-manifest-grammar` (4341586). TASK_881D IS UNBLOCKED** —
+> its corpus precondition now carries the written grammar. Gates (i)–(iv) PASS. `tools/tests`:
+> **529 passed, 1 skipped, 0 failed** (orchestrator-run first-hand).
+>
+> **Gate (i) FAILED the doc on first execution, and that is the headline.** An isolated agent authored
+> 46 cases from the doc alone (never reading the parser); a second ran them through the real CLI:
+> **40 AGREE, 3 SURPRISE, 3 UNDERSPECIFIED — every one a DOC defect, the tool self-consistent
+> throughout.** The doc was amended six times and each amendment re-verified against actual behaviour.
+> What a reader hit at the *first realistic shapes they would type*:
+> a **dangling entry exits 2** (the doc's "not malformed / does not poison the file" is about
+> intra-file poisoning and never said so); **"a fenced header can only ever ADD protection" is FALSE**
+> when the closing fence immediately follows the last item — it withdraws the WHOLE FILE, and one
+> blank line before the fence makes it accept; EMPTY-vs-INTERRUPTED was undecided; the item
+> micro-grammar (leading indent, no space after the dash, trailing whitespace — **all accepted**, in
+> deliberate asymmetry with the strictly column-0 header) was unwritten; whitespace-only-as-blank was
+> unwritten; and **entry paths resolve via `realpath` against the process CWD, not the manifest's own
+> directory** — unwritten, and it made a verifier's whole first pass falsely refuse.
+> **Lesson for 881D's corpus author:** the grammar is now authorable, but it was not before it was
+> tested this way. Write the corpus from the doc, and if you find yourself guessing, that is a doc bug.
+>
+> **Two defects the row itself introduced, both caught and closed:**
+> **(BLOCKER)** the nested/duplicate `--experiments-dir` collapse **suppressed an 881I-shipped
+> refusal** — it ran on `realpath` before `load_manifests`, erasing the input the symlinked-scan-root
+> refusal needs, taking `--experiments-dir experiments experiments_link` from **exit 2 to exit 0**.
+> It survived review only because no test had ever passed TWO scan dirs. **(MAJOR)** the collapse's
+> claim that "nothing under a collapsed directory goes un-scanned" was false — the walk prunes
+> `.git`/`__pycache__`, so a manifest under `experiments/__pycache__/` went **1 protect → 0 protect,
+> silently, at exit 0**: the wrongly-WITHDRAWN direction, which in 881D's world makes a
+> manifest-protected checkpoint deletable. **(MAJOR)** the new MD032 acceptance emitted a misaligned
+> span, so `strip_spans` cut INSIDE the last item line — on the exact shape gate (v) says 881D's
+> corpus will use.
+>
+> **Remainders — both doc-accuracy, both FIXED before shipping rather than carried** (this block IS
+> 881D's corpus precondition, and its own header says "if it is not written here, it is not
+> accepted"): the delete-path `--protect-file` paragraph was false for two of the three shapes it
+> named (a **directory CRASHES** at exit 1, a **live symlink is READ AND HONOURED**, a **fifo HANGS**
+> — only missing/dangling is "silently empty at exit 0"), and the collapse's reachability claim is
+> proven only against the walk's **name-based** prune list, not past an I/O error (a non-listable
+> intermediate does drop a protection — loudly, exit 2, so no verdict changes).
+>
+> **Still open, named in the doc, not closed here:** the `---`-after-a-gap SPLIT wording; the two
+> parsers' line-number drift on exotic Unicode separators (never changes an accept/refuse decision).
+> **Inherited from 881S and still live:** MAJOR-A (one shared absolute `--log-glob` reported once per
+> co-located score dir) and its three fail-closed count-inflation MINORs.
+
 # TASK_881G — the manifest grammar: written down, then accepted (881D's unblocker)
 
 **Status**: READY 2026-08-20 (planner; seeded by D53 after run 37's finding that 881I's "settled"
