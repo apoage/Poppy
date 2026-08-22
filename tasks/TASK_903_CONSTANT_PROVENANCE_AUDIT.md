@@ -1,3 +1,45 @@
+> **STATUS (2026-08-22, factory run 40): SHIPPED as `task903-constant-provenance`. 8 constants
+> enumerated, 9 gates, all classifications independently re-derived by an adversarial judge and held.
+> NO VERDICT CHANGED — and both load-bearing verdicts now rest on numbers that were actually
+> re-derived. Verified on gpu-server: 9/9 gates, exit 0.**
+>
+> **875's numbers REPRODUCE EXACTLY — the headline result.** The audit first classified them
+> PROVENANCE-UNRECOVERABLE-FROM-WORKSTATION. That was true of the workstation and stated as though it
+> were true of the numbers: the artifacts were simply on the other host (`gpu-server:runs/875_wf/`,
+> 1.4 GB). Re-derived read-only via `grade_correct.py` — **no re-run of the 8h57m battery** — all five
+> folds' medians and floors, all 15 seeds, f5's terminal PVs (59,860/83,721/67,056), zero bankruptcies,
+> full step counts, and `folds graded: 5/5 | above own floor: 1` match the LEDGER row exactly.
+> **"No OOS edge" rests on numbers that reproduce.** Superseded classification kept visible per D39.
+>
+> **The file named like the summary is empty.** `runs/875_wf/WF_SUMMARY.json` ships as `[]` — a
+> documented silent fake-null (`NOTE_summary_key_mismatch.md`: the orchestrator read
+> `sharpe`/`teacher.floor_inenv`; the schema keys are `sharpe_full`/`tiers["21"]["teacher_floor_inenv"]`).
+> The provenance chain is the raw per-seed JSONs + `grade_correct.py`, and it is intact.
+>
+> **892-C4 — a "REQUIRED" precondition the real leg never satisfied.** The 2000-trial
+> `calibration_real_leg.json` exists but was never wired in; `report.py:1082` embeds the old
+> 200/400-trial table in every shipped report. **Non-material, checked not asserted:** recomputed
+> across every calibrated field for all three seeds — no sign change, no zero-crossing, no band change.
+> **ANTI-EDGE holds; D47 untouched.**
+>
+> **A skipped gate can no longer certify a finding it did not make.** Exit contract: `0` = every gate
+> ran and passed; `1` = a check failed; `2` = nothing failed but a gate skipped fail-closed. **A skip
+> never exits 0**, and the summary is built only from gates that ran. Verified both ways.
+> Also removed: a "self-cleaning" `git checkout --` that silently destroyed unrelated uncommitted work
+> at exit 0 — replaced by a throwaway worktree with a fail-closed pre-check.
+>
+> **Classifications:** REPRODUCES — 892-C1, 892-C3, 892-C6, 875-C1. DRIFTS-with-named-cause
+> (both non-material) — 892-C4, 837-C1. PROVENANCE-UNRECOVERABLE (non-material, disclosed) —
+> 892-C2, 892-C5.
+>
+> **REMAINDERS → planner.** (1) `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with
+> fixture-derived content, unguarded — content-idempotent TODAY (only `generated` stamps move), so a
+> latent landmine that arms the moment the `SPEC.md:60-72` real-db re-materialization is committed.
+> (2) None of `runs/875_wf/`, `grade_correct.py`, `orch_wf875.sh` has ever been committed: a
+> load-bearing verdict's evidence lives on one host, gitignored — D48's cited-but-untracked class.
+> (3) `report.py:220-250`'s two MEASURED-MARGIN prose values are transcribed an order too small
+> (non-material — no code path reads the prose); 892's own lane.
+
 # TASK_903 — the constant-provenance question, pointed at 892's calibration table and 875's walk-forward numbers
 
 **Status**: READY 2026-08-22 (planner; seeded by D59's ruling, answering the run-39 factory's
