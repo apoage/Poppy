@@ -1085,6 +1085,16 @@ def load_manifests(scan_dirs: list[str], stats: dict | None = None) -> ManifestS
     n_scan_dirs = n_dirs_walked = n_read = n_refused = 0
 
     def _walk_error(exc: OSError) -> None:
+        # TASK_881S scope item 3 (D50): a dangling symlink named like a manifest basename is ALSO
+        # caught, more specifically, a few lines below in this same walk, by
+        # `manifest_shape_refusal` on the identical `fp` (same underlying `classify_entry` state —
+        # both are `lstat`-derived, so they can never disagree). Reporting it here TOO would double
+        # one real defect into two problem-count entries, exactly what an alert keying on that count
+        # must not see. Every OTHER dangling link (not a manifest basename) has no other detector
+        # in this file and is still reported here, unchanged.
+        if (isinstance(exc, DanglingScanLink)
+                and os.path.basename(getattr(exc, "filename", "")) in MANIFEST_BASENAMES):
+            return
         errors.append(f"{getattr(exc, 'filename', '?')}: {exc}")
 
     def _classify(entry: ManifestEntry) -> None:
@@ -1444,6 +1454,188 @@ def _find_score_dirs(roots: list[str], on_error=None, stats: dict | None = None)
     return sorted(found)
 
 
+# ======================================================================================
+# TASK_881S — SCORE-SOURCE ENUMERATION (D50, seeded by TASK_881I's 3-cycle halt)
+# ======================================================================================
+# `_find_score_dirs` above enumerates a directory only when it holds a `SCORE_BASENAMES` file
+# (`scores.jsonl` / `checkpoints_index.json`). The module docstring names a THIRD score source,
+# consulted in the SAME order — a run log matched by `--score-regex`/`--log-glob` — and that
+# source was never enumerated at all: a run scored PURELY through it was never handed to
+# `_load_scores_strict`, so that reader's log-file shape guard (`_score_source_shape_reason`, in
+# its `score_regex` branch) was dead code for exactly that input class. Measured (D50):
+# `--verify-manifests --score-regex ... --log-glob <FIFO>` with no `scores.jsonl` anywhere printed
+# "verify-manifests: OK" at exit 0, while the identical flags on the real (non-`--verify-manifests`)
+# path — which has no shape guard at all — hang forever on `open()`. So the pre-flight guarantee
+# `--help` advertises for `--verify-manifests` did not hold for this input class.
+#
+# `_find_log_glob_score_dirs` below is a SEPARATE enumeration, not a modification of
+# `_find_score_dirs` (kept byte-identical — TASK_881S gate (iv)): it only decides WHERE to look,
+# handing every directory it finds to the SAME `_load_scores_strict` the co-located-score path
+# already uses, so the shape check itself is never duplicated or re-derived here.
+
+def _find_log_glob_score_dirs(roots: list[str], score_regex: str | None, log_glob: str,
+                              already_found) -> list[str]:
+    """Directories under ``roots`` that carry a ``--log-glob`` match, found INDEPENDENTLY of
+    :func:`_find_score_dirs`'s ``SCORE_BASENAMES`` gate (D50; see the section banner above).
+
+    This function never opens anything and never classifies a shape: it only decides WHICH
+    directories to hand to :func:`_load_scores_strict`, which re-globs the identical pattern and
+    does its own, already-correct shape check (FIFO/socket/directory/dangling-symlink — the same
+    guard the co-located-score path already exercises) before ever calling ``open()``. Deciding
+    the shape a second time here would risk a second, differently-worded refusal for the same
+    file — the failure mode scope item 3 fixes elsewhere for manifests, not reintroduced here.
+
+    ``already_found`` is the caller's own :func:`_find_score_dirs` result over these same
+    ``roots``: skipped here so a directory that has BOTH a real score file and a matching log is
+    not handed to ``_load_scores_strict`` twice, which would print any refusal twice. Root-shape
+    refusals (a dangling/blank/non-directory ``--roots`` entry) are likewise not re-reported here
+    — the caller's ``_find_score_dirs`` call, over the identical ``roots`` with ``on_error``
+    wired, is already authoritative for root shape.
+
+    Inert (returns ``[]``) when ``score_regex`` is not given: canon's own log-glob branch is dead
+    without it too (see the module docstring), so there is nothing this input class could hide.
+
+    ONE PHYSICAL FILE YIELDS ONE CANDIDATE, however the pattern is spelled (TASK_881S scope item
+    3). The property that matters is not "the pattern is absolute" — it is DIRECTORY-INDEPENDENCE:
+    a pattern that resolves to the SAME physical file no matter which ``dirpath`` it is joined to.
+    An absolute pattern has that property because ``os.path.join(dirpath, log_glob)`` DISCARDS
+    ``dirpath``; a relative ``..``-traversal pattern has it too, by arithmetic instead of by
+    syntax (``runs/r1/../shared.log`` and ``runs/r2/../shared.log`` are the same file), and so
+    does any pair of spellings that meet at a symlink. An ``os.path.isabs`` test — which is what
+    stood here — is a pattern-match on ONE spelling of the property and misses the others:
+    measured on a 5-sibling-run tree with a single shared FIFO one level up and
+    ``--log-glob '../shared.log'``, it enumerated FIVE "additional score dir(s)" and printed FIVE
+    ``VERIFY-MANIFESTS REFUSAL`` lines for ONE file — a problem count an alert keys on, inflated
+    5x by one defect and growing with the size of the tree.
+
+    So the property is DETECTED, never spelled: every glob match is normalised with
+    ``os.path.realpath`` and a directory is enumerated only when it contributes a resolved path no
+    earlier candidate already covers. Directory-independent patterns collapse to one candidate by
+    construction, and genuinely distinct files (the ordinary ``--log-glob '*.log'`` case, one real
+    log per run dir) stay distinct — two real defects are never folded into one.
+
+    The claim set is SEEDED before the walk with everything already covered elsewhere in the same
+    invocation, so the dedup holds ACROSS passes and not merely within this one:
+
+    * the bare, CWD-relative glob term (:func:`_bare_log_glob_matches`), which
+      :func:`_load_bare_log_glob_scores_strict` reads exactly once per invocation. This is what
+      keeps an absolute pattern reported by that once-per-invocation checker, with its
+      source-naming message, exactly as before — the absolute case is now a CONSEQUENCE of the
+      invariant rather than a special case beside it; and
+    * every ``already_found`` directory's own matches — the caller has already handed those dirs
+      to ``_load_scores_strict``, which globs the identical term for them, so a file shared with a
+      co-located-score dir is already reported and must not be reported again from here.
+    """
+    if not score_regex:
+        return []
+    import glob as _glob
+
+    def _resolved(dirpath: str) -> set[str]:
+        # Enumeration only — `realpath` never opens anything, and a shape that cannot be opened
+        # (fifo/dangling/directory) still normalises fine; the SHAPE verdict stays
+        # `_load_scores_strict`'s, exactly as the paragraph above promises.
+        return {os.path.realpath(m) for m in _glob.glob(os.path.join(dirpath, log_glob))}
+
+    claimed: set[str] = {os.path.realpath(m)
+                         for m in _bare_log_glob_matches(score_regex, log_glob)}
+    for sd in sorted(already_found):
+        claimed |= _resolved(sd)
+    found = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+            # Same non-descent-through-symlinks discipline as `_find_score_dirs`: a directory
+            # reached only by crossing a symlink is not walked into looking for logs either.
+            # SORTED so that which of several colliding directories wins the single report is
+            # deterministic, rather than an artefact of `os.scandir` order.
+            dirnames[:] = sorted(d for d in dirnames
+                                 if not classify_entry(os.path.join(dirpath, d)).is_link)
+            if dirpath in already_found:
+                continue
+            resolved = _resolved(dirpath)
+            if resolved - claimed:
+                found.append(dirpath)
+            claimed |= resolved
+    return sorted(set(found))
+
+
+# --- canon's SECOND log-glob term: the bare, CWD-relative one ---------------------------------
+# `_load_scores_strict` (like canon's `_load_scores`) globs TWO terms for the `--score-regex`
+# source, per run dir:
+#
+#     _glob.glob(os.path.join(run_dir, log_glob)) + _glob.glob(log_glob)
+#                └── term 1: under the run dir ──┘   └─ term 2: BARE, relative to CWD ─┘
+#
+# Term 2 does not depend on `run_dir` at all: it is a single, GLOBAL score source, resolved once
+# against the process's CWD. `_find_log_glob_score_dirs` above mirrors only term 1, so a score
+# source reachable ONLY through term 2 was still never enumerated and `_load_scores_strict` was
+# never called on it — D50 one layer further down, and the same false green: a tree of
+# `runs/r1/snapshot_ep1/` plus a FIFO `./topfile.log`, run with `--log-glob topfile.log`, printed
+# "0 additional score dir(s) found, 0 examined" / "verify-manifests: OK" / exit 0, while the same
+# flags on the real (non-`--verify-manifests`) path hang forever on `open()`.
+#
+# So term 2 is probed here ONCE PER INVOCATION — not once per directory, which is what would
+# multiply one bad file into one refusal per walked dir.
+
+# A `run_dir` that provably holds NO co-located score file, used to isolate term 2 from term 1.
+# `os.devnull` is a character device, so `os.path.join(os.devnull, "scores.jsonl")` and
+# `os.path.join(os.devnull, "checkpoints_index.json")` can never exist (`lstat` -> ENOTDIR ->
+# `classify_entry` "unstatable" -> `_score_source_shape_reason` None -> `os.path.exists` False ->
+# the branch is skipped), and `glob("/dev/null/<relative pattern>")` is empty for the same reason.
+# Passing it as `run_dir` therefore leaves the bare term as the ONLY source that can contribute.
+_BARE_LOG_GLOB_PROBE_DIR = os.devnull
+
+
+def _bare_log_glob_matches(score_regex: str | None, log_glob: str) -> list[str]:
+    """What canon's bare, CWD-relative ``_glob.glob(log_glob)`` term resolves to, right now.
+
+    Enumeration only — nothing is opened or classified here (same division of labour as
+    :func:`_find_log_glob_score_dirs`). Exists so ``--verify-manifests`` can PRINT how many files
+    this source contributed: "0 file(s) matched" and "every matched file read clean" must not be
+    the same line, which is the reporting discipline the rest of this mode already follows.
+
+    Inert (``[]``) without ``score_regex``, exactly like canon's branch and like
+    :func:`_find_log_glob_score_dirs`.
+    """
+    if not score_regex:
+        return []
+    import glob as _glob
+    return sorted(_glob.glob(log_glob))
+
+
+def _load_bare_log_glob_scores_strict(score_regex: str | None, log_glob: str) -> dict[int, float]:
+    """Read the bare, CWD-relative ``--log-glob`` term through :func:`_load_scores_strict` itself,
+    ONCE per invocation, so every shape guard and every strictness rule that reader already
+    enforces covers this input class too.
+
+    The reader is CALLED, never re-implemented: a hand-rolled second copy of the FIFO/dangling/
+    directory shape check and of the ``--score-regex`` coercion check could silently drift from
+    the one that actually runs on the real path, and "the verifier's mirror disagrees with the
+    reader" is precisely the class of hole this row exists to close. ``_load_scores_strict`` is
+    left byte-identical (TASK_881S gate (iv)); the isolation is done by the ``run_dir`` argument
+    — see :data:`_BARE_LOG_GLOB_PROBE_DIR`.
+
+    Two deliberate differences from a raw call, both in the REPORTING, never in what is checked:
+
+    * the refusal names the SOURCE ("the bare `--log-glob …` term, matched relative to CWD …")
+      instead of ``/dev/null``, which would be an unreadable diagnosis for an operator; and
+    * duplicate error strings are collapsed. For an ABSOLUTE ``log_glob`` the reader's two glob
+      terms resolve to the identical path, so it appends the identical message twice and reports
+      "2 unreadable record(s)" for ONE file. That doubling is pre-existing behaviour of the reader
+      (unchanged since the 881I ship, and reachable there through any co-located score dir), so it
+      is not fixed HERE — but this row must not carry it into the count it is itself responsible
+      for.
+    """
+    try:
+        return _load_scores_strict(_BARE_LOG_GLOB_PROBE_DIR, score_regex, log_glob)
+    except ScoreReadIncomplete as e:
+        raise ScoreReadIncomplete(
+            f"the bare `--log-glob {log_glob}` term (matched relative to CWD {os.getcwd()}, "
+            f"independently of --roots — canon's reader globs it for every run)",
+            list(dict.fromkeys(e.errors))) from None
+
+
 def _run_manifest_check(a) -> int:
     """TASK_881I's CLI entry point (``--verify-manifests``): PARSE every manifest, protect-file,
     and score file this tool would otherwise consult, CLASSIFY what each one says, and REFUSE
@@ -1527,10 +1719,20 @@ def _run_manifest_check(a) -> int:
     # half verified NOTHING at exit 0 for every other wrong `--roots`.
     score_stats: dict = {}
     n_score_read = 0
+    score_dirs_seen: set[str] = set()
+    # Every score-source error string ALREADY printed, so the bare-`--log-glob` probe at the end of
+    # this function does not report a file a run-dir read has just reported. `_load_scores_strict`
+    # globs the bare term for EVERY run dir it is called on, so with a co-located `scores.jsonl`
+    # present the same bad CWD log is seen by both passes; without this, adding the probe would
+    # have turned one refusal into two on that tree (measured: 1 at the 881I ship -> 2). Scope item
+    # 3, applied to this row's OWN addition.
+    score_errors_seen: set[str] = set()
     for sd in _find_score_dirs(list(a.roots), on_error=_root_error, stats=score_stats):
+        score_dirs_seen.add(sd)
         try:
             _load_scores_strict(sd, a.score_regex, a.log_glob)
         except ScoreReadIncomplete as e:
+            score_errors_seen.update(e.errors)
             print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {e}", file=sys.stderr)
             ok = False
         n_score_read += 1
@@ -1543,6 +1745,50 @@ def _run_manifest_check(a) -> int:
           f"{score_stats.get('dirs_walked', 0)} dir(s) walked, "
           f"{score_stats.get('score_dirs_found', 0)} score dir(s) found, "
           f"{n_score_read} examined")
+
+    # TASK_881S (D50): the THIRD score source — `--score-regex`/`--log-glob` — enumerated
+    # independently of the `SCORE_BASENAMES` gate above, so a run scored purely through it reaches
+    # the same `_load_scores_strict` and its shape guard is no longer dead code for this input
+    # class. See `_find_log_glob_score_dirs`.
+    log_glob_extra = _find_log_glob_score_dirs(list(a.roots), a.score_regex, a.log_glob,
+                                               score_dirs_seen)
+    for sd in log_glob_extra:
+        try:
+            _load_scores_strict(sd, a.score_regex, a.log_glob)
+        except ScoreReadIncomplete as e:
+            score_errors_seen.update(e.errors)
+            print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: {e}", file=sys.stderr)
+            ok = False
+        n_score_read += 1
+    print(f"[ckpt_gc] score scan (log-glob fallback, independent of SCORE_BASENAMES): "
+          f"{len(log_glob_extra)} additional score dir(s) found, "
+          f"{len(log_glob_extra)} examined")
+
+    # TASK_881S, escalated cycle: canon's reader globs TWO terms for this source, and the pass
+    # above mirrors only the first (under each run dir). The second is BARE — relative to CWD,
+    # independent of `--roots` and of every directory walked — so it is checked here, exactly
+    # once per invocation. Without this, a score source reachable only through that term was
+    # never handed to `_load_scores_strict` at all and its shape guard stayed dead code for the
+    # input class D50 is about. See `_load_bare_log_glob_scores_strict`.
+    bare_matches = _bare_log_glob_matches(a.score_regex, a.log_glob)
+    if bare_matches:
+        try:
+            _load_bare_log_glob_scores_strict(a.score_regex, a.log_glob)
+        except ScoreReadIncomplete as e:
+            # Only what no pass above has already said, and NEVER a downgrade of the verdict: the
+            # term is examined unconditionally (that is the whole fix), and if every one of its
+            # errors was already reported then `ok` is already False from that report. Suppressing
+            # a duplicate LINE is not the same as making the check conditional on a run dir
+            # existing — with no score dir at all, `score_errors_seen` is empty and this refuses on
+            # its own, which is exactly the D50 tree.
+            fresh = [x for x in e.errors if x not in score_errors_seen]
+            if fresh:
+                print(f"[ckpt_gc] VERIFY-MANIFESTS REFUSAL: "
+                      f"{ScoreReadIncomplete(e.run_dir, fresh)}", file=sys.stderr)
+                ok = False
+    print(f"[ckpt_gc] score scan (bare --log-glob term, relative to CWD, independent of --roots): "
+          f"{len(bare_matches)} file(s) matched, "
+          f"{1 if bare_matches else 0} read(s) — once per invocation, never once per directory")
 
     print(f"[ckpt_gc] verify-manifests: {'OK' if ok else 'REFUSED'}")
     return 0 if ok else 2
@@ -1629,6 +1875,9 @@ def main() -> int:
                     help="TASK_881I: PARSE and CLASSIFY every manifest (--experiments-dir), "
                          "--protect-file, and score file (--roots) this tool would otherwise "
                          "consult, and REFUSE (exit 2) on anything malformed, symlinked, torn, "
+                         "unreadable-by-shape (TASK_881S: the score sources include the "
+                         "--score-regex/--log-glob log, matched BOTH under each --roots run dir "
+                         "and — as this tool's own reader does — relative to CWD), "
                          "or dangling. Deletes and discovers NOTHING — returns before --apply's "
                          "checkpoint discovery ever runs. Mutually exclusive in effect with "
                          "--apply (this mode never reaches it).")

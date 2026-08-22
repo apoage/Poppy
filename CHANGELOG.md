@@ -3,6 +3,63 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_881S — score-source enumeration: `--verify-manifests` now consults what it claims to
+
+- **What shipped.** D50's defect closed in `tools/ckpt_gc.py`: a run scored purely via
+  `--score-regex`/`--log-glob` — the module's own documented THIRD fallback source — is now enumerated
+  by the same code path that consults it, so `_load_scores_strict`'s shape guards are no longer dead
+  code for that input class. Before: `--verify-manifests … --score-regex … --log-glob <FIFO>` printed
+  `verify-manifests: OK`, **exit 0**, while the real path hung forever at **EXIT=124**. Now: exit 2,
+  one refusal, no hang — and the real path still hangs, proving the guard covers the genuine danger.
+- **Review found the same defect ONE LAYER DOWN, and that is the more interesting half.** Canon's
+  reader globs **two** terms per run dir — `os.path.join(run_dir, log_glob)` **and** a bare,
+  CWD-relative `_glob.glob(log_glob)`. The first implementation mirrored only the first term, so a
+  log reachable only through the bare term reproduced D50 exactly. Closed by probing the bare term
+  once per invocation through the **real** `_load_scores_strict` rather than a shape-only
+  re-implementation (a mirror would have missed the `--score-regex` coercion strictness; a test pins
+  that). The `--help` promise was **widened to match**, not narrowed — the guarantee was made true
+  instead of trimmed.
+- **The dedup was pattern-matched before it was implemented — twice caught, then done properly.**
+  Scope item 3 says one real defect must not inflate a count an alert keys on. First implementation:
+  an absolute `--log-glob` produced **one refusal per directory walked** (6 lines for one FIFO), and
+  that slipped through because the repro test asserted substring presence and exit code but never a
+  COUNT. Second implementation guarded on `os.path.isabs` — a spelling test, not the invariant — and
+  a reviewer broke it with a relative `../shared.log` across sibling dirs, which is
+  directory-independent by traversal without being absolute: **5 refusals for one physical file**.
+  The shipped version implements the actual invariant, **resolved-path collision**: every glob match
+  normalised through `realpath`, a directory enumerated only if it contributes a path no earlier
+  candidate covers, with the claim set seeded from both the bare term and the co-located dirs so the
+  dedup holds ACROSS the three passes. `../shared.log` 5 dirs → **1**; two genuinely distinct FIFOs
+  still → **2**; two spellings meeting at a symlink → **1**; a clean shared log stays exit 0.
+- **How the final gate was passed.** Not by re-reading the diff: **960 differential CLI pairs**
+  against a purpose-built no-dedup reference across 160 random trees × 6 glob spellings (zero
+  exit-code divergences, zero defects present in the reference and missing from the shipped code); a
+  **shuffled-`os.scandir` determinism probe** (one distinct result across 10 seeds, so which dir wins
+  the single report is not a filesystem artifact); and a **reconstructed previous build** to prove
+  the absolute case byte-identical on stdout and stderr.
+- **A pre-existing defect was documented rather than smuggled into scope.** With N score dirs that
+  each carry a valid `scores.jsonl` plus one shared absolute `--log-glob`, the tool prints N refusal
+  lines for one physical file. This reproduces at `bf1f8d5` — it is not a regression from this row,
+  and closing it needs pre-existing reader lines edited, which gate (iv)'s pure-insertion test
+  forbids. It now ships with two tests: one asserting today's counts, and one that runs the same tree
+  against `git show bf1f8d5:tools/ckpt_gc.py` so "pre-existing" is **measured, not asserted**. Both
+  go red if someone later fixes it — a known-limitation test that survives its own limitation being
+  fixed is a trap, and this one was checked against that.
+- **Gate (iv):** `tools/ckpt_gc.py` is a **pure insertion** — 249 added, **0** removed or rewritten vs
+  the 881I-shipped tree, verified independently by two judges via their own diff and AST-level
+  function extraction. The delete path stays unreachable: `--verify-manifests` returns before
+  `collect`/`plan`/`--apply`. The `--apply` freeze is untouched.
+- **Remainders (3 MINORs, all count-inflation, all fail-closed — exit codes correct, nothing
+  suppressed; not fixable inside the 3-cycle limit, worth a follow-up row).** (1) A dangling
+  `--log-glob` symlink is now reported TWICE where HEAD reported once — the same duplicate-refusal
+  class this row closes for `MANIFEST_BASENAMES`, moving the other way on the score side. (2)
+  `realpath` folds two DISTINCT dangling symlinks sharing a missing target into one candidate, and
+  does NOT fold hardlinks to a single inode — so the "one physical file, one candidate" docstring
+  over-claims in one direction and under-claims in the other; keying the claim on `(st_dev, st_ino)`
+  would close it. (3) `--log-glob ''` matches every walked directory and yields one refusal each
+  (several hundred lines on this repo); `--experiments-dir` refuses a blank at parse time and
+  `--log-glob` has no equivalent.
+
 ## 2026-08-22 — TASK_897 — the corrected 809 estimator: an instrument that cannot lie the way 809's did
 
 - **What shipped: the INSTRUMENT, not the verdict.** `experiments/897_corrected_809/` — `honest_estimator.py`

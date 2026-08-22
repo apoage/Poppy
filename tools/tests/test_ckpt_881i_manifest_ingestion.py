@@ -1350,10 +1350,14 @@ _REGEX = r"Epoch (?P<epoch>\d+) reward (?P<score>[-\w.]+)"
 
 
 def _score_regex_tree(tmp_path, log_body):
+    # Deliberately NO `scores.jsonl` / `checkpoints_index.json` anywhere (TASK_881S, D50 scope
+    # item 2): a test for the `--score-regex`/`--log-glob` FALLBACK source must not construct the
+    # primary source alongside it, or it never proves the fallback is independently reachable.
+    # Before TASK_881S this tree needed a co-located `scores.jsonl` just to get `runs/r1` past
+    # `_find_score_dirs`'s `SCORE_BASENAMES` gate; `_find_log_glob_score_dirs` now enumerates a
+    # log-glob match on its own, which is the very enumeration this row exists to prove.
     (tmp_path / "runs" / "r1").mkdir(parents=True)
     (tmp_path / "experiments").mkdir()
-    # a VALID scores.jsonl so `_find_score_dirs` reports the dir; the regex branch runs anyway
-    (tmp_path / "runs" / "r1" / "scores.jsonl").write_text('{"epoch": 1, "score": 0.5}\n')
     (tmp_path / "runs" / "r1" / "train.log").write_text(log_body)
     return tmp_path
 
@@ -1371,9 +1375,44 @@ def test_score_regex_clean_log_is_read_and_exits_zero(tmp_path):
     cwd = os.getcwd()
     os.chdir(str(tmp_path))
     try:
-        assert gc._load_scores_strict("runs/r1", _REGEX, "*.log") == {1: 0.5, 5: 0.75, 6: 0.80}
+        assert gc._load_scores_strict("runs/r1", _REGEX, "*.log") == {5: 0.75, 6: 0.80}
     finally:
         os.chdir(cwd)
+
+
+def test_load_scores_strict_merges_all_three_sources_in_order(tmp_path):
+    """`_load_scores_strict`'s CROSS-SOURCE merge: `checkpoints_index.json`, then `scores.jsonl`,
+    then the `--score-regex` log, all resolving into ONE dict, later source winning on a repeated
+    epoch — the reader's documented "same three sources" contract.
+
+    Restored here as its OWN tree (TASK_881S escalated cycle, MINOR): `_score_regex_tree` used to
+    carry a co-located `scores.jsonl` and was the only place this merge was exercised, but that
+    co-location is exactly what scope item 2 removes — a FALLBACK-source test must not construct
+    the PRIMARY source alongside it. Splitting the two concerns keeps both: the fallback tests
+    stay primary-source-free, and the merge keeps a test that is ABOUT the merge."""
+    run = tmp_path / "runs" / "r1"
+    run.mkdir(parents=True)
+    (tmp_path / "experiments").mkdir()
+    (run / "checkpoints_index.json").write_text(
+        '[{"epoch": 1, "score": 0.1}, {"epoch": 2, "score": 0.2}]')
+    # epoch 2 repeats -> scores.jsonl wins over checkpoints_index.json
+    (run / "scores.jsonl").write_text('{"epoch": 2, "score": 0.22}\n{"epoch": 3, "score": 0.3}\n')
+    # epoch 3 repeats -> the regex log wins over both
+    (run / "train.log").write_text("Epoch 3 reward 0.33\nEpoch 4 reward 0.4\n")
+
+    cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        assert gc._load_scores_strict("runs/r1", _REGEX, "*.log") == {
+            1: 0.1, 2: 0.22, 3: 0.33, 4: 0.4}
+    finally:
+        os.chdir(cwd)
+
+    # ...and the same tree through the real CLI stays green: three clean sources, no refusal.
+    r = _cli("--roots", "runs", "--experiments-dir", "experiments", "--score-regex", _REGEX,
+             "--log-glob", "*.log", "--verify-manifests", cwd=str(tmp_path), timeout=20)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 score dir(s) found, 1 examined" in r.stdout, r.stdout
 
 
 def test_score_regex_matched_but_uncoercible_record_refuses(tmp_path):
