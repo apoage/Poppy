@@ -1,3 +1,67 @@
+> **STATUS (2026-08-22, factory run 39): D57's NARROWING IS DONE AND VERIFIED — the row HALTED on
+> the 3-cycle rule before shipping (D59). NOT SHIPPED. Work preserved in `stash@{0}`, 188 tests +
+> selftest 12/12 green. THE SRV LEG MUST NOT LAUNCH until the read-write DB handle below is closed.**
+>
+> **What is finished and verified (8 lens-runs, 4 default-tier + 4 escalated).** The tau claim is
+> narrowed to what tau is: a linear-ACF statistic equal to the dependence RANGE only inside the
+> triangular family the calibration was measured against, demonstrably under-reading outside it
+> (a 4%-of-variance AR1 at phi=.99 reads tau=1, certifies 100%, covers 0.805; at phi=.999, 0.376).
+> The guard is stated as EXPECTED-NOT-TO-BITE here — and a flow-verifier CONFIRMED that empirically,
+> driving 36 real cells through the real pipeline and measuring tau=1-3 against block 60, so its
+> near-universal pass is disclosed as an absence of measurement, not a clean bill of health.
+> `CI lo > 0` is recorded UNAVAILABLE-because-uncalibratable with the D49/D55 structural reason as the
+> FIRST box in the artifact body; the calibrated pair is renamed `ci_lo_ADVISORY`/`ci_hi_ADVISORY`,
+> never band-readable, with the qualifier travelling in the SAME table cell as the number. TASK_901 is
+> named as the range-based replacement that re-reads the conjunct from the same artifacts.
+> **A regression judge rebuilt the pre-D57 tree in a worktree and proved all 144 per-cell artifact rows
+> BYTE-IDENTICAL: this work changed CLAIMS, never NUMBERS.**
+>
+> **The provenance wave — the transferable result of this run.** Asking one question of each shipped
+> constant (*is this the exact output of the command its own comment advertises?*) found FIVE that were
+> not, and they were re-pinned or re-disclosed with superseded records kept visible per D39:
+> `MEASURED_SHIPPED_K_AT_DEPENDENCE_MISMATCH` (claimed "MC noise ~6pp, never bit-identically" on a
+> BIT-DETERMINISTIC path), `MEASURED_CALIBRATION_TABLE` ("fresh random draws each run" — strata are
+> deterministically seeded), `MEASURED_TABLE_SEED_JITTER` (provenance unrecoverable; its shipped clause
+> "one of those six seeds landed on 0.9267 exactly" RETRACTED — and the retraction itself was then
+> caught contradicting its own paragraph and re-scoped), `MEASURED_DEPENDENCE_REFUSAL_OC` (silently
+> rounded to 3dp), `ci_coverage_probe.MEASURED_COVERAGE` (caveat 70 lines from the claim it qualifies).
+> Also corrected: `BLOCK_CAP_SELECTION_RATIONALE` said "only cap=80/n_dec=500 read below target" when
+> TWO cells do; `MEASURED_BORROWED_PAIRING_COVERAGE`'s row 639 cannot reproduce BY CONSTRUCTION, because
+> stratum 620 was demoted by this row.
+>
+> **Guards hardened, each demonstrated:** the protected-DB guard now refuses `?`/`#`/`file:` spellings
+> and compares realpath+samefile on BOTH cwd- and repo-relative interpretations (a judge had
+> DEMONSTRATED a writable handle via `trading_data.db?x=1` — sqlite parses `?x=1?mode=ro` as one
+> parameter, leaving `mode` unset); `--n-jobs` clamps and refuses above cpu_count (unclamped, 100000 was
+> MEASURED spawning 7,549 processes); **gate (iv) now REFUSES tiers absent from the fee grid** — passing
+> Kraken's real `14,12,10` previously measured NOTHING while the artifact called them "the
+> Kraken-reachable subset", fail-open toward CELL CLEARS since the verdict would be read off cheaper 8bp
+> cells; the dependence counter no longer reports "guard refused" for cells that carried no data (the
+> banner had contradicted its own table 144-to-0); `_parse_window` refuses unparseable and inverted
+> windows.
+>
+> **WHAT HALTED IT (D59).** A third, unguarded door to the same hazard: `sweep_gated_maker.py:405`
+> calls `probe.report_bar_frequency()` — the harness's FIRST data touch on every run — and
+> `probe.py:162` opens a bare `sqlite3.connect(cfg.db_path)`, i.e. READ-WRITE-CREATE, on whatever
+> `--db-path` names. Demonstrated: a nonexistent `--db-path` had a zero-byte file CREATED at it, and DDL
+> through that exact form succeeded on a decoy. This falsifies the harness's own sentence at
+> `sweep_gated_maker.py:44` ("this harness never writes to it") and breaches the config invariant — and
+> a read-write open of a 24GB sqlite carrying a hot journal performs rollback RECOVERY and writes, which
+> `mode=ro` cannot. The remedy is a few lines inside the in-scope file; it was cycle 4, and the rule
+> caps at 3.
+>
+> **REMAINDERS, all named in D59:** the 639 overlay disclosure exists in code but is NOT rendered (the
+> borrowed-pairing table renders no `reason` column, unlike the per-stratum table beside it); the
+> Scope-honesty prose still cites a "near-100% pass rate" the empty run does not have (errs
+> conservatively); the `dep<=block` column prints a bare `False` for cells the guard never ran on; **the
+> inherited-IC check is VACUOUS on a non-finite IC** (`nan > tol` is False) while the artifact records it
+> as performed; a 100%-failed run gets no top-level statement while a 0-decision run gets a large one;
+> `--out` DEFAULTS to the tracked `experiments/897_corrected_809/result.md`, so a bare run writes into
+> the repo tree; exit-code semantics are deliberately untouched and seeded as **D58**; the
+> `MEASURED_DEPENDENCE_REFUSAL_OC` dep-multiple grid is still {0,1,2,4,8} (at 1.5x the guard still
+> certifies 8-13% of draws at 0.905 coverage); the 809 lineage's other plain `sqlite3.connect` sites and
+> the never-validated maker-fill model stand unchanged.
+
 > **STATUS (2026-08-22): INSTRUMENT SHIPPED as `task897-corrected-809-estimator` (c8a406c). THE
 > VERDICT IS NOT IN — the real leg is planner-scheduled on gpu-server per D54.**
 > Gates (i), (ii), (iv) PASS. Gate (iii) is **PARTIAL and disclosed** (see below). Two BLOCKERs were
