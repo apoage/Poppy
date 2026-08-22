@@ -3,6 +3,61 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-22 — TASK_898 — trend-decay + the spot-legal variant: the instrument, and the confound it caught
+
+- **What shipped: the INSTRUMENT, not the verdict.** `experiments/898_trend_decay/` — `SPEC.md`
+  (pre-registered, hash-pinned), `decay_harness.py`, `PREREG.json`, an 11-check test module.
+  FALLBACK STANDS / FALLBACK DEAD, VARIANT LIVES / BOTH DEAD is the planner's ruling off a
+  gpu-server run per **D54**, and it rewrites `docs/pathway.md:106`. Nothing here emits a verdict.
+- **The finding that changes what this row will say.** The long-flat (no-short, spot-legal) variant
+  **silently de-leverages**: `trader.strategy.weights()` is signal-sign-agnostic, so clipping shorts
+  does not reallocate their budget onto the longs — it becomes **implicit cash**. Measured mean gross
+  exposure: FULL **43%** of baseline, BEAR22 **27.6%** — the exact regime the "is the edge just
+  crash-avoidance shorting?" question turns on. Sharpe is scale-invariant to a *constant* leverage
+  multiplier, not to a *state-dependent* one, so a book that goes mostly-to-cash precisely when the
+  frozen rule would have shorted damps both mean and variance right where the thesis lives — and no
+  reported field exposed it.
+- **So a third, leverage-matched series was added, and it inverts the reading.** Rescaling the
+  long-flat book row-wise to the baseline's realized exposure: in **every** regime the variant's
+  Sharpe was flattered by cash drag, and on FULL it goes from **+0.321 (roughly flat) to −1.308
+  (clearly negative)**; MASTER goes −0.035 → −1.858. An artifact without this series would have
+  shown "long-flat holds up" where the long-only signal alone scores −1.31 — a plausible route to a
+  wrong **FALLBACK DEAD, VARIANT LIVES** ruling. The de-leveraged book remains the PRIMARY series
+  (it is the honest reading of "shorts replaced by flat" and the only thing deployable without
+  perps); the matched series is labelled DIAGNOSTIC, not shippable, and its residual is disclosed
+  (rows where every present asset is short cannot be matched — `lm_unmatched_frac`).
+- **Exposure is now reported everywhere a Sharpe is**, per window and per regime, for all three
+  series, so the confound cannot be read past. Measured on the scorer's own H-strided decision grid,
+  recovered by calling unmodified `bt.regime_series` rather than re-deriving stride/warmup arithmetic
+  — validated against an independent reconstruction on 7 windows including straddling-panel-end and
+  fully-post-panel.
+- **Gate (i) — the scorer is genuinely unmodified.** `trader/backtest.py` and `trader/strategy.py`
+  have **zero** diff. The variant differs from `trader.strategy.build_positions` by exactly one line.
+  Equivalence of the window scorer to `trader.backtest.window_metrics` was first claimed on ONE
+  window; it now sweeps a **24-window battery** (unbounded, open-ended, panel-head, pre/post-panel,
+  straddling, degenerate, reversed, thin 1/3/6/8/14d, leap-day, full span) comparing **every key** at
+  `atol=0`, plus the variant path against unmodified `cell_metrics` on all 6 regimes — zero
+  mismatches, confirmed independently by a reviewer's own 26-case fuzz.
+- **Gate (ii) — both assertions, not one.** The raw `ohlcv_daily` epoch (independent of universe
+  filtering) AND the filtered panel's own `ts_sub` bounds, with a narrowing flag proven to fire on a
+  truncated panel. The second was promised by the SPEC and initially unimplemented — a universe whose
+  coverage was narrower than the table would have gone unnoticed, which is the exact data-rot failure
+  (G6) the gate exists for. The real table ends **2026-07-06** (~47 days stale as of shipping): WARN
+  band, so the srv run proceeds but every number carries an `epoch_caveat` — **TASK_899 has not run**,
+  and the artifact says which epoch it used.
+- **Pre-registration was amended honestly, not laundered.** Adding the third series changed
+  `SPEC.md`, so it was re-registered explicitly (`d714a9a0…` → `5ebcbaa2…`). That is legitimate only
+  because no real-data leg has run — the only extant numbers are fixture-scale instrument checks the
+  bands cannot be tuned against — and the bands, windows, cost tiers, seed, bootstrap count and rule
+  parameters are untouched (they are sourced live from `trader.config.STRATEGY`, so a SPEC.md text
+  edit cannot move them). SPEC.md records the counterfactual: had a real score been read, the honest
+  move would have been a new row, not an amendment.
+- **Remainders.** The leverage-matched series is concentration-unbounded (one surviving long can
+  carry the whole gross budget; scale reached 221× on a thin fixture row) — gross stays within cap
+  and it is diagnostic-only, but its Sharpe is not a shippable book's. `SPEC.md` was authored and
+  amended in an untracked working copy, so the pre-amendment prose cannot be byte-diffed; commit the
+  SPEC before amending next time.
+
 ## 2026-08-22 — TASK_881S — score-source enumeration: `--verify-manifests` now consults what it claims to
 
 - **What shipped.** D50's defect closed in `tools/ckpt_gc.py`: a run scored purely via

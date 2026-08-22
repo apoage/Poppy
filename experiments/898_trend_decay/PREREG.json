@@ -1,0 +1,40 @@
+{
+  "variant": "long_flat_898",
+  "spec_file": "SPEC.md",
+  "spec_sha256": "5ebcbaa2d5292dd522287c69fdad3d4c25b5c6c83c586d4ba6a87e0da5ea89e0",
+  "registered_at_utc": "2026-08-22T01:44:04.303521+00:00",
+  "rule": {
+    "lookbacks": [
+      30
+    ],
+    "sizing": "equal",
+    "signal": "sign",
+    "vol_window": 30,
+    "H_rebal": 1,
+    "gross_cap": 1.0,
+    "signal_transform": "s' = max(s, 0) -- short replaced by flat"
+  },
+  "scorer": {
+    "costs_bp": [
+      0,
+      3,
+      8,
+      21
+    ],
+    "gate_costs": [
+      8,
+      21
+    ],
+    "n_boot": 2000,
+    "seed": 819,
+    "identity": "trader.backtest.cell_metrics / trader.backtest.window_metrics (unmodified)"
+  },
+  "windows": {
+    "start": "2021-01-01",
+    "kinds": [
+      "calendar_year",
+      "half_year",
+      "master"
+    ]
+  }
+}
