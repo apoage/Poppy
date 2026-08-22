@@ -80,12 +80,34 @@ If compute is CPU-effective + bandwidth available + frees GPU → use CPU + RAM.
 
 Goal: keep GPU saturated with gradient compute, offload everything else.
 
+### Where tests and verification RUN (operator rule, 2026-08-22)
+
+**Test suites, eval sweeps, and verification runs go on `gpu-server`, on GPU, wrapped. NOT on
+workstation CPU.** Two reasons, and the first is the one that gets forgotten: **workstation CPU
+tests are SLOW** — while they grind, three RTX 3090s sit idle on the server. The second is the
+crash class: unwrapped jobs on the display box are unbounded and unattributable.
+
+```bash
+# on gpu-server, inside tmux, on a VERIFIED-IDLE gpu (0 is VirtualBox-reserved):
+tools/safe_run.sh --name <tag> --mem 16G --gpu 1 --gpu-frac 0.7 -- python -m pytest <path> -q
+```
+
+- Wrap **everything**: `tools/safe_run.sh` (cgroup RAM cap) inside `tmux` (survives SSH loss).
+- Never blind `--gpu 1,2,3`; check `nvidia-smi` and take one idle GPU.
+- The workstation keeps orchestration, greps, reads, and syntax checks (`py_compile`).
+- **"It was only the fixture DB" is not an exemption.** The rule is about *where* and *how much*,
+  not *which database*.
+
 ### Anti-patterns (NEVER)
 
 - Pre-generate training data to npz/pkl then load
 - Repeated disk reads in training loop
 - Intermediate tensors on disk
 - Any compute touching disk when RAM/VRAM available
+- **Bare `python -m pytest` / sweeps on the workstation** — wrap them and run them on the server
+- **Fanning out parallel subagents that each run suites/sweeps.** Load multiplies invisibly because
+  every agent looks small on its own. Factory run 40 put 8 unwrapped agents on the workstation and
+  drove load average to 17.6 while `gpu-server` idled. Cap concurrency deliberately.
 
 ## JAX Pitfalls
 

@@ -1,3 +1,48 @@
+> **STATUS (2026-08-22, factory run 40): SHIPPED as `task897-d59-ro-handle`. The D59(a) resume is
+> complete — the read-write DB handle is closed, and a protected-DB gate bypass was found and closed
+> with it. Verified on gpu-server (GPU-pinned, `safe_run`-wrapped): 207 tests + selftest 12/12.**
+>
+> **What closed.** `probe.report_bar_frequency` — the harness's FIRST data touch on every run — no
+> longer opens `--db-path` READ-WRITE-CREATE. `probe.sqlite3` is rebound to a read-only proxy around
+> that one call and restored in `finally` (rebinding the NAME, not the attribute: `probe.sqlite3` and
+> `alias_read_layer.sqlite3` are the same cached module object, so mutating `.connect` in place
+> recurses infinitely — measured). `probe.py` stays byte-untouched (md5 `ab8e94b0…`, mtime 2026-06-26),
+> checked explicitly because `runs/` is gitignored and `git status` cannot see it.
+>
+> **The bypass, which mattered more than the FIFO work.** A leading `//localhost` is stripped by
+> sqlite's URI parser as an ignored authority, so any belt reasoning about the raw string reasons about
+> a different file than sqlite opens. Measured against a decoy: `assert_db_path_allowed('<decoy>')`
+> REFUSED, `assert_db_path_allowed('//localhost<decoy>')` **PASSED**, and `_connect_ro` then opened the
+> protected decoy. Closed by normalizing once and feeding both the quote and the open, plus a leading
+> `//` refusal at the gate. Mutation-proven on srv both directions: remove BOTH belts → breach
+> reproduces; restore → refuses; either belt alone still refuses.
+>
+> **The FIFO guard was built and then REMOVED, on operator call.** Cycles 2–3 chased a `mode=ro`-on-FIFO
+> hang through ever more exotic spellings (FIFO → symlink-to-FIFO → `//localhost`-prefixed FIFO). That
+> is TASK_891's recorded failure mode — chasing total coverage of an unbounded input space — and
+> complexity inside a fail-closed guard is itself risk. `--db-path` is an operator-supplied path to a
+> real database on a scheduled run. **The hang is now a documented limitation, not a defence.**
+>
+> **One test's stated red-case was false and is retracted.**
+> `test_the_normalized_path_is_the_file_sqlite_opens` claimed dropping `normalize_db_path` from
+> `_connect_ro` would make it red; mutation-tested, it stayed GREEN, because sqlite does the identical
+> stripping itself. It pins the mirror, not the call site. Corrected in place.
+>
+> **Byte-identity, honestly.** The 144-cell fixture A/B differs only on `Runtime:` — but every cell is
+> zero-decision/NaN (≤6 assets present per bar vs the grid's `k≥16` floor), so it proves STRUCTURAL
+> identity only. The numeric proof is `bar_sec` equality plus an off-grid non-NaN A/B (0 mismatches).
+> The smoke grid is 144 cells; the full pre-registered grid is 864.
+>
+> **REMAINDERS → TASK_902**, all pre-existing: `run_sweep`/`_run_sweep_inner` never call
+> `assert_db_path_allowed`; the guard returns the unresolved string (TOCTOU residual, not closed);
+> unbounded refusal echoes; a FIFO `<db>-journal` sidecar still wedges (hangs identically pre-fix); the
+> artifact never states it ran the reduced smoke grid. Plus everything D58/D59 already deferred.
+>
+> **THE SRV LEG IS NOT LAUNCHED.** It is planner-scheduled, and the operator's attainable Kraken
+> maker-fee tiers must be recorded BEFORE the verdict is read (gate iv). Orchestration PARSES THE
+> ARTIFACT, never the exit code (D58's pre-902 contract).
+
+> _(superseded — run 39's halt banner, kept for the record:)_
 > **STATUS (2026-08-22, factory run 39): D57's NARROWING IS DONE AND VERIFIED — the row HALTED on
 > the 3-cycle rule before shipping (D59). NOT SHIPPED. Work preserved in `stash@{0}`, 188 tests +
 > selftest 12/12 green. THE SRV LEG MUST NOT LAUNCH until the read-write DB handle below is closed.**

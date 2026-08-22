@@ -21,8 +21,13 @@ population Sharpe is exactly 0, in two scenarios:
                    harness uses, and it is the relevant stress case here: per-decision SEGMENTS
                    are non-overlapping by construction, but consecutive HOLDS are not independent
                    bets (signal persistence and regime structure carry across rebalances), and
-                   `compute_honest_metrics` CAPS the block length at 20 — so any dependence longer
-                   than 20 decisions is structurally outside what this bootstrap can capture.
+                   `compute_honest_metrics` CAPS the block length at
+                   `honest_estimator.MAX_BLOCK_DEFAULT` — so dependence longer than that cap is
+                   structurally outside what this bootstrap can capture. The `MEASURED_COVERAGE`
+                   numbers below were taken when that cap was 20; D55(a) has since raised it (see
+                   the UPDATE note at the end of this docstring), and the CURRENT code path's
+                   certified coverage lives in `calibration.MEASURED_CALIBRATION_TABLE` +
+                   `calibration.MEASURED_BORROWED_PAIRING_COVERAGE`, not here.
 
 Coverage is measured against the NOMINAL 95% the percentile interval claims (2.5/97.5).
 
@@ -33,6 +38,16 @@ The numbers this printed on 2026-08-22 are recorded verbatim in `MEASURED_COVERA
 quoted in `honest_estimator.CI_UNCALIBRATED_DISCLOSURE`. They are a CHEAP measurement
 (400 trials x 400 resamples; binomial MC SE ~1.1-2.5pp near p=0.9), which is ample to establish
 the DIRECTION and ROUGH SIZE of the shortfall but is not a certification of any particular value.
+
+TASK_897 D55(a) UPDATE (2026-08-22, same day): `honest_estimator.MAX_BLOCK_DEFAULT` was RAISED
+from 20 to 60 after `MEASURED_COVERAGE` below was recorded — `block_for` here reads that live
+constant (never a hardcoded 20) so THIS probe cannot drift from the estimator it measures, but
+it also means **re-running the reproduce command above today prints DIFFERENT numbers than
+`MEASURED_COVERAGE`** at n_dec=500/1000 (block becomes 25/50 instead of 20/20) — that is
+expected, not a regression: `MEASURED_COVERAGE` is the PRE-calibration baseline that motivated
+raising the cap and building `calibration.py`'s calibrated-width correction in the first place,
+kept verbatim as the historical evidence. The CURRENT code path's certified coverage (raised
+cap + calibrated k) lives in `calibration.MEASURED_CALIBRATION_TABLE`, not here.
 """
 from __future__ import annotations
 
@@ -64,10 +79,15 @@ def simulate_overlapping(n_dec: int, dep: int, rng: np.random.Generator) -> np.n
 SCENARIOS = {"iid": simulate_iid, "overlapping": simulate_overlapping}
 
 
-def block_for(n_dec: int) -> int:
+def block_for(n_dec: int, max_block: int = hest.MAX_BLOCK_DEFAULT) -> int:
     """The block length `compute_honest_metrics` would itself select at this decision count —
-    read off the same expression, so the probe cannot drift from the estimator it measures."""
-    return max(2, min(20, int(n_dec) // 20))
+    read off the same expression AND the same live cap constant (`hest.MAX_BLOCK_DEFAULT`, D55(a)
+    raised it from 20 to 60), so the probe cannot drift from the estimator it measures. The
+    `MEASURED_COVERAGE` numbers below were recorded BEFORE the D55(a) cap raise (block cap was 20
+    at measurement time) — they remain the motivating evidence for calibrating
+    (`calibration.py`), not a live re-check of the raised cap; `test_calibration.py` and
+    `calibration.MEASURED_CALIBRATION_TABLE` are what certify the current (cap=60) code path."""
+    return max(2, min(int(max_block), int(n_dec) // 20))
 
 
 def measure_coverage(n_dec: int, scenario: str = "iid", dep: int = 20, n_trials: int = 400,
@@ -91,10 +111,39 @@ def measure_coverage(n_dec: int, scenario: str = "iid", dep: int = 20, n_trials:
 
 
 # Recorded verbatim from the reproduce command above on 2026-08-22 (seed=0, 400 trials,
-# n_boot=400, dep=20). EVERY cell is BELOW the nominal 0.95 the interval advertises; the
-# overlapping-dependence column is catastrophically below it at the decision counts a thin cell
-# actually produces. This is the evidence behind
+# n_boot=400, dep=20) UNDER THE THEN-PREVAILING BLOCK CAP OF 20. EVERY cell is BELOW the nominal
+# 0.95 the interval advertises; the overlapping-dependence column is catastrophically below it at
+# the decision counts a thin cell actually produces. This is the evidence behind
 # `honest_estimator.CI_UNCALIBRATED_DISCLOSURE`.
+#
+# *** WHAT RE-RUNNING THE COMMAND TODAY PRINTS, CELL BY CELL (D57 fix pass, item 4) ***
+# The docstring above says this at length ~70 lines up; it is repeated HERE because the
+# "recorded verbatim" claim sits on THIS constant and a reader checking it must not have to go
+# find the caveat. `block_for` reads the LIVE `honest_estimator.MAX_BLOCK_DEFAULT`, which D55(a)
+# raised from 20 to 60 AFTER these numbers were taken, so `block` changes for any cell whose
+# n_dec // 20 exceeds 20 — and the coverage changes with it:
+#
+#   * STILL REPRODUCE (block unaffected by the cap: 2, 5 and 10, all below either cap) —
+#     ("iid",40)=0.905, ("iid",100)=0.902, ("iid",200)=0.920 and the LOAD-BEARING
+#     ("overlapping",100)=0.530, the number D55/D49 and `CI_UNCALIBRATED_DISCLOSURE` quote.
+#     Re-measured 2026-08-22 at the raised cap: identical, at the 3 decimals recorded here.
+#     PRECISION: 3dp is a DISPLAY rounding of hits/400 — ("iid",100) reads 0.9025 live and is
+#     recorded as 0.902; `round(live, 3) == recorded` is the exact claim, pinned by
+#     `test_honest_estimator.py::test_measured_coverage_probe_load_bearing_cells_still_reproduce`.
+#   * NO LONGER REPRODUCE (the cap raise moved their block) — ("iid",500) and
+#     ("overlapping",500) now run at block 25 instead of 20, ("iid",1000) and
+#     ("overlapping",1000) at block 50 instead of 20. Measured at the raised cap they read
+#     roughly 0.930 / 0.877 / 0.930 / 0.910 against the 0.935 / 0.865 / 0.948 / 0.868 recorded
+#     (the second figure was written as 0.878 and is CORRECTED to 0.877, D57 fix cycle 4 item C4:
+#     the ("overlapping",500) cell measures 351/400 = 0.8775 exactly, and the nearest double to
+#     0.8775 lies just BELOW it, so the command's `f"{...:.3f}"` renders 0.877 — which is what a
+#     reader checking this comment against the output actually sees. Re-run 2026-08-22: the cell
+#     reads 0.8775 (400 usable trials) and prints 0.877.)
+#     here. That is EXPECTED — a longer block is a different estimator, which is the whole reason
+#     the cap was raised — and it is why these four cells are historical evidence only.
+# NOTHING here certifies the current code path; `calibration.MEASURED_CALIBRATION_TABLE` +
+# `calibration.MEASURED_BORROWED_PAIRING_COVERAGE` do that. The four still-reproducing cells are
+# NOT a certification either: every one of them is BELOW nominal, which is the point.
 MEASURED_COVERAGE = {
     ("iid", 40): 0.905,
     ("iid", 100): 0.902,
@@ -105,6 +154,13 @@ MEASURED_COVERAGE = {
     ("overlapping", 500): 0.865,
     ("overlapping", 1000): 0.868,
 }
+
+# The split above, machine-readable so a test can pin it instead of a reader trusting the comment.
+# A cell reproduces iff the cap raise did not move its block, i.e. iff n_dec // 20 <= 20.
+MEASURED_COVERAGE_STILL_REPRODUCES = (("iid", 40), ("iid", 100), ("iid", 200),
+                                      ("overlapping", 100))
+MEASURED_COVERAGE_SUPERSEDED_BY_CAP_RAISE = (("iid", 500), ("iid", 1000),
+                                             ("overlapping", 500), ("overlapping", 1000))
 
 
 def main() -> None:

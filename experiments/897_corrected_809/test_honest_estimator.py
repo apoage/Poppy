@@ -245,12 +245,130 @@ def test_ci_fields_are_named_uncalibrated():
 
 
 def test_ci_uncalibrated_disclosure_states_the_consequence():
-    """The disclosure must say the thing that matters: the band's criterion cannot be read off
-    this interval, and it must cite the D49 precedent it rests on."""
+    """The disclosure must say the thing that matters: the band's criterion is UNAVAILABLE off
+    this interval (TASK_897 D57 narrowed 'cannot be read off THIS interval' to 'unavailable on
+    this leg, off either interval'), and it must cite the D49 precedent it rests on."""
     d = hest.CI_UNCALIBRATED_DISCLOSURE
     assert "UNCALIBRATED" in d
     assert "D49" in d
-    assert "CI lo > 0" in d and "CANNOT BE READ OFF THIS INTERVAL" in d
+    assert "CI lo > 0" in d and "UNAVAILABLE-because-uncalibratable" in d
+
+
+def test_ci_uncalibrated_disclosure_states_the_certifications_own_condition():
+    """Fix cycle 3, MAJOR 1(a); narrowed by TASK_897 D57 (2026-08-22). This string ships VERBATIM
+    into every artifact, at exactly the spot a reader checks the calibration's legitimacy — so it
+    is where the certification's CONDITION, and the fact that the guard checking it is measured
+    inert on this row's real data, both have to be stated."""
+    d = hest.CI_UNCALIBRATED_DISCLOSURE
+    assert "CONDITIONAL ON MEASURED DEPENDENCE" in d
+    assert "dep == block" in d
+    assert "NOT a worst case" in d
+    assert "0.52-0.55" in d and "0.530" in d
+    assert "REFUSES to certify" in d
+    assert "cannot be measured at all" in d
+    # the condition names the LIVE cap, by construction, so it cannot go stale
+    assert f"capped at {hest.MAX_BLOCK_DEFAULT}" in d
+    # D57: the tau guard is narrowed to a linear-ACF, in-family-only statistic, and the real-data
+    # inertness + TASK_901 handoff must be named right here, not only in calibration.py
+    assert "LINEAR-ACF" in d
+    assert "0.805" in d and "0.376" in d
+    assert "EXPECTED NOT TO BITE" in d
+    assert "0.639" in d
+    assert "TASK_901" in d
+    assert "UNAVAILABLE-because-uncalibratable" in d
+
+
+# ------------------------- the realized-dependence measurement (fix cycle 3, MAJOR 1(b))
+
+def test_honest_metrics_reports_the_block_it_used_and_the_dependence_it_measured():
+    """The two fields the refusal is built on must come off the ESTIMATOR, not be re-derived by
+    the consumer: `block_used` is the block the CI was actually bootstrapped at, and
+    `measured_dependence_len` is this cell's own realized per-decision dependence."""
+    fields = set(hest.HonestMetrics.__dataclass_fields__)
+    assert {"block_used", "measured_dependence_len"} <= fields
+    rng = np.random.default_rng(0)
+    n_dec, hold = 400, 3
+    gross = np.repeat(rng.normal(0, 1e-4, n_dec), hold)
+    turn = np.zeros(gross.size)
+    turn[::hold] = 0.1
+    m = hest.compute_honest_metrics(gross, turn, 0.0, 60, seed=0, n_boot=100)
+    assert m.n_decisions == n_dec
+    assert m.block_used == max(2, min(hest.MAX_BLOCK_DEFAULT, n_dec // 20)) == 20
+    assert np.isfinite(m.measured_dependence_len) and m.measured_dependence_len <= 3
+
+
+def test_block_used_is_minus_one_when_no_ci_was_computed():
+    """Below `MIN_DECISIONS_FOR_SHARPE` no CI exists, so there is no block to compare against —
+    the record must say so rather than report a plausible-looking block."""
+    gross = np.zeros(100)
+    turn = np.zeros(100)
+    turn[10] = 0.1                       # exactly ONE decision
+    m = hest.compute_honest_metrics(gross, turn, 0.0, 60, seed=0, n_boot=50)
+    assert m.n_decisions == 1
+    assert m.block_used == -1
+    assert np.isnan(m.measured_dependence_len)
+
+
+def test_dependence_length_refuses_rather_than_guesses():
+    """FAIL-CLOSED at the source. NaN — never a number — for a series too short to estimate an
+    ACF from, a degenerate one, or one whose ACF never returns to the white-noise band."""
+    assert np.isnan(hest.dependence_length(np.zeros(0)))
+    # too short to estimate an ACF from — NON-degenerate on purpose, so this pins the length
+    # floor itself and not the zero-variance guard below it
+    short = np.random.default_rng(3).normal(size=hest.MIN_DECISIONS_FOR_DEPENDENCE - 1)
+    assert short.std() > 0
+    assert np.isnan(hest.dependence_length(short))
+    assert np.isnan(hest.dependence_length(np.ones(500)))                    # zero variance
+    walk = np.cumsum(np.random.default_rng(1).normal(size=20000))            # unresolved memory
+    assert np.isnan(hest.dependence_length(walk))
+    # ...and it DOES measure an ordinary series (the guard is not a blanket refusal)
+    iid = np.random.default_rng(2).normal(size=2000)
+    assert hest.dependence_length(iid) == pytest.approx(1.0)
+
+
+def test_ci_uncalibrated_disclosure_quotes_the_LIVE_block_cap_not_a_stale_one():
+    """MAJOR (fix pass 2026-08-22): this disclosure ships VERBATIM into every artifact, a few
+    lines below a calibrated table showing `block=60, achieved=True` rows — and it still asserted,
+    present tense, that the estimator "CAPS the block length at 20, so dependence longer than 20
+    decisions cannot be captured at any n", and that calibrating was still "a planner-scheduled
+    prerequisite". Both were FALSE at ship time. The artifact contradicted itself at exactly the
+    spot a reader checks the calibration's legitimacy.
+
+    The previous version of this test only pinned a qualitative phrase, which is why the
+    staleness sailed through. This one asserts THE CAP VALUE THE CODE ACTUALLY USES — the
+    disclosure is built as an f-string over `MAX_BLOCK_DEFAULT`, so the claim and the constant
+    cannot drift apart again — and that the retracted claims are gone."""
+    d = hest.CI_UNCALIBRATED_DISCLOSURE
+    cap = hest.MAX_BLOCK_DEFAULT
+    # (1) the live cap is quoted, by construction, in the sentence that describes the mechanism
+    assert f"`MAX_BLOCK_DEFAULT` = {cap} decisions" in d
+    assert f"min({cap}, n_dec // 20)" in d
+    # (2) the stale present-tense claims are gone
+    assert "CAPS the block length at 20" not in d
+    assert "cannot be captured at any n" not in d
+    assert "planner-scheduled prerequisite" not in d
+    # (3) the historical measurement is still quoted, but explicitly dated to the OLD cap
+    assert "0.530" in d and "THEN-" in d and "PREVAILING BLOCK CAP OF 20" in d
+    # (4) the CURRENT mechanism (where an advisory interval does exist) is described — renamed
+    # from ci_calibrated/ci_lo to ci_advisory/ci_lo_ADVISORY by TASK_897 D57 (2026-08-22)
+    assert "ci_advisory" in d and "`ci_lo_ADVISORY`" in d
+    assert "ci_calibrated" not in d and "`ci_lo`" not in d
+    # (5) and the disclosure never claims a cap the code does not use
+    for wrong in (20, 21, 40, 80, 100):
+        if wrong == cap:
+            continue
+        assert f"`MAX_BLOCK_DEFAULT` = {wrong}" not in d
+
+
+def test_ci_uncalibrated_disclosure_does_not_contradict_the_calibration_table():
+    """Cross-module consistency: the disclosure ships in the same artifact as
+    `calibration.MEASURED_CALIBRATION_TABLE`. If that table certifies rows at the raised cap,
+    the disclosure beside it must not be describing a lower one."""
+    import calibration as cal
+    assert cal.NEW_MAX_BLOCK == hest.MAX_BLOCK_DEFAULT
+    shipped_blocks = {e["block"] for e in cal.MEASURED_CALIBRATION_TABLE.values()}
+    assert max(shipped_blocks) == hest.MAX_BLOCK_DEFAULT
+    assert f"{hest.MAX_BLOCK_DEFAULT} decisions" in hest.CI_UNCALIBRATED_DISCLOSURE
 
 
 def test_measured_coverage_probe_reproduces_below_nominal():
@@ -265,6 +383,58 @@ def test_measured_coverage_probe_reproduces_below_nominal():
     assert r["coverage"] < 0.80                 # nominal is 0.95
     assert probe.MEASURED_COVERAGE[("overlapping", 100)] < 0.95
     assert all(v < 0.95 for v in probe.MEASURED_COVERAGE.values())
+
+
+def test_measured_coverage_probe_caveat_lives_on_the_constant_not_70_lines_away():
+    """D57 fix pass item 4. `MEASURED_COVERAGE`'s comment says "recorded verbatim from the
+    reproduce command above", and since the D55(a) cap raise (20 -> 60) four of its eight cells no
+    longer reproduce that command. The module docstring said so; the comment ON THE CONSTANT did
+    not, and that is where a reader checks. This pins the caveat's LOCATION and its CONTENT: which
+    cells still reproduce, which do not, and why."""
+    import inspect
+
+    import ci_coverage_probe as probe
+    src = inspect.getsource(probe)
+    head, _, tail = src.partition("MEASURED_COVERAGE = {")
+    # the caveat must sit in the ~30 lines immediately above the constant, not only in the docstring
+    near = "\n".join(head.splitlines()[-32:])
+    assert "WHAT RE-RUNNING THE COMMAND TODAY PRINTS" in near
+    assert "STILL REPRODUCE" in near and "NO LONGER REPRODUCE" in near
+    assert "0.530" in near and "LOAD-BEARING" in near      # the one that still reproduces
+    for n_dec in (500, 1000):
+        assert f'("iid",{n_dec})' in near and f'("overlapping",{n_dec})' in near
+    # the split is machine-readable and covers the record exactly once
+    a, b = probe.MEASURED_COVERAGE_STILL_REPRODUCES, probe.MEASURED_COVERAGE_SUPERSEDED_BY_CAP_RAISE
+    assert set(a) | set(b) == set(probe.MEASURED_COVERAGE)
+    assert not set(a) & set(b)
+    # ...and it is the split the code implies: a cell reproduces iff the cap raise left its block
+    for scenario, n_dec in a:
+        assert probe.block_for(n_dec) == min(20, n_dec // 20), (scenario, n_dec)
+    for scenario, n_dec in b:
+        assert probe.block_for(n_dec) > 20, (scenario, n_dec)
+    assert tail                                            # the constant really follows the caveat
+
+
+def test_measured_coverage_probe_load_bearing_cells_still_reproduce():
+    """The other half of item 4: the cells the caveat says still reproduce, actually re-measured
+    through the live code path at the recorded settings — exact at the 3 decimals the record
+    prints (a coverage is hits/400, so 3dp is a display rounding: ("iid",100) reads 0.9025 live).
+
+    SUBSET, DISCLOSED: 2 of the 4 unaffected cells — ("overlapping",100), the load-bearing 0.530
+    that D49/D55 and `CI_UNCALIBRATED_DISCLOSURE` quote, and ("iid",100), the one cell whose
+    record is a rounding of a 4th decimal, so the disclosed precision claim is pinned and not just
+    asserted. Each cell costs ~5.5s (400 trials x 400 resamples); the other two unaffected cells
+    (("iid",40) and ("iid",200)) were verified out of band in the same fix pass and reproduce
+    identically, but are not paid for on every run. The four SUPERSEDED cells are deliberately
+    NOT re-measured here — under the raised cap they are a different estimator, which is the
+    caveat's whole point."""
+    import ci_coverage_probe as probe
+    for cell in (("overlapping", 100), ("iid", 100)):
+        scenario, n_dec = cell
+        r = probe.measure_coverage(n_dec, scenario=scenario)     # every arg at the recorded default
+        assert r["n_usable"] == 400, cell
+        assert round(r["coverage"], 3) == probe.MEASURED_COVERAGE[cell], (cell, r["coverage"])
+    assert probe.MEASURED_COVERAGE[("overlapping", 100)] == 0.530
 
 
 if __name__ == "__main__":

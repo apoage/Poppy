@@ -25,7 +25,27 @@ and hand-checkable in isolation.
 
 CONFIDENCE INTERVALS ARE **UNCALIBRATED** HERE — see `CI_UNCALIBRATED_DISCLOSURE` below and the
 `ci_lo_UNCALIBRATED`/`ci_hi_UNCALIBRATED` field names on `HonestMetrics`. The pre-registered
-band's "CI lo > 0" criterion therefore CANNOT be read off this module's interval.
+band's "CI lo > 0" criterion therefore CANNOT be read off this module's interval. One layer up,
+`calibration.py` certifies a width-inflation factor per real `(block, n_dec)` pairing through
+THIS module's own `block_bootstrap_sharpe_ci`, and `sweep_gated_maker.apply_ci_calibration`
+publishes the widened result as `ci_lo_ADVISORY`/`ci_hi_ADVISORY`, NaN wherever the pairing is
+uncertified.
+
+TASK_897 D57 (2026-08-22) — `ci_lo_ADVISORY`/`ci_hi_ADVISORY` ARE **NEVER BAND-READABLE ON THIS
+LEG EITHER**, certified or not. The calibration's own certifying condition (this cell's measured
+per-decision dependence <= the block its CI was bootstrapped at) is checked via
+`dependence_length` below, a LINEAR-ACF statistic (the integrated autocorrelation time, tau) that
+equals the dependence's RANGE — what a block bootstrap actually needs — only inside the exact
+triangular-ACF family the calibration was measured against, and demonstrably UNDER-READS outside
+it (see `dependence_length`'s own docstring for the measured numbers). On THIS row's real
+per-decision data the guard is EXPECTED NOT TO BITE (every measured series reads tau=1-2 against
+block 60), so its near-universal pass here is NOT evidence the dependence condition holds — it is
+the guard measured INERT exactly where it will be used. The pre-registered band's third
+criterion, "CI lo > 0", is therefore **UNAVAILABLE-because-uncalibratable** on this leg regardless
+of which pair a reader looks at. `ci_lo_ADVISORY`/`ci_hi_ADVISORY` are recorded anyway — never
+discarded — because **TASK_901** (a range-based dependence probe: first-lag-in-band /
+variance-ratio / spectral-density-at-zero, validated out-of-family) re-reads this conjunct
+retroactively FROM THE SAME ARTIFACTS.
 """
 from __future__ import annotations
 
@@ -43,39 +63,100 @@ SECONDS_PER_YEAR = 365.0 * 24.0 * 3600.0  # 31,536,000 — non-leap convention, 
 # than a number a band could be read off. See `test_fewer_than_two_real_decisions_is_nan`.
 MIN_DECISIONS_FOR_SHARPE = 2
 
+# TASK_897 D55(a) — the block-length cap `compute_honest_metrics` selects at (previously a bare
+# 20, making dependence longer than 20 decisions structurally uncapturable at ANY n, per D49's
+# re-measured finding below). Raised to 60 by measurement, not taste — see
+# `calibration.BLOCK_CAP_SELECTION_RATIONALE` for the two reproducible sweeps
+# (`measure_block_cap_candidates` / `measure_dependence_mismatch`) behind this number. Owned
+# HERE (not in `calibration.py`) so `calibration.py` can import it without creating a circular
+# import (`calibration.py` already imports this module to run the REAL bootstrap it calibrates).
+MAX_BLOCK_DEFAULT = 60
+
+# --- REALIZED-DEPENDENCE MEASUREMENT (fix cycle 3, MAJOR 1(b)) -------------------------------
+# The calibration certifies `k` at dep == block ONLY (see `calibration.CERTIFICATION_IS_
+# CONDITIONAL_ON_DEPENDENCE`). Nothing in the pipeline previously MEASURED the real per-decision
+# dependence of the 809 strategy, so the certification rested on an assumption the data was never
+# asked about. These constants and `dependence_length` below give the srv leg the ability to
+# REFUSE: each cell's own realized per-decision return series is measured, and where its
+# dependence exceeds the block the cell's CI was bootstrapped at, `sweep_gated_maker.
+# apply_ci_calibration` withholds even the advisory pair (`ci_advisory=False`, qualifier
+# stands) — and per D57, an advisory=True cell is STILL never band-readable on this leg (the
+# guard behind the flag is measured inert out-of-family; see `dependence_length`'s docstring).
+DEPENDENCE_ACF_N_SE = 2.0            # white-noise band = n_se/sqrt(n): the truncation rule.
+DEPENDENCE_ACF_MAX_LAG_FACTOR = 4    # probe lags out to 4x the largest representable block.
+MIN_DECISIONS_FOR_DEPENDENCE = 20    # below this an ACF is not an estimate; refuse instead.
+
 CI_UNCALIBRATED_DISCLOSURE = (
-    "THE CONFIDENCE INTERVAL PRODUCED BY THIS MODULE IS **UNCALIBRATED**. "
-    "`block_bootstrap_sharpe_ci` is a plain circular block bootstrap whose two-sided coverage "
-    "has NEVER been validated for this statistic (an annualized SHARPE RATIO of a per-decision "
-    "return series) at the block lengths this module selects. DECISIONS D49 (2026-08-19) records "
-    "the directly relevant negative result on this repo's OTHER block bootstrap: where the block "
-    "length sits at the dependence length, two-sided coverage PLATEAUS near 88% against a 93% "
+    "THE RAW INTERVAL PRODUCED BY THIS MODULE — the `ci_lo_UNCALIBRATED`/`ci_hi_UNCALIBRATED` "
+    "fields, and `block_bootstrap_sharpe_ci`'s return value — IS **UNCALIBRATED**, and remains "
+    "so. It is a plain circular block bootstrap percentile pair whose nominal 95% has never been "
+    "shown to be its real two-sided coverage for this statistic (an annualized SHARPE RATIO of a "
+    "per-decision return series). "
+    "IT IS NOT A HYPOTHETICAL WORRY — IT WAS MEASURED. `ci_coverage_probe.py` runs THIS function "
+    "under a true null (population Sharpe exactly 0) and found two-sided coverage BELOW the "
+    "nominal 0.95 in every cell tested (2026-08-22, 400 trials x 400 resamples, AT THE THEN-"
+    "PREVAILING BLOCK CAP OF 20): i.i.d. returns gave 0.905 / 0.902 / 0.920 / 0.935 / 0.948 at "
+    "40 / 100 / 200 / 500 / 1000 decisions, and under overlapping dependence of length 20 it "
+    "collapsed to 0.530 / 0.865 / 0.868 at 100 / 500 / 1000 decisions. DECISIONS D49 "
+    "(2026-08-19) records the same class of failure on this repo's OTHER block bootstrap: where "
+    "the block length sits at the dependence length, coverage plateaus near 88% against a 93% "
     "target and NO SAMPLE SIZE closes the gap — the remedy has to be the block length or the "
-    "interval method, never more data. TASK_892 shipped a calibrated-width remedy for THAT "
-    "estimator (`experiments/892_action_ev/calibration.py` + `disclosures.CALIBRATION_TABLE`, "
-    "validated to 0.940-0.975 coverage), but that table does NOT transfer to this module: it was "
-    "measured through `report.block_bootstrap_delta_ci` (a DELTA-OF-MEANS between two sides, not "
-    "a Sharpe ratio), at a FIXED block length of 21 keyed only by block COUNT, for containment of "
-    "the value 0 under a true null of delta==0. This module bootstraps a different statistic "
-    "(mean/sd, a ratio whose bootstrap distribution is driven by the variance estimate) through a "
-    "different code path at block lengths 2..20. Importing k from that table would be an "
-    "unvalidated transfer across statistic AND block-length regime — exactly the class of "
-    "unchecked estimator reuse that produced the retracted '809 trap' in the first place. "
-    "AND IT IS NOT A HYPOTHETICAL WORRY — IT IS MEASURED. `ci_coverage_probe.py` runs THIS "
-    "function under a true null (population Sharpe exactly 0) and finds two-sided coverage BELOW "
-    "the nominal 0.95 in every cell tested (2026-08-22, 400 trials x 400 resamples): i.i.d. "
-    "returns give 0.905 / 0.902 / 0.920 / 0.935 / 0.948 at 40 / 100 / 200 / 500 / 1000 decisions, "
-    "and under overlapping dependence of length 20 it collapses to 0.530 / 0.865 / 0.868 at "
-    "100 / 500 / 1000 decisions. The collapse is structural: `compute_honest_metrics` CAPS the "
-    "block length at 20, so dependence longer than 20 decisions cannot be captured at any n — "
-    "D49's 'the remedy is the block length or the interval method, never more data', measured "
-    "again on this code path. A borrowed k (892's table gives ~2.0 at 5 blocks) would not be a "
-    "calibration of this shortfall; it would be a false calibration label over an unmeasured one. "
-    "CONSEQUENCE, STATED PLAINLY: the TASK_897 pre-registered band's third criterion, 'CI lo > 0', "
-    "CANNOT BE READ OFF THIS INTERVAL. The interval is reported as a spread diagnostic only. "
-    "Calibrating it (re-running 892's Monte-Carlo calibrate-then-validate harness against THIS "
-    "code path and THIS statistic, in both the i.i.d. and overlapping-dependence scenarios) is a "
-    "planner-scheduled prerequisite before any CELL CLEARS read, not an implementation detail."
+    "interval method, never more data. "
+    "WHAT HAS CHANGED SINCE (D55(a), 2026-08-22 — the CURRENT mechanism, stated here because "
+    "this sentence is where a reader checks the calibration's legitimacy): "
+    f"(1) the block-length cap is now `MAX_BLOCK_DEFAULT` = {MAX_BLOCK_DEFAULT} decisions, not "
+    "20 — `compute_honest_metrics` selects "
+    f"`max(min_block, min({MAX_BLOCK_DEFAULT}, n_dec // 20))`, so dependence up to "
+    f"{MAX_BLOCK_DEFAULT} decisions is now structurally representable where 20 was the ceiling "
+    "before, and the pre-raise numbers quoted above no longer describe the block lengths this "
+    "module selects. (2) `experiments/897_corrected_809/calibration.py` ran TASK_892's "
+    "calibrate-then-validate METHOD (never its table — 892 calibrates a DELTA-OF-MEANS at a "
+    "FIXED block 21 keyed by block COUNT; importing k across that statistic change AND that "
+    "block-regime change would be exactly the unvalidated estimator reuse that produced the "
+    "retracted '809 trap') against THIS code path, and certified a width-inflation factor `k` "
+    "per REAL `(block, n_dec)` pairing, validated on an INDEPENDENT batch and re-measured at "
+    "BORROWED (non-stratum) pairings. (3) `sweep_gated_maker.apply_ci_calibration` applies that "
+    "`k` around the POINT ESTIMATE and publishes the result as the SEPARATE `ci_lo_ADVISORY`/"
+    "`ci_hi_ADVISORY` fields with `ci_advisory=True`. "
+    "(4) **THAT CERTIFICATION IS CONDITIONAL ON MEASURED DEPENDENCE, AND THE MEASUREMENT ITSELF "
+    "IS ONLY VALID INSIDE ONE FAMILY.** Every `k` in the table was measured with the simulated "
+    "dependence set EQUAL to the block length (dep == block). That is NOT a worst case — it is "
+    "the EASIEST point of the calibration's own dependence sweep, and earlier revisions of "
+    "`calibration.py` wrongly called it 'the matched-dependence worst case'. Held fixed against "
+    "dependence 8x its block, the SHIPPED k covers 0.52-0.55 (measured; "
+    "`calibration.MEASURED_SHIPPED_K_AT_DEPENDENCE_MISMATCH`) — the same magnitude as the 0.530 "
+    "that raised D55. Since `block` is chosen from the SAMPLE SIZE "
+    f"(`n_dec // 20`, capped at {MAX_BLOCK_DEFAULT}) and never from the data, 'dependence == "
+    "block' would be self-fulfilling if merely assumed. `dependence_length` below ATTEMPTS to "
+    "measure each cell's realized per-decision dependence (reported as `measured_dependence_len`, "
+    "beside `block_used`) via tau, the integrated autocorrelation time — a LINEAR-ACF statistic "
+    "that equals the dependence's RANGE (what a block bootstrap actually needs) ONLY inside the "
+    "exact triangular-ACF family the calibration was measured against, and DEMONSTRABLY "
+    "UNDER-READS out of family (TASK_897 D57, 2026-08-22): a synthetic series carrying a "
+    "persistent component worth only 4% of variance (0.2 * AR(1), phi=0.99 — population tau 8.6, "
+    "genuinely under block 60) reads tau=1, certifies 100% of draws, and covers 0.805; at "
+    "phi=0.999 coverage is 0.376, BELOW the 0.530 that raised D55 "
+    "(`calibration.MEASURED_TAU_OUT_OF_FAMILY_HALTED_CYCLE`). ON THIS ROW'S REAL PER-DECISION "
+    "DATA THE GUARD IS EXPECTED NOT TO BITE: every measured series (7 majors, OOS 2024-11 -> "
+    "2025-04, H in {1,5,20}, long-only and long-short) reads tau=1-2 against block=60 "
+    "(`calibration.MEASURED_REAL_DATA_TAU_INERT_HALTED_CYCLE`, real-data, provenance-stamped, NOT "
+    "re-run in this loop) — so a ~100% certification rate on THIS leg's real cells is NOT "
+    "evidence the dep<=block condition holds, it is the guard measured INERT exactly where it "
+    "will be used; an empirical containment check on the real long/short H=1 series (97 disjoint "
+    "1000-decision chunks) contained the grand Sharpe only 0.639 of the time while the guard "
+    "certified ~100%. `sweep_gated_maker.apply_ci_calibration` still REFUSES to certify any cell "
+    "whose measured dependence exceeds its own block OR cannot be measured at all — fail-closed, "
+    "worth keeping, with the qualifier standing for a refused cell. **TASK_901** (a range-based "
+    "dependence probe — first-lag-in-band / variance-ratio / spectral-density-at-zero, validated "
+    "out-of-family) is what would re-earn this conjunct, retroactively, FROM THE SAME ARTIFACTS. "
+    "CONSEQUENCE, STATED PLAINLY: the TASK_897 pre-registered band's third criterion, "
+    "'CI lo > 0', is **UNAVAILABLE-because-uncalibratable** on this leg — not off "
+    "`ci_lo_UNCALIBRATED`, ever, and not off `ci_lo_ADVISORY` either, REGARDLESS of whether "
+    "`ci_advisory` reads True: the guard behind that flag is measured inert on this row's real "
+    "data, so a True does not establish the condition it claims to check. `ci_lo_ADVISORY`/"
+    "`ci_hi_ADVISORY` are NEVER band-readable on this leg; they are retained, never discarded, so "
+    "TASK_901 can re-read them. The raw pair is retained as a spread diagnostic only, so the "
+    "advisory and uncalibrated numbers can always be compared side by side."
 )
 
 
@@ -225,6 +306,93 @@ def block_bootstrap_sharpe_ci(
     return float(lo), float(hi)
 
 
+def dependence_length(
+    x: np.ndarray,
+    max_lag: int = None,
+    n_se: float = DEPENDENCE_ACF_N_SE,
+) -> float:
+    """ATTEMPT TO MEASURE the realized dependence length of a per-decision return series — the
+    quantity the whole calibration is conditional on and which nothing in this pipeline
+    previously measured. Read the OUT-OF-FAMILY paragraph below before trusting this on real
+    data: it is a LINEAR-ACF statistic, valid as a stand-in for dependence RANGE only inside the
+    one family it was calibrated against.
+
+    The estimate is the INTEGRATED AUTOCORRELATION TIME,
+        tau = 1 + 2 * sum_{h=1..M} |rho(h)|,
+    with the sum truncated at the first lag whose sample autocorrelation falls inside the
+    white-noise band `n_se / sqrt(n)` (an initial-positive-sequence style truncation; a raw
+    first-crossing lag is far noisier, and a fixed window would import an assumption of its own).
+
+    WHY tau MATCHES `block` INSIDE THE CALIBRATED FAMILY, AND ONLY THERE. Under the exact
+    dependence model the calibration is certified against (`calibration.simulate_overlapping`: a
+    rolling sum of `dep` i.i.d. innovations) the population autocorrelation is triangular,
+    rho(h) = 1 - h/dep for h < dep and 0 beyond, so
+        tau = 1 + 2 * sum_{h=1..dep-1} (1 - h/dep) = 1 + 2 * (dep-1)/2 = dep
+    exactly. Inside THAT family tau reads out, in the SAME units, the `dep` a certified cell's
+    `k` was measured at — which is `block` — so `tau <= block` there reads "this series'
+    dependence is no longer than the dependence the shipped k was certified at". For an i.i.d.
+    series tau -> 1.
+
+    OUT OF FAMILY, THIS BREAKS DOWN (TASK_897 D57, 2026-08-22) — NARROWED HERE BECAUSE AN EARLIER
+    REVISION GENERALISED THE IN-FAMILY EQUALITY ABOVE TO EVERY SERIES, WHICH IS FALSE. A block
+    bootstrap's real requirement is `block >= dependence RANGE` (how far out the autocorrelation
+    extends); tau CONFLATES that range with AMPLITUDE (how large the autocorrelation is at each
+    lag), so a low-amplitude but long-range persistent component under-reads tau badly: a
+    synthetic series carrying a persistent component worth only 4% of variance
+    (`calibration.simulate_persistent_component`, weight=0.2, phi=0.99 — population tau 8.6,
+    genuinely under block 60) reads tau=1, certifies 100% of draws, and the achieved coverage is
+    only 0.805; at phi=0.999 coverage falls to 0.376, BELOW the 0.530 that raised D55 in the first
+    place (`calibration.MEASURED_TAU_OUT_OF_FAMILY_HALTED_CYCLE`; direction reproduced at reduced
+    budget by `calibration.measure_tau_out_of_family_mismatch`). ON THIS ROW'S REAL PER-DECISION
+    DATA THE GUARD IS THEREFORE EXPECTED NOT TO BITE: every measured real series (7 majors, OOS
+    2024-11 -> 2025-04, H in {1,5,20}, long-only and long-short) reads tau=1-2 against block=60
+    (`calibration.MEASURED_REAL_DATA_TAU_INERT_HALTED_CYCLE` — real-data, provenance-stamped,
+    NOT re-run in this loop per the project's real-data-validation-is-scheduled invariant), so a
+    ~100% certification rate on this leg's real cells is NOT evidence `tau <= block` genuinely
+    holds — it is the guard measured INERT exactly where it will be used. An empirical
+    containment check on the real long/short H=1 series (97 disjoint 1000-decision chunks)
+    contained the grand Sharpe only 0.639 of the time while the guard certified ~100%.
+    **TASK_901** (a range-based dependence probe — first-lag-in-band / variance-ratio /
+    spectral-density-at-zero, validated out-of-family) is the row that replaces this comparison,
+    re-reading this conjunct retroactively FROM THE SAME ARTIFACTS.
+
+    FAIL-CLOSED. Returns NaN — which every consumer must treat as REFUSE, never as "fine" —
+    whenever the dependence cannot be measured: fewer than `MIN_DECISIONS_FOR_DEPENDENCE`
+    finite points, a degenerate (zero-variance) series, or an autocorrelation function that never
+    returns to the white-noise band inside `max_lag` (dependence longer than this series can
+    resolve is unknown dependence, and unknown dependence must not certify). This fail-closed
+    behaviour is unaffected by the out-of-family caveat above — it is what happens when tau CAN
+    be computed but should not be trusted as a range measurement that governs it.
+
+    Otherwise returns `ceil(tau)` as a float, floored at 1.0.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    n = int(x.size)
+    if n < MIN_DECISIONS_FOR_DEPENDENCE:
+        return float("nan")
+    xc = x - x.mean()
+    denom = float(np.dot(xc, xc))
+    if not np.isfinite(denom) or denom <= 0.0:
+        return float("nan")           # constant series: no dependence structure is measurable
+    if max_lag is None:
+        max_lag = int(min(n // 2, DEPENDENCE_ACF_MAX_LAG_FACTOR * MAX_BLOCK_DEFAULT))
+    max_lag = int(max_lag)
+    if max_lag < 1:
+        return float("nan")
+    band = float(n_se) / math.sqrt(n)
+    acc = 0.0
+    for h in range(1, max_lag + 1):
+        rho = float(np.dot(xc[h:], xc[:-h])) / denom
+        if not np.isfinite(rho):
+            return float("nan")
+        if abs(rho) < band:
+            tau = 1.0 + 2.0 * acc
+            return float(max(1.0, math.ceil(tau)))
+        acc += abs(rho)
+    return float("nan")               # never returned to the band: dependence is UNRESOLVED
+
+
 @dataclass
 class HonestMetrics:
     n_bars: int
@@ -242,6 +410,14 @@ class HonestMetrics:
     sharpe_per_bar_DIAGNOSTIC_DO_NOT_GATE_ON: float      # the retracted 809-trap number; kept
                                                           # only as a visible contrast, never a
                                                           # verdict input.
+    block_used: int = -1                                  # the block length the CI above was
+                                                          # ACTUALLY bootstrapped at (-1 = no CI
+                                                          # was computed). The calibration is
+                                                          # certified at dep == THIS number.
+    measured_dependence_len: float = float("nan")         # `dependence_length(reb_ret)` — the
+                                                          # REALIZED dependence of this cell's own
+                                                          # per-decision series. NaN = unmeasurable
+                                                          # = REFUSE (fix cycle 3, MAJOR 1(b)).
 
 
 def compute_honest_metrics(
@@ -252,7 +428,7 @@ def compute_honest_metrics(
     seed: int = 0,
     n_boot: int = 2000,
     min_block: int = 2,
-    max_block: int = 20,
+    max_block: int = MAX_BLOCK_DEFAULT,
 ) -> HonestMetrics:
     """The single entry point cells/cells-sweeps should call. Computes net = gross - turn*cost,
     then the HONEST per-decision Sharpe (never per-bar), an UNCALIBRATED CI (see
@@ -280,10 +456,16 @@ def compute_honest_metrics(
     if n_dec < MIN_DECISIONS_FOR_SHARPE:
         sh_dec = float("nan")
         lo = hi = float("nan")
+        block = -1
     else:
         sh_dec = sharpe(reb_ret, ppy)
         block = max(min_block, min(max_block, n_dec // 20))
         lo, hi = block_bootstrap_sharpe_ci(reb_ret, ppy, block, n_boot, seed)
+
+    # The measurement the certification is conditional on (MAJOR 1(b)): this cell's OWN realized
+    # per-decision dependence, in the same units as `block`. NaN when unmeasurable — consumers
+    # must refuse on NaN, never certify.
+    dep_len = dependence_length(reb_ret)
 
     pnl, maxdd = cumulative_pnl_and_maxdd(net_bar)
     turnover_mean = float(np.mean(turn_bar)) if n_bars else float("nan")
@@ -296,4 +478,5 @@ def compute_honest_metrics(
         turnover_mean=turnover_mean, sharpe_decision=sh_dec, ci_lo_UNCALIBRATED=lo,
         ci_hi_UNCALIBRATED=hi, pnl=pnl,
         maxdd=maxdd, sharpe_per_bar_DIAGNOSTIC_DO_NOT_GATE_ON=sh_bar_diagnostic,
+        block_used=int(block), measured_dependence_len=float(dep_len),
     )
