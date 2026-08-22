@@ -1,3 +1,35 @@
+> **STATUS (2026-08-22): INSTRUMENT SHIPPED as `task898-trend-decay-instrument` (3f44138). THE
+> VERDICT IS NOT IN — the real leg is planner-scheduled on gpu-server per D54.** Gates (i)–(iii) PASS.
+>
+> **READ THIS BEFORE RULING — the row's central comparison was confounded, and the fix inverts it.**
+> The long-flat (no-short, spot-legal) variant **silently de-leverages**: `trader.strategy.weights()`
+> is signal-sign-agnostic, so clipping shorts does not reallocate their budget onto the longs — it
+> becomes **implicit cash**. Mean gross exposure is **43% of baseline on FULL and 27.6% in BEAR22**,
+> the exact regime the "is the edge just crash-avoidance shorting?" question turns on. A
+> leverage-matched third series was added, and in **every** regime the variant's Sharpe proves
+> flattered by cash drag: **FULL +0.321 (roughly flat) → −1.308 (clearly negative)**; MASTER −0.035 →
+> −1.858. **A ruling read off the un-matched variant alone would likely have said VARIANT LIVES where
+> the long-only signal by itself scores −1.31.** Exposure is now printed alongside every Sharpe, per
+> window and per regime, so this cannot be read past.
+> The de-leveraged book remains the **PRIMARY** series — it is the honest reading of "shorts replaced
+> by flat" and the only variant deployable without perps. The matched series is **DIAGNOSTIC, not
+> shippable**: it is concentration-unbounded (one surviving long can carry the whole gross budget;
+> scale hit 221× on a thin fixture row) and its unmatchable rows are disclosed per window.
+>
+> **Data epoch — the srv run is NOT blocked, but every number will carry a caveat.** The real
+> `ohlcv_daily` ends **2026-07-06**, ~47 days stale at ship time: inside the WARN band (14–120d), so
+> the run proceeds and stamps an `epoch_caveat` rather than hard-refusing. **TASK_899 (backfill) has
+> not run**, and the artifact states which epoch it used, per this row's own "runs on the table as it
+> stands and says so".
+>
+> **Launch note.** Run `decay_harness.py run --db <staged path>` on srv; `preregister` is already done
+> and committed (hash `5ebcbaa2…`). The harness refuses if `SPEC.md` drifts from the registered hash.
+>
+> **Remainder:** `SPEC.md` was authored AND amended in an untracked working copy, so its
+> pre-amendment prose cannot be byte-diffed — the amendment's honesty rests on the bands living in
+> the task file and the parameters being sourced live from `trader.config.STRATEGY`, not on a diff.
+> Commit the SPEC before amending next time.
+
 # TASK_898 — trend-decay aggregation + the spot-legal variant: is the fallback still a fallback?
 
 **Status**: READY 2026-08-19 (planner; seeded by the pathfinder audit
