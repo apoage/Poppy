@@ -108,8 +108,14 @@ allocation contract. Leak-free, cost-honest, ≥3 seeds for any promotion claim 
 - E5 shows search can't beat its own teacher with a working model → H1 weakens materially;
   the honest answer starts looking architectural, and the pathway pivots to a new structural
   hypothesis — recorded, not rationalized.
-- Fixed rule stays the fallback shippable at every rung; the corridor keeps everyone honest
-  about how much of the oracle gap any rung actually closed.
+- ~~Fixed rule stays the fallback shippable at every rung~~ **STRUCK 2026-08-22 (898/trend-decay,
+  BOTH DEAD).** The rule's full-span edge is real (MASTER net@8 +0.813, CI[+0.045,+1.599]) but
+  entirely carried by 2021–2023; its recent edge is not statistically alive (2024 +0.04, 2025
+  +0.66, 2026H1 −1.66 — every CI spans 0), and the spot-legal long-flat variant is measured dead
+  (2026H1 −5.22, CI[−7.89,−2.09]). The program currently has NO positive-expectancy fallback;
+  every "measured against the rule" comparison in the LEDGER inherits that. The corridor keeps
+  everyone honest about how much of the oracle gap any rung actually closed — but the corridor's
+  floor is now a historical benchmark, not a shippable artifact.
 
 ## Current wiring
 
