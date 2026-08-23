@@ -462,6 +462,123 @@ def _run_sweep_inner(
     finally:
         probe.sqlite3 = _orig_probe_sqlite3
 
+    # =========================================================================================
+    # TASK_897 D60 — PIN-ERA INHERITED-IC GUARD (re-based to the pins' own claim).
+    # -----------------------------------------------------------------------------------------
+    # D59's guard asserted 806's June-era full-slice test-IC pins against THIS harness's SWEEP
+    # panel, whose test slice runs a year past the pins' basis (test_end 2025-04-01) — measured
+    # (planner, srv, D60) to be the ENTIRE cause of the srv leg #1 ok=0 (chunked == unchunked
+    # exactly at every H; the pins reproduce to -4.5e-5 on a pin-era panel built from TODAY's
+    # table). The guard's actual claim is LINEAGE FIDELITY — does this harness reproduce 806's
+    # audited signal on 806's OWN basis — so it is re-based to a SEPARATE pin-era panel, built
+    # and checked ONCE here, BEFORE the sweep panel exists. The sweep-panel IC becomes a
+    # disclosed MEASUREMENT (the decay signal), never gated — see the per-H loop below (item 3).
+    #
+    # `cfg_pin` is `probe.Config`'s OWN split defaults — train_start=2023-05-16,
+    # val_start=2024-06-01, test_start=2024-11-01, test_end=2025-04-01 (verified: these ARE the
+    # pins' basis) — built from ONLY `db_path`, deliberately NOT from this run's --train-start /
+    # --val-start / --window-a / --window-b overrides, so an operator override of any of those
+    # can never move the guard off the pins' own basis.
+    #
+    # The panel is the EXACT-SPELLING 806 read (`load_universe_trainlocked` + `build_aligned_
+    # ohlcv`), NOT the D56(a) alias union below — the union is a measured +0.003-max,
+    # OPPOSITE-SIGN effect the pins never contained, and D60 specifies exact-spelling.
+    #
+    # Both probe calls open the DB via a bare `sqlite3.connect` (the exact D59 hazard already
+    # closed on `report_bar_frequency` above — READ-WRITE-CREATE), so this whole read is wrapped
+    # in the SAME scope patch, restored in `finally`. Re-introducing an RW handle here would be a
+    # BLOCKER-class regression on the protected 24GB DB.
+    inherited_ic_pin_era: Dict[int, Dict] = {}
+    if verify_inherited_ic:
+        cfg_pin = probe.Config(db_path=db_path)
+        pin_panel_error: Optional[str] = None
+        ohlcv_pin = close_pin = grid_ts_pin = None
+        _orig_probe_sqlite3_pin = probe.sqlite3
+        probe.sqlite3 = _ReadOnlySqlite3ForProbe()
+        try:
+            _symbols_pin, asset_ids_pin, _ranking_pin = probe.load_universe_trainlocked(cfg_pin)
+            ohlcv_pin, grid_ts_pin = probe.build_aligned_ohlcv(cfg_pin, asset_ids_pin, bar_sec)
+            close_pin = np.ascontiguousarray(ohlcv_pin[:, :, 3])
+            del ohlcv_pin
+            gc.collect()
+        except Exception as exc:  # noqa: BLE001 — gate (ii): the PANEL BUILD itself can fail;
+            # every H must still be recorded (dropped), never silently omitted.
+            pin_panel_error = f"pin-era PANEL BUILD failed: {type(exc).__name__}: {exc}"
+            # CLEANUP SYMMETRY with the success path's `del ohlcv_pin; gc.collect()`: an
+            # exception raised AFTER the `ohlcv_pin, grid_ts_pin = ...` bind but BEFORE the
+            # `del` (e.g. anything the `[:, :, 3]` slice can raise) would otherwise leave the
+            # full pin-era panel alive in THIS frame's locals for the rest of the function —
+            # straight through the much larger sweep-panel build immediately below, the worst
+            # moment for the scheduled leg's `safe_run --mem 64G` budget. Rebinding the frame
+            # locals is what actually frees them (the caught exception's traceback holds THIS
+            # frame), so drop them here rather than relying on function exit.
+            ohlcv_pin = close_pin = grid_ts_pin = None
+            gc.collect()
+        finally:
+            probe.sqlite3 = _orig_probe_sqlite3_pin
+
+        if pin_panel_error is not None:
+            for H in grid_h:
+                inherited_ic_pin_era[H] = {"ic": None, "status": "failed",
+                                            "reason": pin_panel_error}
+        else:
+            _orig_decide_cfg_pin = decide.CFG  # == the sweep cfg here (run_sweep already
+            decide.CFG = cfg_pin               # patched decide.CFG to `cfg` before this call)
+            try:
+                for H in grid_h:
+                    try:
+                        # SECOND ROOT CAUSE of the same vacuity class TASK_902 item 2 names
+                        # (that item scopes only the NaN cause; this one is independent of it).
+                        # `decide.inherited_signal_check_chunked` reads its target as
+                        # `tgt = backtest.SIGNAL_806_IC_FULL.get(H)` and compares ONLY
+                        # `if tgt is not None and ...` — so for ANY H outside the pinned set
+                        # {1, 5, 20} the comparison short-circuits and the function returns a
+                        # real, finite, NEVER-COMPARED IC. Unguarded, that lands as
+                        # {"ic": <real number>, "status": "pass"} and the artifact calls it the
+                        # lineage-fidelity proof — a vacuous pass, the exact failure mode the
+                        # `np.isfinite` rider below closes for the OTHER cause. Not reachable
+                        # from today's CLI (GRID_H / SMOKE_GRID_H are subsets of the pinned set)
+                        # but fully reachable through the public `run_sweep(grid_h=...)` API,
+                        # which is the reuse surface D60 points the 898-class decay work at.
+                        # Read the pins the SAME way the lineage function does — the live module
+                        # attribute, at the same moment — so the two can never disagree.
+                        tgt_pin = backtest.SIGNAL_806_IC_FULL.get(H)
+                        if tgt_pin is None:
+                            raise AssertionError(
+                                f"pin-era inherited-IC guard H={H}: NOT-EVALUABLE — H={H} "
+                                "carries no 806 IC pin (pinned H: "
+                                f"{sorted(backtest.SIGNAL_806_IC_FULL)}), so "
+                                "`decide.inherited_signal_check_chunked` would return an IC it "
+                                "never compared against anything and LINEAGE FIDELITY WAS NOT "
+                                "ESTABLISHED for this H. An uncompared IC is a GUARD FAILURE, "
+                                "never a pass (TASK_897 D60 rider — second root cause of "
+                                "TASK_902 item 2's vacuity class, which scopes only the "
+                                "non-finite cause).")
+                        w_pin, mu_pin, sd_pin, _alpha_pin = decide.fit_xs_signal_chunked(
+                            close_pin, grid_ts_pin, H)
+                        ic_pin = decide.inherited_signal_check_chunked(
+                            close_pin, grid_ts_pin, H, w_pin, mu_pin, sd_pin)
+                        # D60 rider on TASK_902's vacuous-on-NaN item: a non-finite IC must never
+                        # read as a pass (`nan > tol` is False, so an unguarded compare would let
+                        # a NaN slip straight through as "the guard did not refuse").
+                        if not np.isfinite(ic_pin):
+                            raise AssertionError(
+                                f"pin-era inherited-IC guard H={H}: IC is non-finite "
+                                f"({ic_pin!r}) — a non-finite IC is a GUARD FAILURE, never a "
+                                "pass (TASK_897 D60 rider on TASK_902's vacuous-on-NaN item).")
+                        inherited_ic_pin_era[H] = {"ic": float(ic_pin), "status": "pass"}
+                    except Exception as exc:  # noqa: BLE001 — gate (ii): drop, never crash
+                        inherited_ic_pin_era[H] = {
+                            "ic": None, "status": "failed",
+                            "reason": f"{type(exc).__name__}: {exc}",
+                        }
+            finally:
+                decide.CFG = _orig_decide_cfg_pin
+            del close_pin, grid_ts_pin
+            gc.collect()
+    # else: --skip-inherited-ic-check — skip this WHOLE block (no pin-era panel build, no cost);
+    # the fixture path requires this since the pins are real-data magic numbers (item 5).
+
     # --- GATE (iii) / D56(a): the canon alias union, applied as a READ-TIME layer owned by
     # THIS runner (`alias_read_layer.py`) for BOTH the universe ranking AND the panel build —
     # the 809 lineage (`probe.py`) is never edited, and its OWN exact-spelling ranking is also
@@ -508,6 +625,11 @@ def _run_sweep_inner(
         "grid_epoch": {"start": int(grid_ts[0]), "end": int(grid_ts[-1])},
         "grid_start_iso": probe._dt.datetime.utcfromtimestamp(int(grid_ts[0])).isoformat() + "Z",
         "grid_end_iso": probe._dt.datetime.utcfromtimestamp(int(grid_ts[-1])).isoformat() + "Z",
+        # TASK_897 D60 — the GATED basis (pin-era) and its inputs, recorded so the artifact can
+        # show the guard's own claim (pins + tol) beside its per-H outcome.
+        "inherited_ic_pin_era": inherited_ic_pin_era,
+        "inherited_ic_pins": dict(backtest.SIGNAL_806_IC_FULL),
+        "inherited_ic_tol": backtest.SIGNAL_IC_TOL,
         "seed": seed, "n_boot": n_boot,
         "n_cells_expected": len(list(grid_h)) * len(list(grid_k)) * len(list(grid_variant))
         * len(list(grid_tau)) * len(list(grid_n)) * len(windows) * len(list(grid_fee_bp)) * len(list(grid_adv_bp)),
@@ -524,12 +646,44 @@ def _run_sweep_inner(
     cells: List[CellRecord] = []
     for H in grid_h:
         h_t0 = time.time()
+
+        # TASK_897 D60, item 2 — the pin-era guard already ran ABOVE, once, before the sweep
+        # panel was even built. A failed or absent (never-ran) result for this H drops every
+        # cell for this H here — gate (ii): drop, never crash, never silently omit — mirroring
+        # the fit/predict except-drop shape one level down.
+        if verify_inherited_ic:
+            pin_result = inherited_ic_pin_era.get(H)
+            if pin_result is None or pin_result.get("status") != "pass":
+                reason = ("pin-era inherited-IC GUARD FAILED (TASK_897 D60 basis: "
+                          "probe.Config defaults, test_end=2025-04-01, tol "
+                          f"{backtest.SIGNAL_IC_TOL} — NOT the sweep panel): "
+                          + (pin_result or {}).get(
+                              "reason", "pin-era guard never ran for this H"))
+                for (wname, wstart, wend) in windows:
+                    cells.extend(_empty_cells(wname, H, grid_k, grid_variant, grid_tau, grid_n,
+                                              grid_fee_bp, grid_adv_bp, "dropped", reason))
+                print(f"[897-sweep] H={H} DROPPED ALL CELLS (pin-era guard): {reason}",
+                      flush=True)
+                continue
+
         try:
             _, _, test = probe.make_splits(cfg, grid_ts, H)
             w, mu, sd, alpha = decide.fit_xs_signal_chunked(close, grid_ts, H)
+            # TASK_897 D60, item 3 — sweep-panel IC is a disclosed MEASUREMENT ONLY, never
+            # gated. Computed through the SAME lineage function (no reimplementation);
+            # non-asserting: scope-patch `backtest.SIGNAL_806_IC_FULL` to `{}` for this one call
+            # so `decide.inherited_signal_check_chunked`'s own `tgt = backtest.
+            # SIGNAL_806_IC_FULL.get(H)` misses and the IC returns unchecked. REBINDS the module
+            # attribute to a NEW dict object — never mutates the shipped dict in place (the D59
+            # lesson) — and is restored in `finally` regardless of outcome.
             ic = None
             if verify_inherited_ic:
-                ic = decide.inherited_signal_check_chunked(close, grid_ts, H, w, mu, sd)
+                _orig_pins = backtest.SIGNAL_806_IC_FULL
+                backtest.SIGNAL_806_IC_FULL = {}
+                try:
+                    ic = decide.inherited_signal_check_chunked(close, grid_ts, H, w, mu, sd)
+                finally:
+                    backtest.SIGNAL_806_IC_FULL = _orig_pins
             dec_rows = np.arange(test.lo, test.hi + 1, dtype=np.int64)
             dec_rows = dec_rows[dec_rows + 2 < close.shape[0]]
             pred = decide._chunked_predict(close, dec_rows, w, mu, sd, cfg.W)
@@ -542,7 +696,7 @@ def _run_sweep_inner(
             print(f"[897-sweep] H={H} DROPPED ALL CELLS: {reason}", flush=True)
             continue
 
-        meta.setdefault("signal_ic", {})[H] = ic
+        meta.setdefault("signal_ic_sweep_panel", {})[H] = ic
         print(f"[897-sweep] H={H} alpha={alpha:g} ic={ic} dec_rows={len(dec_rows)} "
               f"fit {time.time()-h_t0:.1f}s", flush=True)
 
@@ -851,8 +1005,22 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
           "frozen fit, not a re-fit).",
           f"- **Windows:** {meta['windows']}",
           f"- **Grid:** {meta['grid']}",
-          f"- **Signal IC by H (inherited-check; None if `--skip-inherited-ic-check`):** "
-          f"{meta.get('signal_ic', {})}",
+          f"- **Inherited-IC GUARD (pin-era basis, TASK_897 D60 — the lineage-fidelity proof; "
+          f"GATED; tol UNCHANGED at {meta.get('inherited_ic_tol')}):** basis = `probe.Config`'s "
+          "own split defaults, exact-spelling read (train_start=2023-05-16, "
+          "val_start=2024-06-01, test_start=2024-11-01, test_end=2025-04-01 — the pins' own "
+          "basis, NOT this run's --train-start/--val-start/--window-a/--window-b, which can "
+          f"never move it). Pins: {meta.get('inherited_ic_pins', {})}. Per-H result (empty if "
+          f"`--skip-inherited-ic-check`): {meta.get('inherited_ic_pin_era', {})}.",
+          "- **Signal IC, SWEEP-PANEL basis (disclosed MEASUREMENT, TASK_897 D60 — NEVER gated "
+          "against the June pins on this basis):** per-H chunked-fit IC over THIS run's own "
+          "test span, computed through the SAME lineage function "
+          "(`decide.inherited_signal_check_chunked`) with the pins scope-patched out for that "
+          f"one call: {meta.get('signal_ic_sweep_panel', {})} (None per H if "
+          "`--skip-inherited-ic-check` — the dict is still keyed by every H that reached the "
+          "fit, with a None value; it is the pin-era GUARD dict above that is empty under that "
+          "flag). A LOWER value here than the pin-era guard's own is the "
+          "signal DECAY the per-window cells measure properly — not a lineage-fidelity failure.",
           f"- **Estimator:** {meta['estimator']}",
           f"- **Maker-fill model (stated inline, per cell, per TASK_897 scope 3):** "
           f"{meta['maker_fill_model']}",
@@ -1332,8 +1500,12 @@ def main() -> None:
     ap.add_argument("--out", type=str, default=str(_THIS.parent / "result.md"))
     ap.add_argument("--smoke", action="store_true", help="tiny pre-registered SMOKE grid, not the real one")
     ap.add_argument("--skip-inherited-ic-check", action="store_true",
-                     help="Skip the 806/808-inherited signal-IC assertion (its pinned targets are "
-                          "real-data magic numbers; skip at fixture/synthetic scale).")
+                     help="Skip the pin-era inherited-IC GUARD (TASK_897 D60: gated against 806's "
+                          "pins on a SEPARATE pin-era panel built from probe.Config's own split "
+                          "defaults, test_end=2025-04-01 — the pins are real-data magic numbers, "
+                          "so this skips building that panel entirely, no cost, at "
+                          "fixture/synthetic scale). Also skips the sweep-panel signal-IC "
+                          "MEASUREMENT (recorded, never gated even when this flag is absent).")
     ap.add_argument("--seed", type=int, default=897)
     ap.add_argument("--n-boot", type=int, default=2000)
     args = ap.parse_args()

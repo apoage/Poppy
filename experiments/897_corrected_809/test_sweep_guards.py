@@ -1360,5 +1360,497 @@ def test_normalize_db_path_mirrors_sqlites_authority_rules(raw, expected):
     assert al.normalize_db_path(raw) == expected
 
 
+# ============================================================================================
+# TASK_897 D60 — the inherited-IC guard re-based to the pins' own claim (queue row 1).
+#
+# The srv leg's FIRST launch recorded an honest NULL: the guard asserted 806's June-era pins
+# against the harness's SWEEP panel, whose test slice runs a year past the pins' basis. D60's
+# ruling re-bases the guard to a SEPARATE pin-era panel (`probe.Config`'s own split defaults —
+# the pins' actual basis), asserted exactly as before (tol UNCHANGED), while the sweep-panel IC
+# becomes a disclosed, non-asserting MEASUREMENT. These tests pin that wiring WITHOUT paying for
+# a real DB or real ridge regression: every DB-touching call in the pipeline is stubbed with a
+# lightweight synthetic-panel generator that reproduces the REAL grid-construction shape (so
+# `probe.make_splits`/`honest_estimator.compute_honest_metrics` still run for real on
+# well-formed arrays), and the PIN vs SWEEP panels are built with DIFFERENT asset counts so a
+# test can tell, from the `close` array a stubbed `decide.fit_xs_signal_chunked`/
+# `inherited_signal_check_chunked` call receives, WHICH panel fed it.
+# ============================================================================================
+
+def _stub_897_pipeline(monkeypatch, sw, *, pin_universe_n=1, sweep_universe_n=2,
+                        pin_ic=0.111111, sweep_ic=0.222222, pin_ic_by_h=None,
+                        check_proxy=False):
+    """Stubs every DB-touching call the pin-era guard and the sweep panel build reach
+    (`probe.report_bar_frequency`/`load_universe_trainlocked`/`build_aligned_ohlcv` for the
+    EXACT-SPELLING pin-era read; `alias_layer.rank_universe_with_alias_union`/
+    `build_aligned_ohlcv_with_alias_union`/`alias_material_slot_report` for the sweep panel) with
+    synthetic-but-real-shaped generators, and stubs `decide.fit_xs_signal_chunked`/
+    `inherited_signal_check_chunked`/`_chunked_predict`/`_run_decision` so no real regression
+    runs. The PIN panel always has `pin_universe_n` assets; the SWEEP panel always has
+    `sweep_universe_n` assets (default 2, deliberately different from the pin's default 1) — a
+    stub tells the two apart by `close.shape[1]`, never by guessing which call site it is, so a
+    test can catch the guard reading the WRONG panel.
+
+    `pin_ic` (or `pin_ic_by_h: Dict[int, float|Exception]`, overriding it per-H) is what the
+    stubbed pin-era `inherited_signal_check_chunked` call returns; the stubbed sweep-panel call
+    always returns `sweep_ic`. If `check_proxy` is True, `load_universe_trainlocked`/
+    `build_aligned_ohlcv` additionally record, per call, whether `probe.sqlite3` was the
+    read-only proxy at call time (`calls['proxy']`).
+
+    Returns `calls`: `{"fit_check": [...], "proxy": [...]}`. Each `fit_check` entry is
+    `{"fn": "fit"|"check", "H": int, "which": "pin"|"sweep", "cfg": <decide.CFG at call time>,
+    "pins_snapshot": dict(backtest.SIGNAL_806_IC_FULL) at call time}`."""
+    import numpy as np
+    import probe
+    import decide
+    import backtest
+
+    calls = {"fit_check": [], "proxy": []}
+
+    def _panel(cfg, n_assets, seed):
+        grid_start = probe._to_epoch(cfg.train_start) - cfg.W * 60
+        grid_end = probe._to_epoch(cfg.test_end)
+        grid_ts = np.arange(grid_start, grid_end, 60, dtype=np.int64)
+        T = len(grid_ts)
+        rng = np.random.default_rng(seed)
+        close = 200.0 + rng.normal(scale=0.001, size=(T, n_assets)).cumsum(axis=0)
+        ohlcv = np.zeros((T, n_assets, 5), dtype=np.float64)
+        ohlcv[:, :, 0] = close
+        ohlcv[:, :, 1] = close + 0.05
+        ohlcv[:, :, 2] = close - 0.05
+        ohlcv[:, :, 3] = close
+        ohlcv[:, :, 4] = 1.0
+        return ohlcv, grid_ts
+
+    def fake_report_bar_frequency(cfg):
+        return 60
+
+    def fake_load_universe_trainlocked(cfg):
+        if check_proxy:
+            calls["proxy"].append(("load_universe_trainlocked",
+                                    isinstance(probe.sqlite3, sw._ReadOnlySqlite3ForProbe)))
+        aids = list(range(pin_universe_n))
+        return [f"P{i}" for i in aids], aids, [(f"P{i}", i, 100) for i in aids]
+
+    def fake_build_aligned_ohlcv(cfg, asset_ids, bar_sec):
+        if check_proxy:
+            calls["proxy"].append(("build_aligned_ohlcv",
+                                    isinstance(probe.sqlite3, sw._ReadOnlySqlite3ForProbe)))
+        return _panel(cfg, len(asset_ids), seed=1)
+
+    def fake_rank_universe_with_alias_union(cfg):
+        aids = list(range(sweep_universe_n))
+        return {"symbols": [f"S{i}" for i in aids], "asset_ids": aids,
+                "alias_groups": [[i] for i in aids], "rank_changes": [],
+                "top64_entered": [], "top64_left": [], "unknown": []}
+
+    def fake_build_aligned_ohlcv_with_alias_union(cfg, asset_ids, alias_groups, bar_sec):
+        ohlcv, grid_ts = _panel(cfg, len(asset_ids), seed=2)
+        return ohlcv, grid_ts, [], [10 for _ in asset_ids]
+
+    def fake_alias_material_slot_report(cfg, windows):
+        return []
+
+    def fake_fit(close, grid_ts, H):
+        which = "pin" if close.shape[1] == pin_universe_n else "sweep"
+        calls["fit_check"].append({"fn": "fit", "H": H, "which": which, "cfg": decide.CFG,
+                                    "pins_snapshot": dict(backtest.SIGNAL_806_IC_FULL)})
+        A = close.shape[1]
+        return np.zeros((1, A)), np.zeros(A), np.ones(A), 1.0
+
+    def fake_check(close, grid_ts, H, w, mu, sd):
+        which = "pin" if close.shape[1] == pin_universe_n else "sweep"
+        calls["fit_check"].append({"fn": "check", "H": H, "which": which, "cfg": decide.CFG,
+                                    "pins_snapshot": dict(backtest.SIGNAL_806_IC_FULL)})
+        if which == "sweep":
+            return sweep_ic
+        result = (pin_ic_by_h.get(H, pin_ic) if pin_ic_by_h is not None else pin_ic)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def fake_chunked_predict(close, rows, w, mu, sd, W, chunk=20000):
+        return np.zeros((len(rows), close.shape[1]))
+
+    def fake_run_decision(close, high, low, pred, present, dec_rows, k, variant, tau, N,
+                           exec_model):
+        # Return contract mirrored from the 809 lineage (`decide._run_decision`, docstring +
+        # `fill_frac = (filled / intended) ...`): (gross_bar ARRAY, turnover_bar ARRAY,
+        # fill_frac SCALAR). The scalar matters — `CellRecord.fill_rate` is rendered `{:.3f}`
+        # by `write_artifact`, so a stubbed ARRAY here makes any artifact-rendering test die
+        # on `TypeError: unsupported format string passed to numpy.ndarray.__format__`
+        # (D60 fix cycle 2: found while adding the H2 artifact-wording test).
+        n = len(dec_rows)
+        return np.zeros(n), np.zeros(n), 1.0
+
+    monkeypatch.setattr(probe, "report_bar_frequency", fake_report_bar_frequency)
+    monkeypatch.setattr(probe, "load_universe_trainlocked", fake_load_universe_trainlocked)
+    monkeypatch.setattr(probe, "build_aligned_ohlcv", fake_build_aligned_ohlcv)
+    monkeypatch.setattr(sw.alias_layer, "rank_universe_with_alias_union",
+                         fake_rank_universe_with_alias_union)
+    monkeypatch.setattr(sw.alias_layer, "build_aligned_ohlcv_with_alias_union",
+                         fake_build_aligned_ohlcv_with_alias_union)
+    monkeypatch.setattr(sw.alias_layer, "alias_material_slot_report",
+                         fake_alias_material_slot_report)
+    monkeypatch.setattr(decide, "fit_xs_signal_chunked", fake_fit)
+    monkeypatch.setattr(decide, "inherited_signal_check_chunked", fake_check)
+    monkeypatch.setattr(decide, "_chunked_predict", fake_chunked_predict)
+    monkeypatch.setattr(decide, "_run_decision", fake_run_decision)
+    return calls
+
+
+_D60_SWEEP_WINDOWS = (("t", "2024-01-04", "2024-01-06"),)
+
+
+def test_pin_era_cfg_is_806s_own_basis_regardless_of_operator_overrides(monkeypatch):
+    """D60: `cfg_pin` must be `probe.Config`'s OWN split defaults — train_start=2023-05-16,
+    val_start=2024-06-01, test_start=2024-11-01, test_end=2025-04-01, the pins' actual basis —
+    even when the CALLER overrides --train-start/--val-start/--window-a/--window-b to something
+    completely different (here: 2024-01-01..2024-01-06, nowhere near the pins' basis).
+
+    PERTURBATION THIS IS RED AGAINST: build `cfg_pin` from the sweep `cfg` (e.g. `probe.Config(
+    db_path=db_path, train_start=train_start, val_start=val_start, test_start=..., test_end=...)`
+    — deriving it from the caller's own overrides, exactly the drift D60 forbids) instead of
+    `probe.Config(db_path=db_path)`, and the captured pin-era `cfg.test_end` below reads
+    "2024-01-06" (the override) instead of "2025-04-01" — this assertion catches it immediately.
+    Mutation-verified by hand (see task report): reverted `cfg_pin` to
+    `probe.Config(db_path=db_path, train_start=train_start, val_start=val_start,
+    test_start=windows[0][1], test_end=windows[-1][2])` and this test failed on the `test_end`
+    assertion; reverted back, test passes again."""
+    sw = _sweep()
+    calls = _stub_897_pipeline(monkeypatch, sw)
+    sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    pin_calls = [c for c in calls["fit_check"] if c["which"] == "pin"]
+    sweep_calls = [c for c in calls["fit_check"] if c["which"] == "sweep"]
+    assert pin_calls and sweep_calls
+    for c in pin_calls:
+        cfg = c["cfg"]
+        assert cfg.train_start == "2023-05-16"
+        assert cfg.val_start == "2024-06-01"
+        assert cfg.test_start == "2024-11-01"
+        assert cfg.test_end == "2025-04-01"
+    for c in sweep_calls:
+        cfg = c["cfg"]
+        assert cfg.train_start == "2024-01-01"
+        assert cfg.test_end == "2024-01-06"
+
+
+def test_pin_era_guard_reads_the_pin_era_panel_not_the_sweep_panel(monkeypatch):
+    """THE LOAD-BEARING MUTATION GATE (queue row 1): the pin-era guard's recorded IC must come
+    from the PIN-ERA panel (exact-spelling `probe.load_universe_trainlocked`/`build_aligned_
+    ohlcv`), and the disclosed sweep-panel measurement must come from the SWEEP panel (the
+    D56(a) alias-union read) — never crossed. The two panels are built with different asset
+    counts here (`pin_universe_n=1` vs `sweep_universe_n=2`) purely so a stub can tell which one
+    it received; `pin_ic`/`sweep_ic` are set to distinct sentinels so a crossed wire is
+    unmistakable in the artifact's own metadata.
+
+    PERTURBATION THIS IS RED AGAINST, MUTATION-VERIFIED BY HAND (see task report): reverted
+    `_run_sweep_inner` to the PRE-D60 shape — deleted the separate pin-era panel build entirely
+    and pointed the (still-asserting) guard at the SWEEP panel instead
+    (`decide.inherited_signal_check_chunked(close, grid_ts, H, w, mu, sd)` on the sweep `close`/
+    `grid_ts`, inside the existing per-H `try` block, exactly as D59 shipped it). Under that
+    revert `meta['inherited_ic_pin_era']` does not exist and the sentinel below is unreachable —
+    RED. Restored the D60 shape and this test passes again."""
+    sw = _sweep()
+    calls = _stub_897_pipeline(monkeypatch, sw, pin_ic=0.111111, sweep_ic=0.222222)
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    assert meta["inherited_ic_pin_era"][5]["status"] == "pass"
+    assert meta["inherited_ic_pin_era"][5]["ic"] == pytest.approx(0.111111)
+    assert meta["signal_ic_sweep_panel"][5] == pytest.approx(0.222222)
+    # ...and every cell that reached the decision engine did so under the sweep panel's shape
+    # (sweep_universe_n=2), never the pin panel's (pin_universe_n=1) — the guard's panel never
+    # leaks into the cells themselves either.
+    assert any(c.status == "ok" for c in cells)
+
+
+def test_pin_era_read_goes_through_the_read_only_proxy(monkeypatch):
+    """The pin-era read reaches `probe.load_universe_trainlocked`/`build_aligned_ohlcv`, and both
+    are, in real life, bare `sqlite3.connect(cfg.db_path)` calls (READ-WRITE-CREATE — the exact
+    D59 hazard already closed on `report_bar_frequency`). This asserts the SAME
+    `_ReadOnlySqlite3ForProbe` scope-patch is installed for the duration of BOTH pin-era calls,
+    and that `probe.sqlite3` is back to the real module immediately after.
+
+    PERTURBATION THIS IS RED AGAINST: delete the `probe.sqlite3 = _ReadOnlySqlite3ForProbe()` /
+    restore around the pin-era panel build (keeping everything else). Mutation-verified by hand
+    (see task report): with the rebind removed, `isinstance(probe.sqlite3,
+    sw._ReadOnlySqlite3ForProbe)` reads False for both stubbed calls — RED. Restored, both read
+    True again."""
+    import sqlite3 as real_sqlite3
+    sw = _sweep()
+    calls = _stub_897_pipeline(monkeypatch, sw, check_proxy=True)
+    sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    assert calls["proxy"], "the pin-era panel build never ran through the stubbed loaders"
+    for fn_name, is_proxy in calls["proxy"]:
+        assert is_proxy, f"{fn_name} ran WITHOUT the read-only proxy installed"
+    # ...and it is restored: nothing left `probe.sqlite3` patched after the run.
+    import probe
+    assert probe.sqlite3 is real_sqlite3
+
+
+def test_pin_era_guard_failure_or_nan_drops_exactly_that_hs_cells_and_keeps_counts_consistent(
+        monkeypatch):
+    """Gate (ii): a failing OR non-finite pin-era guard at one H must drop every cell of THAT H
+    only (reason names the D60 pin-era basis), never crash the run, and `n_cells_recorded` must
+    still equal `n_cells_expected`. H=1 gets a NaN IC (the D60 rider on TASK_902's vacuous-on-NaN
+    item — `nan > tol` is False, so an unguarded compare would let it slip through as a pass);
+    H=5 gets a normal passing IC and its cells proceed to the (stubbed) decision engine.
+
+    PERTURBATION THIS IS RED AGAINST: delete the `if not np.isfinite(ic_pin): raise
+    AssertionError(...)` guard in `_run_sweep_inner`'s pin-era loop. Mutation-verified by hand
+    (see task report): with it removed, H=1's `inherited_ic_pin_era` status reads "pass" with
+    `ic=nan` instead of "failed", and H=1's cells are NOT dropped (status "ok") — RED against
+    both assertions below. Restored, this test passes again."""
+    sw = _sweep()
+    calls = _stub_897_pipeline(monkeypatch, sw, pin_ic_by_h={1: float("nan"), 5: 0.1511})
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(1, 5), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    assert meta["inherited_ic_pin_era"][1]["status"] == "failed"
+    assert "non-finite" in meta["inherited_ic_pin_era"][1]["reason"]
+    assert meta["inherited_ic_pin_era"][5]["status"] == "pass"
+
+    h1_cells = [c for c in cells if c.H == 1]
+    h5_cells = [c for c in cells if c.H == 5]
+    assert h1_cells and all(c.status == "dropped" for c in h1_cells)
+    assert all("pin-era inherited-IC GUARD FAILED" in c.reason for c in h1_cells)
+    assert h5_cells and any(c.status == "ok" for c in h5_cells)
+    assert meta["n_cells_recorded"] == meta["n_cells_expected"]
+
+
+def test_sweep_panel_ic_is_never_gated_and_the_pins_module_attribute_is_restored(monkeypatch):
+    """D60 item 3: the sweep-panel IC call must go through the SAME lineage function
+    (`decide.inherited_signal_check_chunked`) but NON-ASSERTING — achieved by rebinding
+    `backtest.SIGNAL_806_IC_FULL` to a new empty dict for that one call and restoring the
+    ORIGINAL object afterwards. This is proven two ways: (1) the stub's own snapshot of
+    `backtest.SIGNAL_806_IC_FULL` at call time is EMPTY for every sweep-panel call and
+    NON-EMPTY (the real pins) for every pin-era call; (2) after the run, the module attribute IS
+    (identity, not just equality) the exact object captured before the call.
+
+    PERTURBATION THIS IS RED AGAINST: delete the `backtest.SIGNAL_806_IC_FULL = {}` /
+    `finally: backtest.SIGNAL_806_IC_FULL = _orig_pins` scope-patch around the sweep-panel call
+    in `_run_sweep_inner`'s per-H loop. Mutation-verified by hand (see task report): with it
+    removed, the sweep-panel call's `pins_snapshot` reads the real non-empty pins dict instead of
+    `{}` — RED against assertion (1). Restored, this test passes again."""
+    sw = _sweep()   # MUST run before `import backtest` — this is what puts
+                    # runs/808_linear_backtest on sys.path in an otherwise-fresh process.
+    import backtest
+    orig_pins_obj = backtest.SIGNAL_806_IC_FULL
+    assert orig_pins_obj  # sanity: the real pins are non-empty going in
+    calls = _stub_897_pipeline(monkeypatch, sw)
+    sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    check_calls = [c for c in calls["fit_check"] if c["fn"] == "check"]
+    pin_checks = [c for c in check_calls if c["which"] == "pin"]
+    sweep_checks = [c for c in check_calls if c["which"] == "sweep"]
+    assert pin_checks and sweep_checks
+    for c in pin_checks:
+        assert c["pins_snapshot"] == orig_pins_obj
+    for c in sweep_checks:
+        assert c["pins_snapshot"] == {}
+    assert backtest.SIGNAL_806_IC_FULL is orig_pins_obj
+
+
+# ============================================================================================
+# TASK_897 D60 fix pass, cycle 2 — three holes the review panel found in the re-based guard.
+# Each test below is mutation-verified RED-then-GREEN against ONE named perturbation, and each
+# is run BOTH in the full suite AND under `-k` isolation (the previous cycle's trap: a test
+# that only passes by accident of full-suite import/patch ordering).
+# ============================================================================================
+
+def test_pin_era_guard_refuses_an_H_that_carries_no_806_pin_instead_of_passing_vacuously(
+        monkeypatch):
+    """H1 (MAJOR) — the SECOND, independent vacuous-pass path, distinct from the non-finite one.
+
+    `decide.inherited_signal_check_chunked` (809 lineage, byte-frozen) compares its IC only
+    `if tgt is not None`, where `tgt = backtest.SIGNAL_806_IC_FULL.get(H)`. For any H outside
+    the pinned set {1, 5, 20} that short-circuits and the function returns a real, FINITE,
+    NEVER-COMPARED IC — which the `np.isfinite` rider happily waves through as
+    `{"ic": <real number>, "status": "pass"}`, under an artifact bullet that calls it "the
+    lineage-fidelity proof; GATED". Reproduced live at H=2 before the fix
+    (`ic: -0.0036549..., status: 'pass'`). Not reachable from today's CLI (`GRID_H` /
+    `SMOKE_GRID_H` are subsets of the pinned set) but fully reachable through the public
+    `run_sweep(grid_h=...)` API — the exact reuse surface D60 points the 898-class decay work at.
+
+    PERTURBATION THIS IS RED AGAINST: delete the `tgt_pin = backtest.SIGNAL_806_IC_FULL.get(H)`
+    / `if tgt_pin is None: raise AssertionError(...)` block from `_run_sweep_inner`'s pin-era
+    loop. Mutation-verified by hand (see task report): with it removed, H=2's
+    `inherited_ic_pin_era` status reads "pass" carrying the stub's finite IC, and H=2's cells
+    are NOT dropped — RED against the first and third assertion groups below."""
+    sw = _sweep()
+    import backtest
+    # The precondition, read from the LINEAGE itself rather than asserted from prose: the pins
+    # are exactly {1, 5, 20}, and the lineage's compare really is `tgt is not None`-gated.
+    assert 2 not in backtest.SIGNAL_806_IC_FULL
+    lineage_src = (_REPO / "runs" / "809_decision_rule_rescue" / "decide.py").read_text()
+    assert "tgt is not None and abs(ic - tgt) > backtest.SIGNAL_IC_TOL" in lineage_src, (
+        "the 809 lineage's short-circuit changed shape — re-derive H1 before trusting this test"
+    )
+
+    calls = _stub_897_pipeline(monkeypatch, sw, pin_ic=-0.0036549)
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(2, 5), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    # (1) the off-grid H is recorded NOT-EVALUABLE, never "pass", and carries no IC.
+    assert meta["inherited_ic_pin_era"][2]["status"] == "failed"
+    assert meta["inherited_ic_pin_era"][2]["ic"] is None
+    reason = meta["inherited_ic_pin_era"][2]["reason"]
+    assert "NOT-EVALUABLE" in reason
+    assert "no 806 IC pin" in reason
+    assert "LINEAGE FIDELITY WAS NOT ESTABLISHED" in reason
+    # (2) the guard refuses BEFORE producing an IC nothing would compare — no pin-era lineage
+    #     call is made for H=2 at all.
+    assert not [c for c in calls["fit_check"] if c["H"] == 2 and c["which"] == "pin"]
+    # (3) a pinned H alongside it is unaffected, its cells proceed, and gate (ii) holds:
+    #     the off-grid H's cells DROP and the recorded/expected counts still match.
+    assert meta["inherited_ic_pin_era"][5]["status"] == "pass"
+    h2_cells = [c for c in cells if c.H == 2]
+    h5_cells = [c for c in cells if c.H == 5]
+    assert h2_cells and all(c.status == "dropped" for c in h2_cells)
+    assert all("pin-era inherited-IC GUARD FAILED" in c.reason for c in h2_cells)
+    assert h5_cells and any(c.status == "ok" for c in h5_cells)
+    assert meta["n_cells_recorded"] == meta["n_cells_expected"]
+
+
+def test_artifact_sweep_panel_ic_bullet_states_what_the_code_actually_does_under_skip(
+        monkeypatch, tmp_path):
+    """H2 (MINOR) — the shipped string must not claim something the code does not do.
+
+    `meta.setdefault("signal_ic_sweep_panel", {})[H] = ic` runs UNCONDITIONALLY for every H that
+    reaches the fit, with `ic = None` under `--skip-inherited-ic-check` — so the dict renders as
+    `{5: None}`, NOT `{}`. The bullet claimed "(empty if `--skip-inherited-ic-check`)". The
+    OTHER new bullet's "empty if skip" claim is true (the pin-era guard dict really is never
+    populated under the flag) and is asserted here too, so the fix cannot be over-applied.
+    This project has escalated this exact shape twice (D53, D57): a false claim in a shipped
+    string, rendered exactly where a reader checks legitimacy.
+
+    PERTURBATION THIS IS RED AGAINST: restore the sweep-panel bullet's wording to
+    "(empty if `--skip-inherited-ic-check`)". Mutation-verified by hand (see task report): the
+    rendered bullet then asserts "empty" beside a literal `{5: None}` on the same line — RED
+    against the `"empty if" not in bullet` assertion."""
+    sw = _sweep()
+    _stub_897_pipeline(monkeypatch, sw)
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5, verify_inherited_ic=False,
+    )
+    # GROUND TRUTH, measured off the run itself — the two dicts behave DIFFERENTLY under skip.
+    assert meta["signal_ic_sweep_panel"] == {5: None}   # keyed, valued None — NOT empty
+    assert meta["inherited_ic_pin_era"] == {}           # this one genuinely IS empty
+
+    out = tmp_path / "result_h2.md"
+    sw.write_artifact(cells, meta, out)
+    lines = out.read_text().splitlines()
+    sweep_bullets = [ln for ln in lines if "Signal IC, SWEEP-PANEL basis" in ln]
+    guard_bullets = [ln for ln in lines if "Inherited-IC GUARD (pin-era basis" in ln]
+    assert len(sweep_bullets) == 1 and len(guard_bullets) == 1
+    sweep_bullet, guard_bullet = sweep_bullets[0], guard_bullets[0]
+    # The sweep-panel bullet renders the real dict and describes it truthfully.
+    assert "{5: None}" in sweep_bullet
+    assert "None per H if" in sweep_bullet
+    assert "empty if" not in sweep_bullet
+    # The pin-era GUARD bullet's own "empty if skip" claim is TRUE and stays.
+    assert "empty if" in guard_bullet
+    assert "{}" in guard_bullet
+
+
+def test_pin_era_panel_build_failure_frees_the_panel_before_the_sweep_build(monkeypatch):
+    """H3 (MINOR) — cleanup symmetry between the pin-era build's success and except paths.
+
+    The success path does `del ohlcv_pin; gc.collect()`. An exception raised AFTER the
+    `ohlcv_pin, grid_ts_pin = build_aligned_ohlcv(...)` bind but BEFORE that `del` (driven here,
+    as the reviewing judge drove it, by a stubbed build returning a malformed 3-channel array,
+    so `ohlcv_pin[:, :, 3]` raises) left the full pin-era panel alive in `_run_sweep_inner`'s
+    frame for the rest of the function — straight through the much larger sweep-panel build
+    immediately below, the worst possible moment for the scheduled leg's `safe_run --mem 64G`
+    budget. The judge did NOT prove this reachable from the real 806-lineage
+    `build_aligned_ohlcv`; the asymmetry is closed anyway because it is cheap and the memory
+    window is the scheduled leg's.
+
+    The liveness probe fires AT THE SWEEP-PANEL BUILD, not after `run_sweep` returns — after
+    return the frame dies and the reference is released either way, so a post-hoc check would be
+    green under the bug and prove nothing.
+
+    PERTURBATION THIS IS RED AGAINST: delete the `ohlcv_pin = close_pin = grid_ts_pin = None;
+    gc.collect()` lines from the pin-era build's `except` branch (and the `ohlcv_pin =` from the
+    pre-`try` initialisation). Mutation-verified by hand (see task report): the weakref then
+    reads ALIVE at the sweep-panel build — RED against the load-bearing assertion below."""
+    import weakref
+
+    import numpy as np
+    sw = _sweep()
+    import probe
+    _stub_897_pipeline(monkeypatch, sw)
+    holder = {}
+
+    def malformed_build_aligned_ohlcv(cfg, asset_ids, bar_sec):
+        """Returns a 3-CHANNEL panel: the bind succeeds, `[:, :, 3]` one line later raises."""
+        grid_start = probe._to_epoch(cfg.train_start) - cfg.W * 60
+        grid_end = probe._to_epoch(cfg.test_end)
+        grid_ts = np.arange(grid_start, grid_end, 60, dtype=np.int64)
+        bad = np.zeros((len(grid_ts), len(asset_ids), 3), dtype=np.float64)
+        holder["wref"] = weakref.ref(bad)
+        holder["nbytes"] = bad.nbytes
+        return bad, grid_ts
+
+    monkeypatch.setattr(probe, "build_aligned_ohlcv", malformed_build_aligned_ohlcv)
+
+    stubbed_sweep_build = sw.alias_layer.build_aligned_ohlcv_with_alias_union
+
+    def probing_sweep_build(cfg, asset_ids, alias_groups, bar_sec):
+        # The moment that matters: the next large allocation in the same frame.
+        holder["alive_at_sweep_build"] = holder["wref"]() is not None
+        return stubbed_sweep_build(cfg, asset_ids, alias_groups, bar_sec)
+
+    monkeypatch.setattr(sw.alias_layer, "build_aligned_ohlcv_with_alias_union",
+                        probing_sweep_build)
+
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    assert "wref" in holder, "the malformed pin-era build never ran"
+    assert holder["nbytes"] > 1_000_000, "the probe panel is too small to be a meaningful check"
+    assert "alive_at_sweep_build" in holder, "the sweep-panel build never ran"
+    # THE LOAD-BEARING ASSERTION: no reference to the failed pin-era panel survives into the
+    # sweep-panel build.
+    assert holder["alive_at_sweep_build"] is False, (
+        "the failed pin-era panel is STILL REFERENCED when the (much larger) sweep panel is "
+        "built — the except branch did not match the success path's cleanup discipline"
+    )
+    # ...and the failure is still recorded per gate (ii): every H dropped, counts consistent.
+    assert meta["inherited_ic_pin_era"][5]["status"] == "failed"
+    assert "pin-era PANEL BUILD failed" in meta["inherited_ic_pin_era"][5]["reason"]
+    assert cells and all(c.status == "dropped" for c in cells)
+    assert meta["n_cells_recorded"] == meta["n_cells_expected"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

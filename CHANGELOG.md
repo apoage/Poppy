@@ -3,6 +3,49 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-23 — TASK_897 — the inherited-IC guard re-based to the pins' own basis (D60)
+
+- **What shipped.** `experiments/897_corrected_809/sweep_gated_maker.py` — the 806-inherited IC guard
+  no longer asserts June-era pins against the harness's SWEEP panel. It builds a separate **pin-era
+  panel** (`probe.Config`'s own split defaults — `test_end=2025-04-01`, the pins' actual basis —
+  exact-spelling read, never the D56(a) alias union) and asserts the pins there with the **tol
+  UNMOVED at 1e-3**. The sweep-panel IC becomes a **disclosed, non-gated MEASUREMENT**. D60 rejected
+  widening the tol ("a bar moved to fit its result") and rejected skipping the check; neither was done.
+- **Why the srv leg read ok=0.** Not a lineage failure. Planner decomposition (D60): the pins
+  reproduce to −4.5e-5 on a pin-era panel built from TODAY's table, chunked ≡ unchunked to
+  `+0.000000`, and the entire drift is the test-span extension. The trap the fix turns on:
+  **`probe.make_splits` IGNORES `cfg.test_end` — the PANEL BUILD is what moves the test span**, so
+  scope-patching `decide.CFG` alone would have been vacuous.
+- **A second vacuous-pass root cause, found by the panel and closed.** `inherited_signal_check_chunked`
+  guards with `if tgt is not None and abs(ic - tgt) > tol`, so for any H outside `{1, 5, 20}` the
+  comparison short-circuits and a real, finite, **never-compared** IC was recorded `status: "pass"`
+  under a bullet calling it "the lineage-fidelity proof; GATED". An `isfinite` screen cannot catch it —
+  the value IS finite. Reproduced independently by two lenses (H=2 and H=7). Not reachable from the
+  CLI today; reachable via the public `run_sweep(grid_h=…)` API, the exact reuse surface D60 points at
+  for 898-class decay work. **The rule, now written into TASK_902 item 2: a check that did not execute
+  a comparison is not a passed check.**
+- **The protected DB.** The pin-era read goes through `probe.load_universe_trainlocked` /
+  `build_aligned_ohlcv`, whose bare `sqlite3.connect` is READ-WRITE-CREATE — the exact D59 hazard. It is
+  wrapped in the same `_ReadOnlySqlite3ForProbe` scope patch; a `CREATE TABLE` through it raises
+  `attempt to write a readonly database`. The pin-era panel is built, used and **freed before** the
+  sweep panel exists (weakref-proven at the build call site on both success and failure paths) — two
+  resident panels would OOM the scheduled leg's `safe_run --mem 64G`.
+- **Gate (ii) holds in every failure mode**: a failed, NaN, or not-evaluable guard DROPS that H's cells
+  with a reason naming the pin-era basis, never crashes, never silently omits —
+  `n_cells_recorded == n_cells_expected` throughout.
+- **809 lineage byte-untouched**, md5-verified at four points: `probe.py ab8e94b0…`,
+  `backtest.py 979a392f…`, `decide.py 2e294c56…`.
+- **Verification.** 215 tests in the 897 dir (212 baseline + 3 new, each mutation-verified RED→GREEN
+  and re-checked under `-k` isolation), selftest 12/12, 144-cell fixture smoke green both ways. A/B vs
+  pre-change: `## Cells` through EOF **byte-identical** (`8468be63…`); only the bullet swap and
+  `Runtime:` differ. **No cell number moved.**
+- **Remainders (routed, not fixed here).** TASK_902 item 2b: an absent/unreadable `--db-path` crashes
+  uncaught at `probe.report_bar_frequency` before any artifact is written — and D58's contract is that
+  orchestration parses the ARTIFACT, never the exit code, so that path produces nothing to parse.
+  TASK_902 item 2: the general statement of the vacuity rule above.
+- **Not verified here, and owned by the planner:** the real-data behavior of the re-based guard. The
+  srv leg relaunch is planner-scheduled.
+
 ## 2026-08-22 — TASK_903 — the constant-provenance question, pointed at 892 and 875 — and 875's numbers verified
 
 - **What shipped.** `experiments/892_action_ev/test_903_constant_provenance.py` (gate-(i) enumeration
