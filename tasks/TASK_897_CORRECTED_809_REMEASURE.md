@@ -213,6 +213,28 @@ CELL CLEARS follow-up, not this row).
 
 ## Launch notes (planner, 2026-08-22)
 
+**Launch record (2026-08-23, planner). GATE (iv) SATISFIED PRE-LAUNCH: the attainable
+maker-fee set is `{8, 16} bp` (operator, 2026-08-23), recorded here before any cell is read.**
+Zero-maker-fee stays out of reach per the Fork-C venue ruling; Kraken's real 14/12/10 ladder is
+not in the pre-registered grid and gate (iv) refuses off-grid tiers, so the grid subset it is.
+**Data basis:** the workstation and srv DBs are NOT byte-identical (sha256 `799dca96…` @
+26,245,337,088 B vs `c19782d1…` @ 26,243,768,320 B), so per D54 the leg runs against a staged,
+content-verified extract: `runs/897_corrected_809/minute_extract_897.db` (full `assets` + all
+`ohlcv` rows in [2023-05-16, 2026-03-01) — 120,900,027 rows, 1,096 assets — built read-only
+from the source of record by `runs/897_corrected_809/build_extract.py`; verification =
+per-window counts + an ordered-stream md5 over every carried row, source vs extract, which must
+MATCH before staging; staged copy sha256-verified on both hosts). The verdict therefore reads
+on data exactly equal to what the calibration measured. **Code basis:** srv deployed to
+`f313d9e` (deploy-branch tip carrying `e5c3864`); the 13 launch-critical files (897 instrument
++ 809 lineage incl. the gitignored `recompute_best.py` repair) sha256-verified IDENTICAL on
+both hosts post-deploy. **Command (tmux `l897` on srv, `safe_run --cpu`, defaults everywhere
+else — full 864-cell grid, NOT `--smoke`, NOT `--skip-inherited-ic-check`):**
+`sweep_gated_maker.py --db-path runs/897_corrected_809/minute_extract_897.db
+--attainable-maker-fee-bp 8,16 --out runs/897_corrected_809/result_897_<ts>.md --n-jobs 32`.
+Orchestration parses the artifact, never the exit code (D58 pre-902 contract). Verdict reads on
+Sharpe ≥ 1.0 & PnL > 0 at the recorded tiers; `CI lo > 0` is UNAVAILABLE (TASK_901 upgrades it
+from the same artifacts).
+
 **D55 (ruled (a)) — calibration gate before the srv leg.** The factory measured the
 pre-registered CI at coverage 0.530 (nominal 0.95) with the block cap at 20 — the D49 structural
 defect. Before any cell is read: run the 892 calibration METHOD (not its table — different
