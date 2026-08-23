@@ -56,6 +56,25 @@ the banner's disclosures in hand — the srv-leg verdict read (planner) already 
    whose contract is explicitly documented as artifact-less, chosen deliberately rather than by
    omission).
 
+2c. **A grid cell can silently produce ZERO decisions and still be recorded, and nothing says so.**
+   **NEW 2026-08-24 (factory run 41, found by TASK_901's real-data leg, independently verified by
+   its correctness judge — both by reading the code and by running it).** `decide._decide_step`
+   (`runs/809_decision_rule_rescue/decide.py:198`) opens with
+   `if npr < (2*k if variant == "long_short" else k): return tgt` — so on a universe narrower than
+   the grid's `k` demands, EVERY bar returns the empty target and the cell yields **0 decisions**.
+   Measured: 897's own grid value `k=16`, long_short, against a 7-asset universe → `n_decisions: 0`.
+   Not triggered on the real 64-asset leg (16 of 64 clears the `2k` floor), so this is not a defect
+   in the shipped numbers — it is a **silent-degenerate-cell class** in the instrument: the cell is
+   not a fit failure, so it does not take the gate-(ii) drop path, and an empty measurement is not
+   visibly distinguishable from a measured one in the artifact.
+   Related and worth stating in the same place: **τ can bind before `k` does.**
+   `n_elig = max(1, int(round((1.0 - tau) * npr)))` means at τ=0.9 a 7-slot universe yields
+   `n_elig = 1` regardless of `k`, so the realized book is one name per side while the cell is
+   labelled by its `k`. A cell's label should not imply a book the run did not hold.
+   Fix direction: record realized `n_decisions` and realized book width per cell, and make a
+   zero-decision cell state that it is empty rather than merely reporting zeros — an empty cell that
+   renders like a measured one is the same honesty class as items 2 and 2b above.
+
 3. **Render the 639 overlay disclosure.** The disclosure exists in code but the borrowed-pairing
    table renders no `reason` column (the per-stratum table beside it has one). Row 639 cannot
    reproduce BY CONSTRUCTION (stratum 620 was demoted by this row) — the artifact must say so at
