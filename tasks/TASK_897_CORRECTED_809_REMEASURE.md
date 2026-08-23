@@ -230,7 +230,10 @@ on data exactly equal to what the calibration measured. **Code basis:** srv depl
 both hosts post-deploy. **Command (tmux `l897` on srv, `safe_run --cpu`, defaults everywhere
 else — full 864-cell grid, NOT `--smoke`, NOT `--skip-inherited-ic-check`):**
 `sweep_gated_maker.py --db-path runs/897_corrected_809/minute_extract_897.db
---attainable-maker-fee-bp 8,16 --out runs/897_corrected_809/result_897_<ts>.md --n-jobs 32`.
+--attainable-maker-fee-bp 8,16 --out runs/897_corrected_809/result_897_<ts>.md`.
+(Correction to this record as first committed: no `--n-jobs` — the sweep's argparse has no such
+flag; the `--n-jobs` mentions in docstrings belong to the calibration probe. The sweep runs
+single-threaded; runtime goes to tmux.)
 Orchestration parses the artifact, never the exit code (D58 pre-902 contract). Verdict reads on
 Sharpe ≥ 1.0 & PnL > 0 at the recorded tiers; `CI lo > 0` is UNAVAILABLE (TASK_901 upgrades it
 from the same artifacts).
