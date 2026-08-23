@@ -43,6 +43,24 @@ the banner's disclosures in hand — the srv-leg verdict read (planner) already 
    {0,1,2,4,8} only; at 1.5x the guard certifies 8–13% of draws at 0.905 coverage. Densify the
    grid or state the gap at the constant.
 
+### Added by run 40 (all pre-existing; routed here by the ship's own remainders list)
+
+9. **The protected-DB gate binds at the wrong layer.** `assert_db_path_allowed` is called only
+   from `main()` — `run_sweep`/`_run_sweep_inner` never call it, so a programmatic caller reads
+   the DB without the acknowledgment flag. Bind the guard at the data-touch layer.
+10. **TOCTOU residual:** the guard returns the *unresolved* string, so a symlink can be
+    re-targeted between check and open. Resolve once and feed both the check and the open (the
+    run-40 `//localhost` fix normalized the string; resolution is still open).
+11. **Refusal echoes are unbounded** (a 900k-char `--db-path` produced a 900k-char refusal).
+    Clip with the path still named (the TASK_888 precedent: 1.6M chars → <4k).
+12. **The artifact must state which grid ran.** The smoke grid is 144 cells; the full
+    pre-registered grid is 864. Today the artifact does not say which — load-bearing for every
+    later reader, TASK_901 first among them ("144/144" must never be read as full coverage).
+
+**Explicitly NOT in scope:** the FIFO `<db>-journal` sidecar hang — operator call, run 40, a
+documented limitation rather than something to guard (the FIFO guard was TASK_891's failure
+mode recurring; complexity inside a fail-closed guard is itself risk).
+
 ## Acceptance (gates)
 
 - (i) All eight scope items demonstrated (test or rendered artifact excerpt per item).

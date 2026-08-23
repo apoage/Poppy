@@ -3,46 +3,45 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-22 (planner, post run 39 + the D58/D59 rulings).** Run 39 (897's D57 narrowing)
-HALTED correctly on the 3-cycle rule — but the narrowing itself is DONE AND VERIFIED (8
-lens-runs; 188 tests + selftest 12/12; all 144 per-cell artifact rows BYTE-IDENTICAL vs the
-pre-D57 tree: it changed CLAIMS, never NUMBERS; work in `stash@{0}`). What halted it: cycle 3
-found `probe.report_bar_frequency()` opening a bare READ-WRITE-CREATE `sqlite3.connect` on
-`--db-path` as the harness's first data touch — falsifying the harness's own "never writes to
-it" and breaching the read-only invariant on the 24GB source of record. **D59 ruled (a): pop
-the stash, close ONLY that handle (scope-patch `probe.sqlite3.connect` around the call with a
-try/finally restore — the `decide.CFG` pattern), re-prove the 144 rows byte-identical, ship.**
-**D58 ruled (a): exit 0 stays for an honest empty result (fixture-normal); a gate-(ii)
-completeness violation exits non-zero — implementation in TASK_902, NOT in the resume.** Run
-39's transferable finding is one question — *is each shipped constant the exact output of the
-command its own comment advertises?* — which failed 5/7 times on 897's instrument; it is now
-seeded as TASK_903 against 892's calibration table and 875's walk-forward numbers. **898
-GRADED: BOTH DEAD** (`f7e812f`) — `pathway.md:106` struck; **897's minute-surface answer is the
-only live edge thread**, and its srv leg launches planner-scheduled the moment the resume
-ships (verdict reads Sharpe ≥ 1.0 & PnL > 0; `CI lo > 0` UNAVAILABLE until TASK_901;
-**operator input due at launch: the attainable Kraken maker-fee tiers, recorded BEFORE the
-verdict is read — gate iv**). The srv orchestration PARSES THE ARTIFACT, never the exit code
-(D58's pre-902 contract — 892's leg already worked this way). **Harness fact, standing: the
-planner lane runs on claude-kimi and the factory on claude-code — the pipes are NOT wired;
-coordination is repo-files only (this file, DECISIONS, banners, lore), and planner-scheduled
-runs go via ssh/tmux on gpu-server.**
-**Ready (physically ordered): 1 TASK_897 resume per D59(a) (pop, close the handle ONLY,
-re-prove, ship) → 2 TASK_881D (protection + deleter + corpus; unblocked) → 3 TASK_901
-(range-based dependence probe) → 4 TASK_902 (897 instrument hardening: the D58 exit contract +
-the named remainders + the --out default) → 5 TASK_903 (constant-provenance audit: 892, 875).
-FILLER: TASK_899 (data backfill — planner/server ops, WAITING on the Q2-2026 dump; only the
-already-ingested Q4_2025/Q1_2026 zips are in Downloads). GATED: TASK_880 (D34+D35).**
+**2026-08-23 (planner, post run 40).** Run 40 shipped BOTH top rows: **TASK_897
+(`task897-d59-ro-handle`, `e5c3864`)** — the D59(a) resume landed exactly as ruled, and found
+and closed a worse hole with it: a leading `//localhost` is stripped by sqlite's URI parser, so
+the protected-DB gate reasoned about a different file than sqlite opened (mutation-proven both
+directions on srv; the FIFO guard was removed on operator call — TASK_891's failure mode
+recurring; `probe.py` byte-untouched, md5-checked since `runs/` is gitignored). **TASK_903
+(`task903-constant-provenance`, `892d3f0`)** — 8 constants, 9 gates, adversarially re-derived:
+**875's five walk-forward folds REPRODUCE the LEDGER row EXACTLY** (all 15 seeds, f5 terminal
+PVs, zero bankruptcies, the 1-of-5-above-floor tally — re-derived read-only on srv, no re-run
+of the 8h57m battery; superseded "unrecoverable" classification kept visible per D39);
+892-C4 found non-material by measurement (the 2000-trial recalibration existed but was never
+wired in; recomputed at the corrected k — no sign change, no zero-crossing, **ANTI-EDGE and D47
+untouched**). **The 897 srv leg is now the only live research action: planner-scheduled,
+BLOCKED on one operator input — the attainable Kraken maker-fee tiers as a subset of the
+pre-registered grid {0, 8, 16} bp (0 is out of reach per the Fork-C venue ruling), recorded
+BEFORE the verdict is read (gate iv).** Verdict reads Sharpe ≥ 1.0 & PnL > 0; `CI lo > 0`
+UNAVAILABLE until TASK_901; orchestration parses the artifact, never the exit code (D58 pre-902
+contract). Run-40 process rule now in root CLAUDE.md: **test suites / eval sweeps /
+verification runs go on gpu-server, GPU-pinned, `safe_run`-wrapped in tmux — never bare on
+workstation CPU.** Run-40 remainders routed: four guard-layer items → TASK_902 scope (added);
+the walkforward smoke landmine + the `WF_SUMMARY.json` fake-null → **TASK_904** (seeded); the
+875 evidence (1.4 GB, never committed, one host) was mirrored srv→workstation planner-side.
+**Ready (physically ordered): 1 TASK_881D (protection + deleter + corpus; unblocked) →
+2 TASK_901 (range-based dependence probe; gates i–iii buildable now, gate iv awaits the srv
+artifacts) → 3 TASK_902 (897 instrument hardening: the D58 exit contract + the named
+remainders + the run-40 guard-layer items) → 4 TASK_904 (walkforward smoke landmine +
+WF_SUMMARY fake-null — defuse BEFORE the SPEC.md:60-72 real-db re-materialization can land).
+FILLER: TASK_899 (data backfill — planner/server ops, WAITING on the Q2-2026 dump). GATED:
+TASK_880 (D34+D35).**
 **OPEN decisions: D43 only.**
-_Next takeable: **TASK_897's resume per D59(a)** — single-purpose: close the read-write
-handle, re-prove, ship. The stash is green; the full spec is in D59's DECIDED row._
+_Next takeable: **TASK_881D.** The research thread's next move (897 srv leg) is the planner's
+and waits on the operator's maker-fee tiers — it does not block the factory._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (RESUME per D59(a)) | XS | Narrowing DONE AND VERIFIED in `stash@{0}` (188 tests + selftest 12/12; 144/144 artifact rows byte-identical vs pre-D57). The row: pop, close ONLY the read-write DB handle (scope-patch `probe.sqlite3.connect` around the `report_bar_frequency` call, try/finally restore — `probe.py` stays byte-untouched), new refusal tests, RE-PROVE the 144 rows byte-identical, ship. Then the srv leg is planner-scheduled — verdict reads Sharpe ≥ 1.0 & PnL > 0, `CI lo > 0` UNAVAILABLE (TASK_901 upgrades it retroactively); orchestration parses the artifact, never the exit code. |
-| 2 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
-| 3 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | **NEW 2026-08-22 — D57(b).** The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). When it ships, 897's third conjunct is re-read from the same artifacts — no srv re-run. |
-| 4 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | **NEW 2026-08-22 — D59(a)/D58(a).** Pays 897's named honesty debt deliberately: D58 exit-code contract (non-zero on gate-(ii) violation, exit 0 for honest empty), the vacuous-on-NaN inherited-IC check, the unrendered 639 disclosure, the dep<=block column, the 100%-failed top-level statement, the tracked `--out` default, the OC grid disclosure. Discipline: CLAIMS/RENDERING only — NUMBERS byte-identical. |
-| 5 | `tasks/TASK_903_CONSTANT_PROVENANCE_AUDIT.md` | S/M | **NEW 2026-08-22 — the run-39 question pointed at other lanes.** For every shipped constant in 892's calibration table and 875's walk-forward numbers whose comment advertises a command: re-run it, compare exactly, classify REPRODUCES / DRIFTS / UNRECOVERABLE, re-pin per D39. Material drift escalates to the planner; the row never re-grades. |
+| 1 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
+| 2 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). Gates (i)–(iii) buildable now; gate (iv) re-reads 897's third conjunct from the srv-leg artifacts when they exist — no srv re-run. |
+| 3 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt deliberately: D58 exit-code contract (non-zero on gate-(ii) violation, exit 0 for honest empty), the vacuous-on-NaN inherited-IC check, the unrendered 639 disclosure, the tracked `--out` default, the OC grid disclosure, plus run-40's guard-layer items (gate bound at data-touch layer, TOCTOU resolution, clipped refusal echoes, artifact states which grid ran). Discipline: CLAIMS/RENDERING only — NUMBERS byte-identical. |
+| 4 | `tasks/TASK_904_WALKFORWARD_SMOKE_LANDMINE.md` | S | **NEW 2026-08-23 — run 40's flagged remainders, ruled planner-side.** `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with fixture content (content-idempotent TODAY; arms when the SPEC.md:60-72 real-db re-materialization lands) + `WF_SUMMARY.json` ships `[]` as a silent fake-null. Smoke out-rooted + `materialize` refuses to write what it didn't generate; the empty summary fails loudly. The 903-verified 875 numbers must not move. |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
