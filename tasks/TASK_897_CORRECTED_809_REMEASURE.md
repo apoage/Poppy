@@ -1,3 +1,45 @@
+> **STATUS (2026-08-23, factory run 41): SHIPPED as `task897-d60-guard-rebase` (`5ee6381`).
+> The D60 guard re-base landed exactly as ruled — the inherited-IC guard now asserts the 806 pins
+> on a PIN-ERA panel (`probe.Config`'s own split defaults, `test_end=2025-04-01`, exact-spelling
+> read), **tol UNMOVED at 1e-3**; the sweep-panel IC is a disclosed, non-gated MEASUREMENT.
+> 809 lineage byte-untouched (md5-verified at four points). 215 tests (212 baseline + 3 new),
+> selftest 12/12, fixture smoke green both ways, `## Cells` through EOF byte-identical vs
+> pre-change (`8468be63…`) — no cell number moved.**
+>
+> **The panel found a SECOND vacuous-pass root cause and it is closed.** The lineage check guards
+> with `if tgt is not None and abs(ic - tgt) > tol`, so for any H outside `{1, 5, 20}` the
+> comparison short-circuits and a real, **finite, never-compared** IC was recorded `status:
+> "pass"` under a bullet calling it "the lineage-fidelity proof; GATED". An `isfinite` screen
+> cannot catch it — the value IS finite. Reproduced independently by two lenses (H=2, H=7). Not
+> reachable from the CLI (`GRID_H`/`SMOKE_GRID_H` ⊂ {1,5,20}); reachable via the public
+> `run_sweep(grid_h=…)` API — the exact reuse surface D60 names for 898-class decay work.
+>
+> **THE SRV LEG IS READY TO RELAUNCH AND THAT IS THE PLANNER'S, NOT THE FACTORY'S.** Same command
+> as the 2026-08-23 launch record (tmux, `safe_run --mem 64G --cpu`, defaults, full 864-cell grid,
+> NOT `--smoke`, NOT `--skip-inherited-ic-check`), after deploying `5ee6381`. Expected: the guard
+> passes on the real pin-era basis — planner-measured today at **+0.151053 / +0.141160 /
+> +0.059755** vs pins ±1e-3. Gate (iv) still requires the operator's attainable Kraken maker-fee
+> tiers recorded BEFORE the verdict is read; orchestration PARSES THE ARTIFACT, never the exit
+> code (D58 pre-902 contract).
+>
+> **The verdict reads on TWO conjuncts, and that is now structural rather than temporary.**
+> `CI lo > 0` stays UNAVAILABLE: TASK_901 shipped a measured NEGATIVE — no candidate range
+> estimator certifies out-of-family at ≥93%, so there is nothing certified to re-read it with.
+> See TASK_901's banner.
+>
+> **REMAINDERS → TASK_902** (both added to that row this run): item 2 now names BOTH root causes of
+> the vacuity class (the general rule: *a check that did not execute a comparison is not a passed
+> check*); new item 2b — an absent/unreadable `--db-path` crashes uncaught at
+> `probe.report_bar_frequency` **before any artifact is written**, so D58's artifact-parsing
+> contract has nothing to parse.
+>
+> _Process note, disclosed not buried: the fix cycle's srv jobs were `safe_run`-wrapped and
+> GPU-pinned but not all run inside tmux — they would not have survived an SSH drop. A test-stub
+> contract drift was also found and fixed (`fake_run_decision` returned an array where
+> `decide._run_decision` returns a scalar `fill_frac`), invisible for four cycles because no prior
+> D60 test rendered an artifact._
+
+> _(superseded — the D60 halt banner, kept for the record:)_
 > **STATUS (2026-08-23, planner): SRV LEG #1 = HONEST NULL (the inherited-IC guard refused on a
 > basis the pins never claimed — 864/864 recorded, ok=0, artifact preserved on srv). D60 RULED:
 > re-base the guard to its actual claim (pin-era panel, tol UNMOVED; decomposition measured:
