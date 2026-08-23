@@ -1,0 +1,28 @@
+[
+  {
+    "label": "acf_band / persistent_component phi=0.99 w=0.2 / n=3000",
+    "n": 3000,
+    "n_draws": 1000,
+    "seed": 901,
+    "n_nan": 0,
+    "median": 18.0,
+    "p10": 3.0,
+    "p90": 62.0,
+    "min": 1.0,
+    "max": 177.0,
+    "frac_in_20_60": 0.367
+  },
+  {
+    "label": "acf_band / triangular dep=20 / n=4000 (the unit test's cell)",
+    "n": 4000,
+    "n_draws": 200,
+    "seed": 901,
+    "n_nan": 0,
+    "median": 29.0,
+    "p10": 20.0,
+    "p90": 63.099999999999994,
+    "min": 19.0,
+    "max": 149.0,
+    "frac_in_20_60": 0.845
+  }
+]

@@ -3,6 +3,47 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-24 — TASK_901 — the range-based dependence probe: a measured NEGATIVE, and two instrument defects found on the way
+
+- **What shipped.** `experiments/901_range_based_dependence_probe/` — three candidate range estimators
+  (`acf_band`, `variance_ratio`, `spectral_zero`), an out-of-family validation harness, a block rule
+  with a refusal ceiling, and the measured verdict as code (`measured_findings.py`) plus its JSON
+  artifacts. Gates (i)–(iii). **Gate (iv) is DEFERRED and unfabricated** — `gate_iv_hook.py` raises
+  `Gate4NotYetRunnable` because 897's srv-leg artifact does not exist yet; no 897 number appears
+  anywhere in the row.
+- **The conclusion.** **No candidate is certified as a general range instrument at ≥93%
+  out-of-family.** That survived three cycles and three independent verifications UNCHANGED.
+  **What kept changing were the REASONS** — cycle 1's were wrong, cycle 2's were wrong in a
+  different place — so they are now stated with their measurements attached and their withdrawn
+  versions named in the file.
+- **Why that distinction is the deliverable.** Each version of the reason implied a different next
+  experiment: "the statistic cannot see the structure" → abandon; "unusably conservative" → abandon
+  differently; the measured truth — "our read-off rule and our block ceiling reject it, and the
+  statistic's own behaviour is NOT SEPARATED from them" → **the question is open**.
+- **`acf_band` and `spectral_zero` fail conclusively** (13–44σ on the 4%-variance persistent
+  component that broke τ). **`variance_ratio` OVER-CERTIFIES at a low rate** — 0.185 pooled over four
+  independent draws on persistent φ=.999 — and cycle 2's "does not over-certify anywhere" is
+  **WITHDRAWN**.
+- **Two instrument defects surfaced, disclosed and NOT fixed.** (1) `MAX_BLOCK_CAP=60` does most of
+  the "refusing": on the persistent component the estimator returns a finite plateau in 16.4% of
+  draws and **163 of 164 are killed by the cap** — a ceiling that would refuse τ too. (2) Exactly
+  **one calibration stratum of 27** (`block=3, n_dec=3000`) fails at **0.925 vs 0.930** on a
+  200-trial batch (z = −0.27, a coin flip) while suppressing up to **32%** of some cells'
+  certifications. Left to the planner deliberately: raising `n_trials_valid` would be a knob turned
+  after seeing the number.
+- **Gate (iii) cannot discriminate between estimators, and its finding is EXCESS DISPERSION, not
+  drift.** Between-chunk variance ≈7× within-chunk (p = 1e-20…1e-33 across three horizons), while the
+  bootstrap SE is FLAT in block length (+6.7% across a 30× change) and the series is ANTI-persistent
+  (VR 0.273 at q=2048). The trend does NOT clear its own bar (slope p = 0.122 / 0.273 / 0.660), so
+  "monotone drift" was struck. **Seeded as `TASK_906`.**
+- **Consequence for TASK_897:** its `CI lo > 0` conjunct is **NOT YET ESTABLISHED** — not
+  "structurally unavailable". That overstatement was the orchestrator's and was corrected in
+  `2eaa844`.
+- **Verification.** 26 tests, selftest 12/12, 63 cells × 1000 trials on `gpu-server`; real leg at all
+  three horizons on the workstation under D54's data-local exception (the 11 GB extract cannot cross
+  a ~5 Mbps uplink), disclosed in the row's own `COMPUTE_LOCATION_DEVIATION`. The final prose pass
+  proved no number moved by AST token-stream and numeric-literal equality across all five files.
+
 ## 2026-08-23 — TASK_897 — the inherited-IC guard re-based to the pins' own basis (D60)
 
 - **What shipped.** `experiments/897_corrected_809/sweep_gated_maker.py` — the 806-inherited IC guard

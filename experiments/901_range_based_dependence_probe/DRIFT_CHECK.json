@@ -1,0 +1,107 @@
+{
+  "H=1": {
+    "n_chunks": 26,
+    "slope_per_chunk": -0.0038634360638887645,
+    "slope_se": 0.0024070896813398815,
+    "slope_t": -1.6050237321187897,
+    "slope_p": 0.12156819340387076,
+    "r_squared": 0.09693299867998598,
+    "spearman_rho": -0.29435897435897435,
+    "spearman_p": 0.14437477036657703,
+    "first_half_mean": -0.23264021550354513,
+    "second_half_mean": -0.24097034060269962,
+    "min_chunk_sharpe": -0.42501183005465953,
+    "max_chunk_sharpe": -0.1003416540116414,
+    "argmin_chunk": 25,
+    "argmax_chunk": 5,
+    "between_sd_raw": 0.09491084467230232,
+    "between_sd_detrended": 0.09205347942089917,
+    "between_within_var_ratio_raw": 7.194946160454027,
+    "between_within_var_ratio_detrended": 6.768248389354339,
+    "last3": [
+      -0.38,
+      -0.393,
+      -0.425
+    ],
+    "lowest3_chunks": [
+      23,
+      24,
+      25
+    ],
+    "highest3_chunks": [
+      2,
+      5,
+      16
+    ]
+  },
+  "H=5": {
+    "n_chunks": 25,
+    "slope_per_chunk": -0.0027358275521986272,
+    "slope_se": 0.0024370863830156953,
+    "slope_t": -1.1225812803620296,
+    "slope_p": 0.27319780222005513,
+    "r_squared": 0.05194472083425993,
+    "spearman_rho": -0.24846153846153846,
+    "spearman_p": 0.23107336631742548,
+    "first_half_mean": -0.20841270993498082,
+    "second_half_mean": -0.21998690418492753,
+    "min_chunk_sharpe": -0.41059753688722234,
+    "max_chunk_sharpe": -0.1166343326754205,
+    "argmin_chunk": 24,
+    "argmax_chunk": 21,
+    "between_sd_raw": 0.0883454253339714,
+    "between_sd_detrended": 0.08787039916698162,
+    "between_within_var_ratio_raw": 6.368064749737368,
+    "between_within_var_ratio_detrended": 6.299767725973327,
+    "last3": [
+      -0.222,
+      -0.329,
+      -0.411
+    ],
+    "lowest3_chunks": [
+      0,
+      9,
+      24
+    ],
+    "highest3_chunks": [
+      2,
+      3,
+      21
+    ]
+  },
+  "H=20": {
+    "n_chunks": 25,
+    "slope_per_chunk": -0.0011781688636900182,
+    "slope_se": 0.0026426216835393136,
+    "slope_t": -0.445833344601969,
+    "slope_p": 0.6598862673865874,
+    "r_squared": 0.008568014325023507,
+    "spearman_rho": -0.16538461538461538,
+    "spearman_p": 0.42949792777079765,
+    "first_half_mean": -0.24508327706380398,
+    "second_half_mean": -0.22859331784961237,
+    "min_chunk_sharpe": -0.4285996018771645,
+    "max_chunk_sharpe": -0.10456593065686602,
+    "argmin_chunk": 24,
+    "argmax_chunk": 5,
+    "between_sd_raw": 0.09367711441566912,
+    "between_sd_detrended": 0.09528107981653967,
+    "between_within_var_ratio_raw": 6.72875546661478,
+    "between_within_var_ratio_detrended": 6.961151367012775,
+    "last3": [
+      -0.337,
+      -0.271,
+      -0.429
+    ],
+    "lowest3_chunks": [
+      0,
+      9,
+      24
+    ],
+    "highest3_chunks": [
+      5,
+      12,
+      20
+    ]
+  }
+}

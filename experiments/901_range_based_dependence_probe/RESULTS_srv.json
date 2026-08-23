@@ -1,0 +1,1028 @@
+{
+  "n_trials_per_cell": 1000,
+  "n_boot_ci": 300,
+  "calib_n_dec_grid": [
+    200,
+    500,
+    1000,
+    3000,
+    10000
+  ],
+  "block_strata": [
+    2,
+    3,
+    5,
+    8,
+    12,
+    18,
+    26,
+    38,
+    60
+  ],
+  "coverage_rows": [
+    {
+      "estimator": "acf_band",
+      "family": "iid",
+      "n_dec": 200,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.988,
+      "coverage_se": 0.003443254274665176,
+      "median_range_est": 1.0,
+      "runtime_s": 13.659265756607056
+    },
+    {
+      "estimator": "acf_band",
+      "family": "iid",
+      "n_dec": 1000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.984,
+      "coverage_se": 0.00396787096564392,
+      "median_range_est": 1.0,
+      "runtime_s": 17.35861563682556
+    },
+    {
+      "estimator": "acf_band",
+      "family": "iid",
+      "n_dec": 3000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 959,
+      "n_refused": 41,
+      "certify_rate": 0.959,
+      "coverage": 0.986444212721585,
+      "coverage_se": 0.003734129141854537,
+      "median_range_est": 1.0,
+      "runtime_s": 26.66458535194397
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.967,
+      "coverage_se": 0.005648982209212561,
+      "median_range_est": 5.0,
+      "runtime_s": 16.383323192596436
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.973,
+      "coverage_se": 0.005125524363418832,
+      "median_range_est": 4.0,
+      "runtime_s": 23.1850106716156
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 997,
+      "n_refused": 3,
+      "certify_rate": 0.997,
+      "coverage": 0.9819458375125376,
+      "coverage_se": 0.004216818038218037,
+      "median_range_est": 13.0,
+      "runtime_s": 15.966636180877686
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 995,
+      "n_refused": 5,
+      "certify_rate": 0.995,
+      "coverage": 0.9778894472361809,
+      "coverage_se": 0.0046615799746004,
+      "median_range_est": 14.0,
+      "runtime_s": 21.552451848983765
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 975,
+      "n_refused": 25,
+      "certify_rate": 0.975,
+      "coverage": 0.9712820512820513,
+      "coverage_se": 0.005348685737385857,
+      "median_range_est": 20.0,
+      "runtime_s": 15.646722555160522
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 962,
+      "n_refused": 38,
+      "certify_rate": 0.962,
+      "coverage": 0.9760914760914761,
+      "coverage_se": 0.004925316076588688,
+      "median_range_est": 20.0,
+      "runtime_s": 20.52834725379944
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 896,
+      "n_refused": 104,
+      "certify_rate": 0.896,
+      "coverage": 0.9754464285714286,
+      "coverage_se": 0.005170172605948971,
+      "median_range_est": 31.0,
+      "runtime_s": 14.363716840744019
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 869,
+      "n_refused": 131,
+      "certify_rate": 0.869,
+      "coverage": 0.9781357882623706,
+      "coverage_se": 0.004960855746588461,
+      "median_range_est": 32.0,
+      "runtime_s": 18.521164894104004
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 695,
+      "n_refused": 305,
+      "certify_rate": 0.695,
+      "coverage": 0.9726618705035971,
+      "coverage_se": 0.006185473370978191,
+      "median_range_est": 45.0,
+      "runtime_s": 12.44110655784607
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 658,
+      "n_refused": 342,
+      "certify_rate": 0.658,
+      "coverage": 0.958966565349544,
+      "coverage_se": 0.007733172916762642,
+      "median_range_est": 48.0,
+      "runtime_s": 14.101537704467773
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 703,
+      "n_refused": 297,
+      "certify_rate": 0.703,
+      "coverage": 0.9772403982930299,
+      "coverage_se": 0.005624777819175859,
+      "median_range_est": 46.0,
+      "runtime_s": 11.432430982589722
+    },
+    {
+      "estimator": "acf_band",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 334,
+      "n_refused": 666,
+      "certify_rate": 0.334,
+      "coverage": 0.9850299401197605,
+      "coverage_se": 0.006644514460623115,
+      "median_range_est": 77.0,
+      "runtime_s": 7.351799726486206
+    },
+    {
+      "estimator": "acf_band",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 903,
+      "n_refused": 97,
+      "certify_rate": 0.903,
+      "coverage": 0.955703211517165,
+      "coverage_se": 0.006847054237468312,
+      "median_range_est": 32.0,
+      "runtime_s": 20.645588397979736
+    },
+    {
+      "estimator": "acf_band",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 160.0,
+      "runtime_s": 2.0679004192352295
+    },
+    {
+      "estimator": "acf_band",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 215.0,
+      "runtime_s": 2.215775728225708
+    },
+    {
+      "estimator": "acf_band",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 845,
+      "n_refused": 155,
+      "certify_rate": 0.845,
+      "coverage": 0.7242603550295857,
+      "coverage_se": 0.015373353307190245,
+      "median_range_est": 18.0,
+      "runtime_s": 21.908903121948242
+    },
+    {
+      "estimator": "acf_band",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 823,
+      "n_refused": 177,
+      "certify_rate": 0.823,
+      "coverage": 0.2624544349939247,
+      "coverage_se": 0.015336330825549442,
+      "median_range_est": 4.0,
+      "runtime_s": 22.81550669670105
+    },
+    {
+      "estimator": "acf_band",
+      "family": "seasonal_regime",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "period": 200,
+        "phi_low": 0.1,
+        "phi_high": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 976,
+      "n_refused": 24,
+      "certify_rate": 0.976,
+      "coverage": 0.9651639344262295,
+      "coverage_se": 0.005869352369975844,
+      "median_range_est": 24.0,
+      "runtime_s": 24.99821949005127
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "iid",
+      "n_dec": 200,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 436,
+      "n_refused": 564,
+      "certify_rate": 0.436,
+      "coverage": 0.9954128440366973,
+      "coverage_se": 0.003236161066499645,
+      "median_range_est": 4.0,
+      "runtime_s": 6.033970594406128
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "iid",
+      "n_dec": 1000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 540,
+      "n_refused": 460,
+      "certify_rate": 0.54,
+      "coverage": 0.9814814814814815,
+      "coverage_se": 0.005801593489659125,
+      "median_range_est": 16.0,
+      "runtime_s": 9.166011810302734
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "iid",
+      "n_dec": 3000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 194,
+      "n_refused": 806,
+      "certify_rate": 0.194,
+      "coverage": 0.9896907216494846,
+      "coverage_se": 0.007252087197037708,
+      "median_range_est": 64.0,
+      "runtime_s": 5.263093948364258
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 539,
+      "n_refused": 461,
+      "certify_rate": 0.539,
+      "coverage": 0.9795918367346939,
+      "coverage_se": 0.006090180383289724,
+      "median_range_est": 16.0,
+      "runtime_s": 9.36028504371643
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 174,
+      "n_refused": 826,
+      "certify_rate": 0.174,
+      "coverage": 0.9827586206896551,
+      "coverage_se": 0.009868128818488614,
+      "median_range_est": 64.0,
+      "runtime_s": 4.194139242172241
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 509,
+      "n_refused": 491,
+      "certify_rate": 0.509,
+      "coverage": 0.9862475442043221,
+      "coverage_se": 0.005162073751225939,
+      "median_range_est": 32.0,
+      "runtime_s": 8.569677352905273
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 165,
+      "n_refused": 835,
+      "certify_rate": 0.165,
+      "coverage": 0.9757575757575757,
+      "coverage_se": 0.011973386931092818,
+      "median_range_est": 64.0,
+      "runtime_s": 4.213461399078369
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 489,
+      "n_refused": 511,
+      "certify_rate": 0.489,
+      "coverage": 0.983640081799591,
+      "coverage_se": 0.00573659569941779,
+      "median_range_est": 32.0,
+      "runtime_s": 8.555347204208374
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 137,
+      "n_refused": 863,
+      "certify_rate": 0.137,
+      "coverage": 0.9708029197080292,
+      "coverage_se": 0.014383844037744332,
+      "median_range_est": 64.0,
+      "runtime_s": 3.5682311058044434
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 394,
+      "n_refused": 606,
+      "certify_rate": 0.394,
+      "coverage": 0.9796954314720813,
+      "coverage_se": 0.007105494589574432,
+      "median_range_est": 32.0,
+      "runtime_s": 6.947696685791016
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 68,
+      "n_refused": 932,
+      "certify_rate": 0.068,
+      "coverage": 0.9705882352941176,
+      "coverage_se": 0.02048913370644812,
+      "median_range_est": 64.0,
+      "runtime_s": 2.0224101543426514
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 228,
+      "n_refused": 772,
+      "certify_rate": 0.228,
+      "coverage": 0.9780701754385965,
+      "coverage_se": 0.009699183216676332,
+      "median_range_est": 32.0,
+      "runtime_s": 3.9488134384155273
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 15,
+      "n_refused": 985,
+      "certify_rate": 0.015,
+      "coverage": 0.8666666666666667,
+      "coverage_se": 0.0877707451472511,
+      "median_range_est": 128.0,
+      "runtime_s": 0.7870407104492188
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 17,
+      "n_refused": 983,
+      "certify_rate": 0.017,
+      "coverage": 0.8823529411764706,
+      "coverage_se": 0.07814248990059665,
+      "median_range_est": 32.0,
+      "runtime_s": 0.5242717266082764
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 128.0,
+      "runtime_s": 0.47986865043640137
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 42,
+      "n_refused": 958,
+      "certify_rate": 0.042,
+      "coverage": 0.9047619047619048,
+      "coverage_se": 0.04529474910530199,
+      "median_range_est": 64.0,
+      "runtime_s": 2.613471746444702
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 128.0,
+      "runtime_s": 1.7449605464935303
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": null,
+      "runtime_s": 1.7574024200439453
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 128.0,
+      "runtime_s": 1.754492998123169
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 8,
+      "n_refused": 992,
+      "certify_rate": 0.008,
+      "coverage": 0.0,
+      "coverage_se": 0.0,
+      "median_range_est": 128.0,
+      "runtime_s": 1.9124085903167725
+    },
+    {
+      "estimator": "variance_ratio",
+      "family": "seasonal_regime",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "period": 200,
+        "phi_low": 0.1,
+        "phi_high": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 80,
+      "n_refused": 920,
+      "certify_rate": 0.08,
+      "coverage": 0.9125,
+      "coverage_se": 0.031591879890250286,
+      "median_range_est": 64.0,
+      "runtime_s": 6.093937635421753
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "iid",
+      "n_dec": 200,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.986,
+      "coverage_se": 0.0037153734670958734,
+      "median_range_est": 1.3881039277812168,
+      "runtime_s": 13.734262704849243
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "iid",
+      "n_dec": 1000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.987,
+      "coverage_se": 0.0035820385257559714,
+      "median_range_est": 1.3846345910172497,
+      "runtime_s": 17.6802339553833
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "iid",
+      "n_dec": 3000,
+      "family_kwargs": {},
+      "n_trials": 1000,
+      "n_certified": 780,
+      "n_refused": 220,
+      "certify_rate": 0.78,
+      "coverage": 0.985897435897436,
+      "coverage_se": 0.004221993967537067,
+      "median_range_est": 1.350421036919713,
+      "runtime_s": 22.177611351013184
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.987,
+      "coverage_se": 0.0035820385257559714,
+      "median_range_est": 25.84722506085226,
+      "runtime_s": 15.804216384887695
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 4
+      },
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.985,
+      "coverage_se": 0.0038438262187565153,
+      "median_range_est": 37.47048262673919,
+      "runtime_s": 21.00660014152527
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 992,
+      "n_refused": 8,
+      "certify_rate": 0.992,
+      "coverage": 0.9939516129032258,
+      "coverage_se": 0.002461764895662039,
+      "median_range_est": 50.5815077374686,
+      "runtime_s": 15.812807559967041
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 10
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 73.49053110005104,
+      "runtime_s": 0.09474873542785645
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 135,
+      "n_refused": 865,
+      "certify_rate": 0.135,
+      "coverage": 0.9777777777777777,
+      "coverage_se": 0.012686649460410013,
+      "median_range_est": 66.4813105606996,
+      "runtime_s": 2.1808552742004395
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 15
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 97.48249994164675,
+      "runtime_s": 0.09392619132995605
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 2,
+      "n_refused": 998,
+      "certify_rate": 0.002,
+      "coverage": 1.0,
+      "coverage_se": 0.0,
+      "median_range_est": 85.74138733772654,
+      "runtime_s": 0.08699250221252441
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 22
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 126.4237380116256,
+      "runtime_s": 0.09428000450134277
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 108.89714376538302,
+      "runtime_s": 0.05565643310546875
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 32
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 162.66590845411446,
+      "runtime_s": 0.09427380561828613
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 1000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 144.96695604281337,
+      "runtime_s": 0.05590677261352539
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "triangular",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "dep": 50
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 219.11090961082715,
+      "runtime_s": 0.0948801040649414
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 73.4770019364126,
+      "runtime_s": 1.3317980766296387
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 222.55602606940158,
+      "runtime_s": 1.3495662212371826
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "ar1",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999
+      },
+      "n_trials": 1000,
+      "n_certified": 0,
+      "n_refused": 1000,
+      "certify_rate": 0.0,
+      "coverage": null,
+      "coverage_se": null,
+      "median_range_est": 222.55602606940158,
+      "runtime_s": 1.341972827911377
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.99,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 714,
+      "n_refused": 286,
+      "certify_rate": 0.714,
+      "coverage": 0.6260504201680672,
+      "coverage_se": 0.018107649295003247,
+      "median_range_est": 2.92298580507193,
+      "runtime_s": 19.51880693435669
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "persistent_component",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "phi": 0.999,
+        "weight": 0.2
+      },
+      "n_trials": 1000,
+      "n_certified": 716,
+      "n_refused": 284,
+      "certify_rate": 0.716,
+      "coverage": 0.25977653631284914,
+      "coverage_se": 0.016387959177317155,
+      "median_range_est": 2.0881029372088555,
+      "runtime_s": 20.670718669891357
+    },
+    {
+      "estimator": "spectral_zero",
+      "family": "seasonal_regime",
+      "n_dec": 3000,
+      "family_kwargs": {
+        "period": 200,
+        "phi_low": 0.1,
+        "phi_high": 0.9
+      },
+      "n_trials": 1000,
+      "n_certified": 1000,
+      "n_refused": 0,
+      "certify_rate": 1.0,
+      "coverage": 0.965,
+      "coverage_se": 0.005811626278418119,
+      "median_range_est": 19.90496843534496,
+      "runtime_s": 25.474453687667847
+    }
+  ],
+  "real_leg": null,
+  "runtime_s": 674.1444363594055
+}

@@ -1,0 +1,3085 @@
+{
+  "real_leg": {
+    "meta": {
+      "H": 1,
+      "variant": "long_short",
+      "k": 2,
+      "tau": 0.9,
+      "N": 60,
+      "fee_bp": 8.0,
+      "adv_bp": 0.0,
+      "n_universe": 7,
+      "symbols": [
+        "XBT/USD",
+        "/USDTEUR",
+        "XBT/EUR",
+        "ETH/USD",
+        "LTC/EUR",
+        "LTC/USD",
+        "XRP/USD"
+      ],
+      "bar_sec": 60,
+      "test_start": "2024-11-01",
+      "test_end": "2025-04-01",
+      "n_bars": 217438,
+      "n_decisions": 26296,
+      "fill_rate": 0.7050535157837692,
+      "db_path": "/home/lukas/Trader/runs/897_corrected_809/minute_extract_897.db",
+      "present_count_hist": {
+        "7": 217438
+      },
+      "n_elig_hist": {
+        "1": 217438
+      },
+      "universe_note": "n_universe=7 resolves (train-window-locked, top-N-by-coverage) to XBT/USD, /USDTEUR, XBT/EUR, ETH/USD, LTC/EUR, LTC/USD, XRP/USD \u2014 i.e. FOUR distinct underlyings (BTC, ETH, LTC, XRP) listed against two quote currencies plus one stablecoin FX pair (/USDTEUR). It is A real per-decision series through the audited lineage; it is NOT 'the 7 majors' the task file names, and cross-sectional breadth here is smaller than the asset count suggests (XBT/USD vs XBT/EUR and LTC/USD vs LTC/EUR are near-duplicate price processes).",
+      "construction_note": "independent real-data leg (see real_series.py docstring) \u2014 NOT a reproduction of the D57 halted-cycle's pinned 0.639 construction, whose exact symbol selection is not preserved in this repo.",
+      "series_npy": "REAL_SERIES_H1.npy",
+      "series_sha256": "a2c8334eaabba754b131c5d8b6aea3a94d9272b15db044bfc6070ff7d104ce68"
+    },
+    "by_estimator": {
+      "acf_band": {
+        "n_dec_total": 26296,
+        "grand_sharpe": -0.18809576051502397,
+        "n_chunks": 26,
+        "chunk_size_decisions": 1000,
+        "n_certified": 26,
+        "n_refused": 0,
+        "certify_rate": 1.0,
+        "contains_grand_sharpe_fraction": 0.6153846153846154,
+        "contains_grand_sharpe_se": 0.09541133429939111,
+        "median_range_est": 1.0,
+        "estimator": "acf_band",
+        "per_chunk": [
+          {
+            "chunk": 0,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 1,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 2,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 3,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 4,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 5,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 6,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 7,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 8,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 9,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 10,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 11,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 12,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 13,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 14,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 15,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 16,
+            "status": "certified",
+            "block": 18,
+            "k": 1.4208024293164911,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 17,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 18,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 19,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 20,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 21,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 22,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 23,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 24,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 25,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          }
+        ],
+        "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+        "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+      },
+      "variance_ratio": {
+        "n_dec_total": 26296,
+        "grand_sharpe": -0.18809576051502397,
+        "n_chunks": 26,
+        "chunk_size_decisions": 1000,
+        "n_certified": 17,
+        "n_refused": 9,
+        "certify_rate": 0.6538461538461539,
+        "contains_grand_sharpe_fraction": 0.8235294117647058,
+        "contains_grand_sharpe_se": 0.09245944094039717,
+        "median_range_est": 16.0,
+        "estimator": "variance_ratio",
+        "per_chunk": [
+          {
+            "chunk": 0,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 1,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 2,
+            "status": "certified",
+            "block": 18,
+            "k": 1.4208024293164911,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 3,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 4,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 5,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 6,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 7,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 8,
+            "status": "certified",
+            "block": 18,
+            "k": 1.4208024293164911,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 9,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 10,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 11,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 12,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 13,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 14,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 15,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 16,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 17,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 18,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 19,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 20,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 21,
+            "status": "certified",
+            "block": 8,
+            "k": 1.3012296973535016,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 22,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 23,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 24,
+            "status": "refused",
+            "reason": "range estimator refused or returned a non-finite/sub-1 range"
+          },
+          {
+            "chunk": 25,
+            "status": "certified",
+            "block": 38,
+            "k": 1.4235613781191627,
+            "contains_grand_sharpe": false
+          }
+        ],
+        "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+        "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+      },
+      "spectral_zero": {
+        "n_dec_total": 26296,
+        "grand_sharpe": -0.18809576051502397,
+        "n_chunks": 26,
+        "chunk_size_decisions": 1000,
+        "n_certified": 26,
+        "n_refused": 0,
+        "certify_rate": 1.0,
+        "contains_grand_sharpe_fraction": 0.6538461538461539,
+        "contains_grand_sharpe_se": 0.09330087000722768,
+        "median_range_est": 2.1188133334489136,
+        "estimator": "spectral_zero",
+        "per_chunk": [
+          {
+            "chunk": 0,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 1,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 2,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 3,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 4,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 5,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 6,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 7,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 8,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 9,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 10,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 11,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 12,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 13,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 14,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 15,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 16,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 17,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 18,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 19,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 20,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 21,
+            "status": "certified",
+            "block": 2,
+            "k": 1.264900382490662,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 22,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": true
+          },
+          {
+            "chunk": 23,
+            "status": "certified",
+            "block": 5,
+            "k": 1.2664676396686678,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 24,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": false
+          },
+          {
+            "chunk": 25,
+            "status": "certified",
+            "block": 3,
+            "k": 1.3424566089376149,
+            "contains_grand_sharpe": false
+          }
+        ],
+        "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+        "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+      }
+    },
+    "stationarity": {
+      "n_dec_total": 26296,
+      "n_chunks": 26,
+      "chunk_size_decisions": 1000,
+      "grand_sharpe": -0.18809576051502397,
+      "chunk_sharpes": [
+        -0.35644320208288854,
+        -0.2156912039328581,
+        -0.10886530117989016,
+        -0.14178558592341187,
+        -0.23088247456658795,
+        -0.1003416540116414,
+        -0.16359689426208684,
+        -0.230745421599456,
+        -0.20914053685883172,
+        -0.30140608038687855,
+        -0.3476344711759838,
+        -0.30174369594152967,
+        -0.31604627962404175,
+        -0.11739772097161542,
+        -0.26566211168975046,
+        -0.22756003654916263,
+        -0.11603117279964846,
+        -0.21819015788210833,
+        -0.2527184612115061,
+        -0.20537024443216453,
+        -0.14256327649100367,
+        -0.1270155175170587,
+        -0.2619538189797199,
+        -0.3804571275045468,
+        -0.39268295175214996,
+        -0.42501183005465953
+      ],
+      "boot_se_by_block": {
+        "2": 0.03364399248730043,
+        "3": 0.03411546479857278,
+        "5": 0.03385785344363458,
+        "8": 0.03398855262506135,
+        "12": 0.034020783264361955,
+        "18": 0.034327809730230495,
+        "26": 0.034760233386173775,
+        "38": 0.03508692818808248,
+        "60": 0.035911645100144225
+      },
+      "n_boot": 1000,
+      "ref_block": 60,
+      "boot_se_flat_ratio": 1.0674014124126252,
+      "chunk_vr_mean": {
+        "2": 0.982470583557051,
+        "4": 0.9637528021167758,
+        "8": 0.9334815988373593,
+        "16": 0.9273272526425577,
+        "32": 0.9244662733832555,
+        "64": 0.8824278443819973
+      },
+      "series_vr": {
+        "2": 0.9838005085614329,
+        "8": 0.9309108428195263,
+        "32": 0.9056760878703857,
+        "128": 0.774808804925648,
+        "512": 0.5230941912818955,
+        "2048": 0.2727239391375288
+      },
+      "between_chunk_sd": 0.09491084467230232,
+      "within_chunk_se_mean": 0.03538360386260587,
+      "between_within_variance_ratio": 7.194946160454027,
+      "chi2_stat": 196.53836517602005,
+      "chi2_df": 25,
+      "chi2_p_value": 1.419768533787153e-28,
+      "chunk_sharpe_slope_per_chunk": -0.0038634360638887676
+    },
+    "by_horizon": {
+      "1": {
+        "meta": {
+          "H": 1,
+          "variant": "long_short",
+          "k": 2,
+          "tau": 0.9,
+          "N": 60,
+          "fee_bp": 8.0,
+          "adv_bp": 0.0,
+          "n_universe": 7,
+          "symbols": [
+            "XBT/USD",
+            "/USDTEUR",
+            "XBT/EUR",
+            "ETH/USD",
+            "LTC/EUR",
+            "LTC/USD",
+            "XRP/USD"
+          ],
+          "bar_sec": 60,
+          "test_start": "2024-11-01",
+          "test_end": "2025-04-01",
+          "n_bars": 217438,
+          "n_decisions": 26296,
+          "fill_rate": 0.7050535157837692,
+          "db_path": "/home/lukas/Trader/runs/897_corrected_809/minute_extract_897.db",
+          "present_count_hist": {
+            "7": 217438
+          },
+          "n_elig_hist": {
+            "1": 217438
+          },
+          "universe_note": "n_universe=7 resolves (train-window-locked, top-N-by-coverage) to XBT/USD, /USDTEUR, XBT/EUR, ETH/USD, LTC/EUR, LTC/USD, XRP/USD \u2014 i.e. FOUR distinct underlyings (BTC, ETH, LTC, XRP) listed against two quote currencies plus one stablecoin FX pair (/USDTEUR). It is A real per-decision series through the audited lineage; it is NOT 'the 7 majors' the task file names, and cross-sectional breadth here is smaller than the asset count suggests (XBT/USD vs XBT/EUR and LTC/USD vs LTC/EUR are near-duplicate price processes).",
+          "construction_note": "independent real-data leg (see real_series.py docstring) \u2014 NOT a reproduction of the D57 halted-cycle's pinned 0.639 construction, whose exact symbol selection is not preserved in this repo.",
+          "series_npy": "REAL_SERIES_H1.npy",
+          "series_sha256": "a2c8334eaabba754b131c5d8b6aea3a94d9272b15db044bfc6070ff7d104ce68"
+        },
+        "stationarity": {
+          "n_dec_total": 26296,
+          "n_chunks": 26,
+          "chunk_size_decisions": 1000,
+          "grand_sharpe": -0.18809576051502397,
+          "chunk_sharpes": [
+            -0.35644320208288854,
+            -0.2156912039328581,
+            -0.10886530117989016,
+            -0.14178558592341187,
+            -0.23088247456658795,
+            -0.1003416540116414,
+            -0.16359689426208684,
+            -0.230745421599456,
+            -0.20914053685883172,
+            -0.30140608038687855,
+            -0.3476344711759838,
+            -0.30174369594152967,
+            -0.31604627962404175,
+            -0.11739772097161542,
+            -0.26566211168975046,
+            -0.22756003654916263,
+            -0.11603117279964846,
+            -0.21819015788210833,
+            -0.2527184612115061,
+            -0.20537024443216453,
+            -0.14256327649100367,
+            -0.1270155175170587,
+            -0.2619538189797199,
+            -0.3804571275045468,
+            -0.39268295175214996,
+            -0.42501183005465953
+          ],
+          "boot_se_by_block": {
+            "2": 0.03364399248730043,
+            "3": 0.03411546479857278,
+            "5": 0.03385785344363458,
+            "8": 0.03398855262506135,
+            "12": 0.034020783264361955,
+            "18": 0.034327809730230495,
+            "26": 0.034760233386173775,
+            "38": 0.03508692818808248,
+            "60": 0.035911645100144225
+          },
+          "n_boot": 1000,
+          "ref_block": 60,
+          "boot_se_flat_ratio": 1.0674014124126252,
+          "chunk_vr_mean": {
+            "2": 0.982470583557051,
+            "4": 0.9637528021167758,
+            "8": 0.9334815988373593,
+            "16": 0.9273272526425577,
+            "32": 0.9244662733832555,
+            "64": 0.8824278443819973
+          },
+          "series_vr": {
+            "2": 0.9838005085614329,
+            "8": 0.9309108428195263,
+            "32": 0.9056760878703857,
+            "128": 0.774808804925648,
+            "512": 0.5230941912818955,
+            "2048": 0.2727239391375288
+          },
+          "between_chunk_sd": 0.09491084467230232,
+          "within_chunk_se_mean": 0.03538360386260587,
+          "between_within_variance_ratio": 7.194946160454027,
+          "chi2_stat": 196.53836517602005,
+          "chi2_df": 25,
+          "chi2_p_value": 1.419768533787153e-28,
+          "chunk_sharpe_slope_per_chunk": -0.0038634360638887676
+        },
+        "by_estimator": {
+          "acf_band": {
+            "n_dec_total": 26296,
+            "grand_sharpe": -0.18809576051502397,
+            "n_chunks": 26,
+            "chunk_size_decisions": 1000,
+            "n_certified": 26,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.6153846153846154,
+            "contains_grand_sharpe_se": 0.09541133429939111,
+            "median_range_est": 1.0,
+            "estimator": "acf_band",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 25,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "variance_ratio": {
+            "n_dec_total": 26296,
+            "grand_sharpe": -0.18809576051502397,
+            "n_chunks": 26,
+            "chunk_size_decisions": 1000,
+            "n_certified": 17,
+            "n_refused": 9,
+            "certify_rate": 0.6538461538461539,
+            "contains_grand_sharpe_fraction": 0.8235294117647058,
+            "contains_grand_sharpe_se": 0.09245944094039717,
+            "median_range_est": 16.0,
+            "estimator": "variance_ratio",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 10,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 23,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 24,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 25,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "spectral_zero": {
+            "n_dec_total": 26296,
+            "grand_sharpe": -0.18809576051502397,
+            "n_chunks": 26,
+            "chunk_size_decisions": 1000,
+            "n_certified": 26,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.6538461538461539,
+            "contains_grand_sharpe_se": 0.09330087000722768,
+            "median_range_est": 2.1188133334489136,
+            "estimator": "spectral_zero",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 25,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          }
+        },
+        "paired_discrimination": [
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "spectral_zero",
+            "n_common_chunks": 26,
+            "a_contains": 16,
+            "b_contains": 17,
+            "a_blocks": [
+              2,
+              3,
+              8,
+              18
+            ],
+            "b_blocks": [
+              2,
+              3,
+              5
+            ],
+            "identical_per_chunk": false
+          },
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 17,
+            "a_contains": 14,
+            "b_contains": 14,
+            "a_blocks": [
+              2,
+              3,
+              8,
+              18
+            ],
+            "b_blocks": [
+              5,
+              8,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          },
+          {
+            "estimator_a": "spectral_zero",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 17,
+            "a_contains": 14,
+            "b_contains": 14,
+            "a_blocks": [
+              2,
+              3,
+              5
+            ],
+            "b_blocks": [
+              5,
+              8,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          }
+        ]
+      },
+      "5": {
+        "meta": {
+          "H": 5,
+          "variant": "long_short",
+          "k": 2,
+          "tau": 0.9,
+          "N": 60,
+          "fee_bp": 8.0,
+          "adv_bp": 0.0,
+          "n_universe": 7,
+          "symbols": [
+            "XBT/USD",
+            "/USDTEUR",
+            "XBT/EUR",
+            "ETH/USD",
+            "LTC/EUR",
+            "LTC/USD",
+            "XRP/USD"
+          ],
+          "bar_sec": 60,
+          "test_start": "2024-11-01",
+          "test_end": "2025-04-01",
+          "n_bars": 217435,
+          "n_decisions": 25785,
+          "fill_rate": 0.7294750465097468,
+          "db_path": "/home/lukas/Trader/runs/897_corrected_809/minute_extract_897.db",
+          "present_count_hist": {
+            "7": 217435
+          },
+          "n_elig_hist": {
+            "1": 217435
+          },
+          "universe_note": "n_universe=7 resolves (train-window-locked, top-N-by-coverage) to XBT/USD, /USDTEUR, XBT/EUR, ETH/USD, LTC/EUR, LTC/USD, XRP/USD \u2014 i.e. FOUR distinct underlyings (BTC, ETH, LTC, XRP) listed against two quote currencies plus one stablecoin FX pair (/USDTEUR). It is A real per-decision series through the audited lineage; it is NOT 'the 7 majors' the task file names, and cross-sectional breadth here is smaller than the asset count suggests (XBT/USD vs XBT/EUR and LTC/USD vs LTC/EUR are near-duplicate price processes).",
+          "construction_note": "independent real-data leg (see real_series.py docstring) \u2014 NOT a reproduction of the D57 halted-cycle's pinned 0.639 construction, whose exact symbol selection is not preserved in this repo.",
+          "series_npy": "REAL_SERIES_H5.npy",
+          "series_sha256": "6114c229036d647eaddbdbcde147459f58861b774dedb9eeb1259f90907be207"
+        },
+        "stationarity": {
+          "n_dec_total": 25785,
+          "n_chunks": 25,
+          "chunk_size_decisions": 1000,
+          "grand_sharpe": -0.18205038891238465,
+          "chunk_sharpes": [
+            -0.3616873817721073,
+            -0.21554982101359663,
+            -0.11798810149050831,
+            -0.12353182141166308,
+            -0.12689177002165372,
+            -0.12668319727692628,
+            -0.12427144625953068,
+            -0.16162035013968534,
+            -0.16548050286493948,
+            -0.3471268222220965,
+            -0.30437933682499174,
+            -0.3257419679220706,
+            -0.24018630515238193,
+            -0.21671581178238705,
+            -0.2668213748950062,
+            -0.14221268838175066,
+            -0.12673425791585485,
+            -0.21619336547657053,
+            -0.23501603715786765,
+            -0.20036361769249678,
+            -0.15787226874609595,
+            -0.1166343326754205,
+            -0.22190683699732178,
+            -0.3287747216111362,
+            -0.41059753688722234
+          ],
+          "boot_se_by_block": {
+            "2": 0.03426828099190422,
+            "3": 0.03386844973354655,
+            "5": 0.03344957294127428,
+            "8": 0.03333888538035404,
+            "12": 0.0339291247896746,
+            "18": 0.03428243197921029,
+            "26": 0.03445002496957918,
+            "38": 0.03465362217958189,
+            "60": 0.034870424865647565
+          },
+          "n_boot": 1000,
+          "ref_block": 60,
+          "boot_se_flat_ratio": 1.0175714642320577,
+          "chunk_vr_mean": {
+            "2": 0.9765607756455721,
+            "4": 0.9234244060706412,
+            "8": 0.8809504902354987,
+            "16": 0.8590387106397728,
+            "32": 0.8103102337821543,
+            "64": 0.7622516079106706
+          },
+          "series_vr": {
+            "2": 0.9924648686557377,
+            "8": 0.9094727881579164,
+            "32": 0.8487625734098052,
+            "128": 0.7226083210423924,
+            "512": 0.7343398004130424,
+            "2048": 1.0627756163375999
+          },
+          "between_chunk_sd": 0.0883454253339714,
+          "within_chunk_se_mean": 0.03500905037775351,
+          "between_within_variance_ratio": 6.368064749737368,
+          "chi2_stat": 151.75807669777882,
+          "chi2_df": 24,
+          "chi2_p_value": 1.560483483877783e-20,
+          "chunk_sharpe_slope_per_chunk": -0.0027358275521986255
+        },
+        "by_estimator": {
+          "acf_band": {
+            "n_dec_total": 25785,
+            "grand_sharpe": -0.18205038891238465,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 25,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.72,
+            "contains_grand_sharpe_se": 0.0897997772825746,
+            "median_range_est": 1.0,
+            "estimator": "acf_band",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 12,
+                "k": 1.395011750266515,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 12,
+                "k": 1.395011750266515,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 12,
+                "k": 1.395011750266515,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 12,
+                "k": 1.395011750266515,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "variance_ratio": {
+            "n_dec_total": 25785,
+            "grand_sharpe": -0.18205038891238465,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 10,
+            "n_refused": 15,
+            "certify_rate": 0.4,
+            "contains_grand_sharpe_fraction": 0.7,
+            "contains_grand_sharpe_se": 0.14491376746189438,
+            "median_range_est": 32.0,
+            "estimator": "variance_ratio",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 1,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 2,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 5,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 9,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 12,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 13,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 17,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 18,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 19,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 23,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "spectral_zero": {
+            "n_dec_total": 25785,
+            "grand_sharpe": -0.18205038891238465,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 25,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.72,
+            "contains_grand_sharpe_se": 0.0897997772825746,
+            "median_range_est": 1.9642502345386916,
+            "estimator": "spectral_zero",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          }
+        },
+        "paired_discrimination": [
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "spectral_zero",
+            "n_common_chunks": 25,
+            "a_contains": 18,
+            "b_contains": 18,
+            "a_blocks": [
+              2,
+              3,
+              5,
+              8,
+              12
+            ],
+            "b_blocks": [
+              2,
+              3,
+              5
+            ],
+            "identical_per_chunk": true
+          },
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 10,
+            "a_contains": 7,
+            "b_contains": 7,
+            "a_blocks": [
+              2,
+              3,
+              8,
+              12
+            ],
+            "b_blocks": [
+              2,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          },
+          {
+            "estimator_a": "spectral_zero",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 10,
+            "a_contains": 7,
+            "b_contains": 7,
+            "a_blocks": [
+              2,
+              3,
+              5
+            ],
+            "b_blocks": [
+              2,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          }
+        ]
+      },
+      "20": {
+        "meta": {
+          "H": 20,
+          "variant": "long_short",
+          "k": 2,
+          "tau": 0.9,
+          "N": 60,
+          "fee_bp": 8.0,
+          "adv_bp": 0.0,
+          "n_universe": 7,
+          "symbols": [
+            "XBT/USD",
+            "/USDTEUR",
+            "XBT/EUR",
+            "ETH/USD",
+            "LTC/EUR",
+            "LTC/USD",
+            "XRP/USD"
+          ],
+          "bar_sec": 60,
+          "test_start": "2024-11-01",
+          "test_end": "2025-04-01",
+          "n_bars": 217420,
+          "n_decisions": 25512,
+          "fill_rate": 0.7552545242882844,
+          "db_path": "/home/lukas/Trader/runs/897_corrected_809/minute_extract_897.db",
+          "present_count_hist": {
+            "7": 217420
+          },
+          "n_elig_hist": {
+            "1": 217420
+          },
+          "universe_note": "n_universe=7 resolves (train-window-locked, top-N-by-coverage) to XBT/USD, /USDTEUR, XBT/EUR, ETH/USD, LTC/EUR, LTC/USD, XRP/USD \u2014 i.e. FOUR distinct underlyings (BTC, ETH, LTC, XRP) listed against two quote currencies plus one stablecoin FX pair (/USDTEUR). It is A real per-decision series through the audited lineage; it is NOT 'the 7 majors' the task file names, and cross-sectional breadth here is smaller than the asset count suggests (XBT/USD vs XBT/EUR and LTC/USD vs LTC/EUR are near-duplicate price processes).",
+          "construction_note": "independent real-data leg (see real_series.py docstring) \u2014 NOT a reproduction of the D57 halted-cycle's pinned 0.639 construction, whose exact symbol selection is not preserved in this repo.",
+          "series_npy": "REAL_SERIES_H20.npy",
+          "series_sha256": "a5f34cadb783b368a15d20351a919f1ea0c5ee7a8fdeae727e8ef6b45b8fd34c"
+        },
+        "stationarity": {
+          "n_dec_total": 25512,
+          "n_chunks": 25,
+          "chunk_size_decisions": 1000,
+          "grand_sharpe": -0.19756426128440183,
+          "chunk_sharpes": [
+            -0.4124207622383807,
+            -0.2474581200687226,
+            -0.16963685027328887,
+            -0.14683281827362557,
+            -0.1958226422577793,
+            -0.10456593065686602,
+            -0.2037969344644129,
+            -0.1780847291600559,
+            -0.20329005540437586,
+            -0.4207938347323552,
+            -0.3128713519867887,
+            -0.3454252952489967,
+            -0.13475446471240562,
+            -0.21200737604826111,
+            -0.22566365660444704,
+            -0.1481482398133179,
+            -0.21224231746218258,
+            -0.22010197016795513,
+            -0.2180050915188415,
+            -0.14760389704294008,
+            -0.11883974518653247,
+            -0.20377279122622446,
+            -0.3368415746825439,
+            -0.27129355256493803,
+            -0.4285996018771645
+          ],
+          "boot_se_by_block": {
+            "2": 0.03552483034285803,
+            "3": 0.035902824467314846,
+            "5": 0.035907280360126054,
+            "8": 0.03592677210039483,
+            "12": 0.03558001018020008,
+            "18": 0.03557229029856406,
+            "26": 0.03587191347975238,
+            "38": 0.03595293069034679,
+            "60": 0.03588411544581701
+          },
+          "n_boot": 1000,
+          "ref_block": 60,
+          "boot_se_flat_ratio": 1.0101136331825218,
+          "chunk_vr_mean": {
+            "2": 0.9875286113240618,
+            "4": 0.9788683779056795,
+            "8": 0.9510862096760883,
+            "16": 0.9203192880890485,
+            "32": 0.8747989178677886,
+            "64": 0.8181095208496515
+          },
+          "series_vr": {
+            "2": 0.9927181380337681,
+            "8": 0.960627534184418,
+            "32": 0.9079914156649627,
+            "128": 0.9113148910732025,
+            "512": 0.930630366768154,
+            "2048": 1.01596842128663
+          },
+          "between_chunk_sd": 0.09367711441566912,
+          "within_chunk_se_mean": 0.03611321318549764,
+          "between_within_variance_ratio": 6.72875546661478,
+          "chi2_stat": 218.95958773907873,
+          "chi2_df": 24,
+          "chi2_p_value": 2.1406854868916985e-33,
+          "chunk_sharpe_slope_per_chunk": -0.0011781688636900167
+        },
+        "by_estimator": {
+          "acf_band": {
+            "n_dec_total": 25512,
+            "grand_sharpe": -0.19756426128440183,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 25,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.68,
+            "contains_grand_sharpe_se": 0.0932952303175248,
+            "median_range_est": 1.0,
+            "estimator": "acf_band",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 12,
+                "k": 1.395011750266515,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "variance_ratio": {
+            "n_dec_total": 25512,
+            "grand_sharpe": -0.19756426128440183,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 17,
+            "n_refused": 8,
+            "certify_rate": 0.68,
+            "contains_grand_sharpe_fraction": 0.5882352941176471,
+            "contains_grand_sharpe_se": 0.11936462498726878,
+            "median_range_est": 32.0,
+            "estimator": "variance_ratio",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 6,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 7,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 8,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 18,
+                "k": 1.4208024293164911,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 13,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "refused",
+                "reason": "range estimator refused or returned a non-finite/sub-1 range"
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 38,
+                "k": 1.4235613781191627,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 8,
+                "k": 1.3012296973535016,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          },
+          "spectral_zero": {
+            "n_dec_total": 25512,
+            "grand_sharpe": -0.19756426128440183,
+            "n_chunks": 25,
+            "chunk_size_decisions": 1000,
+            "n_certified": 25,
+            "n_refused": 0,
+            "certify_rate": 1.0,
+            "contains_grand_sharpe_fraction": 0.68,
+            "contains_grand_sharpe_se": 0.0932952303175248,
+            "median_range_est": 1.9952740845088,
+            "estimator": "spectral_zero",
+            "per_chunk": [
+              {
+                "chunk": 0,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 1,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 2,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 3,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 4,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 5,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 6,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 7,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 8,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 9,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 10,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 11,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 12,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 13,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 14,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 15,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 16,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 17,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 18,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 19,
+                "status": "certified",
+                "block": 3,
+                "k": 1.3424566089376149,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 20,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 21,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 22,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              },
+              {
+                "chunk": 23,
+                "status": "certified",
+                "block": 5,
+                "k": 1.2664676396686678,
+                "contains_grand_sharpe": true
+              },
+              {
+                "chunk": 24,
+                "status": "certified",
+                "block": 2,
+                "k": 1.264900382490662,
+                "contains_grand_sharpe": false
+              }
+            ],
+            "se_note": "binomial SE, treats chunks as independent; the measured drift (stationarity_diagnostics) says they are not \u2014 this is a floor.",
+            "reading": "a property of the SERIES (non-stationarity), not evidence about the estimator \u2014 see stationarity_diagnostics and the docstring above."
+          }
+        },
+        "paired_discrimination": [
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "spectral_zero",
+            "n_common_chunks": 25,
+            "a_contains": 17,
+            "b_contains": 17,
+            "a_blocks": [
+              2,
+              3,
+              5,
+              8,
+              12,
+              18,
+              38
+            ],
+            "b_blocks": [
+              2,
+              3,
+              5
+            ],
+            "identical_per_chunk": true
+          },
+          {
+            "estimator_a": "acf_band",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 17,
+            "a_contains": 10,
+            "b_contains": 10,
+            "a_blocks": [
+              2,
+              3,
+              5,
+              8,
+              12,
+              18
+            ],
+            "b_blocks": [
+              2,
+              5,
+              8,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          },
+          {
+            "estimator_a": "spectral_zero",
+            "estimator_b": "variance_ratio",
+            "n_common_chunks": 17,
+            "a_contains": 10,
+            "b_contains": 10,
+            "a_blocks": [
+              2,
+              3,
+              5
+            ],
+            "b_blocks": [
+              2,
+              5,
+              8,
+              18,
+              38
+            ],
+            "identical_per_chunk": true
+          }
+        ]
+      }
+    },
+    "paired_discrimination": {
+      "1": [
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "spectral_zero",
+          "n_common_chunks": 26,
+          "a_contains": 16,
+          "b_contains": 17,
+          "a_blocks": [
+            2,
+            3,
+            8,
+            18
+          ],
+          "b_blocks": [
+            2,
+            3,
+            5
+          ],
+          "identical_per_chunk": false
+        },
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 17,
+          "a_contains": 14,
+          "b_contains": 14,
+          "a_blocks": [
+            2,
+            3,
+            8,
+            18
+          ],
+          "b_blocks": [
+            5,
+            8,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        },
+        {
+          "estimator_a": "spectral_zero",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 17,
+          "a_contains": 14,
+          "b_contains": 14,
+          "a_blocks": [
+            2,
+            3,
+            5
+          ],
+          "b_blocks": [
+            5,
+            8,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        }
+      ],
+      "5": [
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "spectral_zero",
+          "n_common_chunks": 25,
+          "a_contains": 18,
+          "b_contains": 18,
+          "a_blocks": [
+            2,
+            3,
+            5,
+            8,
+            12
+          ],
+          "b_blocks": [
+            2,
+            3,
+            5
+          ],
+          "identical_per_chunk": true
+        },
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 10,
+          "a_contains": 7,
+          "b_contains": 7,
+          "a_blocks": [
+            2,
+            3,
+            8,
+            12
+          ],
+          "b_blocks": [
+            2,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        },
+        {
+          "estimator_a": "spectral_zero",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 10,
+          "a_contains": 7,
+          "b_contains": 7,
+          "a_blocks": [
+            2,
+            3,
+            5
+          ],
+          "b_blocks": [
+            2,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        }
+      ],
+      "20": [
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "spectral_zero",
+          "n_common_chunks": 25,
+          "a_contains": 17,
+          "b_contains": 17,
+          "a_blocks": [
+            2,
+            3,
+            5,
+            8,
+            12,
+            18,
+            38
+          ],
+          "b_blocks": [
+            2,
+            3,
+            5
+          ],
+          "identical_per_chunk": true
+        },
+        {
+          "estimator_a": "acf_band",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 17,
+          "a_contains": 10,
+          "b_contains": 10,
+          "a_blocks": [
+            2,
+            3,
+            5,
+            8,
+            12,
+            18
+          ],
+          "b_blocks": [
+            2,
+            5,
+            8,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        },
+        {
+          "estimator_a": "spectral_zero",
+          "estimator_b": "variance_ratio",
+          "n_common_chunks": 17,
+          "a_contains": 10,
+          "b_contains": 10,
+          "a_blocks": [
+            2,
+            3,
+            5
+          ],
+          "b_blocks": [
+            2,
+            5,
+            8,
+            18,
+            38
+          ],
+          "identical_per_chunk": true
+        }
+      ]
+    }
+  },
+  "runtime_s": 497.0069115161896
+}

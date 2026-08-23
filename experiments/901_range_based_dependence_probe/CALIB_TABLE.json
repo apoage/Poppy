@@ -1,0 +1,272 @@
+{
+  "block=2,n_dec=200": {
+    "block": 2,
+    "n_dec": 200,
+    "k": 1.3291680627567608,
+    "k_uncapped": 1.3291680627567608,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=2,n_dec=1000": {
+    "block": 2,
+    "n_dec": 1000,
+    "k": 1.264900382490662,
+    "k_uncapped": 1.264900382490662,
+    "validation_coverage": 0.97,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=2,n_dec=3000": {
+    "block": 2,
+    "n_dec": 3000,
+    "k": 1.2458390799772048,
+    "k_uncapped": 1.2458390799772048,
+    "validation_coverage": 0.965,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=3,n_dec=200": {
+    "block": 3,
+    "n_dec": 200,
+    "k": 1.3633803676991438,
+    "k_uncapped": 1.3633803676991438,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=3,n_dec=1000": {
+    "block": 3,
+    "n_dec": 1000,
+    "k": 1.3424566089376149,
+    "k_uncapped": 1.3424566089376149,
+    "validation_coverage": 0.98,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=3,n_dec=3000": {
+    "block": 3,
+    "n_dec": 3000,
+    "k": 1.2029365639508327,
+    "k_uncapped": 1.2029365639508327,
+    "validation_coverage": 0.925,
+    "validation_n": 200,
+    "achieved": false,
+    "reason": "validation-batch coverage 0.925 < target 0.93 at block=3, n_dec=3000, k=1.203"
+  },
+  "block=5,n_dec=200": {
+    "block": 5,
+    "n_dec": 200,
+    "k": 1.5960581482257752,
+    "k_uncapped": 1.5960581482257752,
+    "validation_coverage": 0.97,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=5,n_dec=1000": {
+    "block": 5,
+    "n_dec": 1000,
+    "k": 1.2664676396686678,
+    "k_uncapped": 1.2664676396686678,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=5,n_dec=3000": {
+    "block": 5,
+    "n_dec": 3000,
+    "k": 1.2536127476496757,
+    "k_uncapped": 1.2536127476496757,
+    "validation_coverage": 0.935,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=8,n_dec=200": {
+    "block": 8,
+    "n_dec": 200,
+    "k": 1.5510952410841,
+    "k_uncapped": 1.5510952410841,
+    "validation_coverage": 0.97,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=8,n_dec=1000": {
+    "block": 8,
+    "n_dec": 1000,
+    "k": 1.3012296973535016,
+    "k_uncapped": 1.3012296973535016,
+    "validation_coverage": 0.955,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=8,n_dec=3000": {
+    "block": 8,
+    "n_dec": 3000,
+    "k": 1.2854145646587865,
+    "k_uncapped": 1.2854145646587865,
+    "validation_coverage": 0.955,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=12,n_dec=200": {
+    "block": 12,
+    "n_dec": 200,
+    "k": 1.5866800430783259,
+    "k_uncapped": 1.5866800430783259,
+    "validation_coverage": 0.955,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=12,n_dec=1000": {
+    "block": 12,
+    "n_dec": 1000,
+    "k": 1.395011750266515,
+    "k_uncapped": 1.395011750266515,
+    "validation_coverage": 0.98,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=12,n_dec=3000": {
+    "block": 12,
+    "n_dec": 3000,
+    "k": 1.306743540201337,
+    "k_uncapped": 1.306743540201337,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=18,n_dec=200": {
+    "block": 18,
+    "n_dec": 200,
+    "k": 1.9223373723054213,
+    "k_uncapped": 1.9223373723054213,
+    "validation_coverage": 0.97,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=18,n_dec=1000": {
+    "block": 18,
+    "n_dec": 1000,
+    "k": 1.4208024293164911,
+    "k_uncapped": 1.4208024293164911,
+    "validation_coverage": 0.965,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=18,n_dec=3000": {
+    "block": 18,
+    "n_dec": 3000,
+    "k": 1.3087676506597767,
+    "k_uncapped": 1.3087676506597767,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=26,n_dec=200": {
+    "block": 26,
+    "n_dec": 200,
+    "k": 2.3454084904190586,
+    "k_uncapped": 2.3454084904190586,
+    "validation_coverage": 0.975,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=26,n_dec=1000": {
+    "block": 26,
+    "n_dec": 1000,
+    "k": 1.3554781872220105,
+    "k_uncapped": 1.3554781872220105,
+    "validation_coverage": 0.98,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=26,n_dec=3000": {
+    "block": 26,
+    "n_dec": 3000,
+    "k": 1.3204106405403084,
+    "k_uncapped": 1.3204106405403084,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=38,n_dec=200": {
+    "block": 38,
+    "n_dec": 200,
+    "k": 2.138379642940212,
+    "k_uncapped": 2.138379642940212,
+    "validation_coverage": 0.935,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=38,n_dec=1000": {
+    "block": 38,
+    "n_dec": 1000,
+    "k": 1.4235613781191627,
+    "k_uncapped": 1.4235613781191627,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=38,n_dec=3000": {
+    "block": 38,
+    "n_dec": 3000,
+    "k": 1.247472056754242,
+    "k_uncapped": 1.247472056754242,
+    "validation_coverage": 0.95,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=60,n_dec=200": {
+    "block": 60,
+    "n_dec": 200,
+    "k": 3.9335705978170896,
+    "k_uncapped": 3.9335705978170896,
+    "validation_coverage": 0.965,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=60,n_dec=1000": {
+    "block": 60,
+    "n_dec": 1000,
+    "k": 1.7555996888219805,
+    "k_uncapped": 1.7555996888219805,
+    "validation_coverage": 0.96,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  },
+  "block=60,n_dec=3000": {
+    "block": 60,
+    "n_dec": 3000,
+    "k": 1.477222915531766,
+    "k_uncapped": 1.477222915531766,
+    "validation_coverage": 0.97,
+    "validation_n": 200,
+    "achieved": true,
+    "reason": ""
+  }
+}
