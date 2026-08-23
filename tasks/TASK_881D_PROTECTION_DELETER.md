@@ -1,3 +1,49 @@
+> **STATUS (2026-08-24, factory run 41): PARKED — GREEN, BLOCKER DEAD, NOT SHIPPED. See D63 (and
+> D62, which pairs with it).** Work preserved in
+> `lore/handoff_2026-08-24_factory_run_41_881D_cycle2.patch` (4321 lines, incl. the 1341-line suite
+> and the 3-file corpus); tree reverted to HEAD.
+>
+> **The BLOCKER is dead, and it was severe: a manifest-protected checkpoint WAS being deleted.**
+> The in-run pruner consumed a protection set cached up to 300 s; the `stale` flag fires only when
+> a scan FAILS, so a scan that SUCCEEDED 299 s ago against a *different* tree was authoritative for
+> an irreversible deleter. Measured in the same second on the same tree: offline `ckpt_gc.py` said
+> `keeping 4` while the in-run pruner deleted the protected snapshot with `stale=False` and no
+> warning. Fixed by `get_protection(..., force_rescan)` with `prune_run_dir_by_score` passing
+> `force_rescan=apply` — keyed off `apply` itself, so the delete branch cannot be reached with a
+> cached protect set; a failed fresh scan still refuses. Proven by mutating the real drop site
+> (reverted → `1 failed`; restored → `1 passed`) at the DEFAULT 300 s TTL with `apply=True` and no
+> `sleep`. A full fresh scan costs 1.694 s against saves that are minutes apart.
+>
+> Also closed: the two `--protect-file` readers are UNIFIED (FIFO now exit 2 where it hung at 124);
+> the falsified "can never disagree about the same tree" claim strings are corrected to what holds;
+> ingestion drift is back to **EMPTY** (AST entity-diff over all 43 `INGESTION_NAMES` = `[]`); and
+> D62's measured consequence is closed by an ADDITIVE `UNTOUCHED_GUARD_NAMES` pin — `_safe_target`
+> ×2, `_du`, `free_gb`, `_WALK_PRUNED_DIRNAMES` and the four `_WHY` constants all mutate RED again.
+> **376 passed / 2 skipped** (baseline 351), selftest 12/12 both hosts, all 7 load-bearing
+> checkpoints byte-identical throughout, no `--apply` outside a scratch copy.
+>
+> **WHY IT DID NOT SHIP.** Two items have their ONLY drop site inside ingestion functions pinned by
+> `INGESTION_NAMES` — which THIS ROW'S scope item 2 forbids reopening. (i) MAJOR:
+> `--verify-manifests` exits 2 permanently, because this row's own corpus carries 3 acknowledged
+> dangling 828/scratch disk entries — so the one pre-flight signal the delete path does NOT repeat
+> carries zero information. `--known-dangling PATH…` was built and measured working, then reverted
+> at the wall. (ii) MINOR: the `experiments/__pycache__` silent withdrawal; same wall, same
+> treatment. **A verdict cannot be green with an open MAJOR** — and at HEAD `--ckpt-retention
+> score` is refused at parse time, so this row is what makes an unsupervised `apply=True` per-save
+> deleter reachable at all. Shipping a newly-reachable deleter whose pre-flight gate can never go
+> green is the "an always-red gate gets ignored" hazard, on exactly the path whose refusals the
+> deleter does not repeat.
+>
+> **Gate (vi) is answered but not executed:** the three `PROTECTED.txt` files now carry a `TRACKING`
+> block recording WHY they must be tracked (untracked files never reach `gpu-server` under the
+> deploy contract, and that is where `ckpt_gc.py` runs). Committing them is a one-line action once
+> the row ships; they are deliberately un-tracked meanwhile (`5e6f2ff`).
+>
+> **Resume per D63** — the factory recommends a narrow, WRITTEN scope amendment permitting
+> `_run_manifest_check` and `load_manifests` to change for exactly those two items, with
+> `INGESTION_NAMES` re-pinned to their new bytes. Both changes are already built and measured; the
+> wall is procedural, not technical.
+
 # TASK_881D — the checkpoint protection model + deleter, on 881I's settled ingestion
 
 **Status**: READY 2026-08-17 (planner; D45 re-cut). **Amended 2026-08-19 (D50):** the ingestion
