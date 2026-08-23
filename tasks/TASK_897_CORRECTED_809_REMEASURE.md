@@ -217,20 +217,30 @@ CELL CLEARS follow-up, not this row).
 maker-fee set is `{8, 16} bp` (operator, 2026-08-23), recorded here before any cell is read.**
 Zero-maker-fee stays out of reach per the Fork-C venue ruling; Kraken's real 14/12/10 ladder is
 not in the pre-registered grid and gate (iv) refuses off-grid tiers, so the grid subset it is.
-**Data basis:** the workstation and srv DBs are NOT byte-identical (sha256 `799dca96…` @
-26,245,337,088 B vs `c19782d1…` @ 26,243,768,320 B), so per D54 the leg runs against a staged,
-content-verified extract: `runs/897_corrected_809/minute_extract_897.db` (full `assets` + all
-`ohlcv` rows in [2023-05-16, 2026-03-01) — 120,900,027 rows, 1,096 assets — built read-only
-from the source of record by `runs/897_corrected_809/build_extract.py`; verification =
-per-window counts + an ordered-stream md5 over every carried row, source vs extract, which must
-MATCH before staging; staged copy sha256-verified on both hosts). The verdict therefore reads
-on data exactly equal to what the calibration measured. **Code basis:** srv deployed to
+**Data basis (amended at launch, stronger than planned):** the workstation and srv DBs are not
+byte-identical (sha256 `799dca96…` @ 26,245,337,088 B vs `c19782d1…` @ 26,243,768,320 B), so an
+extract was built and verified per D54 (`runs/897_corrected_809/build_extract.py`: full
+`assets` + all `ohlcv` rows in [2023-05-16, 2026-03-01) — 120,900,027 rows; per-window counts +
+ordered-stream md5 `faa0bbdc…` MATCH). But the transfer was uplink-bound (~0.5 MB/s, ~6 h), and
+the extract's own verification tooling then answered the better question directly: **srv's DB
+produces the IDENTICAL content hashes as the source of record across the sweep's entire SQL
+surface** — `ASSETS=1c26e91f763129a12be3ce1ef1cb2db2`, `OHLCV(span,
+120,900,027 rows)=faa0bbdc480352bab90420eeb49f6208`, computed by
+`runs/897_corrected_809/hash_db_content.py` on both hosts. The byte difference is page layout
+only. **The leg therefore runs on srv's `trading_data.db` directly** (`--db-path
+/home/operator/Trader/trading_data.db --i-am-the-scheduled-real-data-run`), on data proven —
+not assumed — identical to what the calibration measured. The verified extract remains on the
+workstation (`runs/897_corrected_809/minute_extract_897.db`, sha256 `fd1fdd79…`) as a byproduct. **Code basis:** srv deployed to
 `f313d9e` (deploy-branch tip carrying `e5c3864`); the 13 launch-critical files (897 instrument
 + 809 lineage incl. the gitignored `recompute_best.py` repair) sha256-verified IDENTICAL on
-both hosts post-deploy. **Command (tmux `l897` on srv, `safe_run --cpu`, defaults everywhere
-else — full 864-cell grid, NOT `--smoke`, NOT `--skip-inherited-ic-check`):**
-`sweep_gated_maker.py --db-path runs/897_corrected_809/minute_extract_897.db
---attainable-maker-fee-bp 8,16 --out runs/897_corrected_809/result_897_<ts>.md`.
+both hosts post-deploy. **Command as launched (2026-08-23 08:58 CEST, tmux `l897` on srv, `safe_run --name l897 --mem
+64G --cpu`, defaults everywhere else — full 864-cell grid, NOT `--smoke`, NOT
+`--skip-inherited-ic-check`):**
+`sweep_gated_maker.py --db-path /home/operator/Trader/trading_data.db
+--i-am-the-scheduled-real-data-run --attainable-maker-fee-bp 8,16
+--out runs/897_corrected_809/result_897_2026-08-23.md`, log
+`runs/897_corrected_809/launch_897_2026-08-23.log` on srv. Confirmed computing (106% CPU,
+single-threaded as designed).
 (Correction to this record as first committed: no `--n-jobs` — the sweep's argparse has no such
 flag; the `--n-jobs` mentions in docstrings belong to the calibration probe. The sweep runs
 single-threaded; runtime goes to tmux.)
