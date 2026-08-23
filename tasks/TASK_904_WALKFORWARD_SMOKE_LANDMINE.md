@@ -1,3 +1,49 @@
+> **STATUS (2026-08-24, factory run 41): HALTED on the 3-cycle rule. NOT SHIPPED. See D61.**
+> Work preserved in `lore/handoff_2026-08-24_factory_run_41_904_cycle3.patch` (1838 lines,
+> including a 32-test suite); `experiments/837_walkforward/` reverted to HEAD.
+>
+> **Both ORIGINAL defects were solved. The row died on the BELT it added, not on the landmine.**
+> Cycle 1's sentinel-string gate was proven broken in both directions (forgeable AND it locked out
+> the `SPEC.md:62-64` re-materialization). Cycle 2's redesign — the operator's
+> `--overwrite-existing` flag as the gate, provenance demoted to disclosure, fixture-over-real
+> refused even with the flag — is **sound and twice re-verified**. Cycle 3 closed four more holes
+> and then failed its own re-verify on a demonstrated BLOCKER.
+>
+> **The BLOCKER:** the new corridor refusal **mutates the tracked fold tree** while exiting 1 and
+> printing "Nothing was written." The write at `walkforward.py:1185` is INSIDE the per-fold loop,
+> before a later fold's refusal at `:1174-1182` (reproduced on a copy: tree hash `8a44fea7…` →
+> `952677ec…`, exit 1). It contradicts the refusal text, the design note at `:1093`, and
+> `_expect_refusal` at `:1629-1632` — which names this exact shape as "not fail-closed". The
+> smoke's own battery cannot catch it: it perturbs `SMOKE_FOLDS[0]`, so the refusal always fires
+> on the first iteration. **A per-fold write-then-refuse loop cannot be fail-closed; the corridor
+> writer needs a two-phase design** (compute and decide every fold, then write).
+>
+> Two MAJORs stand with it: `_prior_db_kind` catches a manifest that LIES but not one that OMITS
+> (adding an empty `_provenance: {}` disables the one refusal no flag may override — fixture
+> content written over a real-provenance tree); and `_assert_summary_writable` cannot fire on the
+> worst summary of all, because `any([])` is False, so a ZERO-fold rollout skips the guard,
+> overwrites a real summary, and emits a LEDGER row reading "over 0/0 folds … Scheduled-run
+> numbers" — the exact fake-null class this row exists to kill.
+>
+> **HEAD still carries the original latent landmine** (smoke overwrites 15 tracked real-fold files
+> — the task file's "8" is wrong, confirmed by `git ls-files`; content-idempotent today, arms when
+> the `SPEC.md:60-72` real re-materialization lands). That was preferred deliberately over
+> shipping a demonstrated mutation-on-refusal that HEAD does not have.
+>
+> **Scope 2 IS done and verified, and survives without a commit.** The `WF_SUMMARY.json` fake-null
+> is dead: regenerated from `grade_correct.py` (untouched, md5 `e87b080d…`) via `runpy`, atomic
+> write, refusing empty and partial results — `folds_positive=4, folds_above_own_floor=1`, matching
+> the LEDGER `875/wf-generalization` row, reproduced independently by three agents. It lives under
+> gitignored `runs/875_wf/` on the workstation, so no commit is possible or needed.
+>
+> **Nothing was lost on the real tree**: `folds/real` tree hash `1b31624a2da9984620567afc30df4cbf`
+> before and after every cycle, and gate (iv)'s 875 numbers never moved.
+>
+> **Resume per D61** — the factory recommends re-cutting the row in two (904A = smoke out-rooting +
+> materialize gate + unified guarded reader, all verified sound; 904B = the corridor/aggregate
+> writers, two-phase). The row failed because it grew to cover four distinct writers with different
+> natural gates, not because the work is wrong.
+
 # TASK_904 — walkforward-lane hardening: the smoke overwrite landmine and the WF_SUMMARY fake-null
 
 **Status**: READY 2026-08-23 (planner; seeded from factory run 40's flagged remainders — the
