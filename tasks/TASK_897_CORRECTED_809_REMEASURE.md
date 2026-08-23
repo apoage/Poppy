@@ -22,10 +22,15 @@
 > tiers recorded BEFORE the verdict is read; orchestration PARSES THE ARTIFACT, never the exit
 > code (D58 pre-902 contract).
 >
-> **The verdict reads on TWO conjuncts, and that is now structural rather than temporary.**
-> `CI lo > 0` stays UNAVAILABLE: TASK_901 shipped a measured NEGATIVE — no candidate range
-> estimator certifies out-of-family at ≥93%, so there is nothing certified to re-read it with.
-> See TASK_901's banner.
+> **The verdict reads on TWO conjuncts. `CI lo > 0` stays UNAVAILABLE — but NOT permanently, and
+> an earlier draft of this banner overstated that.** TASK_901's first pass reported a total
+> negative (no candidate range estimator certifies out-of-family at ≥93%). Its correctness panel
+> then measured that the negative is only PARTIAL: `variance_ratio` was condemned by a read-off
+> rule its own docstring does not describe — under the documented rule it reads range 256 on the
+> persistent component and takes gate (ii)'s REFUSE/PASS branch — so that candidate has never been
+> correctly tested. `acf_band` and `spectral_zero` do genuinely fail. **The honest status is
+> "not yet established", not "structurally impossible".** TASK_901 is in a corrective cycle; see
+> its banner for the settled conclusion.
 >
 > **REMAINDERS → TASK_902** (both added to that row this run): item 2 now names BOTH root causes of
 > the vacuity class (the general rule: *a check that did not execute a comparison is not a passed
