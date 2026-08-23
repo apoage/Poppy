@@ -1,3 +1,10 @@
+> **STATUS (2026-08-23, planner): SRV LEG #1 = HONEST NULL (the inherited-IC guard refused on a
+> basis the pins never claimed — 864/864 recorded, ok=0, artifact preserved on srv). D60 RULED:
+> re-base the guard to its actual claim (pin-era panel, tol UNMOVED; decomposition measured:
+> pins reproduce to −4.5e-5 on today's table, chunked ≡ unchunked exactly, the whole drift is
+> the test-span extension). RESUME = the guard re-base in `sweep_gated_maker.py` (in-scope file,
+> lineage byte-untouched) + relaunch (~17 min).**
+>
 > **STATUS (2026-08-22, factory run 40): SHIPPED as `task897-d59-ro-handle`. The D59(a) resume is
 > complete — the read-write DB handle is closed, and a protected-DB gate bypass was found and closed
 > with it. Verified on gpu-server (GPU-pinned, `safe_run`-wrapped): 207 tests + selftest 12/12.**

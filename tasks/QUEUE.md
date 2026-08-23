@@ -25,23 +25,28 @@ verification runs go on gpu-server, GPU-pinned, `safe_run`-wrapped in tmux — n
 workstation CPU.** Run-40 remainders routed: four guard-layer items → TASK_902 scope (added);
 the walkforward smoke landmine + the `WF_SUMMARY.json` fake-null → **TASK_904** (seeded); the
 875 evidence (1.4 GB, never committed, one host) was mirrored srv→workstation planner-side.
-**Ready (physically ordered): 1 TASK_881D (protection + deleter + corpus; unblocked) →
-2 TASK_901 (range-based dependence probe; gates i–iii buildable now, gate iv awaits the srv
-artifacts) → 3 TASK_902 (897 instrument hardening: the D58 exit contract + the named
-remainders + the run-40 guard-layer items) → 4 TASK_904 (walkforward smoke landmine +
-WF_SUMMARY fake-null — defuse BEFORE the SPEC.md:60-72 real-db re-materialization can land).
+**Ready (physically ordered): 1 TASK_897 guard re-base per D60 (S — the live thread's only
+blocker; then the planner relaunches the srv leg, ~17 min) → 2 TASK_881D (protection + deleter
++ corpus; unblocked) → 3 TASK_901 (range-based dependence probe; gates i–iii buildable now,
+gate iv awaits the srv artifacts) → 4 TASK_902 (897 instrument hardening: the D58 exit contract
++ the named remainders + the run-40 guard-layer items) → 5 TASK_904 (walkforward smoke landmine
++ WF_SUMMARY fake-null — defuse BEFORE the SPEC.md:60-72 real-db re-materialization can land).
 FILLER: TASK_899 (data backfill — planner/server ops, WAITING on the Q2-2026 dump). GATED:
 TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.**
-_Next takeable: **TASK_881D.** The research thread's next move (897 srv leg) is the planner's
-and waits on the operator's maker-fee tiers — it does not block the factory._
+**OPEN decisions: D43 only.** (D60 seeded RULED planner-side; operator may override.)
+_Next takeable: **TASK_897's guard re-base (D60).** Srv leg #1 was an honest NULL: the
+inherited-IC guard asserted June-era pins against the sweep's extended panel. Measured
+decomposition: pins reproduce to −4.5e-5 on a pin-era panel from today's table; chunked ≡
+unchunked exactly; the whole drift is the test-span extension. The fix is one scoped change in
+`sweep_gated_maker.py` (D60's DECIDED row is the spec); the planner relaunches on ship._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
-| 2 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). Gates (i)–(iii) buildable now; gate (iv) re-reads 897's third conjunct from the srv-leg artifacts when they exist — no srv re-run. |
-| 3 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt deliberately: D58 exit-code contract (non-zero on gate-(ii) violation, exit 0 for honest empty), the vacuous-on-NaN inherited-IC check, the unrendered 639 disclosure, the tracked `--out` default, the OC grid disclosure, plus run-40's guard-layer items (gate bound at data-touch layer, TOCTOU resolution, clipped refusal echoes, artifact states which grid ran). Discipline: CLAIMS/RENDERING only — NUMBERS byte-identical. |
-| 4 | `tasks/TASK_904_WALKFORWARD_SMOKE_LANDMINE.md` | S | **NEW 2026-08-23 — run 40's flagged remainders, ruled planner-side.** `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with fixture content (content-idempotent TODAY; arms when the SPEC.md:60-72 real-db re-materialization lands) + `WF_SUMMARY.json` ships `[]` as a silent fake-null. Smoke out-rooted + `materialize` refuses to write what it didn't generate; the empty summary fails loudly. The 903-verified 875 numbers must not move. |
+| 1 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (guard re-base per D60) | S | The live thread's only blocker. Spec = D60's DECIDED row: the inherited-IC guard asserts the 806 pins on a PIN-ERA panel (exact-spelling read, `test_end=2025-04-01`) built by the runner with a scope-patched pin-era cfg (the `decide.CFG` pattern); tol UNMOVED at 1e-3; the sweep-panel IC becomes a disclosed per-H measurement in the artifact (never gated against June pins); 809 lineage byte-untouched; 902's NaN-vacuity item applies to the restructured check. Gates: the guard passes on the real pin-era basis (measured today: +0.151053/+0.141160/+0.059755 vs pins ±1e-3), a mutation re-pointing the guard at the sweep panel is caught, the 144-cell fixture smoke stays green, selftest 12/12. On ship the planner relaunches (tmux, safe_run, same command as launch record 2026-08-23). |
+| 2 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
+| 3 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). Gates (i)–(iii) buildable now; gate (iv) re-reads 897's third conjunct from the srv-leg artifacts when they exist — no srv re-run. |
+| 4 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt deliberately: D58 exit-code contract (non-zero on gate-(ii) violation, exit 0 for honest empty), the vacuous-on-NaN inherited-IC check, the unrendered 639 disclosure, the tracked `--out` default, the OC grid disclosure, plus run-40's guard-layer items (gate bound at data-touch layer, TOCTOU resolution, clipped refusal echoes, artifact states which grid ran). Discipline: CLAIMS/RENDERING only — NUMBERS byte-identical. |
+| 5 | `tasks/TASK_904_WALKFORWARD_SMOKE_LANDMINE.md` | S | **NEW 2026-08-23 — run 40's flagged remainders, ruled planner-side.** `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with fixture content (content-idempotent TODAY; arms when the SPEC.md:60-72 real-db re-materialization lands) + `WF_SUMMARY.json` ships `[]` as a silent fake-null. Smoke out-rooted + `materialize` refuses to write what it didn't generate; the empty summary fails loudly. The 903-verified 875 numbers must not move. |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
