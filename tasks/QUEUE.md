@@ -3,50 +3,53 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-23 (planner, post run 40).** Run 40 shipped BOTH top rows: **TASK_897
-(`task897-d59-ro-handle`, `e5c3864`)** — the D59(a) resume landed exactly as ruled, and found
-and closed a worse hole with it: a leading `//localhost` is stripped by sqlite's URI parser, so
-the protected-DB gate reasoned about a different file than sqlite opened (mutation-proven both
-directions on srv; the FIFO guard was removed on operator call — TASK_891's failure mode
-recurring; `probe.py` byte-untouched, md5-checked since `runs/` is gitignored). **TASK_903
-(`task903-constant-provenance`, `892d3f0`)** — 8 constants, 9 gates, adversarially re-derived:
-**875's five walk-forward folds REPRODUCE the LEDGER row EXACTLY** (all 15 seeds, f5 terminal
-PVs, zero bankruptcies, the 1-of-5-above-floor tally — re-derived read-only on srv, no re-run
-of the 8h57m battery; superseded "unrecoverable" classification kept visible per D39);
-892-C4 found non-material by measurement (the 2000-trial recalibration existed but was never
-wired in; recomputed at the corrected k — no sign change, no zero-crossing, **ANTI-EDGE and D47
-untouched**). **The 897 srv leg is now the only live research action: planner-scheduled,
-BLOCKED on one operator input — the attainable Kraken maker-fee tiers as a subset of the
-pre-registered grid {0, 8, 16} bp (0 is out of reach per the Fork-C venue ruling), recorded
-BEFORE the verdict is read (gate iv).** Verdict reads Sharpe ≥ 1.0 & PnL > 0; `CI lo > 0`
-UNAVAILABLE until TASK_901; orchestration parses the artifact, never the exit code (D58 pre-902
-contract). Run-40 process rule now in root CLAUDE.md: **test suites / eval sweeps /
-verification runs go on gpu-server, GPU-pinned, `safe_run`-wrapped in tmux — never bare on
-workstation CPU.** Run-40 remainders routed: four guard-layer items → TASK_902 scope (added);
-the walkforward smoke landmine + the `WF_SUMMARY.json` fake-null → **TASK_904** (seeded); the
-875 evidence (1.4 GB, never committed, one host) was mirrored srv→workstation planner-side.
-**Ready (physically ordered): 1 TASK_897 guard re-base per D60 (S — the live thread's only
-blocker; then the planner relaunches the srv leg, ~17 min) → 2 TASK_881D (protection + deleter
-+ corpus; unblocked) → 3 TASK_901 (range-based dependence probe; gates i–iii buildable now,
-gate iv awaits the srv artifacts) → 4 TASK_902 (897 instrument hardening: the D58 exit contract
-+ the named remainders + the run-40 guard-layer items) → 5 TASK_904 (walkforward smoke landmine
-+ WF_SUMMARY fake-null — defuse BEFORE the SPEC.md:60-72 real-db re-materialization can land).
-FILLER: TASK_899 (data backfill — planner/server ops, WAITING on the Q2-2026 dump). GATED:
+**2026-08-24 (planner, post run 41 + the D61/D62/D63 rulings).** Run 41 shipped **TASK_897's
+D60 guard re-base** (`task897-d60-guard-rebase`, `5ee6381` — 215 tests, cells byte-identical
+`8468be63…`; the pin-era panel, tol UNMOVED) — **the srv leg relaunched planner-side
+2026-08-24 ~19:01 CEST (tmux `l897`), verdict read follows on completion** — and **TASK_901 as
+a measured NEGATIVE** (`5c9932b`; the headline never moved but its reasons were corrected three
+times: `acf_band`/`spectral_zero` fail conclusively (13–44σ), `variance_ratio` never
+over-certifies but refuses unusably (and its read-off rule is itself an artifact), gate (ii)'s
+"pass" is mostly the MAX_BLOCK_CAP=60 ceiling not the estimator — **the direction is NOT
+closed**, and 897's `CI lo > 0` conjunct is "not yet established", NOT "structurally
+unavailable"). **D61(a) ruled: 904 re-cut** into 904A (the twice-re-verified half: smoke
+out-rooting + materialize gate + unified reader — re-apply the committed patch) and 904B (the
+corridor/aggregate writers — two-phase redesign; decide every fold, THEN write). **D62(a) +
+D63(a) ruled: 881D resumes** — gate (iv) amended in writing (byte-identity except the
+enumerated sanctioned refusal), the narrow scope amendment granted (`_run_manifest_check` +
+`load_manifests`, additive-only, `INGESTION_NAMES` re-pinned), the committed patch re-applied —
+this unblocks the MEASURED TTL fix (the in-run pruner deleted a manifest-protected checkpoint
+under a 300 s stale cache while the offline tool said `keeping 4`). **Run-41's transferable
+finding, adopted as a standing lens: seven defects across four rows were ONE defect — every
+guard's logic was correct and every guard governed the WRONG OBJECT** (a stale path string, a
+stale basis, a comparison that never executed, a 300 s-old protection set from a different
+tree, a refusal that had already written, a forgeable sentinel, a read-off rule on a climbing
+curve). **Standing brief for every verification panel from here: "what object does this guard
+actually hold, at the moment it acts?"** None of the seven was caught by the agent that wrote
+the code; all came from lenses briefed to disbelieve. Seeded by run 41: TASK_905 (validate
+`--fold-root` audits the ORIGINAL tree — a false-PASS audit tool) and TASK_906 (the 809/897
+per-decision series carries EXCESS DISPERSION — between-chunk sd 0.0949 vs within-chunk SE
+0.0354, VR 7.19, p = 1.4e-28, replicated at all H — bearing on EVERY whole-window Sharpe claim
+on that series, incl. the verdict now being read; scope 4 excludes instrument artifacts first).
+**Ready (physically ordered): 1 TASK_881D (resume per D62(a)+D63(a): re-apply the committed
+patch, gate (iv) amended, corpus committed, ship) → 2 TASK_904A (the verified half, per D61(a))
+→ 3 TASK_906 (excess dispersion on the 897 series) → 4 TASK_902 (897 hardening, incl. run-41's
+routed items) → 5 TASK_905 (validate --fold-root false PASS) → 6 TASK_904B (two-phase corridor
+writers; after 904A). FILLER: TASK_899 (data backfill — WAITING on the Q2-2026 dump). GATED:
 TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.** (D60 seeded RULED planner-side; operator may override.)
-_Next takeable: **TASK_897's guard re-base (D60).** Srv leg #1 was an honest NULL: the
-inherited-IC guard asserted June-era pins against the sweep's extended panel. Measured
-decomposition: pins reproduce to −4.5e-5 on a pin-era panel from today's table; chunked ≡
-unchunked exactly; the whole drift is the test-span extension. The fix is one scoped change in
-`sweep_gated_maker.py` (D60's DECIDED row is the spec); the planner relaunches on ship._
+**OPEN decisions: D43 only.** (D61/D62/D63 seeded RULED planner-side; operator may override.)
+_Next takeable: **TASK_881D per D62(a)+D63(a)** — green, BLOCKER dead, fully built and
+measured; the wall was procedural and is now opened in writing. 897 is planner-scheduled (leg
+running), not a factory row._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_897_CORRECTED_809_REMEASURE.md` (guard re-base per D60) | S | The live thread's only blocker. Spec = D60's DECIDED row: the inherited-IC guard asserts the 806 pins on a PIN-ERA panel (exact-spelling read, `test_end=2025-04-01`) built by the runner with a scope-patched pin-era cfg (the `decide.CFG` pattern); tol UNMOVED at 1e-3; the sweep-panel IC becomes a disclosed per-H measurement in the artifact (never gated against June pins); 809 lineage byte-untouched; 902's NaN-vacuity item applies to the restructured check. Gates: the guard passes on the real pin-era basis (measured today: +0.151053/+0.141160/+0.059755 vs pins ±1e-3), a mutation re-pointing the guard at the sweep panel is caught, the 144-cell fixture smoke stays green, selftest 12/12. On ship the planner relaunches (tmux, safe_run, same command as launch record 2026-08-23). |
-| 2 | `tasks/TASK_881D_PROTECTION_DELETER.md` | M | Unblocked (881G shipped run 38). Scope item 0: author the real `PROTECTED.txt` corpus against the written grammar. The `--apply` freeze STANDS until this ships AND 880's D35 gate opens. Deliberately late-ranked, as 881 was. |
-| 3 | `tasks/TASK_901_RANGE_BASED_DEPENDENCE_PROBE.md` | S/M | The range-based dependence probe (first-lag-in-band / variance-ratio / spectral-at-zero), validated OUT-of-family (the τ guard's failure mode). Gates (i)–(iii) buildable now; gate (iv) re-reads 897's third conjunct from the srv-leg artifacts when they exist — no srv re-run. |
-| 4 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt deliberately: D58 exit-code contract (non-zero on gate-(ii) violation, exit 0 for honest empty), the vacuous-on-NaN inherited-IC check, the unrendered 639 disclosure, the tracked `--out` default, the OC grid disclosure, plus run-40's guard-layer items (gate bound at data-touch layer, TOCTOU resolution, clipped refusal echoes, artifact states which grid ran). Discipline: CLAIMS/RENDERING only — NUMBERS byte-identical. |
-| 5 | `tasks/TASK_904_WALKFORWARD_SMOKE_LANDMINE.md` | S | **NEW 2026-08-23 — run 40's flagged remainders, ruled planner-side.** `walkforward.py smoke` overwrites 8 tracked `folds/real/*` files with fixture content (content-idempotent TODAY; arms when the SPEC.md:60-72 real-db re-materialization lands) + `WF_SUMMARY.json` ships `[]` as a silent fake-null. Smoke out-rooted + `materialize` refuses to write what it didn't generate; the empty summary fails loudly. The 903-verified 875 numbers must not move. |
+| 1 | `tasks/TASK_881D_PROTECTION_DELETER.md` (RESUME per D62(a)+D63(a)) | M | Re-apply `lore/handoff_2026-08-24_factory_run_41_881D_cycle2.patch` (4321 lines, incl. the 1341-line suite + the first real PROTECTED.txt corpus); gate (iv) amended in writing per D62(a) (byte-identity EXCEPT the enumerated sanctioned refusal; canon pin restored with the named omissions; whole-file diff un-skipped behind an allowlist); scope amendment per D63(a) (additive-only touches to `_run_manifest_check` + `load_manifests`, `INGESTION_NAMES` re-pinned); the three PROTECTED.txt files COMMIT with the ship (untracked never reaches srv, and that is where ckpt_gc.py runs). The TTL BLOCKER fix is mutation-proven at the real drop site. **The `--apply` freeze stands until ship AND 880's D35.** |
+| 2 | `tasks/TASK_904A_WALKFORWARD_SMOKE_OUTROOT.md` | S | **NEW 2026-08-24 — D61(a).** The twice-re-verified half of 904: smoke out-rooting (no writes to tracked `folds/real/*`), the `--overwrite-existing` materialize gate, the unified guarded manifest reader. Re-apply the committed patch `lore/handoff_2026-08-24_factory_run_41_904_cycle3.patch` with the 904B (corridor/aggregate writer) components EXCLUDED. 875's numbers and the fold-tree hash `1b31624a…` must not move. |
+| 3 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | **NEW 2026-08-24 — run 41's by-product finding.** The 809/897 per-decision series carries EXCESS DISPERSION across its OOS window (not monotone drift — corrected `d7b0d3f`). Bears on every whole-window Sharpe claim on that series; may reframe D57's parking of 897's CI conjunct. Scope 4 is the honest guard: exclude instrument artifacts FIRST (alias/identity, forward-filled stale prices, frozen-cell mask, universe turnover) — a drifting instrument looks identical to a drifting market here. |
+| 4 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt: D58 exit contract, the vacuous inherited-IC check (now TWO root causes — NaN, and an H with `tgt=None` recording "pass" for a comparison that never executed; **a check that did not execute a comparison is not a passed check**), the unrendered 639 disclosure, the tracked `--out` default, the run-40 guard-layer items, and 2b: an absent `--db-path` crashing uncaught BEFORE any artifact (a refusal the orchestrator cannot read is indistinguishable from a run that never started). CLAIMS/RENDERING only — NUMBERS byte-identical. |
+| 5 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | **NEW 2026-08-24 — run 41.** `validate --fold-root <copy>` re-reads the ORIGINAL tree via the manifest's baked-in path and reports ALL PASS on a tampered copy — a false-PASS audit tool. Smoke's internal `_clone_fold_tree` already has the fix pattern. |
+| 6 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | **NEW 2026-08-24 — D61(a).** PROPOSED until 904A ships (shared files). The corridor/aggregate writers redesigned two-phase: decide every fold, then write — a per-fold write-then-refuse loop cannot be fail-closed (cycle 3's BLOCKER: refusal printed "Nothing was written" while having written). Includes the residual bare-`open` readers (the ~10 enumerated in the cycle-3 re-verify). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
