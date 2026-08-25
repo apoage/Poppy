@@ -1,3 +1,16 @@
+> **STATUS (2026-08-25, planner): COMPLETE — VERDICT READ: ALL FAIL. The minute surface is closed
+> for real.** Srv leg #2 (`runs/897_corrected_809/result_897_2026-08-24.md`, 864/864 cells ok,
+> runtime 11,438.5s, tiers {8,16} bp pre-registered at `4e79b78`): **0/576 attainable-tier cells
+> clear** (Sharpe ≥ 1.0 & PnL > 0); not one cell even reaches Sharpe ≥ 0 or PnL > 0; **0/864 at
+> any nonzero fee**. Best attainable cell: window a **−5.045** (H=1 k=16 long-only τ=.9 N=60,
+> fee 8, adv 0); window b −8.425. 0/188 clear even at adv=0 (the fill model's most generous
+> setting) — the verdict needs no fill-model generosity. The pre-cost edge is real (fee0/adv0
+> 96/96 "clear", best +204 — the frictionless fantasy regime) and any measured cost term destroys
+> it by orders of magnitude (adv=5 alone at fee0: +204 → −634). **The killer is adverse
+> selection, not the venue fee.** 809's retracted PASS is falsified, not merely un-validated.
+> LEDGER row `897/809-corrected`; consequence → **D65**. Leg #1's null-run artifact is preserved
+> on srv (`result_897_2026-08-23.md`).
+>
 > **STATUS (2026-08-23, factory run 41): SHIPPED as `task897-d60-guard-rebase` (`5ee6381`).
 > The D60 guard re-base landed exactly as ruled — the inherited-IC guard now asserts the 806 pins
 > on a PIN-ERA panel (`probe.Config`'s own split defaults, `test_end=2025-04-01`, exact-spelling
