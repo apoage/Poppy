@@ -3,6 +3,59 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_881D — the checkpoint protection deleter ships, and D64's `--apply` freeze becomes a CODE GATE
+
+- **What shipped.** The D62(a)/D63(a) work that had been green-but-unshipped since factory run 42 is
+  committed (`--known-dangling` with exact set-intersection matching, the walk-pruned-dirname report,
+  `AMENDED_INGESTION_NAMES` re-pinned by hardcoded digests, the restored gate-(iv) byte-identity pin,
+  the TTL fix whose absence let the in-run pruner delete a manifest-protected checkpoint) — plus
+  D64's ruling implemented as MECHANISM: `--apply` refuses at parse/entry time, before any
+  filesystem work, exit 2, empty stdout, unless
+  `--i-have-read-d64-and-accept-the-unbound-coverage-risk=I-HAVE-READ-D64` appears in full, exactly
+  once, with that literal token. The three `experiments/*/PROTECTED.txt` corpus files are now
+  TRACKED — untracked manifests never reach gpu-server, which is where `ckpt_gc.py` actually runs.
+- **The `--keep-best N` MAJOR was fixed by DISCLOSURE, not by a real cap — deliberately.** `plan()`
+  caps per metric group, so N metrics could retain up to K*N checkpoints while printing `keeping N`
+  as if it were the cap. The arithmetic is byte-UNCHANGED; only the report now names the
+  multiplication. A real global cap would have made `plan()` — a live per-epoch `apply=True` path via
+  `train_jax_fast.py:757` — start DELETING checkpoints that survive today. Over-retention is
+  tolerable in an irreversible deleter; under-retention is not.
+- **The gate took three cycles because it kept being bypassable in the same shape, and the third
+  fix closed the CLASS rather than the instance.** Cycle 1: `argparse` defaults
+  `allow_abbrev=True` and no other option begins with `i`, so **`--apply --i` armed the override** —
+  proven with real deletion of a checkpoint whose only "coverage" came from an unrelated experiment.
+  Cycle 2 required the exact token AND the full spelling present in `sys.argv`, and fell to
+  `FLAG=NOT_THE_TOKEN --i=I-HAVE-READ-D64`: the presence test was an unconditional `any()` over argv
+  while the value came from argparse's last-occurrence-wins namespace, so **two different tokens each
+  satisfied one condition.** Cycle 3 made `spelled_in_full` an equality against the whole occurrence
+  list and made multiplicity refuse first — the occurrence supplying the arming value must itself be
+  the full spelling. Verified mutually redundant (severing either alone still refuses). A 13-shape
+  adversarial sweep found no argv shape where argparse resolves a token the counter fails to see.
+- **The gate is now PINNED.** It was extracted from `main()` — which is 391 lines and
+  content-unchecked by design — into a top-level function pinned to hardcoded sha256 digests of its
+  AST entity text, with a mutation test at three real drop sites and an assertion that exactly one
+  arming path exists. A safety gate that nothing pins is one careless edit from vanishing.
+- **Two numbers in this row's own record were false and are corrected.** "17 pre-existing `--apply`
+  call sites mass-edited" → the true count is **1** (the other 20 override-bearing invocations are in
+  the new suite, written with D64 support from the start); this figure had been propagated into the
+  verification briefs by the orchestrator. And the removal-pin coverage was stale: **40.5% unpinned /
+  59.5% protected**, not 28.8%/2657 lines.
+- **Remainders, disclosed in code and pinned by tests.** D64's underlying gap — manifest coverage has
+  no authority binding — is unfixed BY DESIGN; the freeze lifts only via **TASK_881E** plus 880's
+  D35. **The freeze covers the offline CLI ONLY**: the in-run pruner calls `plan()`/`collect()`
+  directly, never through argparse, and is deliberately not gated because prune failure propagates to
+  a process-level `sys.exit(1)` — freezing it would convert "do not prune" into "kill the training
+  run". Recommended for 881E. Also open: `main()` itself is unpinned, and the implementer's
+  1204-shape argv sweep was ephemeral rather than a checked-in test.
+- **Verification.** fail-closed x3 cycles + regression x1 — **not the full HIGH tier**, and the
+  verdict says so; correctness, security and flow-verifier did not run against this resume's diff
+  (run 42 ran all five against the pre-resume work this did not modify, and the security question IS
+  D64, already ruled). Final lens returned NO FINDINGS with a shape table in which the positive
+  controls genuinely delete and every bypass shape leaves all checkpoints intact. Suites **454 passed
+  / 1 skipped** (git-HEAD 288/1 → 393/1 pre-resume → 454/1, every delta itemised, 0 tests removed at
+  any point); selftest 12/12. The suite run, the selftest, the three gate directions and the cycle-3
+  closure were all reproduced by the orchestrator rather than taken on report.
+
 ## 2026-08-24 — TASK_901 — the range-based dependence probe: a measured NEGATIVE, and two instrument defects found on the way
 
 - **What shipped.** `experiments/901_range_based_dependence_probe/` — three candidate range estimators

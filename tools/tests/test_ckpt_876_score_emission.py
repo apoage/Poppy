@@ -1,15 +1,19 @@
 """TASK_876 — WRITE-SIDE behaviour this row ships.
 
-Scope note (deliberate): TASK_876 ships the score EMITTER and two storage-policy defaults,
-with ZERO deleter surface. ``tools/ckpt_gc.py`` is byte-identical to HEAD and is NOT under
-test here. The shipped GC is epoch-keyed and cannot resolve ``checkpoint_<step>`` or
-``checkpoint_epoch_<N>`` rows; making it path-first is TASK_881. See
-``append_checkpoint_score``'s docstring — these tests pin the WRITER, not the reader.
+Scope note (deliberate, UPDATED by TASK_881): TASK_876 shipped the score EMITTER and two
+storage-policy defaults, with ZERO deleter surface, and at THAT time ``tools/ckpt_gc.py`` was
+byte-identical to HEAD and epoch-keyed (could not resolve ``checkpoint_<step>`` or
+``checkpoint_epoch_<N>`` rows). TASK_881 made the reader path-first (see
+``tools/tests/test_ckpt_881_protection_model.py``) and gave ``--ckpt-retention score`` a real
+implementation gated on the retention policy module being loadable, rather than an
+unconditional refusal — ``test_ckpt_retention_score_now_has_an_implementation_task_881`` below
+replaces the old "refuses" pin. ``append_checkpoint_score``'s docstring still documents the
+full path-resolution history.
 
 Covered:
   1. emission is unconditional and APPENDS across a simulated restart (never truncates)
   2. None / NaN / Inf -> ``score: null`` + ``score_invalid``; a real ``0.0`` stays ``0.0``
-  3. ``--ckpt-retention score`` REFUSES; ``recency`` is the default
+  3. ``--ckpt-retention`` defaults to ``recency``; ``score`` now works (TASK_881)
   4. ``save_checkpoint`` defaults to ``overwrite=False``; ``_verify_checkpoint_on_disk``
      raises ``CheckpointVanishedError`` on a vanished / empty / zero-byte checkpoint
   5. FIX-1: ``_attempt_checkpoint_save`` swallows ONLY the three designed outcomes; any
@@ -126,15 +130,18 @@ def test_ckpt_retention_defaults_to_recency():
         sys.argv = old
 
 
-def test_ckpt_retention_score_refuses():
-    """'score' has no implementation in this build (TASK_881) — it must FAIL LOUDLY."""
+def test_ckpt_retention_score_now_has_an_implementation_task_881():
+    """UPDATED for TASK_881: 'score' is no longer an unconditional refusal — it is accepted
+    at parse time whenever the retention policy module (tools/ckpt_gc.py) is loadable, which
+    it is in this checkout. The refusal moved to being CONDITIONAL on that module's
+    availability (see mcts_trader/training/cli.py) rather than a blanket "not implemented"."""
     from mcts_trader.training.cli import parse_args
+    from mcts_trader.training.safe_checkpoint import retention_policy_available
+    assert retention_policy_available()[0], "tools/ckpt_gc.py must be loadable in this checkout"
     old = sys.argv
     try:
         sys.argv = ['train_jax_fast.py', '--ckpt-retention', 'score']
-        with pytest.raises(SystemExit) as ei:
-            parse_args()
-        assert ei.value.code != 0
+        assert parse_args().ckpt_retention == 'score'
     finally:
         sys.argv = old
 
@@ -262,7 +269,10 @@ def test_final_save_failure_sets_a_nonzero_exit_instead_of_raising_from_finally(
     src = inspect.getsource(train_jax_fast.main)
     assert 'final_ckpt_save_failed = False' in src, "the exit-code flag was removed"
     assert 'final_ckpt_save_failed = True' in src, "the finally-block handler no longer records"
-    exit_block = 'if final_ckpt_save_failed:\n        sys.exit(1)'
+    # TASK_881 gate v: a FAILED score-based prune joined this same exit path (`or
+    # ckpt_prune_failed`) rather than replacing it, so `final_ckpt_save_failed` alone must
+    # still be sufficient to trigger a nonzero exit.
+    exit_block = 'if final_ckpt_save_failed or ckpt_prune_failed:\n        sys.exit(1)'
     assert exit_block in src, "an unrecognised final-save failure no longer exits nonzero"
     # the exit must be OUTSIDE (after) the finally block, or it would clobber the real
     # exception that stopped training.

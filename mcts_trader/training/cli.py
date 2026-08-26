@@ -326,11 +326,14 @@ def parse_args() -> TrainingConfig:
     # "invalid choice" — score-based retention ships in TASK_881, the checkpoint protection
     # model.
     parser.add_argument('--ckpt-retention', choices=['score', 'recency'], default='recency',
-                        help="'recency' (default, and the only implemented mode): the legacy "
-                             "flax keep=3 behaviour, unchanged from pre-TASK_876. 'score' is "
-                             "NOT implemented in this build and REFUSES at startup — "
-                             "score-based retention ships in TASK_881 (the checkpoint "
-                             "protection model).")
+                        help="'recency' (DEFAULT): the legacy flax keep=3 behaviour, unchanged "
+                             "from pre-TASK_876. 'score' (TASK_881, opt-in): keeps the top-K "
+                             "scored checkpoints plus the newest/golden ones, PROTECTED by an "
+                             "explicit experiments/<id>/PROTECTED.txt or SPEC.md manifest — a "
+                             "run dir with no manifest coverage is refused (nothing pruned), "
+                             "loudly, rather than guessed. Stays opt-in: flipping the DEFAULT "
+                             "needs its own end-to-end proof (see TASK_881 gate vi) which this "
+                             "build has not carried out across the full training-loop surface.")
     parser.add_argument('--rollback-patience', type=int, default=50,
                         help='Epochs to wait before considering rollback')
     parser.add_argument('--rollback-threshold', type=float, default=0.5,
@@ -482,17 +485,21 @@ def parse_args() -> TrainingConfig:
 
     args = parser.parse_args()
 
-    # TASK_876 (D33): REFUSAL guard, not a normalizer — it fails loudly rather than silently
-    # falling back to 'recency' or no-op'ing. All deleter/protection surface was stripped from
-    # this row (three halts across two factory runs kept landing on that surface), so
-    # '--ckpt-retention score' has no implementation to run. Score-based retention ships in
-    # TASK_881 (the checkpoint protection model); today this flag supports 'recency' only.
+    # TASK_881: 'score' now has an implementation (the manifest-based protection model +
+    # `prune_run_dir_by_score`), gated on the retention POLICY MODULE (`tools/ckpt_gc.py`)
+    # actually being loadable from this deployment — a partial deploy (a copied-out trainer
+    # missing that file) must be refused at startup, not discovered mid-run when the disk
+    # fills. This is still a REFUSAL guard, not a normalizer: it never silently falls back to
+    # 'recency' here (see train_jax_fast.py for the runtime defense-in-depth check, which DOES
+    # fall back, loudly, for the caller that bypasses this CLI entirely).
     if args.ckpt_retention == 'score':
-        parser.error(
-            "--ckpt-retention score has NO IMPLEMENTATION in this build: the checkpoint "
-            "protection model ships in TASK_881. --ckpt-retention currently supports "
-            "'recency' only. Refusing at startup rather than silently falling back to "
-            "'recency' or no-op'ing.")
+        from mcts_trader.training.safe_checkpoint import retention_policy_available
+        ok, where = retention_policy_available()
+        if not ok:
+            parser.error(
+                f"--ckpt-retention score requested but the retention policy module is "
+                f"UNAVAILABLE ({where}). Refusing at startup rather than silently falling "
+                f"back to 'recency' or no-op'ing.")
 
     # Create config object from args
     # Filter out args that aren't in TrainingConfig or are None

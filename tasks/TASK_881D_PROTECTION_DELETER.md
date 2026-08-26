@@ -1,3 +1,54 @@
+> **STATUS (2026-08-27): SHIPPED as `task881d-d64-code-gate`** — factory run 43. The D62(a)/D63(a)
+> work that sat green-but-unshipped since run 42 is committed, and D64's `--apply` freeze is now a
+> CODE GATE rather than a written convention.
+>
+> **What shipped.** (1) `--apply` refuses at parse/entry time — before any filesystem work, exit 2,
+> empty stdout — unless `--i-have-read-d64-and-accept-the-unbound-coverage-risk=I-HAVE-READ-D64` is
+> given in full, exactly once, with that literal token. The refusal names D64, TASK_881E and the
+> lift condition (881E ships AND 880's D35 opens). (2) The `--keep-best N` MAJOR: `plan()`'s
+> per-metric arithmetic is byte-UNCHANGED and the `keeping N` line now DISCLOSES the per-metric
+> multiplication when more than one metric is present — option (b), not a real global cap, because
+> `plan()` is a live per-epoch `apply=True` path (`train_jax_fast.py:757`) and a real cap would have
+> converted the bug into NEW DELETIONS, the one forbidden direction. (3) The tie-break MINOR: exact
+> score ties now break on recency, reusing `_order_newest_first`'s ordering rather than a second
+> rule. (4) The three `experiments/*/PROTECTED.txt` corpus files are now TRACKED — untracked
+> manifests never reach gpu-server, which is where `ckpt_gc.py` actually runs.
+>
+> **Three cycles, two of them because the gate kept being bypassable in the same shape.**
+> Cycle 1: `argparse` defaults `allow_abbrev=True` and no other flag starts with `i`, so
+> **`--apply --i` armed the override** — proven with real deletion. Cycle 2's fix required the exact
+> token AND the full spelling present in `sys.argv`, and was bypassed again:
+> `FLAG=NOT_THE_TOKEN --i=I-HAVE-READ-D64` — the "full spelling present" test was an unconditional
+> `any()` over argv while the value came from argparse's last-occurrence-wins namespace, so **two
+> different tokens each satisfied one condition.** Cycle 3 closed the CLASS: `spelled_in_full` is now
+> an equality against the whole occurrence list, AND multiplicity refuses first, so the occurrence
+> that supplies the arming value must itself be the full spelling. Measured to be mutually redundant
+> (severing either alone still refuses; only both restores the bypass) and pinned as behaviour.
+> **The gate was also extracted from `main()` and PINNED** to hardcoded sha256 digests of its AST
+> entity text — it previously lived inside the ~40% of the file nothing checks.
+>
+> **Two false numbers in this row's own record were corrected, one of them the orchestrator's.**
+> "17 pre-existing `--apply` call sites mass-edited" → the true count is **1**. The removal-pin
+> coverage figure was stale: **1549 lines / 40.5% unpinned, 2280 / 59.5% protected** (not
+> 28.8%/2657), with `main` at 382 lines content-unchecked by design. Both now stated accurately.
+>
+> **Named remainders, all disclosed in code and pinned by tests where applicable.** The D64 gap
+> itself (manifest coverage has no authority binding) is unfixed BY DESIGN — that is what the freeze
+> exists for; it lifts only via **TASK_881E** + 880's D35. **The freeze covers the offline CLI
+> ONLY** — the in-run pruner is not behind it, disclosed in four places, deliberately not gated
+> because prune failure propagates to a process-level `sys.exit(1)` and a naive freeze would convert
+> "do not prune" into "kill the training run"; recommended for 881E. `main()` remains unpinned (the
+> new pin covers the gate, not the delete loop). `train_jax_fast.py:757` carries no D64 comment.
+> The implementer's 1204-shape argv sweep was ephemeral, not a checked-in test.
+>
+> **Verification: fail-closed x3 cycles + regression x1 — NOT the full HIGH tier**; correctness,
+> security and flow-verifier did not run against this resume's diff (run 42 ran all five against the
+> pre-resume work, which this did not modify; the security question IS D64, already ruled). Final
+> lens: NO FINDINGS, with a shape table where positive controls genuinely delete and every bypass
+> shape leaves all checkpoints intact, plus a 13-shape sweep confirming the class closed. Suites
+> **454 passed / 1 skipped** (HEAD 288/1 → 393/1 pre-resume → 454/1, every delta itemised, 0 removed),
+> selftest 12/12 — both run by the orchestrator, not taken on report.
+
 > **STATUS (2026-08-25, planner): RESUME per D64 — the in-tree work SHIPS with ONE addition: the
 > `--apply` freeze becomes a CODE GATE** (parse/entry-time refusal of `--apply` unless the
 > explicitly-named override is present; refusal text names D64/TASK_881E). The freeze lifts only

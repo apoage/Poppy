@@ -42,6 +42,8 @@ Cycle-3 fix pass (the ROOT of (1) above, read in the other direction) adds:
   (8) canon byte-identity vs HEAD, and behavioural `--apply` parity against the HEAD tool on a
       scratch tree (never the repo's real `runs/`).
 """
+import hashlib
+import importlib.util
 import os
 import re
 import subprocess
@@ -54,6 +56,17 @@ CKPT_GC = os.path.join(REPO, "tools", "ckpt_gc.py")
 
 sys.path.insert(0, os.path.join(REPO, "tools"))
 import ckpt_gc as gc  # noqa: E402
+
+# D62(a): `UNTOUCHED_GUARD_NAMES` is defined ONCE, in the 881D protection-model suite, and
+# imported here rather than re-listed — "reuse/consolidate rather than maintaining two lists".
+# Loaded via `spec_from_file_location` (the same idiom this file already uses for `gc` above)
+# rather than a bare `import test_ckpt_881_protection_model`, so this works regardless of which
+# test file(s) a given pytest invocation happens to collect.
+_pm_spec = importlib.util.spec_from_file_location(
+    "_ckpt_881_protection_model_for_untouched_guard_names",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_ckpt_881_protection_model.py"))
+_pm = importlib.util.module_from_spec(_pm_spec)
+_pm_spec.loader.exec_module(_pm)
 
 
 def _cli(*args, cwd, timeout=30):
@@ -1470,10 +1483,65 @@ def test_red_when_the_score_regex_strictness_is_reverted_at_its_real_drop_site(t
 # The invariant (config: "canon paths stay bit-identical") is checked two ways, because either
 # alone is weak: textually against HEAD, and behaviourally by running BOTH tools `--apply` on
 # identical scratch trees and comparing what survives. Never the repo's real `runs/`.
+#
+# TASK_881D RE-SCOPE (D45/D50 — 881D is the row 881I's own docstring names as the one that
+# REBUILDS `plan()`/`collect()`/the delete loop on top of this settled ingestion; this is not an
+# accidental regression, it is 881D's explicit mandate). The two tests below therefore no longer
+# assert "canon changed NOTHING" — that claim was 881I's OWN, about ITS OWN diff, and is FALSE
+# by design once 881D ships the protection model + deleter into those same functions. Following
+# the exact precedent 881G set for ITS OWN narrower rewrite of `test_diff_against_head_removes_
+# no_content_line` (see `_881G_KNOWN_REWRITES` below): each row states its OWN gate (iv) here.
+# 881D's task file states it plainly: "Byte-identity of every non-`--apply` code path vs HEAD" —
+# for THIS row that is the manifest-INGESTION surface (881I/881G/881S's own, settled, and NOT
+# reopened here), checked below as `INGESTION_NAMES`. `CANON_FUNCTIONS` — the functions 881D is
+# explicitly authorized to rewrite (the protection model + deleter) — is kept only as a comment,
+# not a byte-identity assertion, so a reader who expects the old check finds this note instead of
+# a silently-vanished test.
+#   CANON_FUNCTIONS (881D may rewrite these — this IS the row's job, not a regression):
+#     "_is_ckpt_dir", "_safe_target", "_du", "_epoch_of", "_load_scores", "free_gb",
+#     "collect", "plan"
+#
+# D62(a)/D63(a) (2026-08-25, planner rulings that unpark this row):
+#   * `test_canon_functions_are_byte_identical_to_head` is RESTORED below, narrowed to the guards
+#     881D genuinely does NOT touch (`UNTOUCHED_GUARD_NAMES`, defined once in
+#     test_ckpt_881_protection_model.py and imported here rather than re-listed).
+#   * `test_diff_against_head_removes_no_content_line` is UN-SKIPPED below, allowlisted by NAMED
+#     ENCLOSING ENTITY (`_881D_KNOWN_REWRITES`) rather than by individual line text — 881D
+#     legitimately rewrites hundreds of HEAD lines across several top-level entities, which makes
+#     881G's own per-line `_881G_KNOWN_REWRITES` mechanism (still below, unmodified, for ITS
+#     still-true narrower claim) the wrong granularity for this row.
+#   * `INGESTION_NAMES` re-pins `_run_manifest_check` and `load_manifests` — D63(a)'s ONE
+#     sanctioned, ADDITIVE amendment (`--known-dangling` + the walk-pruned-dirname report) — to
+#     their OWN new bytes via `AMENDED_INGESTION_NAMES` (a content hash), not to HEAD's: a
+#     HEAD-diff pin cannot stay live once a name is deliberately ALLOWED to differ from HEAD.
 # ============================================================================================
 
-CANON_FUNCTIONS = ("_is_ckpt_dir", "_safe_target", "_du", "_epoch_of", "_load_scores", "free_gb",
-                   "collect", "plan")
+INGESTION_NAMES = ("MANIFEST_BASENAMES", "SCORE_BASENAMES", "_MANIFEST_LINE_RE", "_SPEC_ITEM_RE",
+                   "_SPEC_BULLET_RE", "_PATHLIKE_HINT_RE", "_THEMATIC_BREAK_RE",
+                   "_is_thematic_break", "ManifestEntry", "MalformedManifestLine",
+                   "parse_protected_txt", "parse_spec_manifest", "strip_spans", "EntryShape",
+                   "_kind_of_mode", "classify_entry", "manifest_shape_refusal",
+                   "_score_source_shape_reason", "UnusableScoreSource", "DanglingScanLink",
+                   "_is_dangling_link", "_unresolvable_link_on_path", "UnusableScanLink",
+                   "_unusable_scan_link_error", "_walk_scan_dirs", "ManifestSet",
+                   "ManifestScanIncomplete", "_read_manifest_text", "load_manifests",
+                   "load_protect_file", "ScoreReadIncomplete", "_load_scores_strict",
+                   "UnusableCheckpointRoot", "_find_score_dirs", "_find_log_glob_score_dirs",
+                   "_bare_log_glob_matches", "_load_bare_log_glob_scores_strict",
+                   "_walk_reaches", "_dedupe_nested_scan_dirs", "_run_manifest_check",
+                   "_scan_dir_arg", "_MANIFEST_ENCODING_WHY", "_MANIFEST_BOMS")
+
+# D63(a) — the ONLY two INGESTION_NAMES sanctioned to move away from HEAD's bytes. INGESTION_NAMES
+# itself stays the full, unmodified 43-name ingestion inventory (still referenced elsewhere as
+# "all 43 INGESTION_NAMES"); these two are skipped in the HEAD-diff loop below and re-pinned here
+# instead, to a SHA-256 digest of their own exact AST entity text, captured at the moment D63(a)
+# shipped. Re-pinning to a hash (rather than simply dropping the pin) is what makes it "live
+# again, not disabled" per the ruling: any FURTHER, unreviewed change to either function — beyond
+# the two D63(a) sanctions — still fails loudly.
+AMENDED_INGESTION_NAMES = {
+    "_run_manifest_check": "185e6124df0571b0820fc8c96d0f2ec54fc48c22e92c4e8709a0769c4e7b3645",
+    "load_manifests": "ab94e0df00425e47f44ce550d08efec47cf492e687b79ca50af487841ee354c4",
+}
 
 
 def _head_source():
@@ -1483,73 +1551,235 @@ def _head_source():
     return r.stdout
 
 
-def _func_source(src, name):
-    """The exact text of a top-level `def <name>` block, from `def` to the next top-level line."""
+def _entity_source(src, name):
+    """The exact text of a top-level `def`/`class`/assignment named `name`, AST-located (not a
+    `def {name}(` string match — INGESTION_NAMES includes classes and module constants, neither
+    of which that shape catches)."""
+    import ast
     lines = src.splitlines(keepends=True)
-    start = next(i for i, l in enumerate(lines) if l.startswith(f"def {name}("))
-    end = start + 1
-    while end < len(lines) and (lines[end].startswith((" ", "\t", "\n"))):
-        end += 1
-    return "".join(lines[start:end]).rstrip() + "\n"
+    tree = ast.parse(src)
+    for node in tree.body:
+        nm = getattr(node, "name", None)
+        if nm is None and isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == name:
+                    nm = name
+        if nm == name:
+            return "".join(lines[node.lineno - 1:node.end_lineno])
+    raise AssertionError(f"{name!r} not found as a top-level def/class/assignment")
+
+
+def test_ingestion_surface_is_byte_identical_to_head():
+    """881D's OWN gate (iv) ("byte-identity of every non-`--apply` code path vs HEAD"): every
+    name 881I/881G/881S ship as the settled manifest-ingestion surface, compared byte-for-byte
+    with HEAD. Supersedes `test_canon_functions_are_byte_identical_to_head` (retired above) —
+    that test asserted CANON (`plan()`/`collect()`/the delete loop) never changed, which was
+    881I's own true claim about ITS OWN diff and is 881D's explicit job to make false.
+
+    D63(a): `_run_manifest_check` and `load_manifests` are SKIPPED here — the ONE sanctioned,
+    additive amendment means they are no longer claimed byte-identical to HEAD at all; they are
+    re-pinned to their OWN new bytes by `test_amended_ingestion_surface_is_pinned_to_its_new_bytes`
+    below instead."""
+    head, now = _head_source(), open(CKPT_GC).read()
+    for name in INGESTION_NAMES:
+        if name in AMENDED_INGESTION_NAMES:
+            continue
+        assert _entity_source(now, name) == _entity_source(head, name), \
+            f"ingestion-surface entity {name!r} is not byte-identical to HEAD"
+
+
+def test_amended_ingestion_surface_is_pinned_to_its_new_bytes():
+    """D63(a) re-pin: `_run_manifest_check`/`load_manifests` are ALLOWED to differ from HEAD (the
+    `--known-dangling` acknowledgement index and the walk-pruned-dirname `MANIFEST NOT SCANNED`
+    report), so a HEAD-diff pin cannot police them any more. This one can: any FURTHER change to
+    either function's exact AST entity text — beyond what already shipped under D63(a) — moves
+    the hash and fails this test, which is what "the pin is live again, not disabled" requires."""
+    now = open(CKPT_GC).read()
+    for name, digest in AMENDED_INGESTION_NAMES.items():
+        actual = hashlib.sha256(_entity_source(now, name).encode()).hexdigest()
+        assert actual == digest, (
+            f"{name!r} drifted from its D63(a) re-pin (now sha256={actual}) — if this is an "
+            f"intentional, reviewed change, update AMENDED_INGESTION_NAMES's digest; "
+            f"INGESTION_NAMES itself, and every OTHER name in it, stays untouched")
+
+
+@pytest.mark.parametrize("name", sorted(AMENDED_INGESTION_NAMES))
+def test_red_when_the_amended_pin_is_mutated_at_its_real_drop_site(name):
+    """MUTATION: append a harmless comment inside the named function's body (a real, in-place
+    text change, not a synthetic string) and confirm the D63(a) hash pin actually notices —
+    proving it is a check and not a tautology that would pass no matter what these two contain."""
+    src = open(CKPT_GC).read()
+    entity = _entity_source(src, name)
+    mutated_entity = entity + "    pass  # MUTATION: test_red_when_the_amended_pin_is_mutated\n"
+    mutated_digest = hashlib.sha256(mutated_entity.encode()).hexdigest()
+    assert mutated_digest != AMENDED_INGESTION_NAMES[name]
+
+
+UNTOUCHED_GUARD_NAMES = _pm.UNTOUCHED_GUARD_NAMES
 
 
 def test_canon_functions_are_byte_identical_to_head():
-    """Every canon function's source text, compared byte-for-byte with HEAD."""
+    """RESTORED per D62(a) (the planner's ruling on 881D gate (iv)): 881D's irreversible `--apply`
+    path leans on guards it does NOT rewrite — `_safe_target`, `_du`, `free_gb` and five named
+    WHY/constant strings, together `UNTOUCHED_GUARD_NAMES` (defined once in
+    test_ckpt_881_protection_model.py and imported here, not re-listed, so there is exactly one
+    list to keep current — "whichever home makes the pin load-bearing": this ingestion suite is
+    where the invariant needs to hold BEFORE `--ckpt-retention score`'s parse-time refusal lifts
+    and `--apply` becomes reachable for the first time, not only inside 881D's own suite).
+
+    Deliberately EXCLUDES the names 881D IS sanctioned to rewrite — `plan`, `collect`,
+    `_epoch_of`, `_load_scores`, `_is_ckpt_dir`, the delete loop inside `main()`, and main()'s
+    argparse block — so a reader who wonders why those seven are missing finds the reason here
+    rather than a silently-shrunken list. Those names are checked for BEHAVIOUR (this file's own
+    integration gates, and test_ckpt_881_protection_model.py's), never for byte-identity vs HEAD."""
     head, now = _head_source(), open(CKPT_GC).read()
-    for name in CANON_FUNCTIONS:
-        assert _func_source(now, name) == _func_source(head, name), \
-            f"canon function {name}() is not byte-identical to HEAD"
+    for name in UNTOUCHED_GUARD_NAMES:
+        assert _entity_source(now, name) == _entity_source(head, name), \
+            f"untouched guard {name!r} is not byte-identical to HEAD"
+
+
+def _entity_ranges(src):
+    """Every top-level statement in `src` (module docstring included), as `(name, start, end)`
+    1-based line ranges that TILE the whole file: each entity's range is extended BACKWARD to
+    swallow the blank/comment lines between it and the previous entity, so a removed BANNER
+    COMMENT is attributed to the entity it introduces — how a reader would attribute it — and no
+    line in the file is left unattributed to any entity at all."""
+    import ast
+    lines = src.splitlines()
+    tree = ast.parse(src)
+    body = tree.body
+    raw = []
+    if body and isinstance(body[0], ast.Expr):
+        raw.append(("<module docstring>", body[0].lineno, body[0].end_lineno))
+        body = body[1:]
+    for node in body:
+        nm = getattr(node, "name", None)
+        if nm is None and isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    nm = t.id
+        if nm is None:
+            nm = f"<anon@{node.lineno}:{type(node).__name__}>"
+        raw.append((nm, node.lineno, node.end_lineno))
+    raw.sort(key=lambda x: x[1])
+    extended, prev_end = [], 0
+    for nm, s, e in raw:
+        extended.append((nm, prev_end + 1, e))
+        prev_end = e
+    if extended:
+        nm, s, _e = extended[-1]
+        extended[-1] = (nm, s, len(lines))
+    return extended
+
+
+def _entity_at(ranges, lineno):
+    for nm, s, e in ranges:
+        if s <= lineno <= e:
+            return nm
+    return None
+
+
+# Every top-level entity 881D is sanctioned to rewrite, EXPLICITLY, by name (the planner's
+# sanctioned fallback when literal line-enumeration is unworkable — D62(a)): a removed HEAD line
+# attributed to any OTHER entity, including one that does not exist yet, still fails this test
+# loudly. `<module docstring>` covers the new protection-model prose, the unified `--protect-file`
+# reader section, and (mechanically, not by content — see the ingestion pin above) the
+# `MANIFEST_BASENAMES` banner comment that got repositioned by the docstring rewrite. `main`
+# covers BOTH the delete loop and the argparse block — both live physically inside `def main():`
+# and 881D's task file names them together. `CKPT_PATTERNS` is the new checkpoint-family
+# recognition (`checkpoint_epoch_N`/`checkpoint_golden`) the score-reader scope addition needs.
+# `_run_manifest_check`/`load_manifests` are D63(a)'s own sanctioned, additive amendment.
+_881D_KNOWN_REWRITES = (
+    "<module docstring>",
+    "CKPT_PATTERNS",
+    "MANIFEST_BASENAMES",
+    "_is_ckpt_dir",
+    "_epoch_of",
+    "_load_scores",
+    "collect",
+    "plan",
+    "main",
+    "_run_manifest_check",
+    "load_manifests",
+)
+
+
+def _diff_offenders(diff_text, ranges, known):
+    """The check `test_diff_against_head_removes_no_content_line` runs, factored out so it can be
+    exercised on a SYNTHETIC diff too (below) without mutating the real file on disk: every
+    removed (`-`) line's HEAD line number is resolved through `ranges` (`_entity_ranges`, which
+    TILES the whole file so nothing escapes attribution) and flagged unless its entity is in
+    `known`."""
+    old_lineno = None
+    offenders = []
+    for line in diff_text.splitlines():
+        m = re.match(r"^@@ -(\d+)(?:,(\d+))?", line)
+        if m:
+            old_lineno = int(m.group(1))
+            continue
+        if line.startswith("-") and not line.startswith("---"):
+            entity = _entity_at(ranges, old_lineno)
+            if entity not in known:
+                offenders.append((old_lineno, entity, line[1:]))
+            old_lineno += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            continue
+    return offenders
 
 
 def test_diff_against_head_removes_no_content_line():
-    """881I's and 881S's OWN diffs were pure insertions: no line that existed at HEAD was removed
-    or rewritten. TASK_881G's task file states a DIFFERENT gate (iv) for ITSELF: "byte-identity
-    OUTSIDE THE INGESTION SURFACE" — 881G is explicitly scoped to WIDEN the manifest-ingestion
-    accept path, which `test_canon_functions_are_byte_identical_to_head` (above) already proves
-    exactly, function-by-function, for the CANON claim that actually matters. This test is
-    narrowed to match: a HEAD line may be removed/rewritten ONLY if it is one of the specific,
-    named 881G rewrites below (each documented in TASK_881G_MANIFEST_GRAMMAR.md and in the
-    MANIFEST GRAMMAR section of this module's own docstring) — an UNRELATED accidental deletion
+    """UN-SKIPPED per D62(a): a diff-against-HEAD check for every code path OUTSIDE the two
+    byte-identity-pinned surfaces (`INGESTION_NAMES` above, `UNTOUCHED_GUARD_NAMES` imported into
+    `test_canon_functions_are_byte_identical_to_head`). 881D legitimately rewrote hundreds of HEAD
+    lines, so enumerating each individual changed LINE (881G's own, narrower
+    `_881G_KNOWN_REWRITES` mechanism, preserved below for its own still-true, still-narrower
+    claim) would be exactly the brittle, un-scoped whitelist that mechanism's own docstring warns
+    against. Allowlisted by NAMED ENCLOSING ENTITY instead: every removed HEAD line must be
+    attributed to one of the entities named in `_881D_KNOWN_REWRITES` — an accidental deletion
     anywhere else in the file still fails this test loudly."""
-    # `load_protect_file`'s indented-`#`-comment bug (881G scope item 4 NIT): the RAW-line check
-    # let a line like `  # comment` through, because the string that starts with `#` is the
-    # STRIPPED one, not the raw one. This is the ONE line 881G's own scope requires REWRITING
-    # rather than only adding around.
-    #
-    # The other two are 881G's ESCALATED-CYCLE corrections, both inside the ingestion surface and
-    # both required because the HEAD text was WRONG rather than merely incomplete:
-    #  * `parse_spec_manifest`'s "a header inside a fence ... can only ADD entries" paragraph. The
-    #    claim is true of the ENTRIES and FALSE of the FILE: a closing backtick-fence line
-    #    immediately after the last item is a non-item line inside a started list, so the natural
-    #    fenced example WITHDRAWS the whole file (gate (i) SURPRISE 2; see
-    #    test_ckpt_881g_manifest_grammar.py::test_doc2_*).
-    #  * the manifest-scan print's `scan_dirs_requested` term. `_dedupe_nested_scan_dirs` rewrites
-    #    `scan_dirs` BEFORE `load_manifests` fills `stats`, so reading "requested" from the
-    #    collapsed list told an operator who named two dirs "1 of 1". It now reads the
-    #    pre-collapse count (`test_scan_line_counts_the_scan_dirs_the_operator_named`).
-    _881G_KNOWN_REWRITES = (
-        '                     if l.strip() and not l.startswith("#")}, None)',
-        '    That is fail-SAFE in the only direction that matters here — it can only ADD entries, '
-        'i.e.',
-        '    make the (future, TASK_881D) deleter MORE conservative — and a bogus path so ingested '
-        'does not',
-        "    pass quietly: it lands in ``ManifestSet.dangling`` and hits ``load_manifests``'s loud",
-        '    dangling-entry refusal at exit 2. Teaching this parser to skip fences would create the',
-        '    opposite, unsafe failure: a real header ignored because something upstream looked like '
-        'a fence.',
-        '          f"{scan_stats.get(\'scan_dirs_requested\', len(scan_dirs))} scan dir(s) visited, "',
-    )
+    ranges = _entity_ranges(_head_source())
     r = subprocess.run(["git", "diff", "-U0", "HEAD", "--", "tools/ckpt_gc.py"], cwd=REPO,
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    removed = [l[1:] for l in r.stdout.splitlines()
-               if l.startswith("-") and not l.startswith("---")]
-    unexpected = [l for l in removed if l not in _881G_KNOWN_REWRITES]
-    assert unexpected == [], f"removed/rewrote an UNEXPECTED HEAD line: {unexpected}"
+    offenders = _diff_offenders(r.stdout, ranges, _881D_KNOWN_REWRITES)
+    assert offenders == [], (
+        "removed/rewrote HEAD line(s) OUTSIDE every entity 881D is sanctioned to rewrite "
+        f"(lineno, entity, text): {offenders}")
+
+
+def test_red_when_a_removal_outside_the_named_entities_is_not_caught():
+    """MUTATION, on the CHECK ITSELF (`_diff_offenders`), not on the real file: a SYNTHETIC
+    `-U0`-shaped diff hunk that removes one real HEAD line from `free_gb` — an UNTOUCHED guard,
+    never in `_881D_KNOWN_REWRITES` — must be flagged. Confirms the allowlist actually refuses an
+    out-of-scope removal instead of accepting everything; the real test above only proves the
+    CURRENT diff is clean, not that the mechanism can tell the difference."""
+    head_src = _head_source()
+    ranges = _entity_ranges(head_src)
+    free_gb_start, free_gb_end = next((s, e) for nm, s, e in ranges if nm == "free_gb")
+    victim_lineno = free_gb_end  # the last line of free_gb() — real HEAD text, not invented
+    victim_text = head_src.splitlines()[victim_lineno - 1]
+    assert _entity_at(ranges, victim_lineno) == "free_gb"
+
+    synthetic_diff = f"@@ -{victim_lineno},1 +{victim_lineno},0 @@\n-{victim_text}\n"
+    offenders = _diff_offenders(synthetic_diff, ranges, _881D_KNOWN_REWRITES)
+    assert offenders == [(victim_lineno, "free_gb", victim_text)]
+
+    # RESTORE-equivalent control: the identical removal, but attributed to an entity 881D IS
+    # sanctioned to rewrite, is correctly NOT flagged — proving the mechanism discriminates by
+    # entity rather than by "any removal at all".
+    assert _diff_offenders(synthetic_diff, ranges, _881D_KNOWN_REWRITES + ("free_gb",)) == []
 
 
 def _apply_tree(root):
-    """A scratch run tree with scored + unscored checkpoints, built so `plan()` has real work."""
+    """A scratch run tree with scored + unscored checkpoints, built so `plan()` has real work.
+
+    TASK_881D: carries a `covers: runs/some_run` manifest so gate (i) is satisfied — 881D's own
+    task file makes an uncovered run dir REFUSE wholesale (dry-run or `--apply`), a deliberate,
+    sanctioned divergence from HEAD's canon (which never gated on manifests at all), not a parity
+    target. The manifest grants nothing beyond coverage (no `protect:` line), so the SCORE-BASED
+    keep/delete arithmetic below is exercised identically to HEAD's, which is what
+    `test_apply_behaviour_is_parity_with_head_on_a_scratch_tree` actually checks.
+    """
     run = root / "runs" / "some_run"
     run.mkdir(parents=True)
     for ep in (10, 20, 30, 40, 50):
@@ -1560,7 +1790,9 @@ def _apply_tree(root):
     (run / "scores.jsonl").write_text("".join(
         f'{{"epoch": {ep}, "score": {s}}}\n' for ep, s in
         ((10, 0.9), (20, 0.1), (30, 0.5), (40, 0.2), (50, 0.7))))
-    (root / "experiments").mkdir()
+    (root / "experiments" / "some_run_exp").mkdir(parents=True)
+    (root / "experiments" / "some_run_exp" / "PROTECTED.txt").write_text(
+        f"covers: {run}\n")
     return root
 
 
@@ -1580,15 +1812,40 @@ def test_apply_behaviour_is_parity_with_head_on_a_scratch_tree(tmp_path):
 
     ra = _cli_script(str(head_tool), "--roots", "runs", "--keep-best", "2", "--apply",
                      cwd=str(a), timeout=30)
-    rb = _cli("--roots", "runs", "--keep-best", "2", "--apply", cwd=str(b), timeout=30)
+    # D64: the override now REQUIRES its exact literal value and refuses an abbreviated option
+    # spelling — imported from the protection-model suite so there is one spelling repo-wide.
+    rb = _cli("--roots", "runs", "--keep-best", "2", "--apply",
+             _pm.D64_OVERRIDE, cwd=str(b), timeout=30)
 
     assert ra.returncode == rb.returncode == 0, ra.stdout + ra.stderr + rb.stdout + rb.stderr
-    assert _survivors(a) == _survivors(b), f"HEAD kept {_survivors(a)}, now keeps {_survivors(b)}"
-    assert "snapshot_ep20" not in _survivors(b)      # something really was deleted
+    # TASK_881D: `--apply` now implies `--write-index` (an auditable `checkpoints_index.json`
+    # per run dir) and appends to `prunes.jsonl` — sanctioned NEW artifacts HEAD's canon never
+    # wrote at all, not a parity target. Excluded here so this test keeps checking what it was
+    # designed to check: the CHECKPOINT keep/delete decision itself is unchanged.
+    _AUDIT_FILES = {"checkpoints_index.json", "prunes.jsonl"}
+    survivors_a = [s for s in _survivors(a) if s not in _AUDIT_FILES]
+    survivors_b = [s for s in _survivors(b) if s not in _AUDIT_FILES]
+    assert survivors_a == survivors_b, f"HEAD kept {survivors_a}, now keeps {survivors_b}"
+    assert "snapshot_ep20" not in survivors_b      # something really was deleted
 
     def _norm(out, root):
-        return [l for l in out.replace(str(root), "<ROOT>").splitlines()
-                if "free=" not in l and "free now" not in l]
+        # TASK_881D: two SANCTIONED reporting upgrades, filtered here rather than chased line-
+        # for-line — the "keeping N" summary line now names which METRIC(s) were scored
+        # (`[metrics: ...]`, gate-scoped to path/step score resolution) and the closing
+        # reclaimed/would-reclaim line now reports REFUSED-run-dir counts instead of the old
+        # "free now" tail (D45's audit requirement) — HEAD's version of that line was already
+        # excluded by the pre-existing "free now" filter, so excluding the whole line here too
+        # (rather than only HEAD's spelling of it) keeps the comparison meaningful on BOTH sides.
+        lines = out.replace(str(root), "<ROOT>").splitlines()
+        lines = [re.sub(r" \[metrics: [^\]]*\]", "", l) for l in lines]
+        # 881D: `plan()` now ranks WITHIN a metric (TASK_881 scope: "never across metrics") and
+        # names it in the deletion reason — a real behavioural addition, not a parity target for
+        # a scratch tree whose scores.jsonl carries no `metric` key at all (so it is always the
+        # same `'<unnamed metric>' (N scored on it)` suffix here; stripped for comparison).
+        lines = [re.sub(r" on metric '[^']*' \(\d+ scored on it\)", "", l) for l in lines]
+        return [l for l in lines if "free=" not in l and "free now" not in l
+                and not l.startswith("[ckpt_gc] reclaimed")
+                and not l.startswith("[ckpt_gc] would reclaim")]
     assert _norm(ra.stdout, a) == _norm(rb.stdout, b)
 
 

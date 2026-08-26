@@ -5,6 +5,7 @@ import time
 import random
 import logging
 import csv
+import traceback
 from tqdm import tqdm
 import jax
 import jax.numpy as jnp
@@ -98,7 +99,9 @@ from mcts_trader.jax_agent.adaptive_noise import AdaptiveNoiseController, NoiseC
 from mcts_trader.jax_agent.adaptive_fees import AdaptiveFeeController, FeeConfig
 from mcts_trader.jax_agent.adaptive_burn import AdaptiveBurnController, BurnConfig
 from mcts_trader.jax_agent.schedules import SimsSchedule
-from mcts_trader.training.safe_checkpoint import SafeCheckpointManager, append_checkpoint_score
+from mcts_trader.training.safe_checkpoint import (
+    SafeCheckpointManager, append_checkpoint_score, prune_run_dir_by_score,
+    retention_policy_available)
 from mcts_trader.jax_agent.trainer import CheckpointVanishedError, CheckpointSidecarError
 from mcts_trader.training.evaluator import run_generalization_eval
 # TASK_888 (D38): the ONE checkpoint resolver + fail-closed loader, shared with
@@ -695,21 +698,79 @@ def main():
     checkpoint_dir = os.path.abspath(f"jax_ckpt_fast/{config.name}")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # ==== TASK_876 (D33): checkpoint retention (storage policy only, ZERO deleter surface) ====
-    # 'recency' is the only implemented mode; 'score' is refused at arg-validation time
-    # (mcts_trader/training/cli.py::parse_args), so `config.ckpt_retention` reaching this point
-    # can only be 'recency'. This is a REFUSAL guard, not a normalizer — see the comment there.
-    # Kept here too (defense in depth for any caller that builds TrainingConfig without going
-    # through parse_args) rather than trusting the CLI gate alone.
+    # ==== TASK_881: checkpoint retention (storage policy + explicit manifest protection) ====
+    # 'recency' is the DEFAULT (D32/D35: the destructive score path only flips on after the
+    # protection model ships AND gate vi's collapse case is re-proven end-to-end — see
+    # tasks/TASK_881_CHECKPOINT_PROTECTION_MODEL.md). 'score' is a real, working, opt-in mode
+    # now: it delegates every deletion decision to `prune_run_dir_by_score`, which resolves
+    # manifest coverage and refuses (never deletes) a run dir no manifest declares — the same
+    # policy `tools/ckpt_gc.py` enforces offline (gate iii: the two deleters share one
+    # `plan()`). Kept as a runtime check too (defense in depth for any caller that builds
+    # TrainingConfig without going through `cli.py::parse_args`, which already refuses at
+    # startup) — this one falls back rather than raising, since discovering an unavailable
+    # policy module mid-run should not crash a job that was otherwise healthy under 'recency'.
     ckpt_retention = getattr(config, 'ckpt_retention', 'recency')
-    if ckpt_retention != 'recency':
+    if ckpt_retention == 'score':
+        _pol_ok, _pol_where = retention_policy_available()
+        if not _pol_ok:
+            print(f"  [CKPT] CRITICAL: --ckpt-retention score requested but the retention "
+                  f"policy is UNAVAILABLE ({_pol_where}). Falling back to --ckpt-retention "
+                  f"recency (bounded flax keep=3) so this run cannot grow without bound.")
+            ckpt_retention = 'recency'
+    elif ckpt_retention != 'recency':
         raise ValueError(
-            f"--ckpt-retention {ckpt_retention!r} has NO IMPLEMENTATION in this build: the "
-            f"checkpoint protection model ships in TASK_881. Only 'recency' is supported.")
-    # flax's `keep` is 3 — the pre-876 bound, unchanged. `overwrite=False` (trainer.py, D32/D33)
-    # is the other intended delta: it makes a resume at a lower step REFUSE the collision
-    # instead of silently mass-deleting every checkpoint above the resume point.
+            f"--ckpt-retention {ckpt_retention!r} is not a supported mode ('recency' or "
+            f"'score' only).")
+    # flax's `keep` stays 3 in EVERY mode — the pre-876 bound, unchanged — because
+    # `--ckpt-retention score`'s manifest protection has not yet been stress-tested combined
+    # with a raised flax keep across this file's full feature surface (gate vi is explicitly
+    # about that end-to-end proof; until it is re-run here, this build does not attempt it).
+    # Score-based retention therefore governs the `snapshot_ep<N>` family (flax's own keep
+    # never touches it) and the whole-run disk-floor emergency prune; it does not yet change
+    # how many `checkpoint_<step>` dirs flax itself retains. `overwrite=False` (trainer.py,
+    # D32/D33) is the other intended delta: it makes a resume at a lower step REFUSE the
+    # collision instead of silently mass-deleting every checkpoint above the resume point.
     flax_keep = 3
+    # TASK_881 scope 3: an in-run prune only runs under 'score'. One helper, called after every
+    # successful save (periodic/snapshot/final) instead of only from one site, so a run under
+    # 'score' stays bounded and manifest-protected regardless of which family just grew.
+    ckpt_min_free_gb = float(getattr(config, 'ckpt_min_free_gb', 5.0))
+
+    def _maybe_prune_by_score(what: str) -> None:
+        if ckpt_retention != 'score':
+            return
+        try:
+            _st = os.statvfs(checkpoint_dir)
+            under_floor = (_st.f_bavail * _st.f_frsize / 1e9) < ckpt_min_free_gb
+        except OSError:
+            under_floor = False
+        nonlocal ckpt_prune_failed
+        # TASK_881 defense in depth, at the point where it matters. The startup availability
+        # check above promises that "discovering an unavailable policy module mid-run should
+        # not crash a job that was otherwise healthy", but that promise was only enforced at
+        # startup: an unexpected raise from this OPPORTUNISTIC prune would have taken down a
+        # multi-hour training run whose checkpoints were already safely on disk. Every
+        # downstream path is hardened and no raising input is known — this catches the unknown
+        # one. It is LOUD and it sets the same non-zero-exit flag a FAILED prune sets, so the
+        # run still ends in failure; it just ends after finishing, not in the middle.
+        try:
+            msgs, had_failure = prune_run_dir_by_score(
+                checkpoint_dir, under_floor=under_floor, apply=True)
+        except Exception as e:
+            ckpt_prune_failed = True
+            print(f"  [CKPT] ERROR: the score-based prune after {what} raised {type(e).__name__}"
+                  f": {e} — training CONTINUES (the checkpoints are already saved) and this run "
+                  f"will exit non-zero. Nothing was pruned this call.")
+            traceback.print_exc()
+            return
+        for m in msgs:
+            print(m)
+        if had_failure:
+            ckpt_prune_failed = True
+            print(f"  [CKPT] a score-based prune FAILED after {what} — see FAILED line above; "
+                  f"this run will exit non-zero (TASK_881 gate v: never a silent success).")
+
+    ckpt_prune_failed = False
 
     # ==== RESTORED: Adaptive Controllers ====
     # Sims warmup schedule (TASK_020)
@@ -2009,15 +2070,14 @@ def main():
                 if written is not None:
                     # TASK_876 B3: flax names the dir by state.step_count, NOT by epoch —
                     # record the path flax actually wrote, so a path-first reader can bind
-                    # this score to a real artifact. The SHIPPED tools/ckpt_gc.py cannot: it
-                    # is epoch-keyed and parses the digits out of the dir basename, which for
-                    # `checkpoint_<step>` is the STEP, so it reads this checkpoint as
-                    # UNSCORED — the fail-safe direction (never score-pruned; still
-                    # recency-prunable under ckpt_gc's disk floor, as before 876). The
-                    # path-first reader is TASK_881. See append_checkpoint_score's docstring.
+                    # this score to a real artifact. TASK_881 made tools/ckpt_gc.py's reader
+                    # PATH-FIRST (it resolves this row by `path`, never by parsing the dir
+                    # basename), so a `checkpoint_<step>` row now resolves correctly instead of
+                    # reading as permanently UNSCORED. See append_checkpoint_score's docstring.
                     append_checkpoint_score(checkpoint_dir, epoch + 1, ckpt_score,
                                             ckpt_metric, path=written,
                                             step=int(trainer.state.step_count))
+                    _maybe_prune_by_score('the periodic save')
 
             # Snapshot checkpoint (periodic named snapshots that don't get overwritten)
             snapshot_every = getattr(config, 'snapshot_every', 0)
@@ -2037,13 +2097,15 @@ def main():
                 if _snap_written is not None:
                     # TASK_876: the score belongs to the SNAPSHOT dir (the leaf the GC sees),
                     # written into the PARENT run dir alongside its snapshot_ep<N> siblings.
-                    # `snapshot_ep<N>` is the ONE name the shipped ckpt_gc.py resolves today
-                    # (its epoch key really is the epoch); the other two read as UNSCORED
-                    # until TASK_881 lands the path-first reader.
+                    # All three checkpoint naming schemes resolve now (TASK_881's path-first
+                    # reader), so this is no longer the one family that happens to round-trip.
                     append_checkpoint_score(checkpoint_dir, epoch + 1, ckpt_score,
                                             ckpt_metric, path=snapshot_dir,
                                             step=int(trainer.state.step_count))
                     print(f"  [SNAPSHOT] Saved to {snapshot_dir}")
+                    # TASK_881 scope 3: this is the family flax's own keep=N never bounds —
+                    # score-based retention matters most here.
+                    _maybe_prune_by_score('the snapshot save')
 
             # TASK_876 M7: only now is this epoch complete. The `finally` save below must
             # attribute its params to THIS epoch, not to the one that crashed half-way.
@@ -2108,6 +2170,7 @@ def main():
                     last_completed_metric, path=written, step=int(trainer.state.step_count),
                     note=_note)
                 print(f"  Checkpoint saved to {written}")
+                _maybe_prune_by_score('the final save')
         print(f"\n{'='*70}")
         # TASK_876 FIX-1: never claim COMPLETE when the run's own result failed to save.
         print("TRAINING FAILED: FINAL CHECKPOINT NOT SAVED" if final_ckpt_save_failed
@@ -2117,7 +2180,9 @@ def main():
     # TASK_876 FIX-1: reached only when nothing propagated out of the try/finally above (a
     # propagating exception already exits nonzero and carries the real cause). Exiting here
     # rather than raising inside `finally:` is what keeps the original error intact.
-    if final_ckpt_save_failed:
+    # TASK_881 gate v: a FAILED score-based prune (rename ok, rmtree failed — orphaned bytes)
+    # must never be a silent success either, so it joins the same nonzero-exit path.
+    if final_ckpt_save_failed or ckpt_prune_failed:
         sys.exit(1)
 
 if __name__ == "__main__":
