@@ -1,5 +1,74 @@
 # TASK_906 — the 809/897 per-decision series carries EXCESS DISPERSION across its OOS window
 
+> **STATUS (2026-08-25, factory run 42): NOT SHIPPED — VERIFICATION FOUND TWO BLOCKERS. Work is
+> preserved in the tree; do not read the measurements below as settled.** An earlier revision of
+> this banner said "SHIPPED" and said scope 4's causes were excluded. Both claims were withdrawn
+> by the verification panel and the banner is corrected here rather than edited quietly.
+>
+> **BLOCKER 1 — the withdrawn banner overclaimed scope 4.** It read "alias/identity, forward-fill
+> staleness, and universe turnover EXCLUDED by measurement". The row's OWN artifact says otherwise:
+> `experiments/906_oos_nonstationarity/GATE4_CANDIDATE_CAUSES.json` records
+> `alias_4a.conclusion = "twin id 1144 HAS rows in this window that the exact-spelling read misses
+> -> NOT EXCLUDED, needs the blast-radius sizing TASK_897/D56 already did for its own 64-asset
+> universe, redone for this 7-asset one"`. The `experiments/LEDGER.md` row is more honest than the
+> banner was ("EXCLUDED IN EFFECT, not vacuously"; "the crude rule this row pre-registered reads
+> NOT-EXCLUDED on its own") — the overstatement was confined to the most-read artifact, which is
+> the worst place for it. **An unexcluded cause is not an excluded cause** (gate (ii)).
+>
+> **BLOCKER 2 — forward-fill (4b) was never actually tested: a temporal-misalignment wiring bug.**
+> `experiments/906_oos_nonstationarity/measure_causes.py:139-158` correlates `chunk_sharpes_h1`
+> (**26** chunks of 1000 REBALANCE DECISIONS, each spanning much of the 5-month window) against
+> `chunk_mean_staleness` (**217** chunks of 1000 RAW MINUTE BARS, each ~16.7 h) by truncating to
+> `n_common = min(26, 217) = 26` instead of aligning them. So Sharpe-chunk 25 (end of the window)
+> is compared against raw minutes 25,000-26,000 (day ~17 of ~150). The reported `|r| = 0.15` vs the
+> pre-registered `|r| >= 0.4` bar is therefore a correlation between unrelated calendar spans and
+> excludes nothing. Independently reproduced: naive truncation of the raw arrays returns
+> `0.15243937660446572` against the script's `0.15243937660446574` — identical to 14 significant
+> figures, which is what proves this is the code that ran. `PREREGISTRATION.md:56-58` had specified
+> per-DECISION chunking; the 26-vs-217 length mismatch was the tell. **Fix direction:** rebuild
+> `chunk_mean_staleness` on the actual rebalance-decision boundaries (or resample the 217-chunk
+> series onto the 26 decision-chunk calendar spans) before correlating. The unaffected aggregate
+> `overall_frac_bars_stale_gt0 = 5.78%` is correctly computed and still stands.
+>
+> **Gate (i) is PARTIALLY MET, not met.** `independent_construction.py` imports none of TASK_901's
+> modules but runs on TASK_901's own `REAL_SERIES_H{1,5,20}.npy` output arrays. That is a different
+> STATISTIC on the SAME CONSTRUCTED SERIES: it cleanly rules out an artifact of 901's
+> bootstrap/chi-square machinery, but by construction it CANNOT detect an artifact baked into the
+> series itself (alias handling, forward-fill, universe choice, k=2 concentration) — which is
+> exactly what scope 4 exists to rule out. `PREREGISTRATION.md:16-23` discloses this narrowing
+> honestly; the withdrawn banner did not.
+>
+> **What DOES stand, pending the fix pass.** The excess dispersion reproduces through an unrelated
+> statistic (classical ANOVA+Levene, two outcome-blind segmentations whose pre-registration ordering
+> was verified against file mtimes), and is SHARPENED to a VARIANCE effect: Levene rejects flat
+> groups at every one of 6 (H, segmentation) cells while ANOVA never rejects the mean
+> (p 0.21-1.00) — directionless heteroskedasticity, NOT decay, regime-switch, or a datable level
+> shift. Carry the open caveat that Levene's extreme p-values (to 4.3e-274) are read at face value
+> on a series this program's own records call anti-persistent (full-series VR 0.273 at q=2048), with
+> no dependence-robust check run; the effect size is large (group std ranging 2.8-5.7x within a
+> cell) so it is unlikely to flip, but it is an unclosed gap. Causes (c) frozen-cell mask (EXCLUDED
+> BY CONSTRUCTION — `price_valid` verified absent from this lineage's loader) and (d) universe
+> turnover (EXCLUDED — and cleared as non-tautological: `probe.py:199-211` ranks on TRAIN-window
+> bar count, so 100% test-window presence is a real empirical result) both survived adversarial
+> checking. A fifth, un-named risk is flagged and unmeasured: portfolio concentration from the
+> 7-asset/k=2 demonstration construction.
+>
+> **Scope 2's convention IS delivered and is NOT withdrawn:** the "NON-STATIONARITY DISCLOSURE"
+> doctrine paragraph in `experiments/LEDGER.md`, above its table — where verdicts are read, not
+> only here. It was judged careful and correctly hedged.
+>
+> **Scope 3 affected-verdict read (unchanged, but note the weakest leg).** TASK_897 srv leg #2
+> window-(a) cells AFFECTED (same span measured here); window-(b) NOT-EXCLUDED but unmeasured (no
+> local per-decision series for that span; building one is a srv-scale job, planner-schedulable).
+> TASK_892/D47 ANTI-EDGE NOT AFFECTED — reason is a concrete data-length fact (116 decisions, too
+> short to chunk). TASK_875/wf-generalization headline NOT AFFECTED, "OOS seed spread" secondary
+> claim QUALIFIED — but this reason is a plausibility argument, not a measurement, and should be
+> cited as reasoning rather than as settled.
+>
+> **Planner-owned, deliberately not done here:** no `docs/pathway.md` write (out of the implementer
+> lane; the convention's home was judged to be the ledger). Detail and all candidate-cause
+> measurements: `experiments/LEDGER.md` row `906/oos-dispersion`.
+
 **Status**: READY 2026-08-24 (seeded by factory run 41 from TASK_901's gate-(iii) re-scope — a
 measurement that arrived as a by-product of testing something else, and outgrew the row that found
 it).
