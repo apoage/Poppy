@@ -1333,6 +1333,29 @@ MEASURED_DEPENDENCE_REFUSAL_OC = {
 }
 
 
+# TASK_902 item 8 — MEASURED_DEPENDENCE_REFUSAL_OC discloses the refusal-rate operating
+# characteristic at dependence multiples {0, 1, 2, 4, 8}x the block ONLY. Factory run 40 measured
+# an intermediate point NOT in that grid: at 1.5x the guard certifies (does not refuse) 8-13% of
+# draws at 0.905 coverage — a materially worse operating point than the 1x neighbour shown above
+# (0.270-0.422 refusal, i.e. 58-73% still certify, but AT the calibration's own dep==block anchor)
+# and worse than what a reader interpolating linearly between the 1x and 2x rows (0.270-0.422 and
+# 0.945-1.000 refusal respectively) would guess. This constant is the disclosed GAP, not a new
+# table row: TASK_902's own discipline is that this row changes claims and rendering, never adds
+# new measured numbers, so the 1.5x point is named here rather than folded into
+# `MEASURED_DEPENDENCE_REFUSAL_OC` as if it had been measured under the same protocol. A reader
+# must not assume the grid interpolates linearly, or monotonically in refusal rate, between its
+# disclosed multiples.
+DEPENDENCE_REFUSAL_OC_GRID_GAP = (
+    "MEASURED_DEPENDENCE_REFUSAL_OC discloses the refusal-rate operating characteristic at "
+    "dependence multiples {0, 1, 2, 4, 8}x the block ONLY. A known intermediate point is NOT in "
+    "this grid and is disclosed here instead (TASK_902 item 8, factory run 40): at 1.5x the "
+    "guard certifies (fails to refuse) 8-13% of draws at 0.905 coverage -- below the "
+    f"{TARGET_COVERAGE} target, and a materially worse operating point than the 1x row's own "
+    "dep==block anchor. Do not interpolate linearly or assume monotonicity between the "
+    "disclosed multiples above; this constant names the gap rather than filling it."
+)
+
+
 def measure_block_cap_candidates(cap_candidates=(20, 40, 60, 80, 100),
                                  n_dec_probe=(500, 2000, 8000), n_trials=150, n_boot=400,
                                  target=TARGET_COVERAGE, margin=0.03, seed=42):

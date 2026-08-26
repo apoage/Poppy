@@ -3,6 +3,58 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_902 — the 897 instrument's honesty debt, retired deliberately, with no number moved
+
+- **What shipped.** All 12 scope items: D58's exit-code contract; the vacuous-inherited-IC rule; a
+  controlled refusal at the first data touch that still writes a parseable artifact; realized
+  `n_decisions` and book width per cell with empty cells SAYING they are empty; the 639 overlay
+  disclosure rendered at its row; the scope-honesty prose computed instead of asserted; `not-run`
+  rendered distinctly from `False`; a symmetric banner for a 100%-failed run; the `--out` default
+  moved off the tracked tree; the OC grid gap disclosed at the constant; the protected-DB guard bound
+  at the data-touch layer; the TOCTOU residual closed by resolving once and feeding both the check
+  and the open; refusal echoes bounded; and the artifact now states WHICH grid ran.
+- **The governing discipline held: NO NUMBER MOVED.** Gate (ii) was re-derived twice by an
+  adversarial lens with its own **header-keyed** parser — the second time against a `git clone`
+  reconstruction of HEAD rather than the working tree — for **zero numeric field diffs across all 144
+  rows**, with every rendering diff mapping to a named scope item. This mattered mechanically: cycle 1
+  inserted a `book_w(mean)` column, and a positional parser would have false-passed the comparison.
+- **Item 2 needed no code, and the row says so.** Both of its root causes were already closed by 897's
+  D60 pass — verified independently at both sites, and shown to generalise to the public
+  `run_sweep(grid_h=…)` surface because the loop iterates the caller's own `grid_h`.
+- **The BLOCKER cycle 1 introduced, and the sharper finding while fixing it.** `except Exception`
+  rendered a genuine internal bug in **byte-identical banner language** to a legitimate refusal and
+  discarded the traceback — strictly worse than the traceback it replaced, since orchestration parses
+  the artifact and not the exit code. The fix keeps a broad catch (a bare traceback writes *nothing*
+  at `--out`, exactly the unreadable state item 2b closed) but renders an unmistakably different
+  artifact and captures `traceback.format_exc()` on both paths. **Narrowing the `except` proved
+  illusory**: in CPython `ProgrammingError → DatabaseError → Error`, so sqlite3 API misuse — a defect
+  — cannot be excluded by any tuple that still admits "file is not a database". Hence an explicit
+  predicate. And **neither artifact quotes the other's banner text**, deliberately: an orchestrator
+  greps these files, so a cross-reference would make the two kinds match each other's search strings.
+- **Echo clipping: 4 sites → all 13.** 1,800,148 → 4,238 chars; 2,700,333 → 6,423.
+  `write_refusal_artifact` had been echoing **all 7 grid axes** unbounded. `_clip_echo` cannot raise
+  now, including on lone surrogates — legal inside a `str` but raising `UnicodeEncodeError` at *write*
+  time, so an unhardened clipper would have looked fine while the refusal still died.
+- **A zero-cell run is now loud** (own banner + exit 2). The defence against D58: gate (ii)'s
+  `recorded == expected` is satisfied **trivially by `0 == 0`** and provides no assurance at all —
+  that is the instrument failing to act, not an honest empty result, which still exits 0 (verified
+  against the real fixture).
+- **Named remainders, both MINOR.** (1) `test_main_does_not_exit_nonzero_on_an_honest_empty_result`
+  still does not pin the state it claims to: cycle 2 correctly moved its premise off the degenerate
+  `0 == 0` case but landed on `ok == 0 / dropped == 144`, which is the **100%-failed** scenario by the
+  code's own taxonomy; the real honest-empty state is `ok == 144`. Not a regression — `exit_code_for`
+  never reads `n_cells_ok` — but the docstring claims coverage it does not have. (2) Five per-cell
+  `reason` fields remain unclipped, deliberately and soundly, because they echo into the
+  gate-(ii)-protected data table where clipping could move artifact bytes.
+- **Caveat carried into the record at the field itself, pinned by a test:** the fixture's 7-asset
+  universe never clears `k=16`'s `2k` floor, so no cell of the 144-cell smoke grid ever realizes
+  `n_decisions > 0`. Gate (ii)'s fixture rerun is SILENT on `realized_book_width_mean`; only the real
+  64-asset leg exercises it.
+- **Verification.** fail-closed ×1 + regression ×2. **250 passed / 3 failed** — the 3 pre-existing and
+  out of scope (`test_recompute_gate.py` is unmodified and imports only the also-unmodified
+  `honest_estimator`, confirmed independently). HEAD 215 → 253 collected, **0 tests removed**, 38
+  added. selftest 12/12, orchestrator-run.
+
 ## 2026-08-27 — TASK_904A — the walkforward smoke/materialize half of 904, and a fence re-derived twice before it held
 
 - **What shipped.** The D61(a) half: smoke out-rooting (real rails to a temp scratch, diffed, never to

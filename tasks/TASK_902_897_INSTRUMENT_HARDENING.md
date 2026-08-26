@@ -1,3 +1,71 @@
+> **STATUS (2026-08-27): SHIPPED as `task902-897-instrument-hardening`** — factory run 43, two
+> cycles. All 12 scope items landed; the row's honesty debt is retired.
+>
+> **The discipline held: NO NUMBER MOVED.** Gate (ii) was re-derived twice by an adversarial lens
+> using its OWN header-keyed parser — the second time against a `git clone` reconstruction of HEAD
+> rather than the working tree — giving **zero numeric field diffs across all 144 rows**. Every
+> rendering diff maps to a named scope item. That mattered mechanically: cycle 1 inserted a
+> `book_w(mean)` column, and a positional parser would have false-passed the whole comparison.
+>
+> **Item 2 needed no code.** Its two root causes were already closed by 897's D60 pass, verified
+> independently at both sites — the `isfinite` guard and the `tgt_pin is None` guard, both routing to
+> `status: "failed"` and dropped by the consumer, and it generalises to the public
+> `run_sweep(grid_h=…)` surface because the loop iterates the caller's own `grid_h`. No fabricated
+> work; the row says so.
+>
+> **The BLOCKER cycle 1 introduced, and the sharper thing found while fixing it.** Item 2b's
+> `except Exception` rendered a genuine internal bug in **byte-identical banner language** to a
+> legitimate refusal, and discarded the traceback entirely — strictly worse than the traceback it
+> replaced, since the standing contract is that orchestration parses the artifact and not the exit
+> code. The fix keeps a broad catch (a bare traceback writes *nothing* at `--out`, which is exactly
+> the unreadable state item 2b closed) but renders an unmistakably different artifact and captures
+> `traceback.format_exc()` on both paths. **Narrowing the `except` to a tuple turned out to be
+> illusory**: in CPython `ProgrammingError → DatabaseError → Error`, so sqlite3 API misuse — a defect
+> — cannot be excluded by any tuple that still admits "file is not a database". Hence an explicit
+> predicate plus `NOT_A_REFUSAL_DESPITE_MATCHING`. And **neither artifact quotes the other's banner
+> text**, deliberately: an orchestrator greps these files, so a cross-reference would make the two
+> kinds match each other's search strings.
+>
+> **Echo clipping went from 4 sites to all 13** (48 call sites). Measured: 1,800,148 → 4,238 chars
+> and 2,700,333 → 6,423. `write_refusal_artifact` had been echoing **all 7 grid axes** unbounded.
+> `_clip_echo` is now hardened so it cannot raise — including lone surrogates, which are legal inside
+> a `str` but raise `UnicodeEncodeError` at *write* time, so an unhardened clipper would have looked
+> fine while the refusal still died.
+>
+> **A zero-cell run is now loud**: its own banner AND exit 2. The defence against D58 is that gate
+> (ii)'s `recorded == expected` is satisfied **trivially by `0 == 0`** and provides no assurance
+> whatsoever — that is the instrument failing to act, not an honest empty result. An honest empty
+> result (cells recorded, none measured — the normal fixture state) still exits **0**, verified
+> against the real fixture.
+>
+> **NAMED REMAINDERS (both MINOR, both logged, neither blocking).**
+> (1) `test_main_does_not_exit_nonzero_on_an_honest_empty_result` still does not pin the state it
+> claims to. Cycle 2 moved its premise off the degenerate `0 == 0` case, which was right, but landed
+> on `ok == 0 / dropped == 144` — which is by the code's own taxonomy the **100%-failed** scenario.
+> The real honest-empty state is `ok == 144` with zero decisions per cell. Not a regression
+> (`exit_code_for` never reads `n_cells_ok`, and the real behaviour was verified directly), but no
+> unit test pins the actual combination and the docstring wrongly claims it does.
+> (2) Five per-cell `reason` fields remain **unclipped**. The reasoning for leaving them is sound and
+> was confirmed: they echo into the gate-(ii)-protected data table, so clipping them risks moving
+> artifact bytes inside the protected surface. Their inputs are hardcoded grid constants, not
+> operator-controlled strings. Residual: an exception whose `str()` embeds a large numpy repr could
+> bloat one cell's reason.
+>
+> **Caveat carried INTO the record, at the field itself and pinned by a test:** the fixture's 7-asset
+> universe never clears `k=16`'s `2k` floor, so **no cell of the 144-cell smoke grid ever realizes
+> `n_decisions > 0`**. The gate-(ii) fixture rerun is therefore SILENT on `realized_book_width_mean`
+> for nonzero-decision cells; only the real 64-asset leg exercises it as shipped.
+>
+> **Verification:** fail-closed ×1 + regression ×2. Suite **250 passed / 3 failed**, where the 3 are
+> pre-existing and out of scope — `test_recompute_gate.py` is unmodified and imports only the also
+> unmodified `honest_estimator`, so they cannot be this row's; I confirmed that independently rather
+> than accepting it. HEAD 215 → 253 collected, **0 tests removed**, 38 added. selftest 12/12. The
+> suite run and selftest were orchestrator-run, not taken on report.
+>
+> **Process note:** the cycle-2 fix pass died on a transient API error mid-report and was RESUMED
+> rather than re-spawned. On resume it re-established state and confirmed the cut had landed after
+> all implementation and verification, with nothing half-applied.
+
 # TASK_902 — 897 instrument hardening: pay the honesty debt deliberately, not one cycle at a time
 
 **Status**: READY 2026-08-22 (planner; seeded by D59's ruling, option (a) — the remainders of the

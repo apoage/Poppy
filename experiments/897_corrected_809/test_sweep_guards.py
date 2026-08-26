@@ -75,8 +75,11 @@ def test_protected_real_db_refuses_without_the_explicit_acknowledgement():
     with pytest.raises(SystemExit) as e:
         sw.assert_db_path_allowed(real, False)
     assert "PROTECTED read-only source of record" in str(e.value)
-    # ...and is reachable only when explicitly named AND acknowledged.
-    assert sw.assert_db_path_allowed(real, True) == real
+    # ...and is reachable only when explicitly named AND acknowledged. TASK_902 item 10 (TOCTOU
+    # fix): the guard now returns the RESOLVED path (here, the protected DB's own canonical
+    # realpath — a fixed constant) rather than echoing back the raw operator spelling, so a
+    # symlink cannot be re-targeted between this check and the caller's later open.
+    assert sw.assert_db_path_allowed(real, True) == os.path.realpath(real)
     # a relative spelling of the same file resolves to the same refusal
     with pytest.raises(SystemExit):
         sw.assert_db_path_allowed("./trading_data.db", False)
@@ -85,7 +88,8 @@ def test_protected_real_db_refuses_without_the_explicit_acknowledgement():
 def test_fixture_db_path_is_allowed():
     sw = _sweep()
     p = str(_REPO / "fixtures" / "trading_fixture.db")
-    assert sw.assert_db_path_allowed(p, False) == p
+    # TASK_902 item 10: resolved, not raw-echoed (see the protected-DB test above).
+    assert sw.assert_db_path_allowed(p, False) == os.path.realpath(p)
 
 
 # ------------------------------------------------------------ A1: the guard was URI-defeatable
@@ -302,7 +306,11 @@ def test_relative_db_path_refuses_the_protected_db_regardless_of_cwd(tmp_path, m
             sw.assert_db_path_allowed(spelling, False)
         assert "PROTECTED read-only source of record" in str(e.value)
     # ...and still reachable when explicitly acknowledged, from that same non-repo-root cwd.
-    assert sw.assert_db_path_allowed("trading_data.db", True) == "trading_data.db"
+    # TASK_902 item 10 (TOCTOU fix): the guard returns the RESOLVED path (here, the protected
+    # DB's own canonical realpath) rather than the raw "trading_data.db" spelling — see the
+    # dedicated protected-DB test above for why.
+    assert sw.assert_db_path_allowed("trading_data.db", True) == os.path.realpath(
+        str(sw.PROTECTED_REAL_DB))
 
 
 def test_relative_fixture_db_path_is_still_allowed_from_a_non_repo_root_cwd(tmp_path, monkeypatch):
@@ -312,7 +320,10 @@ def test_relative_fixture_db_path_is_still_allowed_from_a_non_repo_root_cwd(tmp_
     sw = _sweep()
     monkeypatch.chdir(tmp_path)
     rel = os.path.relpath(_REPO / "fixtures" / "trading_fixture.db", tmp_path)
-    assert sw.assert_db_path_allowed(rel, False) == rel
+    # TASK_902 item 10 (TOCTOU fix): the guard returns the RESOLVED (realpath) string, computed
+    # from the SAME cwd this check ran under, not the raw relative spelling — see the fixture/
+    # protected-DB tests above.
+    assert sw.assert_db_path_allowed(rel, False) == os.path.realpath(rel)
 
 
 @pytest.mark.parametrize("raw,needle", [
@@ -1850,6 +1861,874 @@ def test_pin_era_panel_build_failure_frees_the_panel_before_the_sweep_build(monk
     assert "pin-era PANEL BUILD failed" in meta["inherited_ic_pin_era"][5]["reason"]
     assert cells and all(c.status == "dropped" for c in cells)
     assert meta["n_cells_recorded"] == meta["n_cells_expected"]
+
+
+# ============================================================================================
+# TASK_902 — 897 instrument hardening. Items 1-12; items 2/10 are demonstrated by the EXISTING
+# D60/D59 tests above (item 2's two vacuous-pass causes were already pinned by
+# `test_pin_era_guard_refuses_an_H_that_carries_no_806_pin_instead_of_passing_vacuously` and
+# `test_pin_era_guard_failure_or_nan_drops_...`; item 10's TOCTOU fix is demonstrated by the
+# updated return-value assertions in the fixture/protected/relative `assert_db_path_allowed`
+# tests near the top of this file). Everything below is new.
+# ============================================================================================
+
+# ---------------------------------------------------------------------------------- item 1 (D58)
+
+def test_exit_code_for_flags_a_gate_ii_violation_and_clears_an_honest_empty_result():
+    """A gate-(ii) completeness violation (recorded != expected) exits non-zero; an HONEST empty
+    result (every cell accounted for, none reached "ok" -- the fixture's normal state) exits 0,
+    and so does a fully-successful run."""
+    sw = _sweep()
+    assert sw.exit_code_for({"n_cells_expected": 144, "n_cells_recorded": 100}) == 1
+    assert sw.exit_code_for({"n_cells_expected": 144, "n_cells_recorded": 144,
+                              "n_cells_ok": 0}) == 0
+    assert sw.exit_code_for({"n_cells_expected": 144, "n_cells_recorded": 144,
+                              "n_cells_ok": 144}) == 0
+
+
+def test_main_exits_nonzero_on_a_forced_gate_ii_violation(tmp_path, monkeypatch):
+    """End-to-end through `main()`: a run whose own meta fails gate (ii) must exit non-zero, and
+    the artifact is still written (D58/orchestration parses the artifact, not just the code)."""
+    sw = _sweep()
+    out = tmp_path / "violation.md"
+
+    def fake_run_sweep(**kwargs):
+        meta = _artifact_meta(n_cells=144)
+        meta["n_cells_recorded"] = 100          # forced violation: 100 != 144 expected
+        return [], meta
+
+    monkeypatch.setattr(sw, "run_sweep", fake_run_sweep)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code == 1
+    assert out.exists()
+
+
+def test_main_does_not_exit_nonzero_on_an_honest_empty_result(tmp_path, monkeypatch):
+    """The complementary direction: recorded == expected (every cell the grid promised WAS
+    recorded) with ok == 0 -- an HONEST EMPTY RESULT, the normal fixture state -- must NOT raise
+    SystemExit at all.
+
+    TASK_902 fix cycle 2, MAJOR: this test used to encode the honest-empty case as
+    `expected == recorded == 0`, which is NOT an honest empty result -- it is a run with NO CELLS
+    AT ALL, where gate (ii)'s `recorded == expected` check is satisfied trivially by `0 == 0` and
+    a degenerate grid reads as healthy. That case is now LOUD (its own banner + exit 2, see
+    `test_a_zero_cell_run_is_loud_instead_of_reading_as_healthy`). D58's honest-empty result is
+    the one pinned here: cells recorded, none measured."""
+    sw = _sweep()
+    out = tmp_path / "empty.md"
+
+    def fake_run_sweep(**kwargs):
+        meta = _artifact_meta(n_cells=144)       # expected == recorded == 144
+        meta["n_cells_ok"] = 0                   # ...and NOT ONE of them measured anything
+        meta["n_cells_dropped_or_failed"] = 144
+        return [], meta
+
+    monkeypatch.setattr(sw, "run_sweep", fake_run_sweep)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    sw.main()                    # must complete normally -- no SystemExit
+    assert out.exists()
+
+
+# --------------------------------------------------------------------------------- item 2b (D58)
+
+def test_absent_db_path_writes_a_refusal_artifact_and_exits_nonzero_instead_of_crashing(
+        tmp_path, monkeypatch):
+    """An absent/unreadable --db-path used to crash UNCAUGHT with NO artifact written at all
+    (`sqlite3.OperationalError` propagating straight out of `report_bar_frequency`, before
+    `write_artifact` was ever reachable). It must now refuse in a CONTROLLED way: a legible
+    artifact at --out, and a non-zero exit."""
+    sw = _sweep()
+    missing = tmp_path / "does_not_exist.db"
+    out = tmp_path / "refusal.md"
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", str(missing),
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code == 1
+    assert out.exists(), "no artifact was written -- the exact defect item 2b closes"
+    text = out.read_text()
+    assert "REFUSED BEFORE ANY CELL WAS MEASURED" in text
+    assert "NO CELL IN THIS ARTIFACT WAS EVER MEASURED" in text
+    assert "OperationalError" in text
+    assert "unable to open database file" in text
+    assert not missing.exists(), "a mode=ro connect must never CREATE the target file"
+
+
+def test_a_systemexit_refusal_still_propagates_unwrapped_through_the_new_except(monkeypatch):
+    """The new `except Exception` in `main()` must NOT swallow the harness's own clean
+    `SystemExit` refusals (gate (iv), `assert_db_path_allowed`, etc.) -- `SystemExit` is a
+    `BaseException`, not an `Exception`, and this pins that it is never caught here."""
+    sw = _sweep()
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "trading_data.db?x=1"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert "not a filesystem path" in str(e.value)   # the ORIGINAL clean refusal, unwrapped
+
+
+# ---------------------------------------------------------------------------------- item 2c
+
+def test_realized_book_width_is_recorded_and_the_instrumentation_cleans_up_after_itself(
+        monkeypatch):
+    """`realized_book_width_mean` is measured by scope-patching `decide._decide_step` for the
+    duration of ONE `_run_decision` call (the same rebind-the-name pattern this file already
+    uses for `decide.CFG`/`probe.sqlite3`) -- it must (a) record a sane, finite, <=k book width
+    for a cell with real decisions, and (b) leave `decide._decide_step` restored to the ORIGINAL
+    function afterward, exactly like those other scope-patches."""
+    import numpy as np
+    sw = _sweep()
+    import decide
+    orig_decide_step = decide._decide_step
+    orig_run_decision = decide._run_decision
+    _stub_897_pipeline(monkeypatch, sw)
+    # `_stub_897_pipeline` stubs `decide._run_decision` too (for OTHER tests' speed); restore the
+    # REAL engine here so the instrumentation wraps the genuine `_decide_step`.
+    monkeypatch.setattr(decide, "_run_decision", orig_run_decision)
+    # `_stub_897_pipeline`'s `_chunked_predict` stub returns all-ZERO predictions, which
+    # `_decide_step` (`p[a] > 0.0`) never treats as eligible -- no cell would ever realize a
+    # decision. Override with reliably-positive predictions so the REAL decision engine actually
+    # holds something to instrument.
+    rng = np.random.default_rng(0)
+
+    def fake_chunked_predict_nonzero(close, rows, w, mu, sd, W, chunk=20000):
+        return rng.normal(loc=1.0, scale=0.1, size=(len(rows), close.shape[1]))
+
+    monkeypatch.setattr(decide, "_chunked_predict", fake_chunked_predict_nonzero)
+
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(1,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    measured = [c for c in cells if c.status == "ok" and c.n_decisions and c.n_decisions > 0]
+    assert measured, "expected at least one cell with real decisions to demonstrate this on"
+    for c in measured:
+        assert np.isfinite(c.realized_book_width_mean)
+        assert 0.0 < c.realized_book_width_mean <= c.k + 1e-9
+    # the instrumentation cleans up after itself -- no leaked wrapper survives the run.
+    assert decide._decide_step is orig_decide_step
+
+
+def test_a_zero_decision_ok_cell_states_that_it_is_empty(tmp_path):
+    """A cell can reach `status='ok'` (not a fit/engine failure) while realizing ZERO decisions
+    (`decide._decide_step`'s `npr < (2*k if long_short else k)` empty-target floor) -- that used
+    to render indistinguishably from a real measurement. It must now say EMPTY in its own row."""
+    sw = _sweep()
+    empty_cell = sw.CellRecord(
+        window="a", H=5, k=16, variant="long_short", tau=0.9, N=0, fee_bp=8.0, adv_bp=5.0,
+        status="ok", reason="", n_bars=9000, n_decisions=0, decisions_per_year=float("nan"),
+        mean_hold_bars=float("nan"), turnover_mean=float("nan"), fill_rate=float("nan"),
+        sharpe_decision=float("nan"), ci_lo_UNCALIBRATED=float("nan"),
+        ci_hi_UNCALIBRATED=float("nan"), ci_advisory=False, ci_calibration_k=float("nan"),
+        ci_calibration_source_n_dec=-1, ci_lo_ADVISORY=float("nan"), ci_hi_ADVISORY=float("nan"),
+        block_used=-1, measured_dependence_len=float("nan"), pnl=float("nan"),
+        maxdd=float("nan"), sharpe_per_bar_diagnostic=float("nan"),
+        realized_book_width_mean=0.0,
+    )
+    measured_cell = sw.CellRecord(
+        window="a", H=5, k=16, variant="long_short", tau=0.9, N=0, fee_bp=8.0, adv_bp=5.0,
+        status="ok", reason="", n_bars=9000, n_decisions=50, decisions_per_year=1000.0,
+        mean_hold_bars=3.0, turnover_mean=0.03, fill_rate=0.5, sharpe_decision=1.2,
+        ci_lo_UNCALIBRATED=0.4, ci_hi_UNCALIBRATED=2.0, ci_advisory=False,
+        ci_calibration_k=float("nan"), ci_calibration_source_n_dec=-1,
+        ci_lo_ADVISORY=float("nan"), ci_hi_ADVISORY=float("nan"), block_used=-1,
+        measured_dependence_len=float("nan"), pnl=0.01, maxdd=-0.02,
+        sharpe_per_bar_diagnostic=5.0, realized_book_width_mean=3.5,
+    )
+    out = tmp_path / "r.md"
+    sw.write_artifact([empty_cell, measured_cell], _artifact_meta(n_cells=2), out)
+    rows = [ln for ln in out.read_text().splitlines() if ln.startswith("| a | 5 | 16 |")]
+    assert len(rows) == 2
+    empty_row = [r for r in rows if r.split("|")[11].strip() == "0"][0]     # n_dec column == 0
+    other_row = [r for r in rows if r.split("|")[11].strip() == "50"][0]
+    assert "EMPTY (0 decisions" in empty_row
+    assert "EMPTY" not in other_row
+    assert "3.50" in other_row       # realized_book_width_mean rendered in the new column
+
+
+# ------------------------------------------------------------------------------------- item 3
+
+def test_borrowed_pairing_table_renders_its_own_reason_column(tmp_path):
+    """The borrowed-pairing table used to render no `reason` column even though pairing 639
+    CANNOT REPRODUCE by construction and `calibration.py` already carries a rich `reason` string
+    for it -- the per-stratum table right beside it had a `reason` column, this one did not."""
+    sw = _sweep()
+    out = tmp_path / "r.md"
+    sw.write_artifact([], _artifact_meta(n_cells=0), out)
+    lines = out.read_text().splitlines()
+    header_idx = [i for i, ln in enumerate(lines)
+                  if ln.startswith("  | n_dec (borrower)")][0]
+    assert "reason" in lines[header_idx]
+    # There is ANOTHER table earlier in the artifact (the seed-jitter demotion narrative) whose
+    # rows also start with "  | 639 |" -- restrict the search to lines AFTER this table's own
+    # header so this test cannot accidentally match that other table.
+    row_639 = [ln for ln in lines[header_idx:] if ln.startswith("  | 639 |")][0]
+    assert "BORROWED-PAIRING FAILURE" in row_639
+
+
+# ------------------------------------------------------------------------------------- item 4
+
+def test_scope_honesty_prose_states_no_pass_rate_on_an_unmeasured_run(tmp_path):
+    """The Scope-honesty section used to assert an UNCONDITIONAL 'near-100% pass rate' even on a
+    run that measured NO pass rate at all (e.g. the empty fixture run) -- a specific numeric
+    claim that run does not back."""
+    sw = _sweep()
+    out = tmp_path / "empty.md"
+    sw.write_artifact([], _artifact_meta(n_cells=0), out)
+    text = out.read_text()
+    assert "near-100% pass rate" not in text
+    assert "recorded NO measured pass rate at all" in text
+
+
+def test_scope_honesty_prose_states_the_real_pass_rate_when_one_exists(tmp_path):
+    sw = _sweep()
+
+    def _cell(dep):
+        return sw.CellRecord(
+            window="a", H=5, k=16, variant="long_short", tau=0.9, N=0, fee_bp=8.0, adv_bp=5.0,
+            status="ok", reason="", n_bars=9000, n_decisions=3000, decisions_per_year=1000.0,
+            mean_hold_bars=3.0, turnover_mean=0.03, fill_rate=0.5, sharpe_decision=1.2,
+            ci_lo_UNCALIBRATED=0.4, ci_hi_UNCALIBRATED=2.0, ci_advisory=False,
+            ci_calibration_k=float("nan"), ci_calibration_source_n_dec=-1,
+            ci_lo_ADVISORY=float("nan"), ci_hi_ADVISORY=float("nan"),
+            block_used=60, measured_dependence_len=dep,
+            pnl=0.01, maxdd=-0.02, sharpe_per_bar_diagnostic=5.0)
+
+    cells = [_cell(12.0), _cell(480.0)]     # one passes (12<=60), one refused (480>60)
+    out = tmp_path / "r.md"
+    sw.write_artifact(cells, _artifact_meta(n_cells=2), out)
+    text = out.read_text()
+    assert ("this artifact's 1/2 pass rate on the ok cells the guard ran on is NOT evidence"
+            in text)
+
+
+# ------------------------------------------------------------------------------------- item 5
+
+def test_dep_le_block_column_renders_not_run_distinctly_from_false(tmp_path):
+    """A cell the dependence guard never ran on (too few decisions for any interval to exist)
+    must render `not-run` in the `dep<=block` column, not a bare `False` -- which used to read
+    as a MEASUREMENT (the guard ran and refused) rather than an absence of one."""
+    sw = _sweep()
+
+    def _cell(n_dec, block, dep):
+        return sw.CellRecord(
+            window="a", H=5, k=16, variant="long_short", tau=0.9, N=0, fee_bp=8.0, adv_bp=5.0,
+            status="ok", reason="", n_bars=9000, n_decisions=n_dec, decisions_per_year=1000.0,
+            mean_hold_bars=3.0, turnover_mean=0.03, fill_rate=0.5,
+            sharpe_decision=1.2 if n_dec else float("nan"),
+            ci_lo_UNCALIBRATED=0.4 if n_dec else float("nan"),
+            ci_hi_UNCALIBRATED=2.0 if n_dec else float("nan"), ci_advisory=False,
+            ci_calibration_k=float("nan"), ci_calibration_source_n_dec=-1,
+            ci_lo_ADVISORY=float("nan"), ci_hi_ADVISORY=float("nan"),
+            block_used=block, measured_dependence_len=dep,
+            pnl=0.01, maxdd=-0.02, sharpe_per_bar_diagnostic=5.0)
+
+    no_ci_cell = _cell(0, -1, float("nan"))       # DEP_NO_CI: guard never ran
+    refused_cell = _cell(3000, 60, 480.0)         # DEP_REFUSED: guard ran, refused
+    out = tmp_path / "r.md"
+    sw.write_artifact([no_ci_cell, refused_cell], _artifact_meta(n_cells=2), out)
+    rows = [ln for ln in out.read_text().splitlines() if ln.startswith("| a | 5 | 16 |")]
+    assert len(rows) == 2
+    no_ci_row = [r for r in rows if "no CI computed" in r][0]
+    refused_row = [r for r in rows if "REFUSED ON DEPENDENCE" in r][0]
+    assert "| not-run |" in no_ci_row
+    assert "| not-run |" not in refused_row
+    assert "| False |" in refused_row
+
+
+# ------------------------------------------------------------------------------------- item 6
+
+def test_a_100_percent_failed_run_gets_a_top_level_banner(tmp_path):
+    """A 0-decision run (every `ok` cell had zero decisions) gets a large banner; a run where
+    every cell's decision engine or upstream guard FAILED (no cell ever reached `status="ok"`)
+    used to get none. Both must now get a top-level statement, and they must not be conflated."""
+    sw = _sweep()
+    dropped_cell = sw.CellRecord(
+        window="a", H=5, k=16, variant="long_short", tau=0.9, N=0, fee_bp=8.0, adv_bp=5.0,
+        status="dropped", reason="pin-era inherited-IC GUARD FAILED", n_bars=0, n_decisions=0,
+        decisions_per_year=float("nan"), mean_hold_bars=float("nan"), turnover_mean=float("nan"),
+        fill_rate=float("nan"), sharpe_decision=float("nan"), ci_lo_UNCALIBRATED=float("nan"),
+        ci_hi_UNCALIBRATED=float("nan"), ci_advisory=False, ci_calibration_k=float("nan"),
+        ci_calibration_source_n_dec=-1, ci_lo_ADVISORY=float("nan"), ci_hi_ADVISORY=float("nan"),
+        block_used=-1, measured_dependence_len=float("nan"), pnl=float("nan"),
+        maxdd=float("nan"), sharpe_per_bar_diagnostic=float("nan"),
+    )
+    out = tmp_path / "r.md"
+    meta = _artifact_meta(n_cells=1)
+    meta["n_cells_ok"] = 0
+    meta["n_cells_dropped_or_failed"] = 1
+    sw.write_artifact([dropped_cell], meta, out)
+    text = out.read_text()
+    assert "EVERY CELL FAILED" in text
+    assert "THIS ARTIFACT CONTAINS NO `ok` CELL AT ALL" in text
+    assert "NO DECISIONS IN THIS RUN" not in text   # the OTHER banner must not also fire
+
+
+# ------------------------------------------------------------------------------------- item 7
+
+def test_out_default_points_into_the_untracked_runs_tree(monkeypatch, tmp_path):
+    """A bare run (no --out) must default into the UNTRACKED runs/ tree, never into the tracked
+    experiments/897_corrected_809/ directory it used to write into by default."""
+    import subprocess
+    sw = _sweep()
+    captured = {}
+
+    def fake_run_sweep(**kwargs):
+        # n_cells=144, not 0: a zero-cell run is now a LOUD non-zero exit (fix cycle 2, MAJOR),
+        # and this test is about the DEFAULT --out path, not about the exit-code contract.
+        return [], _artifact_meta(n_cells=144)
+
+    def fake_write_artifact(cells, meta, path):
+        captured["path"] = path
+
+    monkeypatch.setattr(sw, "run_sweep", fake_run_sweep)
+    monkeypatch.setattr(sw, "write_artifact", fake_write_artifact)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--smoke"])
+    sw.main()
+    assert "path" in captured
+    default_out = captured["path"]
+    assert "experiments/897_corrected_809" not in str(default_out)
+    assert str(default_out) == str(_REPO / "runs" / "897_corrected_809" / "result.md")
+    res = subprocess.run(["git", "check-ignore", "-q", str(default_out)], cwd=str(_REPO))
+    assert res.returncode == 0, f"{default_out} is NOT gitignored -- item 7 is not actually safe"
+
+
+# ------------------------------------------------------------------------------------- item 8
+
+def test_dependence_refusal_oc_grid_gap_is_disclosed(tmp_path):
+    """`MEASURED_DEPENDENCE_REFUSAL_OC` only discloses dependence multiples {0,1,2,4,8}x; the
+    known worse intermediate point (1.5x, 8-13% certify at 0.905 coverage) is now named
+    explicitly rather than silently absent from the grid."""
+    sw = _sweep()
+    out = tmp_path / "r.md"
+    sw.write_artifact([], _artifact_meta(n_cells=0), out)
+    text = out.read_text()
+    assert "1.5x the guard certifies" in text
+    assert "8-13%" in text
+    assert "{0, 1, 2, 4, 8}x the block ONLY" in text
+
+
+# ------------------------------------------------------------------------------------- item 9
+
+def test_run_sweep_itself_refuses_the_protected_db_without_the_acknowledgement():
+    """`assert_db_path_allowed` used to be bound ONLY in `main()`; a PROGRAMMATIC caller of
+    `run_sweep` (the reuse surface D60 points the 898-class decay work at) could reach the
+    protected DB without ever passing the acknowledgement flag. Bind it in `run_sweep` too."""
+    sw = _sweep()
+    real = str(sw.PROTECTED_REAL_DB)
+    with pytest.raises(SystemExit) as e:
+        sw.run_sweep(attainable_maker_fee_bp=[8.0], db_path=real)
+    assert "PROTECTED read-only source of record" in str(e.value)
+
+
+def test_run_sweep_accepts_the_protected_db_when_acknowledged(monkeypatch):
+    """The complementary direction, fully stubbed so no real file is ever touched (every
+    DB-touching call `_stub_897_pipeline` intercepts is monkeypatched to a synthetic generator
+    regardless of `cfg.db_path`'s value): the acknowledgement flag DOES reach `run_sweep`'s own
+    internal gate (not just `main()`'s), and once passed, the run proceeds normally -- while the
+    SAME call without it still refuses, everything else held identical."""
+    sw = _sweep()
+    _stub_897_pipeline(monkeypatch, sw)
+    real = str(sw.PROTECTED_REAL_DB)
+    kwargs = dict(
+        attainable_maker_fee_bp=[8.0], db_path=real,
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(16,), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    with pytest.raises(SystemExit):
+        sw.run_sweep(**kwargs)                                    # not acknowledged -> refuses
+    cells, meta = sw.run_sweep(scheduled_real_data_run=True, **kwargs)   # acknowledged -> proceeds
+    assert meta["n_cells_recorded"] == meta["n_cells_expected"]
+
+
+# ------------------------------------------------------------------------------------ item 11
+
+def test_db_path_refusal_echo_is_clipped():
+    """A huge --db-path used to be echoed VERBATIM into the refusal message (measured: a
+    900k-char --db-path produced a 900k-char refusal). Uses the URI-syntax refusal path
+    specifically, which never touches the filesystem (no realpath/stat calls), so this test
+    cannot be flaky on OS path-length limits."""
+    sw = _sweep()
+    huge = "a" * 900_000 + "?x=1"
+    with pytest.raises(SystemExit) as e:
+        sw.assert_db_path_allowed(huge, False)
+    msg = str(e.value)
+    assert len(msg) < 5000, f"refusal message is {len(msg)} chars -- not clipped"
+    assert "aaaa" in msg              # the value is still visibly named, not replaced outright
+    assert "CLIPPED" in msg
+
+
+def test_clip_echo_unit():
+    sw = _sweep()
+    assert sw._clip_echo("short") == "short"
+    long_s = "b" * 5000
+    clipped = sw._clip_echo(long_s)
+    assert len(clipped) < len(long_s)
+    assert clipped.startswith("b" * sw.ECHO_CLIP_LEN)
+    assert "CLIPPED" in clipped and "5000 total" in clipped
+
+
+# ------------------------------------------------------------------------------------ item 12
+
+def test_grid_coverage_label_distinguishes_smoke_full_and_custom(tmp_path):
+    """The artifact must state WHICH pre-registered grid ran -- smoke is normally 144 cells, the
+    full pre-registered grid is normally 864, and a bare cell count must never be readable as
+    full coverage on its own."""
+    sw = _sweep()
+
+    smoke_meta = _artifact_meta(n_cells=0)
+    smoke_meta["grid"] = {"H": list(sw.SMOKE_GRID_H), "k": list(sw.SMOKE_GRID_K),
+                           "variant": list(sw.SMOKE_GRID_VARIANT),
+                           "tau": list(sw.SMOKE_GRID_TAU), "N": list(sw.SMOKE_GRID_N)}
+    out1 = tmp_path / "smoke.md"
+    sw.write_artifact([], smoke_meta, out1)
+    assert "**SMOKE** grid" in out1.read_text()
+
+    full_meta = _artifact_meta(n_cells=0)
+    full_meta["grid"] = {"H": list(sw.GRID_H), "k": list(sw.GRID_K),
+                          "variant": list(sw.GRID_VARIANT), "tau": list(sw.GRID_TAU),
+                          "N": list(sw.GRID_N)}
+    out2 = tmp_path / "full.md"
+    sw.write_artifact([], full_meta, out2)
+    assert "**FULL** grid" in out2.read_text()
+
+    custom_meta = _artifact_meta(n_cells=0)      # grid = {"H": [5]} only, from the helper
+    out3 = tmp_path / "custom.md"
+    sw.write_artifact([], custom_meta, out3)
+    assert "**CUSTOM** grid" in out3.read_text()
+
+
+# ============================================================================================
+# TASK_902 FIX CYCLE 2 — the findings from the two verification lenses on the first cycle.
+# ============================================================================================
+
+# ------------------------------------------------------- BLOCKER: refusal vs DEFECT, + traceback
+
+_INJECTED_BUGS = [
+    KeyError("nonexistent_key"),
+    TypeError("unsupported operand type(s) for +: 'NoneType' and 'int'"),
+]
+
+
+@pytest.mark.parametrize("injected", _INJECTED_BUGS, ids=["KeyError", "TypeError"])
+def test_an_arbitrary_bug_renders_as_a_DEFECT_never_as_a_governed_refusal(
+        tmp_path, monkeypatch, capsys, injected):
+    """THE BLOCKER. `main()`'s single `except Exception` rendered EVERY escape from `run_sweep` as
+    the item-2b CONTROLLED REFUSAL artifact, in byte-identical prose: an injected `KeyError` or
+    `TypeError` in `probe.report_bar_frequency` (an unrelated code defect, NOT a refusal
+    condition) produced a file titled `REFUSED BEFORE ANY CELL WAS MEASURED` with exit 1, so a
+    shipped bug and a missing DB were indistinguishable to the operator AND to the orchestrator
+    (whose standing contract is to parse the artifact, never the exit code alone). Before item 2b
+    the same bug produced a loud uncaught traceback -- strictly more diagnosable -- so the fix had
+    made this failure mode worse. And `traceback.format_exc()` was called NOWHERE in the module,
+    so the stack was destroyed and logged nowhere.
+
+    Both halves are pinned here: the DEFECT shape, and the traceback surviving in the artifact AND
+    on stderr. No test covered this path at all before (the only item-2b test uses the DB-not-found
+    case, which *reads* like a real refusal), which is how the gap shipped green."""
+    sw = _sweep()
+    import probe
+    out = tmp_path / "defect.md"
+
+    def boom(cfg):
+        raise injected
+
+    monkeypatch.setattr(probe, "report_bar_frequency", boom)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code == 1
+    assert out.exists(), "an artifact must still be written -- item 2b's contract"
+    text = out.read_text()
+    # (a) DEFECT-shaped...
+    assert "UNEXPECTED INTERNAL ERROR" in text
+    assert "A DEFECT, NOT A GOVERNED REFUSAL" in text
+    assert "THIS IS A DEFECT IN THE INSTRUMENT" in text
+    # (b) ...and NOT refusal-shaped. These are the exact strings an orchestrator greps for; the
+    # two artifacts deliberately never quote each other's banner text.
+    assert "REFUSED BEFORE ANY CELL WAS MEASURED" not in text
+    assert "CONTROLLED REFUSAL record" not in text
+    assert "NO CELL IN THIS ARTIFACT WAS EVER MEASURED" not in text
+    # (c) the traceback is NOT destroyed -- in the artifact...
+    assert "Traceback (most recent call last)" in text
+    assert type(injected).__name__ in text
+    assert "report_bar_frequency" in text, "the failing call site must be visible"
+    # ...and on stderr, so an operator sees it without opening the file.
+    err = capsys.readouterr().err
+    assert "UNEXPECTED INTERNAL ERROR" in err
+    assert "Traceback (most recent call last)" in err
+
+
+def test_a_governed_gate_refusal_still_renders_as_a_controlled_refusal(tmp_path, monkeypatch):
+    """The complementary direction of the BLOCKER: a GOVERNED refusal (here gate (iv)'s
+    attainable-tier subset check, which raises `GateRefusal` from inside `run_sweep`) must still
+    produce the item-2b CONTROLLED REFUSAL artifact -- narrowing the `except` must not have turned
+    a designed refusal into a 'defect'."""
+    sw = _sweep()
+    out = tmp_path / "refusal.md"
+    # 10 bp is not in the smoke fee grid (0, 8, 16) -> gate (iv)'s subset refusal, raised before
+    # any data is touched.
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "10", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code == 1
+    text = out.read_text()
+    assert text.splitlines()[0].startswith(
+        "# TASK_897 -- gated_maker sweep artifact -- REFUSED BEFORE ANY CELL WAS MEASURED")
+    assert "CONTROLLED REFUSAL record" in text
+    assert "A GOVERNED REFUSAL" in text
+    assert "GateRefusal" in text
+    assert "GATE (iv) REFUSAL" in text
+    # NOT defect-shaped: neither artifact quotes the other's banner.
+    assert "UNEXPECTED INTERNAL ERROR" not in text
+    assert "THIS IS A DEFECT IN THE INSTRUMENT" not in text
+
+
+def test_gate_refusal_is_a_valueerror_subclass_so_existing_callers_are_unaffected():
+    """`GateRefusal` narrows the TYPE of this harness's own gate refusals so they can be told
+    apart from a stdlib/numpy `ValueError` raised by a real bug -- but it subclasses `ValueError`,
+    so every existing caller and test that catches `ValueError` from `run_sweep` still works."""
+    sw = _sweep()
+    assert issubclass(sw.GateRefusal, ValueError)
+    assert sw.GateRefusal in sw.REFUSAL_EXCEPTIONS
+    import sqlite3 as _sq
+    assert _sq.DatabaseError in sw.REFUSAL_EXCEPTIONS and OSError in sw.REFUSAL_EXCEPTIONS
+    # The whole taxonomy, through the ONE predicate `main()` uses.
+    assert sw._is_governed_refusal(sw.GateRefusal("gate (iv)"))
+    # The missing-DB case (item 2b's own test): OperationalError is a DatabaseError.
+    assert sw._is_governed_refusal(_sq.OperationalError("unable to open database file"))
+    assert sw._is_governed_refusal(_sq.DatabaseError("file is not a database"))
+    assert sw._is_governed_refusal(FileNotFoundError("no such file"))
+    # A plain ValueError is NOT a governed refusal: it is the single most common way a real bug
+    # (numpy shape mismatch, int() of garbage) surfaces, so it must render as a defect.
+    assert not sw._is_governed_refusal(ValueError("x"))
+    assert not sw._is_governed_refusal(KeyError("nonexistent_key"))
+    assert not sw._is_governed_refusal(TypeError("NoneType + int"))
+    # ...and sqlite3 API MISUSE is a DEFECT even though CPython makes `ProgrammingError` a
+    # SUBCLASS of `DatabaseError` -- narrowing the tuple alone could not have excluded it, which
+    # is exactly why the discrimination is a predicate and not just an `except` tuple.
+    assert issubclass(_sq.ProgrammingError, _sq.DatabaseError)
+    assert not sw._is_governed_refusal(_sq.ProgrammingError("bad API use"))
+
+
+@pytest.mark.parametrize("base_exc", [SystemExit("clean refusal"), KeyboardInterrupt()],
+                          ids=["SystemExit", "KeyboardInterrupt"])
+def test_baseexceptions_pass_through_unwrapped_and_write_no_artifact(
+        tmp_path, monkeypatch, base_exc):
+    """`SystemExit` (every clean refusal in this file) and `KeyboardInterrupt` are
+    `BaseException`, not `Exception`, so NEITHER handler in `main()` may see them: they propagate
+    unwrapped and write no artifact of either kind. Pinned because the BLOCKER fix touched exactly
+    that `except` structure."""
+    sw = _sweep()
+    import probe
+    out = tmp_path / "never_written.md"
+
+    def boom(cfg):
+        raise base_exc
+
+    monkeypatch.setattr(probe, "report_bar_frequency", boom)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    with pytest.raises(type(base_exc)):
+        sw.main()
+    assert not out.exists(), "a BaseException must not be wrapped into an artifact"
+
+
+# --------------------------------------------------- MINOR 2: the double fault must still speak
+
+def test_a_double_fault_writing_the_refusal_artifact_still_reaches_the_operator(
+        tmp_path, capsys):
+    """`write_refusal_artifact`'s own `path.parent.mkdir()` was unguarded and OUTSIDE `main()`'s
+    `except`: `--out <plainfile>/result.md` raises `FileExistsError` there, so NO artifact was
+    written at all and the original refusal was buried behind an unrelated traceback -- reviving
+    the exact 'traceback, exit 1, nothing to parse' state item 2b closed."""
+    sw = _sweep()
+    plain = tmp_path / "not_a_dir"
+    plain.write_text("i am a file\n")
+    out = plain / "result.md"           # parent is an existing PLAIN FILE
+    sw.write_refusal_artifact(out, "OperationalError: unable to open database file",
+                               "fixtures/trading_fixture.db", [8.0],
+                               (("a", "2024-11-01", "2025-04-01"),), (5,), (16,),
+                               ("long_only",), (0.75,), (0,))
+    assert not out.exists()
+    err = capsys.readouterr().err
+    assert "DOUBLE FAULT" in err
+    assert "FileExistsError" in err or "NotADirectoryError" in err
+    # the record itself is not lost -- the whole artifact body goes to stderr
+    assert "REFUSED BEFORE ANY CELL WAS MEASURED" in err
+    assert "unable to open database file" in err
+    assert "NOTHING WAS WRITTEN AT --out" in err
+
+
+def test_a_double_fault_end_to_end_through_main_still_exits_cleanly(tmp_path, monkeypatch, capsys):
+    """The same double fault, reached the way an operator would reach it: a missing --db-path
+    (governed refusal) AND an --out whose parent is a plain file. `main()` must still exit 1 with
+    a legible stderr record, never a raw `FileExistsError` traceback out of the handler."""
+    sw = _sweep()
+    plain = tmp_path / "not_a_dir"
+    plain.write_text("i am a file\n")
+    out = plain / "result.md"
+    missing = tmp_path / "does_not_exist.db"
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", str(missing),
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code == 1
+    err = capsys.readouterr().err
+    assert "DOUBLE FAULT" in err
+    assert "unable to open database file" in err
+
+
+# ------------------------------------------------- MAJOR: every echoing refusal site is clipped
+
+_HUGE = "a" * 900_000
+
+
+def test_every_echoing_refusal_site_is_clipped():
+    """`_clip_echo` reached only 4 of the >=11 echoing sites after fix cycle 1. Measured before
+    this fix: a 900,000-char `--attainable-maker-fee-bp` produced a 1,800,148-char `SystemExit`
+    (the value echoed TWICE per message) and a 900,000-char `--window-a` produced 2,700,344 chars
+    (THREE times) -- both LARGER than the 900k->1.6M TASK_888 defect item 11 cites as its own
+    precedent. Every echoing refusal in the module is exercised here, by name."""
+    sw = _sweep()
+    checked = []
+
+    def _refuses_clipped(label, marker, fn, *a, exc_type=SystemExit):
+        """`marker` is a short prefix of the offending value: a clipped echo must still NAME the
+        value it rejected (item 11's rule -- a real prefix, never a placeholder)."""
+        with pytest.raises(exc_type) as e:
+            fn(*a)
+        msg = str(e.value)
+        assert len(msg) < 20_000, f"{label}: refusal message is {len(msg)} chars -- not clipped"
+        assert "CLIPPED" in msg, f"{label}: nothing was clipped"
+        assert marker in msg, f"{label}: the value is no longer identifiably named"
+        checked.append(label)
+
+    # parse_fee_tiers -- 4 echoing refusals
+    _refuses_clipped("fee: separators only", ",,,,", sw.parse_fee_tiers, "," * 900_000)
+    _refuses_clipped("fee: not a number", "aaaa", sw.parse_fee_tiers, _HUGE)
+    _refuses_clipped("fee: not finite", "aaaa", sw.parse_fee_tiers, "nan," + _HUGE + ",8")
+    _refuses_clipped("fee: negative", "aaaa", sw.parse_fee_tiers, "-1," + _HUGE + ",8")
+    # _parse_window -- 3 echoing refusals (the third, the INVERTED-window one, cannot carry a huge
+    # echo at all: it is only reachable once BOTH bounds have parsed as ISO dates, so its echoes
+    # are bounded by construction. Clipped anyway, for uniformity.)
+    _refuses_clipped("window: not START,END", "aaaa", sw._parse_window, "--window-a", _HUGE)
+    _refuses_clipped("window: not an ISO date", "aaaa", sw._parse_window, "--window-a",
+                      _HUGE + ",x")
+    # assert_db_path_allowed -- 2 echoing refusals (already clipped in cycle 1; re-pinned)
+    _refuses_clipped("db-path: URI syntax", "aaaa",
+                      lambda p: sw.assert_db_path_allowed(p, False), _HUGE + "?x=1")
+    # run_sweep gate (iv) -- the attainable-tier subset refusal echoes two SEQUENCES, unbounded
+    # through the public API.
+    _refuses_clipped("gate iv: tier not in grid", "1.0,",
+                      lambda: sw.run_sweep(attainable_maker_fee_bp=[float(i) for i in range(4000)],
+                                            db_path="fixtures/trading_fixture.db"),
+                      exc_type=sw.GateRefusal)
+    assert len(checked) == 8, checked
+
+
+def test_the_fee_tier_refusal_is_not_larger_than_its_own_input():
+    """The specific measured regression: the echo used to MULTIPLY the input (1.8M chars out of a
+    900k-char input, because `raw` is echoed twice per message)."""
+    sw = _sweep()
+    with pytest.raises(SystemExit) as e:
+        sw.parse_fee_tiers(_HUGE)
+    assert len(str(e.value)) < len(_HUGE) / 100
+
+
+def test_window_refusal_is_not_larger_than_its_own_input():
+    sw = _sweep()
+    with pytest.raises(SystemExit) as e:
+        sw._parse_window("--window-a", _HUGE + ",x")
+    assert len(str(e.value)) < len(_HUGE) / 100
+
+
+def test_the_refusal_and_defect_artifacts_clip_their_sequence_echoes(tmp_path):
+    """Both failure artifacts echo caller-supplied SEQUENCES (tiers, windows, every grid axis),
+    which are unbounded through the public API -- e.g. `run_sweep(grid_h=range(10**6))`."""
+    sw = _sweep()
+    big_axis = tuple(range(200_000))
+    for name, writer, extra in (("refusal", sw.write_refusal_artifact, ()),
+                                 ("defect", sw.write_internal_error_artifact,
+                                  ("Traceback (most recent call last): ...",))):
+        out = tmp_path / f"{name}.md"
+        writer(out, "reason: " + _HUGE, *extra, _HUGE,
+               [float(i) for i in range(50_000)],
+               (("a", "2024-11-01", "2025-04-01"),), big_axis, (16,), ("long_only",), (0.75,), (0,))
+        text = out.read_text()
+        assert len(text) < 60_000, f"{name} artifact is {len(text)} chars -- echoes unclipped"
+        assert "CLIPPED" in text
+
+
+def test_clip_echo_cannot_raise_on_hostile_input():
+    """A clipper that raises inside a refusal path turns a clean refusal into a traceback -- the
+    whole failure class this module is closing. Non-str, None, bytes, a broken `__str__`, and lone
+    SURROGATES (legal in a `str`, but `UnicodeEncodeError` the moment the message is written to a
+    file or stderr) must all be survivable."""
+    sw = _sweep()
+
+    class _Hostile:
+        def __str__(self):
+            raise RuntimeError("no string for you")
+
+    assert sw._clip_echo(None) == "None"
+    assert sw._clip_echo(17) == "17"
+    assert sw._clip_echo(b"bytes") == "b'bytes'"
+    assert sw._clip_echo([1, 2, 3]) == "[1, 2, 3]"
+    assert "unprintable _Hostile" in sw._clip_echo(_Hostile())
+    assert sw._clip_echo(float("nan")) == "nan"
+    # a lone surrogate survives clipping AND is safe to write out afterwards
+    surrogate = "bad\udcff" + "a" * 5000
+    clipped = sw._clip_echo(surrogate)
+    assert "CLIPPED" in clipped
+    clipped.encode("utf-8")          # would raise UnicodeEncodeError if surrogates survived
+    # well-formed non-ASCII round-trips untouched
+    assert sw._clip_echo("héllo — ✓") == "héllo — ✓"
+
+
+# ------------------------------------------- MAJOR: a zero-cell run must be loud, not "healthy"
+
+def test_a_zero_cell_run_is_loud_instead_of_reading_as_healthy(monkeypatch, tmp_path):
+    """`run_sweep(grid_k=())` is API-reachable (not CLI-reachable -- the same surface item 2's
+    second root cause lived on) and produced `n_cells_expected == n_cells_recorded ==
+    n_cells_ok == 0` with `len(cells) == 0`. Every loud path missed it: gate (ii)'s completeness
+    check is satisfied TRIVIALLY by `0 == 0`, `no_measurement` needs `bool(n_ok)` (False),
+    `all_cells_failed` needs `n_cells_total > 0` (False), and `exit_code_for` returned 0. A
+    degenerate run read as healthy from top to bottom. It must now carry its OWN banner and exit
+    non-zero -- while a genuine HONEST EMPTY result (cells recorded, none measured: D58's
+    protected case, the normal fixture state) still exits 0."""
+    sw = _sweep()
+    _stub_897_pipeline(monkeypatch, sw)
+    cells, meta = sw.run_sweep(
+        attainable_maker_fee_bp=[8.0], db_path="fixtures/trading_fixture.db",
+        train_start="2024-01-01", val_start="2024-01-03", windows=_D60_SWEEP_WINDOWS,
+        grid_h=(5,), grid_k=(), grid_variant=("long_only",), grid_tau=(0.75,), grid_n=(0,),
+        grid_fee_bp=(8.0,), grid_adv_bp=(0.0,), n_boot=5,
+    )
+    # the degenerate state, reproduced exactly as reported
+    assert len(cells) == 0
+    assert meta["n_cells_expected"] == 0 and meta["n_cells_recorded"] == 0
+    assert meta["n_cells_ok"] == 0
+    # ...is now LOUD in both channels
+    assert sw.exit_code_for(meta) != 0
+    out = tmp_path / "zero.md"
+    sw.write_artifact(cells, meta, out)
+    text = out.read_text()
+    assert "ZERO CELLS" in text
+    assert "THE GRID ITSELF WAS EMPTY" in text
+    assert "satisfied trivially by `0 == 0`" in text.replace("**", "")
+    # and it is NOT conflated with either of the other two banners
+    assert "EVERY CELL FAILED" not in text
+    assert "NO DECISIONS IN THIS RUN" not in text
+
+
+def test_exit_code_separates_a_zero_cell_run_from_an_honest_empty_one():
+    """D58's line, drawn explicitly: cells recorded + none measured = HONEST EMPTY = exit 0 (a
+    non-zero code there would fire on every fixture run and train operators to ignore it); NO
+    cells at all = the instrument did nothing = non-zero."""
+    sw = _sweep()
+    assert sw.exit_code_for({"n_cells_expected": 144, "n_cells_recorded": 144,
+                              "n_cells_ok": 0}) == 0        # honest empty -- unchanged
+    assert sw.exit_code_for({"n_cells_expected": 0, "n_cells_recorded": 0,
+                              "n_cells_ok": 0}) != 0        # zero-cell -- now loud
+    assert sw.exit_code_for({"n_cells_expected": 144, "n_cells_recorded": 100}) == 1
+
+
+def test_main_exits_nonzero_on_a_zero_cell_run(tmp_path, monkeypatch, capsys):
+    """End-to-end through `main()`, and the artifact is still written (orchestration parses the
+    artifact, not just the code)."""
+    sw = _sweep()
+    out = tmp_path / "zero.md"
+
+    def fake_run_sweep(**kwargs):
+        return [], _artifact_meta(n_cells=0)
+
+    monkeypatch.setattr(sw, "run_sweep", fake_run_sweep)
+    monkeypatch.setattr(sys, "argv", [
+        "prog", "--attainable-maker-fee-bp", "8", "--db-path", "fixtures/trading_fixture.db",
+        "--out", str(out), "--smoke"])
+    with pytest.raises(SystemExit) as e:
+        sw.main()
+    assert e.value.code != 0
+    assert "ZERO CELLS" in out.read_text()
+    assert "ZERO CELLS" in capsys.readouterr().err
+
+
+# -------------------------------------- MINOR 1: the protected-DB acknowledgement is keyword-only
+
+def test_scheduled_real_data_run_is_keyword_only():
+    """D57's bar is that the acknowledgement flag reflects EXPLICIT operator intent, never an
+    accident. It was the 16th positional-or-keyword parameter of `run_sweep` -- and this very
+    hardening row appended it there, which is exactly how a future parameter insertion above it
+    would silently shift a positional argument into it and grant protected-DB access nobody asked
+    for. It (and every other flag past the `*`) is keyword-only now."""
+    import inspect
+    sw = _sweep()
+    params = inspect.signature(sw.run_sweep).parameters
+    for name in ("scheduled_real_data_run", "verify_inherited_ic", "seed", "n_boot"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+    # nothing positional can reach it: the positional tail ends at grid_adv_bp
+    positional = [n for n, p in params.items()
+                  if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD]
+    assert positional[-1] == "grid_adv_bp"
+    with pytest.raises(TypeError):
+        # 12 positional args (the whole remaining tail) + 2 more: the 13th USED to land on `seed`
+        # and one insertion above would have been enough for one to land on the acknowledgement
+        # flag. Now every one of them is rejected.
+        sw.run_sweep([8.0], "fixtures/trading_fixture.db", "2023-05-16", "2024-06-01",
+                      sw.REAL_WINDOWS, (5,), (16,), ("long_only",), (0.75,), (0,), (8.0,), (0.0,),
+                      897, True)
+
+
+# ------------------------------- MINOR 3: the module-global monkeypatch non-reentrancy is stated
+
+def test_the_monkeypatch_nonreentrancy_is_documented_at_every_patch_site_and_in_run_sweep():
+    """Item 2c's `decide._decide_step` patch joins `decide.CFG`, `probe.sqlite3` and
+    `backtest.SIGNAL_806_IC_FULL`; none is thread-safe, so a concurrent `run_sweep` (the 898-class
+    reuse surface this instrument is pointed at) would interleave the save/restore pairs and could
+    leave a module attribute permanently mispointed. Pre-existing in kind. This row DOCUMENTS it
+    (a locking redesign is explicitly out of scope) -- pinned so the documentation cannot quietly
+    disappear while the hazard stays."""
+    sw = _sweep()
+    doc = sw.run_sweep.__doc__ or ""
+    assert "NOT THREAD-SAFE" in doc and "NOT REENTRANT" in doc
+    for attr in ("decide.CFG", "probe.sqlite3", "backtest.SIGNAL_806_IC_FULL",
+                 "decide._decide_step"):
+        assert attr in doc, f"{attr} is not named in run_sweep's non-reentrancy docstring"
+    src = Path(sw.__file__).read_text()
+    # every patch site carries the warning LOCALLY too, not only in the docstring
+    assert src.count("NOT REENTRANT (MINOR 3)") >= 5, src.count("NOT REENTRANT (MINOR 3)")
+
+
+def test_the_fixture_cannot_cover_the_nonzero_decision_book_width_path():
+    """The caveat a reader must not over-read past: the fixture universe is 7 assets and never
+    clears `k=16`'s `2k` floor for `long_short`, so NO cell of the 144-cell SMOKE grid ever
+    realizes `n_decisions > 0`. The gate-(ii) fixture rerun is therefore SILENT on
+    `realized_book_width_mean` for nonzero-decision cells -- that path is covered only by a
+    partly-stubbed unit test. Pinned at the field's own docstring so the disclosure ships with the
+    code rather than living only in a verdict record."""
+    sw = _sweep()
+    field_doc = Path(sw.__file__).read_text()
+    assert "THE FIXTURE CANNOT COVER THE NONZERO-DECISION PATH OF THIS FIELD" in field_doc
+    assert "test_realized_book_width_is_recorded_and_the_instrumentation_cleans_up_after_itself" \
+        in field_doc
 
 
 if __name__ == "__main__":

@@ -59,8 +59,10 @@ import argparse
 import gc
 import itertools
 import os
+import sqlite3
 import sys
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -92,6 +94,131 @@ GRID_TAU: Tuple[float, ...] = (0.75, 0.9)
 GRID_N: Tuple[int, ...] = (0, 60)
 GRID_FEE_BP: Tuple[float, ...] = (0.0, 8.0, 16.0)
 GRID_ADV_BP: Tuple[float, ...] = (0.0, 5.0, 10.0)
+
+
+class GateRefusal(ValueError):
+    """A GOVERNED refusal raised by this harness's own gates — a designed precondition failure,
+    NEVER an unhandled defect.
+
+    TASK_902 fix cycle 2, BLOCKER. `main()` used to wrap `run_sweep` in a bare
+    `except Exception` and render EVERY escape as the item-2b "CONTROLLED REFUSAL" artifact, in
+    byte-identical prose. Reproduced by injecting a `KeyError`/`TypeError` into
+    `probe.report_bar_frequency`: an ordinary code defect produced a file titled `REFUSED BEFORE
+    ANY CELL WAS MEASURED` whose body says "This file is a CONTROLLED REFUSAL record" — the same
+    output a missing DB produces. Before item 2b that same bug produced a loud uncaught traceback,
+    which is strictly MORE diagnosable, so the fix had made the failure mode worse.
+    `type(exc).__name__` was the only capture and `traceback.format_exc()` was never called
+    anywhere, so the call stack was destroyed and logged nowhere.
+
+    A refusal is now identified by TYPE, not by where it happened to be caught:
+    `REFUSAL_EXCEPTIONS` below is the closed set of exception classes the first data touch can
+    legitimately raise as a governed refusal. Anything else is a DEFECT and renders as one
+    (`write_internal_error_artifact`), traceback included. This class exists so the harness's own
+    deliberate gate refusals (which are semantically refusals but arrive as `ValueError`) are not
+    forced to share a type with the numpy/stdlib `ValueError` a real bug raises.
+
+    Subclasses `ValueError` so it is a strictly compatible narrowing: every existing caller and
+    test that expects `ValueError` from `run_sweep`'s gate (iv) still catches it."""
+
+
+# The closed set of exception types a governed refusal may arrive as. Everything else escaping
+# `run_sweep` is an unhandled DEFECT and must never be rendered as a refusal.
+#   * `GateRefusal`         — this harness's own gates (above).
+#   * `sqlite3.DatabaseError`— the item-2b case: an absent, unreadable, or not-actually-a-database
+#                      `--db-path` raises `sqlite3.OperationalError` ("unable to open database
+#                      file") or `sqlite3.DatabaseError` ("file is not a database") at the first
+#                      data touch. NOT the broader `sqlite3.Error`, which also covers
+#                      `InterfaceError` (sqlite3 API misuse — a defect here, not a precondition).
+#   * `OSError`      — the same class of precondition on the filesystem side (a `--db-path` that is
+#                      a directory, permission denied, a dangling symlink). Chosen knowing it is
+#                      the widest member of this set; it is here because a first-data-touch
+#                      `OSError` is overwhelmingly a path precondition.
+# `SystemExit`/`KeyboardInterrupt` are deliberately ABSENT: they are `BaseException`, not
+# `Exception`, so the handler in `main()` cannot see them and both pass through unwrapped
+# (verified by test_baseexceptions_pass_through_unwrapped_and_write_no_artifact).
+REFUSAL_EXCEPTIONS: Tuple[type, ...] = (GateRefusal, sqlite3.DatabaseError, OSError)
+
+# ...MINUS these, which MATCH the set above by inheritance but are DEFECTS, not refusals. In
+# CPython's sqlite3, `ProgrammingError` is a SUBCLASS of `DatabaseError` (`ProgrammingError ->
+# DatabaseError -> Error`), so narrowing the tuple alone could not exclude it — a misuse of the
+# sqlite3 API inside this harness or the read layer (a closed cursor, the wrong number of binds)
+# would otherwise be rendered to the operator as "your invocation was wrong". It is not: it is a
+# bug here. The fail-safe direction for anything ambiguous is DEFECT (loud, with a traceback),
+# never a routine-looking refusal, so the exclusion is applied explicitly by
+# `_is_governed_refusal` rather than left to the exception hierarchy.
+NOT_A_REFUSAL_DESPITE_MATCHING: Tuple[type, ...] = (sqlite3.ProgrammingError,)
+
+
+def _is_governed_refusal(exc: BaseException) -> bool:
+    """Is `exc` one of this harness's DESIGNED precondition failures (-> the CONTROLLED REFUSAL
+    artifact), or an unhandled defect (-> the INTERNAL ERROR artifact)? A single predicate rather
+    than a chain of `except` clauses, because the taxonomy is not expressible as a tuple: see
+    `NOT_A_REFUSAL_DESPITE_MATCHING`. Pinned by
+    test_gate_refusal_is_a_valueerror_subclass_so_existing_callers_are_unaffected."""
+    return (isinstance(exc, REFUSAL_EXCEPTIONS)
+            and not isinstance(exc, NOT_A_REFUSAL_DESPITE_MATCHING))
+
+
+def _refusal_exception_names() -> str:
+    """`REFUSAL_EXCEPTIONS` as operator-readable names for the artifacts. Module-qualified where
+    the bare name would be ambiguous — `sqlite3.Error.__name__` is just `Error`, which tells a
+    reader nothing."""
+    out = []
+    for t in REFUSAL_EXCEPTIONS:
+        mod = getattr(t, "__module__", "")
+        out.append(t.__qualname__ if mod in ("builtins", "", __name__)
+                   else f"{mod}.{t.__qualname__}")
+    return "`" + "`, `".join(out) + "`"
+
+
+# =============================================================================
+# ECHO CLIPPING (TASK_902 item 11) — defined HERE, above every refusal path in this file, so
+# every one of them can reach it.
+# =============================================================================
+# A 900k-char `--db-path` produced a 900k-char refusal message (measured): every rejection path
+# in this file echoes the operator's own string back so they can see what was rejected, and
+# nothing bounded how long that echo could be. Clip while keeping the value NAMED (a real prefix,
+# never a placeholder) and stating how much was dropped — TASK_888's precedent (1.6M chars ->
+# <4k) for the same class of unbounded echo.
+#
+# FIX CYCLE 2 (TASK_902 MAJOR): the first pass applied this at only 4 of the >=11 echoing sites.
+# `parse_fee_tiers` and `_parse_window` were still unbounded, and measured WORSE than the defect
+# item 11 cites as its own precedent: a 900,000-char `--attainable-maker-fee-bp` produced a
+# 1,800,148-char `SystemExit` (the value echoed TWICE per message) and a 900,000-char
+# `--window-a` produced 2,700,344 chars (THREE times). Every echoing refusal in this module now
+# goes through `_clip_echo`; the enumeration is in `test_every_echoing_refusal_site_is_clipped`.
+ECHO_CLIP_LEN = 2000
+# A traceback is machine-generated, multi-frame, and the thing an operator actually needs; it
+# gets its own (much larger) budget, but it is still BOUNDED — a defect whose exception message
+# is itself 900k chars would otherwise write a 900k-char "defect" artifact.
+TRACEBACK_CLIP_LEN = 20000
+
+
+def _clip_echo(s, limit: int = ECHO_CLIP_LEN) -> str:
+    """Bound an operator-supplied value before it is echoed into a refusal message.
+
+    CANNOT ITSELF RAISE (TASK_902 fix cycle 2 — a clipper that raises inside a refusal path turns
+    a clean refusal into a traceback, which is the whole failure class this file is closing):
+      * non-str input (None, bytes, int, list, Path, an arbitrary object) goes through `str()`;
+      * an object whose `__str__` itself raises is rendered as an unprintable placeholder rather
+        than being allowed to propagate;
+      * lone surrogates (reachable from a real argv on Linux, where undecodable bytes arrive as
+        `surrogateescape` code points) are escaped, because they are legal in a `str` but raise
+        `UnicodeEncodeError` at the moment the message is WRITTEN to a file or to stderr — i.e.
+        the clipper would look fine and the refusal would still die. The round-trip is a no-op
+        for every well-formed string, including non-ASCII.
+    Verified by `test_clip_echo_cannot_raise_on_hostile_input`."""
+    try:
+        s = str(s)
+    except Exception:  # noqa: BLE001 — an object with a broken __str__ must not break a refusal.
+        return f"<unprintable {type(s).__name__}>"
+    try:
+        s = s.encode("utf-8", "backslashreplace").decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 — belt-and-braces; not reachable for a `str`.
+        pass
+    if len(s) <= limit:
+        return s
+    return f"{s[:limit]}...[CLIPPED: {len(s) - limit} more chars, {len(s)} total]"
 
 
 class _ReadOnlySqlite3ForProbe:
@@ -216,6 +343,34 @@ class CellRecord:
     pnl: float
     maxdd: float
     sharpe_per_bar_diagnostic: float
+    # TASK_902 item 2c — REALIZED book width, mean nonzero slots in `decide._decide_step`'s
+    # target book across every bar of THIS cell's decision-engine run. `decide._decide_step`
+    # (809 lineage, byte-frozen) opens with `if npr < (2*k if long_short else k): return tgt`
+    # (the empty target) whenever the present universe is narrower than the grid's `k` demands,
+    # so a cell can silently realize ZERO decisions while still taking the "ok" path (not a fit
+    # failure, so it never takes the gate-(ii) drop path) — an empty measurement that used to
+    # render indistinguishably from a real one. Separately, τ CAN BIND BEFORE k DOES:
+    # `n_elig = max(1, int(round((1.0-tau)*npr)))` means a narrow universe realizes a book far
+    # thinner than `k` implies even when npr clears the `2*k`/`k` floor above. `n_decisions` was
+    # already recorded (existing field); this adds the OTHER half of "record realized n_decisions
+    # and realized book width per cell" — a cell's `k` column is a REQUEST, not a report of what
+    # was actually held, and a reader should not assume the book the run held from it alone.
+    # Default NaN (never measured) rather than a required field, so every existing construction
+    # site (this row must never move a number) keeps working unchanged.
+    #
+    # THE FIXTURE CANNOT COVER THE NONZERO-DECISION PATH OF THIS FIELD (stated here because this
+    # is where a reader looks for its coverage). The fixture universe is 7 assets and never clears
+    # `k=16`'s `2k` floor for `long_short` (nor the `k` floor for `long_only`), so NO cell on the
+    # fixture ever realizes `n_decisions > 0`: every fixture cell takes `decide._decide_step`'s
+    # empty-target early return, and `realized_book_width_mean` is therefore measured only on
+    # all-zero books there. The gate-(ii) fixture rerun (the 144-cell SMOKE grid, k=16) is
+    # consequently SILENT on this field for nonzero-decision cells. That path is covered ONLY by
+    # `test_realized_book_width_is_recorded_and_the_instrumentation_cleans_up_after_itself`, which
+    # reaches it by dropping to `grid_k=(1,)` AND stubbing `decide._chunked_predict` to return
+    # reliably-positive predictions — i.e. a partly-stubbed unit test, not the shipped grid. A
+    # fixture-level gate-(ii) pass must NOT be over-read as covering the nonzero-decision case;
+    # only the real 64-asset leg exercises it as shipped.
+    realized_book_width_mean: float = float("nan")
 
 
 def _to_epoch(date_str: str) -> int:
@@ -385,20 +540,73 @@ def run_sweep(
     grid_n: Sequence[int] = GRID_N,
     grid_fee_bp: Sequence[float] = GRID_FEE_BP,
     grid_adv_bp: Sequence[float] = GRID_ADV_BP,
+    # TASK_902 fix cycle 2, MINOR 1 — EVERYTHING PAST THIS POINT IS KEYWORD-ONLY, and
+    # `scheduled_real_data_run` is why. It is the acknowledgement that unlocks the PROTECTED 24GB
+    # source of record (D57: the flag must reflect explicit operator intent, never an accident),
+    # and it used to be the 16th positional-or-keyword parameter of this function. This very
+    # hardening row APPENDED it there — which is exactly the mechanism by which a future
+    # parameter insertion anywhere above would silently shift a positional argument into it and
+    # grant protected-DB access nobody asked for. Keyword-only removes the whole class: the flag
+    # can now only ever be set by NAMING it. `seed`/`n_boot`/`verify_inherited_ic` are inside the
+    # barrier too, so a future trailing insert lands in keyword-only territory by default rather
+    # than extending the positional tail again. Every call site in the tree already passes these
+    # by keyword (audited), so this narrows the API without moving a number.
+    *,
     seed: int = 897,
     n_boot: int = 2000,
     verify_inherited_ic: bool = True,
+    scheduled_real_data_run: bool = False,
 ) -> Tuple[List[CellRecord], Dict]:
+    """Run the gated_maker sweep and return `(cells, meta)`. See the module docstring for what
+    this instrument is and is not.
+
+    RAISES: `GateRefusal` (a ValueError subclass) for a governed gate refusal; `SystemExit` from
+    `assert_db_path_allowed` for a protected-DB / URI-syntax refusal; `sqlite3.Error`/`OSError`
+    from the first data touch for an absent or unreadable `--db-path`. `main()` renders those as
+    a CONTROLLED REFUSAL artifact. Anything else escaping this function is an unhandled DEFECT
+    and `main()` renders it as one, with the traceback — never as a refusal.
+
+    NOT THREAD-SAFE / NOT REENTRANT — DO NOT RUN TWO SWEEPS CONCURRENTLY IN ONE PROCESS
+    (TASK_902 fix cycle 2, MINOR 3; pre-existing in kind, documented rather than redesigned —
+    a locking redesign is explicitly out of this row's scope). This function and
+    `_run_sweep_inner` reuse the 806/808/809 lineage VERBATIM (never reimplemented), and the only
+    way to do that at a non-canonical scale is to scope-patch MODULE-GLOBAL attributes for the
+    duration of a call, restoring each in a `finally`. There are five such patches:
+
+        `decide.CFG`                     (run_sweep, around the whole inner call)
+        `probe.sqlite3`                  (_run_sweep_inner, x2: bar-frequency + pin-era panel)
+        `backtest.SIGNAL_806_IC_FULL`    (_run_sweep_inner, per-H sweep-panel IC measurement)
+        `decide._decide_step`            (_run_sweep_inner, per-cell book-width instrumentation)
+
+    None of them is thread-safe, and none is reentrant: two concurrent `run_sweep` calls in one
+    process (the 898-class reuse surface this instrument is explicitly pointed at) would
+    interleave save/restore pairs, so one call can restore a value the other had already
+    replaced — leaving a module attribute permanently mispointed for the rest of the process
+    (e.g. `decide.CFG` stuck on a finished sweep's Config, or `probe.sqlite3` stuck on the
+    read-only shim, or — the dangerous direction — restored to the bare READ-WRITE `sqlite3`
+    while a sweep is still reading the protected DB). Run sweeps SEQUENTIALLY in-process, or in
+    separate processes. Each patch site carries the same warning locally."""
     # --- GATE (iv): the attainable maker-fee tier set is a REQUIRED operator input. -------
     # Never invented, guessed, or defaulted — refuse before touching any data.
     if attainable_maker_fee_bp is None or len(list(attainable_maker_fee_bp)) == 0:
-        raise ValueError(
+        raise GateRefusal(
             "GATE (iv) REFUSAL: --attainable-maker-fee-bp is required and was not provided. "
             "This is the OPERATOR's Kraken-reachable maker-fee tier set (Fork-C venue ruling: "
             "zero-maker-fee is out of reach) — this harness will not invent, guess, or default "
             "it. Pass e.g. --attainable-maker-fee-bp 8,16 and re-run."
         )
-    attainable_maker_fee_bp = [float(x) for x in attainable_maker_fee_bp]
+    # A programmatic caller (the CLI is already covered by `parse_fee_tiers`) can hand this a
+    # non-numeric tier. That is a REFUSAL, not a defect in the instrument, so raise it as one
+    # rather than letting a bare `float()` ValueError/TypeError escape and be rendered as an
+    # internal error by `main()`'s defect handler.
+    try:
+        attainable_maker_fee_bp = [float(x) for x in attainable_maker_fee_bp]
+    except (TypeError, ValueError) as exc:
+        raise GateRefusal(
+            "GATE (iv) REFUSAL: --attainable-maker-fee-bp contains a non-numeric tier "
+            f"({_clip_echo(exc)}); the tier set is written verbatim into the artifact's "
+            "operator-facing disclosure line, so it must be a list of finite bp numbers."
+        ) from None
     # --- GATE (iv), SECOND HALF: every declared attainable tier must actually BE IN the grid. ---
     # D57 fix cycle 4, item B1. The artifact tells the reader the tier set is "the Kraken-reachable
     # subset of the fee grid below" (see `write_artifact`), and NOTHING enforced that. Pass
@@ -411,9 +619,12 @@ def run_sweep(
     grid_fee_set = [float(x) for x in grid_fee_bp]
     missing_tiers = [t for t in attainable_maker_fee_bp if t not in grid_fee_set]
     if missing_tiers:
-        raise ValueError(
-            f"GATE (iv) REFUSAL: attainable maker-fee tier(s) {missing_tiers} bp are NOT in this "
-            f"run's pre-registered fee grid {sorted(set(grid_fee_set))} bp, so NOT ONE of them "
+        # item 11 (fix cycle 2): both echoes are caller-supplied SEQUENCES, so both are unbounded
+        # in length through the public API — clipped like every other echo in this file.
+        raise GateRefusal(
+            f"GATE (iv) REFUSAL: attainable maker-fee tier(s) {_clip_echo(missing_tiers)} bp are "
+            f"NOT in this run's pre-registered fee grid {_clip_echo(sorted(set(grid_fee_set)))} "
+            f"bp, so NOT ONE of them "
             "would be measured. The artifact would still call the tier set 'the Kraken-reachable "
             "subset of the fee grid', and a verdict read off a CHEAPER grid cell than any "
             "attainable tier is strictly better than reality — optimistic, which is the one "
@@ -421,6 +632,18 @@ def run_sweep(
             f"(available: {sorted(set(grid_fee_set))} bp) or change the pre-registered grid "
             "deliberately (a planner decision, not a flag) and re-run."
         )
+
+    # TASK_902 item 9 — the protected-DB gate used to be bound ONLY in `main()`; `run_sweep` (and
+    # `_run_sweep_inner`) never called `assert_db_path_allowed` themselves, so a PROGRAMMATIC
+    # caller of the public API — the exact reuse surface D60 already points the 898-class decay
+    # work at — could read `trading_data.db` without ever passing the acknowledgement flag. Bind
+    # the guard here too, at the entry to the actual data-touch layer, so `main()`'s own
+    # pre-check (kept, for a clean CLI-level refusal before any argument-derived work happens) is
+    # defence-in-depth rather than the ONLY belt — the same "two belts, neither depending on the
+    # other" pattern this module already uses for the URI-syntax check. This also closes item 10
+    # (TOCTOU) for every caller: `assert_db_path_allowed` now returns the RESOLVED path, which is
+    # what `cfg.db_path` becomes below and therefore what every downstream open actually uses.
+    db_path = assert_db_path_allowed(db_path, scheduled_real_data_run)
 
     t0 = time.time()
     cfg = probe.Config(
@@ -434,6 +657,9 @@ def run_sweep(
     # window dates would otherwise be silently ignored. Point decide.CFG at OUR cfg for the
     # duration of this sweep (restored in `finally`); this is the only way to reuse those
     # functions verbatim (no reimplementation) at a non-canonical (fixture/synthetic) scale.
+    # NOT REENTRANT (MINOR 3): this is a MODULE-GLOBAL rebind, so a second concurrent `run_sweep`
+    # in this process would interleave with this save/restore pair and could leave `decide.CFG`
+    # permanently pointing at a finished sweep's Config. See `run_sweep`'s docstring.
     _orig_decide_cfg = decide.CFG
     decide.CFG = cfg
     try:
@@ -455,6 +681,10 @@ def _run_sweep_inner(
     # docstring for the hazard, the demonstration, and why this is a rebind-the-name patch
     # rather than an in-place mutation of `sqlite3.connect`) for the duration of that ONE call,
     # restored in `finally` — exactly like the `decide.CFG` scope-patch above.
+    # NOT REENTRANT (MINOR 3): module-global rebind. Two concurrent sweeps could interleave these
+    # save/restore pairs and leave `probe.sqlite3` restored to the BARE read-write module while
+    # another sweep is still reading — the dangerous direction, on the protected DB. Sequential
+    # in-process use only; see `run_sweep`'s docstring.
     _orig_probe_sqlite3 = probe.sqlite3
     probe.sqlite3 = _ReadOnlySqlite3ForProbe()
     try:
@@ -493,6 +723,7 @@ def _run_sweep_inner(
         cfg_pin = probe.Config(db_path=db_path)
         pin_panel_error: Optional[str] = None
         ohlcv_pin = close_pin = grid_ts_pin = None
+        # NOT REENTRANT (MINOR 3) — same module-global hazard as the patch above.
         _orig_probe_sqlite3_pin = probe.sqlite3
         probe.sqlite3 = _ReadOnlySqlite3ForProbe()
         try:
@@ -676,6 +907,13 @@ def _run_sweep_inner(
             # SIGNAL_806_IC_FULL.get(H)` misses and the IC returns unchecked. REBINDS the module
             # attribute to a NEW dict object — never mutates the shipped dict in place (the D59
             # lesson) — and is restored in `finally` regardless of outcome.
+            # NOT REENTRANT (MINOR 3): rebinding `backtest.SIGNAL_806_IC_FULL` to `{}` is a
+            # module-global change. A concurrent sweep in this process could observe the EMPTY
+            # dict during this window — and the pin-era guard reads exactly this attribute, so it
+            # would see "no pin for this H" and drop cells for a reason that is not true. The
+            # `tgt_pin is None` guard makes that fail CLOSED (drop, never a vacuous pass), which
+            # is why this is a correctness-of-claims hazard rather than a fail-open one.
+            # Sequential in-process use only; see `run_sweep`'s docstring.
             ic = None
             if verify_inherited_ic:
                 _orig_pins = backtest.SIGNAL_806_IC_FULL
@@ -707,9 +945,39 @@ def _run_sweep_inner(
                     dr_w = dec_rows[wmask]
                     pred_w = pred[wmask]
                     pres_w = present[wmask]
-                    gross, turn, fill = decide._run_decision(
-                        close, high, low, pred_w, pres_w, dr_w, k, variant, tau, N, "maker"
-                    )
+                    # TASK_902 item 2c — instrument the REALIZED book width (nonzero slots in
+                    # `decide._decide_step`'s per-bar target) without editing `decide.py` (809
+                    # lineage, byte-frozen): scope-patch the module attribute for the duration of
+                    # this ONE `_run_decision` call, the SAME rebind-the-name pattern this file
+                    # already uses for `decide.CFG`/`probe.sqlite3` — the original function still
+                    # runs, unmodified, for every bar; this only OBSERVES its return value. Never
+                    # changes `gross`/`turn`/`fill` (this cell's actual numbers).
+                    # NOT REENTRANT (MINOR 3): module-global rebind, and the one with the widest
+                    # blast radius — two concurrent sweeps interleaving these save/restore pairs
+                    # can leave `decide._decide_step` permanently pointing at a wrapper closed
+                    # over a FINISHED cell's `_book_widths` list, so every later cell in the other
+                    # sweep would append its widths into the wrong list (a wrong
+                    # `realized_book_width_mean`, i.e. a corrupted rendered claim) — or, if the
+                    # restore lands the other way, stack wrappers. Sequential in-process use only;
+                    # see `run_sweep`'s docstring.
+                    _orig_decide_step = decide._decide_step
+                    _book_widths: List[int] = []
+
+                    def _instrumented_decide_step(*_a, _orig=_orig_decide_step,
+                                                   _widths=_book_widths, **_k):
+                        _tgt = _orig(*_a, **_k)
+                        _widths.append(int(np.count_nonzero(_tgt)))
+                        return _tgt
+
+                    decide._decide_step = _instrumented_decide_step
+                    try:
+                        gross, turn, fill = decide._run_decision(
+                            close, high, low, pred_w, pres_w, dr_w, k, variant, tau, N, "maker"
+                        )
+                    finally:
+                        decide._decide_step = _orig_decide_step
+                    realized_book_width_mean = (float(np.mean(_book_widths))
+                                                 if _book_widths else float("nan"))
                 except Exception as exc:  # noqa: BLE001 — gate (ii)
                     reason = (f"window={wname} H={H} k={k} {variant} tau={tau} N={N} decision "
                               f"engine failed: {type(exc).__name__}: {exc}")
@@ -743,6 +1011,7 @@ def _run_sweep_inner(
                             measured_dependence_len=m.measured_dependence_len,
                             pnl=m.pnl, maxdd=m.maxdd,
                             sharpe_per_bar_diagnostic=m.sharpe_per_bar_DIAGNOSTIC_DO_NOT_GATE_ON,
+                            realized_book_width_mean=realized_book_width_mean,
                         ))
                     except Exception as exc:  # noqa: BLE001 — gate (ii)
                         reason = f"honest-metrics failed: {type(exc).__name__}: {exc}"
@@ -804,6 +1073,35 @@ def _dependence_ok(c: CellRecord) -> bool:
     return _dependence_status(c) == DEP_PASS
 
 
+def _grid_coverage_label(meta: Dict) -> str:
+    """TASK_902 item 12 — the artifact must state WHICH pre-registered grid ran: the SMOKE grid
+    (fixture/synthetic-scale verification only, normally 144 cells) or the FULL grid (the real
+    pre-registered sweep, normally 864 cells) — today it states neither, and a recorded/expected
+    count must never be readable as full coverage on its own. Derived from `meta['grid']`
+    (recorded regardless of caller) by shape comparison against the module's own pre-registered
+    `GRID_*`/`SMOKE_GRID_*` H/k/variant/tau/N constants, so it stays correct even for a custom
+    grid passed directly to `run_sweep` (e.g. a test) — those cases name themselves CUSTOM rather
+    than guessing. Cites THIS run's own `n_cells_expected` rather than a hardcoded 144/864 —
+    those counts also fold in `windows`/`fee_bp`/`adv_bp`, which this shape check does not
+    compare, so a hardcoded number could be wrong for a caller that varies only those."""
+    g = meta.get("grid") or {}
+    shape = tuple(tuple(g.get(k, [])) for k in ("H", "k", "variant", "tau", "N"))
+    smoke_shape = (SMOKE_GRID_H, SMOKE_GRID_K, SMOKE_GRID_VARIANT, SMOKE_GRID_TAU, SMOKE_GRID_N)
+    full_shape = (GRID_H, GRID_K, GRID_VARIANT, GRID_TAU, GRID_N)
+    n = meta.get("n_cells_expected", "?")
+    if shape == smoke_shape:
+        return (f"**SMOKE** grid — the fixture/synthetic-scale pre-registered grid "
+                f"(`SMOKE_GRID_*`; normally 144 cells with the default windows/fee/adv grid, "
+                f"{n} cells expected on THIS run), NOT the full pre-registered grid.")
+    if shape == full_shape:
+        return (f"**FULL** grid — the real-data pre-registered sweep grid (`GRID_*`; normally "
+                f"864 cells with the default windows/fee/adv grid, {n} cells expected on THIS "
+                "run).")
+    return (f"**CUSTOM** grid — neither the SMOKE nor the FULL pre-registered H/k/variant/tau/N "
+            f"shape ({n} cells expected on THIS run; H={g.get('H')} k={g.get('k')} "
+            f"variant={g.get('variant')} tau={g.get('tau')} N={g.get('N')}).")
+
+
 def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
     """Write the TASK_897 artifact. Metadata (incl. the gate-(iv) attainable-tier set and the
     data epoch, gate iii) is recorded FIRST, before the cell table. NO verdict is computed or
@@ -854,12 +1152,80 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
             f"{n_dep_no_ci} carried fewer than {hest.MIN_DECISIONS_FOR_SHARPE} decisions, so no "
             "interval was bootstrapped for them and the dependence guard never ran at all** —"
         )
+    # TASK_902 item 4 — the "Scope honesty" section below used to assert "this artifact's
+    # near-100% pass rate is NOT evidence ..." UNCONDITIONALLY, even on a run (e.g. the empty
+    # fixture run) that recorded no measured pass rate at all — a claim the run itself does not
+    # back (errs conservative: it understates how bad the guard's own numbers might be here, but
+    # it is still a specific numeric claim this run cannot support). State the REAL pass rate,
+    # computed from the SAME `n_dep_pass`/`n_dep_measured` the banner box above already counts,
+    # never a hardcoded "near-100%".
+    if n_dep_measured > 0:
+        _scope_pass_rate_clause = (
+            f"this artifact's {n_dep_pass}/{n_dep_measured} pass rate on the ok cells the guard "
+            "ran on"
+        )
+    else:
+        _scope_pass_rate_clause = (
+            "this artifact recorded NO measured pass rate at all (the guard ran on zero cells)"
+        )
     # A run in which NOT ONE ok cell carried a decision contains no measurement at all. Stated
     # (never graded — this instrument records, the planner rules) and never as an error: on the
     # fixture, tiny windows legitimately yield zero decisions.
     n_ok_with_decisions = sum(1 for c in cells
                               if c.status == "ok" and c.n_decisions and c.n_decisions > 0)
     no_measurement = bool(n_ok) and n_ok_with_decisions == 0
+    # TASK_902 item 6 — SYMMETRY FOR A 100%-FAILED RUN. A run where every `ok` cell recorded zero
+    # decisions gets the large banner below (`no_measurement`); a run where every cell's decision
+    # engine or an upstream guard FAILED before any cell could even reach "ok" status used to get
+    # NONE — the only trace was the per-cell `reason` column, easy to miss on a table this wide.
+    # Both are "this artifact holds no measurement", so both get a top-level statement. Gate (ii)
+    # is untouched by either: a 100%-dropped run can still satisfy `n_cells_recorded ==
+    # n_cells_expected` (every cell was accounted for, just none of them computed).
+    n_cells_total = len(cells)
+    all_cells_failed = n_cells_total > 0 and n_ok == 0
+    # TASK_902 fix cycle 2, MAJOR — A ZERO-CELL RUN USED TO READ AS HEALTHY FROM TOP TO BOTTOM.
+    # `run_sweep(grid_k=())` (API-reachable; not CLI-reachable — the same surface item 2's second
+    # root cause lived on) produces `n_cells_expected == n_cells_recorded == n_cells_ok == 0` and
+    # `len(cells) == 0`. Every existing loud path missed it: the gate-(ii) completeness check is
+    # satisfied TRIVIALLY by `0 == 0`, `no_measurement` requires `bool(n_ok)` (False),
+    # `all_cells_failed` requires `n_cells_total > 0` (False), and `exit_code_for` returned 0. So
+    # the artifact rendered `expected: 0 recorded: 0 (ok=0, dropped/failed=0)` with no banner and
+    # no warning — a degenerate run indistinguishable from a healthy one. This is precisely the
+    # "neither banner fires but the run is degenerate anyway" case item 6's doctrine asks about.
+    # It gets its OWN banner (this is not an "every cell failed" run — there were no cells to
+    # fail) and a NON-ZERO exit (`exit_code_for`, which documents the D58 reasoning: cells
+    # recorded + none measured = honest empty = exit 0; NO cells at all = the instrument did
+    # nothing = non-zero).
+    zero_cell_run = n_cells_total == 0 or int(meta.get("n_cells_expected") or 0) <= 0
+    if zero_cell_run:
+        L += ["> ## :warning: ZERO CELLS — **THE GRID ITSELF WAS EMPTY; THIS RUN MEASURED "
+              "NOTHING AND PROMISED NOTHING**",
+              ">",
+              f"> This run recorded {n_cells_total} cells against "
+              f"{meta.get('n_cells_expected')} expected: at least one grid dimension was EMPTY "
+              "(`H`/`k`/`variant`/`tau`/`N`/`windows`/`fee_bp`/`adv_bp` — see the Grid line in "
+              "the metadata below), so the product over the grid is zero and there was never a "
+              "cell to measure. **This is NOT an honest empty result** (that is a run where "
+              "every cell the grid promised WAS recorded and none of them measured anything — "
+              "the normal fixture state, which exits 0). Here the grid promised nothing, so "
+              "**gate (ii) has nothing to check: its `recorded == expected` test is satisfied "
+              "trivially by `0 == 0` and provides no assurance whatsoever on this run.** The "
+              "instrument failed to do anything, which is a different thing from measuring "
+              "nothing, so the process exits NON-ZERO. Fix the grid and re-run; read no "
+              "conclusion of any kind off this file.", ""]
+    if all_cells_failed:
+        n_dropped = sum(1 for c in cells if c.status == "dropped")
+        n_failed = sum(1 for c in cells if c.status == "failed")
+        L += ["> ## :warning: EVERY CELL FAILED — **THIS ARTIFACT CONTAINS NO `ok` CELL AT ALL**",
+              ">",
+              f"> All {n_cells_total} recorded cells are dropped/failed ({n_dropped} `dropped`, "
+              f"{n_failed} `failed`) — not one cell reached `status=\"ok\"`, so this artifact "
+              "holds no measurement of any kind, not even a zero-decision one. This is a "
+              "STATEMENT ABOUT THIS RUN, not a verdict and not, by itself, an error: gate (ii) "
+              "only requires `n_cells_recorded == n_cells_expected` (every cell accounted for), "
+              "which a 100%-failed run can still satisfy. Check the per-cell `reason` column and "
+              "the metadata above (in particular the inherited-IC guard result) before reading "
+              "anything else.", ""]
     if no_measurement:
         L += ["> ## :warning: NO DECISIONS IN THIS RUN — **THIS ARTIFACT CONTAINS NO "
               "MEASUREMENT**",
@@ -1024,6 +1390,8 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
           f"- **Estimator:** {meta['estimator']}",
           f"- **Maker-fill model (stated inline, per cell, per TASK_897 scope 3):** "
           f"{meta['maker_fill_model']}",
+          f"- **Grid coverage (TASK_902 item 12 — the cell count below must never be readable "
+          f"as full coverage on its own):** {_grid_coverage_label(meta)}",
           f"- **Cells expected:** {meta['n_cells_expected']}  **recorded:** "
           f"{meta['n_cells_recorded']}  (ok={meta['n_cells_ok']}, "
           f"dropped/failed={meta['n_cells_dropped_or_failed']})",
@@ -1080,6 +1448,7 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
             d = e["by_dep_multiple"][mult]
             L.append(f"  | {nd} | {e['block']} | {d['dep']} | {d['refusal_rate']:.3f} | "
                      f"{d['unmeasurable_rate']:.3f} | {d['median_tau']} |")
+    L += ["", "> " + cal.DEPENDENCE_REFUSAL_OC_GRID_GAP, ""]
     L += ["", "- **How to read the `achieved=False` rows:** "
           + cal.DEMOTION_IS_MC_JITTER_NOT_A_DEMONSTRATED_HOLE,
           "", "  | re-measured | group | recorded in table | coverage by seed | mean | "
@@ -1109,16 +1478,20 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
           "half, and the one that matters for real cells: a real cell essentially never lands on "
           "a pinned stratum, so each row below is a NON-stratum n_dec run at ITS OWN real block "
           "with the `k` `calibrated_k_for` actually hands it, re-measured on a fresh true-null "
-          "batch. A row below target would mean the region around it is NOT certified:",
+          "batch. A row below target would mean the region around it is NOT certified. "
+          "TASK_902 item 3: this table renders its OWN `reason` column now — pairing 639 CANNOT "
+          "REPRODUCE by construction (stratum 620 was demoted by this row) and the `False` in "
+          "its `meets target` cell used to be the only signal of that; the per-stratum table "
+          "above already carried a `reason` column, this one did not:",
           "", "  | n_dec (borrower) | block | borrowed k | from stratum | cov(overlap) | "
-          "cov(iid) | trials x boot | meets target |",
-          "  |--:|--:|--:|--:|--:|--:|--:|:--:|"]
+          "cov(iid) | trials x boot | meets target | reason |",
+          "  |--:|--:|--:|--:|--:|--:|--:|:--:|---|"]
     for nd in sorted(cal.MEASURED_BORROWED_PAIRING_COVERAGE):
         e = cal.MEASURED_BORROWED_PAIRING_COVERAGE[nd]
         L.append(f"  | {nd} | {e.get('block')} | {e.get('borrowed_k')!r} | "
                  f"{e.get('borrowed_from_n_dec')!r} | {e.get('coverage_overlapping')!r} | "
                  f"{e.get('coverage_iid')!r} | {e.get('n_trials')}x{e.get('n_boot')} | "
-                 f"{e.get('meets_target')} |")
+                 f"{e.get('meets_target')} | {e.get('reason') or ''} |")
     L += ["", "> " + cal.CALIBRATION_SCENARIO_CAVEAT, ""]
     L += ["> Raw-interval disclosure (`ci_lo_UNCALIBRATED`/`ci_hi_UNCALIBRATED`, present on every "
           "cell regardless of certification): " + hest.CI_UNCALIBRATED_DISCLOSURE.replace("\n", " "),
@@ -1145,11 +1518,12 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
 
     L += ["## Cells (every grid cell — status ok/dropped/failed, no omissions)",
           "| window | H | k | var | tau | N | fee bp | adv bp | status | n_bars | n_dec | "
-          "dec/yr | mean_hold | turnover | fill | Sh_decision | CI(UNCALIBRATED) | block | "
+          "dec/yr | mean_hold | turnover | fill | book_w(mean) | Sh_decision | "
+          "CI(UNCALIBRATED) | block | "
           "dep_len | dep<=block | advisory | "
           "CI(ADVISORY) | pnl | maxDD | Sh_per_bar(diag) | reason |",
-          "|---|--:|--:|---|--:|--:|--:|--:|:--:|--:|--:|--:|--:|--:|--:|---|---|--:|--:|:--:|"
-          ":--:|---|--:|--:|--:|---|"]
+          "|---|--:|--:|---|--:|--:|--:|--:|:--:|--:|--:|--:|--:|--:|--:|--:|---|---|--:|--:|"
+          ":--:|:--:|---|--:|--:|--:|---|"]
     for c in cells:
         # An uncertified cell names WHY, per D55(a) ("any region you cannot certify keeps the
         # UNCALIBRATED qualifier and says so per-cell") — and, per fix cycle 3 MAJOR 1(b),
@@ -1185,15 +1559,36 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
                           f"n_dec={c.n_decisions})")
         dep_str = (f"{c.measured_dependence_len:.0f}"
                    if np.isfinite(c.measured_dependence_len) else "UNMEASURABLE")
+        # TASK_902 item 5: a cell the guard never ran on (DEP_NO_CI — no interval was ever
+        # bootstrapped for it) rendered a bare `False` in this column, indistinguishable from a
+        # cell the guard DID run and refused. `False` now means "the guard ran and refused";
+        # `not-run` means "no interval existed for this cell, so the guard never evaluated it" —
+        # the same distinction `_dependence_status`/DEP_NO_CI already draws for the CI(ADVISORY)
+        # column beside it (`UNCALIBRATED (no CI computed; ...)`, never `REFUSED ON DEPENDENCE`).
+        dep_ok_str = "not-run" if dep_state == DEP_NO_CI else str(dep_ok)
+        book_w_str = (f"{c.realized_book_width_mean:.2f}"
+                      if np.isfinite(c.realized_book_width_mean) else "n/a")
+        # TASK_902 item 2c, second half — a cell can reach `status="ok"` (not a fit/engine
+        # failure, so it never takes the gate-(ii) drop path) and still realize ZERO decisions
+        # (`decide._decide_step`'s `npr < (2*k if long_short else k)` empty-target floor), which
+        # used to render indistinguishably from a real measurement: `n_dec=0` sat quietly among
+        # 20+ other columns, blank `reason`, and every metric NaN. Say so explicitly, in the same
+        # column an engine failure already names its reason in — `reason` stays "" in the DATA
+        # (the CellRecord field, per its own docstring convention: non-empty iff status != "ok"),
+        # this is a RENDER-time-only synthesized note for exactly this case.
+        reason_str = c.reason
+        if c.status == "ok" and (not c.n_decisions or c.n_decisions == 0):
+            reason_str = ("EMPTY (0 decisions — ok, not an engine failure; universe narrower "
+                          "than k, or tau bound the book to nothing eligible; see n_dec/book_w)")
         L.append(
             f"| {c.window} | {c.H} | {c.k} | {c.variant} | {c.tau:g} | {c.N} | {c.fee_bp:g} | "
             f"{c.adv_bp:g} | {c.status} | {c.n_bars} | {c.n_decisions} | "
             f"{c.decisions_per_year:.1f} | {c.mean_hold_bars:.1f} | {c.turnover_mean:.4f} | "
-            f"{c.fill_rate:.3f} | {c.sharpe_decision:+.3f} | "
+            f"{c.fill_rate:.3f} | {book_w_str} | {c.sharpe_decision:+.3f} | "
             f"[{c.ci_lo_UNCALIBRATED:+.2f},{c.ci_hi_UNCALIBRATED:+.2f}] | "
-            f"{blk if blk is not None else 'n/a'} | {dep_str} | {dep_ok} | "
+            f"{blk if blk is not None else 'n/a'} | {dep_str} | {dep_ok_str} | "
             f"{c.ci_advisory} | {ci_adv_str} | "
-            f"{c.pnl:+.4f} | {c.maxdd:+.4f} | {c.sharpe_per_bar_diagnostic:+.2f} | {c.reason} |"
+            f"{c.pnl:+.4f} | {c.maxdd:+.4f} | {c.sharpe_per_bar_diagnostic:+.2f} | {reason_str} |"
         )
     L += ["", "## Scope honesty",
           "This artifact never computes a pass/fail verdict; the `Sh_per_bar(diag)` column is "
@@ -1253,8 +1648,8 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
           "series measured on this row (7 majors, OOS 2024-11 -> 2025-04, H in {1,5,20}, "
           "long-only and long-short) reads tau=1-2 against block=60 "
           "(`calibration.MEASURED_REAL_DATA_TAU_INERT_HALTED_CYCLE`, provenance-stamped, NOT "
-          "re-run in this loop) — **THE GUARD IS THEREFORE EXPECTED NOT TO BITE HERE**, and this "
-          "artifact's near-100% pass rate is NOT evidence the dep<=block condition holds. An "
+          "re-run in this loop) — **THE GUARD IS THEREFORE EXPECTED NOT TO BITE HERE**, and "
+          + _scope_pass_rate_clause + " is NOT evidence the dep<=block condition holds. An "
           "empirical containment check on the real long/short H=1 series (97 disjoint "
           "1000-decision chunks) contained the grand Sharpe only 0.639 of the time while the "
           "guard certified ~100%. The guard is KEPT — it still fails closed on unmeasurable or "
@@ -1264,6 +1659,9 @@ def write_artifact(cells: List[CellRecord], meta: Dict, path: Path) -> None:
           "validated out-of-family) is the row that replaces it, re-reading this leg's third "
           "conjunct retroactively FROM THESE SAME ARTIFACTS.",
           ""]
+    # TASK_902 item 7: `--out` now defaults into the untracked `runs/` tree, whose directory may
+    # not exist yet on a fresh checkout — create it rather than fail on a missing parent.
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(L) + "\n")
 
 
@@ -1279,7 +1677,13 @@ def parse_fee_tiers(raw: Optional[str]) -> List[float]:
     value like `","` slipped past the truthiness check and then blew up as an uncaught
     `ValueError` traceback deeper in `run_sweep` — the same practical refusal, but presented as
     a crash. Same for a non-numeric entry. The refusal is the product here; it should read like
-    one."""
+    one.
+
+    TASK_902 item 11, FIX CYCLE 2 — EVERY echo below is clipped. This function was the WORST
+    unbounded-echo site in the file, worse than the `--db-path` case item 11 was written for:
+    each message echoes `raw` (and often the offending part) so a 900,000-char
+    `--attainable-maker-fee-bp` produced a MEASURED 1,800,148-char `SystemExit` message, against
+    the 900k->1.6M TASK_888 precedent item 11 cites."""
     if raw is None or not raw.strip():
         raise SystemExit(
             "GATE (iv) REFUSAL: --attainable-maker-fee-bp is required and has no default. "
@@ -1290,7 +1694,8 @@ def parse_fee_tiers(raw: Optional[str]) -> List[float]:
     parts = [p.strip() for p in raw.split(",") if p.strip() != ""]
     if not parts:
         raise SystemExit(
-            f"GATE (iv) REFUSAL: --attainable-maker-fee-bp {raw!r} contains no tier values "
+            f"GATE (iv) REFUSAL: --attainable-maker-fee-bp {_clip_echo(raw)!r} contains no tier "
+            "values "
             "(separators only). Pass a comma-separated bp list, e.g. "
             "--attainable-maker-fee-bp 8,16"
         )
@@ -1300,8 +1705,8 @@ def parse_fee_tiers(raw: Optional[str]) -> List[float]:
             v = float(p)
         except ValueError:
             raise SystemExit(
-                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {p!r} is not a number "
-                f"(from {raw!r}). Pass a comma-separated bp list, e.g. "
+                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {_clip_echo(p)!r} is not a "
+                f"number (from {_clip_echo(raw)!r}). Pass a comma-separated bp list, e.g. "
                 "--attainable-maker-fee-bp 8,16"
             ) from None
         # FIX 2: this list is written VERBATIM into the artifact's operator-facing metadata
@@ -1312,14 +1717,16 @@ def parse_fee_tiers(raw: Optional[str]) -> List[float]:
         # not a parsing failure, and nothing downstream treats 0 as a sentinel for "missing".
         if not np.isfinite(v):
             raise SystemExit(
-                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {p!r} is not finite "
-                f"(from {raw!r}). Maker-fee tiers must be finite bp values, e.g. "
+                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {_clip_echo(p)!r} is not "
+                f"finite (from {_clip_echo(raw)!r}). Maker-fee tiers must be finite bp values, "
+                "e.g. "
                 "--attainable-maker-fee-bp 8,16"
             )
         if v < 0:
             raise SystemExit(
-                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {p!r} is negative "
-                f"(from {raw!r}). A maker fee cannot be negative bp (0 is allowed — a "
+                f"GATE (iv) REFUSAL: --attainable-maker-fee-bp entry {_clip_echo(p)!r} is "
+                f"negative (from {_clip_echo(raw)!r}). A maker fee cannot be negative bp (0 is "
+                "allowed — a "
                 "rebate-neutral venue — but a negative tier is not a fee, it's a rebate, and "
                 "this harness does not model rebates). Pass a comma-separated non-negative bp "
                 "list, e.g. --attainable-maker-fee-bp 8,16"
@@ -1388,7 +1795,7 @@ def assert_db_path_allowed(db_path: Optional[str], scheduled_real_data_run: bool
     bad_prefix = [p for p in DB_PATH_FORBIDDEN_PREFIXES if raw.lower().startswith(p)]
     if bad or bad_prefix:
         raise SystemExit(
-            f"REFUSAL: --db-path {raw!r} is not a filesystem path. "
+            f"REFUSAL: --db-path {_clip_echo(raw)!r} is not a filesystem path. "
             + (f"It contains {', '.join(repr(c) for c in bad)}, which sqlite's URI parser treats "
                "as a query/fragment separator. " if bad else "")
             + (f"It starts with {bad_prefix[0]!r}, i.e. it is a URI, not a path. "
@@ -1431,12 +1838,28 @@ def assert_db_path_allowed(db_path: Optional[str], scheduled_real_data_run: bool
     resolved_cwd = candidates[0]
     if is_protected and not scheduled_real_data_run:
         raise SystemExit(
-            f"REFUSAL: --db-path {resolved_cwd} is the PROTECTED read-only source of record. "
-            "TASK_897's scope note: expensive real-data validation is SCHEDULED (gpu-server, "
-            "per D54), never polled from a factory or interactive session. If this really IS "
-            "the scheduled run, say so explicitly: add --i-am-the-scheduled-real-data-run."
+            f"REFUSAL: --db-path {_clip_echo(resolved_cwd)} is the PROTECTED read-only source "
+            "of record. TASK_897's scope note: expensive real-data validation is SCHEDULED "
+            "(gpu-server, per D54), never polled from a factory or interactive session. If this "
+            "really IS the scheduled run, say so explicitly: add "
+            "--i-am-the-scheduled-real-data-run."
         )
-    return str(db_path)
+    # TASK_902 item 10 — TOCTOU residual: this function used to `return str(db_path)`, the RAW,
+    # UNRESOLVED operator spelling, while every check above (including the protected-identity
+    # check) ran on a `realpath`-resolved string computed here and then discarded. A symlink
+    # component in the raw spelling could therefore be re-targeted between THIS check and the
+    # caller's later actual open (`_connect_ro`), which re-resolves the raw string from scratch —
+    # the classic check/use gap. Resolve ONCE, here, and feed the SAME resolved value to both
+    # this check (already done, above) and every caller — never the raw spelling again.
+    if is_protected:
+        # The protected DB is a fixed, known constant — return ITS canonical realpath directly
+        # rather than whichever candidate happened to match (cwd-relative or _REPO-relative);
+        # both name the same file once resolved, and this removes any ambiguity about which one.
+        return protected
+    # Not protected: `resolved_cwd` is the cwd-relative realpath — the interpretation Python/
+    # sqlite will actually use to open a relative path at runtime, resolved at the SAME moment
+    # this check ran.
+    return resolved_cwd
 
 
 def _parse_window(flag: str, raw: str) -> Tuple[str, str]:
@@ -1452,11 +1875,17 @@ def _parse_window(flag: str, raw: str) -> Tuple[str, str]:
     against the SAME `%Y-%m-%d` reader the slicer uses (`probe._to_epoch`), and strict ordering.
     Exit-code semantics are deliberately untouched (a planner ruling, out of scope); the
     complementary half of this item is the artifact's own no-decisions statement in
-    `write_artifact`."""
+    `write_artifact`.
+
+    TASK_902 item 11, FIX CYCLE 2 — EVERY echo below is clipped, including the echoes INSIDE the
+    caught `exc` (`datetime.strptime`'s own message quotes the offending value back, so `{exc}`
+    is a third copy of the operator's string). Measured before the fix: a 900,000-char
+    `--window-a` produced a 2,700,344-char `SystemExit` message — larger than the 900k->1.6M
+    TASK_888 defect item 11 cites as its own precedent."""
     parts = [p.strip() for p in str(raw).split(",")]
     if len(parts) != 2 or not all(parts):
         raise SystemExit(
-            f"REFUSAL: {flag} {raw!r} must be exactly 'START,END' (ISO dates), "
+            f"REFUSAL: {flag} {_clip_echo(raw)!r} must be exactly 'START,END' (ISO dates), "
             f"e.g. {flag} 2024-11-01,2025-04-01"
         )
     epochs = []
@@ -1465,19 +1894,247 @@ def _parse_window(flag: str, raw: str) -> Tuple[str, str]:
             epochs.append(_to_epoch(p))
         except (ValueError, TypeError) as exc:
             raise SystemExit(
-                f"REFUSAL: {flag} {raw!r} — {p!r} is not an ISO date (YYYY-MM-DD): {exc}. An "
+                f"REFUSAL: {flag} {_clip_echo(raw)!r} — {_clip_echo(p)!r} is not an ISO date "
+                f"(YYYY-MM-DD): {_clip_echo(exc)}. An "
                 "unparseable bound is NOT a narrow window: the slicer would select zero "
                 "decisions, every cell would still be recorded `ok`, and the artifact would "
                 f"read green with no measurement in it. Pass {flag} 2024-11-01,2025-04-01."
             ) from None
     if epochs[0] >= epochs[1]:
         raise SystemExit(
-            f"REFUSAL: {flag} {raw!r} — START must be strictly BEFORE END "
-            f"({parts[0]!r} >= {parts[1]!r}). An inverted or empty window selects zero decisions "
+            f"REFUSAL: {flag} {_clip_echo(raw)!r} — START must be strictly BEFORE END "
+            f"({_clip_echo(parts[0])!r} >= {_clip_echo(parts[1])!r}). An inverted or empty "
+            "window selects zero decisions "
             "silently, which renders as a complete, gate-clean artifact containing no "
             "measurement at all."
         )
     return parts[0], parts[1]
+
+
+def exit_code_for(meta: Dict) -> int:
+    """TASK_902 item 1 / D58(a) — the exit-code contract. Exit NON-ZERO on a gate-(ii)
+    completeness violation (`n_cells_recorded != n_cells_expected` — the instrument failing its
+    OWN gate: some cell the grid promised was silently never recorded). Exit 0 for an HONEST
+    empty result (`n_cells_ok == 0`, every cell accounted for but none reached `status="ok"` —
+    e.g. the fixture's inherited-IC guard failing as expected, or a window with zero decisions):
+    that is a legitimate, disclosed measurement outcome the artifact states plainly, and on the
+    fixture it is the NORMAL state — a non-zero exit there would trade a false-green for a
+    false-red that fires on every verification run, training the next operator to ignore the
+    exit code, which is strictly worse than the status quo (D58's ruling). Orchestration still
+    PARSES THE ARTIFACT rather than gating on this code alone (the standing contract, pre-902);
+    this code is a second, cheap signal for callers that do check it.
+
+    TASK_902 fix cycle 2, MAJOR — A ZERO-CELL RUN IS LOUD, AND EXITS NON-ZERO. `run_sweep(
+    grid_k=())` (API-reachable; not CLI-reachable — the same surface item 2's second root cause
+    lived on) yielded `n_cells_expected == n_cells_recorded == 0`, so the completeness check above
+    was satisfied TRIVIALLY by `0 == 0` and returned 0, while `no_measurement` (needs `bool(n_ok)`)
+    and `all_cells_failed` (needs `n_cells_total > 0`) BOTH failed to fire: a degenerate run read
+    as healthy from top to bottom.
+
+    WHICH SIDE OF D58 THIS FALLS ON, and why. D58 protects the HONEST EMPTY RESULT: cells were
+    recorded, every cell the grid promised is accounted for, and none of them measured anything —
+    that is a real, disclosed outcome (the NORMAL fixture state), so it stays exit 0 and a
+    non-zero code there would train operators to ignore the code. A run with NO CELLS AT ALL is a
+    different thing: the grid promised nothing, so nothing can be honestly empty and gate (ii)
+    has nothing to check. It is the instrument failing to do anything — much closer to the
+    completeness violation above than to an empty measurement — so it exits NON-ZERO and carries
+    its own banner in the artifact (`write_artifact`). Note this cannot fire on any grid that
+    names at least one value per dimension, so it never touches the honest-empty fixture path."""
+    if meta["n_cells_recorded"] != meta["n_cells_expected"]:
+        return 1
+    if int(meta.get("n_cells_expected") or 0) <= 0 or int(meta.get("n_cells_recorded") or 0) <= 0:
+        return 2
+    return 0
+
+
+def _write_or_shout(path: Path, text: str, what: str) -> bool:
+    """Write `text` to `path`, and if THAT write itself fails, make sure the operator still gets
+    the whole record — on stderr — instead of nothing at all. Returns True iff the file was
+    written.
+
+    TASK_902 fix cycle 2, MINOR 2 — `write_refusal_artifact`'s OWN failure was unguarded and
+    OUTSIDE `main()`'s `except`. Its `path.parent.mkdir(parents=True, exist_ok=True)` raises
+    `FileExistsError` when a path component is an existing plain file (reproducible with
+    `--out <plainfile>/result.md`), and `write_text` can raise `PermissionError`,
+    `IsADirectoryError`, `OSError` (ENOSPC) or `UnicodeEncodeError`. Any of those inside the
+    failure handler produced NO artifact and a traceback out of the handler — reviving exactly the
+    "traceback, exit 1, nothing to parse" state item 2b closed, and losing the ORIGINAL exception
+    behind a second, unrelated one. So: the double fault is caught here, both faults are named,
+    and the artifact body is dumped to stderr so it is never simply lost.
+
+    Deliberately NOT used by `write_artifact` (the success-path writer): a COMPLETED sweep whose
+    artifact could not be written must fail loudly and let the exception propagate, because there
+    the file IS the product. Here the file is a failure record and the process is already exiting
+    non-zero, so degrading to stderr is strictly better than raising over the top of the real
+    cause."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return True
+    except Exception as write_exc:  # noqa: BLE001 — see docstring: never lose the original.
+        print(
+            f"[897-sweep] DOUBLE FAULT: could not write the {what} to {_clip_echo(str(path))!r} "
+            f"({type(write_exc).__name__}: {_clip_echo(write_exc)}). The record follows on stderr "
+            "so it is not lost; NOTHING WAS WRITTEN AT --out, so an orchestrator parsing the "
+            "artifact will see NO FILE — treat that as this failure, not as a run that never "
+            "started.",
+            file=sys.stderr, flush=True)
+        print("---- BEGIN UNWRITTEN " + what.upper() + " ----", file=sys.stderr, flush=True)
+        try:
+            print(text, file=sys.stderr, flush=True)
+        except Exception as print_exc:  # noqa: BLE001 — a triple fault still says something.
+            print(f"(record itself could not be printed: {type(print_exc).__name__})",
+                  file=sys.stderr, flush=True)
+        print("---- END UNWRITTEN " + what.upper() + " ----", file=sys.stderr, flush=True)
+        return False
+
+
+def write_internal_error_artifact(path: Path, reason: str, traceback_text: str, db_path: str,
+                                  attainable_maker_fee_bp: Sequence[float],
+                                  windows: Sequence[Tuple[str, str, str]],
+                                  grid_h: Sequence[int], grid_k: Sequence[int],
+                                  grid_variant: Sequence[str], grid_tau: Sequence[float],
+                                  grid_n: Sequence[int],
+                                  grid_fee_bp: Sequence[float] = GRID_FEE_BP,
+                                  grid_adv_bp: Sequence[float] = GRID_ADV_BP) -> None:
+    """TASK_902 fix cycle 2, BLOCKER — the artifact for an UNHANDLED DEFECT, deliberately sharing
+    NOTHING with `write_refusal_artifact`'s prose.
+
+    A governed refusal (a missing DB, a gate this harness designed) and a bug in this harness's
+    own code are completely different events for both readers of this file: the operator, who must
+    know whether to fix their invocation or fix the instrument, and the orchestrator, whose
+    standing contract (D58, pre-902) is to PARSE THE ARTIFACT and never the exit code alone. Item
+    2b's fix made them byte-identical — an injected `KeyError`/`TypeError` in
+    `probe.report_bar_frequency` produced a file titled `REFUSED BEFORE ANY CELL WAS MEASURED`
+    saying "This file is a CONTROLLED REFUSAL record". This file's title, banner and body all say
+    DEFECT instead, and it carries the full traceback, which the refusal path never had at all.
+
+    WHY AN ARTIFACT AND NOT A BARE TRACEBACK. Letting the defect propagate would give the loud,
+    diagnosable traceback the pre-2b code had, but it would also write NOTHING at `--out`, and an
+    absent artifact is exactly the unreadable state item 2b closed — the orchestrator cannot tell
+    it from a run that never started. So both: an artifact that is unmistakably NOT a refusal, AND
+    the traceback in it AND on stderr."""
+    n_cells_expected = (len(list(grid_h)) * len(list(grid_k)) * len(list(grid_variant))
+                         * len(list(grid_tau)) * len(list(grid_n)) * len(list(windows))
+                         * len(list(grid_fee_bp)) * len(list(grid_adv_bp)))
+    L = [
+        "# TASK_897 -- gated_maker sweep -- UNEXPECTED INTERNAL ERROR (**A DEFECT, NOT A "
+        "GOVERNED REFUSAL**)", "",
+        "> ## :warning: UNEXPECTED INTERNAL ERROR -- **THIS IS A DEFECT IN THE INSTRUMENT, NOT A "
+        "GOVERNED REFUSAL**",
+        ">",
+        "> **This file is NOT a refusal record and NOT a sweep.** `run_sweep` raised an exception "
+        "of a type this harness does not recognise as any of its own governed refusal conditions "
+        f"({_refusal_exception_names()}). That means the instrument "
+        "hit a code path it was not written for -- a BUG here, not a bad invocation. Nothing was "
+        "measured, and nothing about the data, the grid, or the operator's arguments may be "
+        "inferred from this run.",
+        ">",
+        "> **Do not read this as a refusal, and do not retry it as if a precondition were "
+        "missing.** A governed refusal (missing/unreadable `--db-path`, a gate this harness "
+        "designed) writes a DIFFERENT artifact with a different title and banner, and says so in "
+        "its own words. This one says DEFECT, and it carries the full traceback below (also "
+        "printed to stderr) so it can be diagnosed WITHOUT re-running -- TASK_902 fix cycle 2's "
+        "BLOCKER was that the two used to be byte-identical prose and the traceback was destroyed "
+        "and logged nowhere. **Neither file quotes the other's banner text**, deliberately: an "
+        "orchestrator greps these artifacts, so a cross-reference in the prose would make the two "
+        "kinds match each other's search strings and re-create exactly the confusion this split "
+        "exists to remove.",
+        "",
+        f"- **Exception:** `{_clip_echo(reason)}`",
+        f"- **db_path (as supplied to this harness):** `{_clip_echo(db_path)}`",
+        f"- **attainable_maker_fee_bp_tiers:** {_clip_echo(list(attainable_maker_fee_bp))}",
+        f"- **windows:** {_clip_echo([{'name': n, 'start': s, 'end': e} for (n, s, e) in windows])}",
+        f"- **grid:** H={_clip_echo(list(grid_h))} k={_clip_echo(list(grid_k))} "
+        f"variant={_clip_echo(list(grid_variant))} tau={_clip_echo(list(grid_tau))} "
+        f"N={_clip_echo(list(grid_n))} fee_bp={_clip_echo(list(grid_fee_bp))} "
+        f"adv_bp={_clip_echo(list(grid_adv_bp))}",
+        f"- **Cells expected:** {n_cells_expected}  **recorded:** 0  (no cell was reached)",
+        "",
+        "## Traceback (the whole point of this file -- an operator must be able to diagnose "
+        "without re-running)",
+        "",
+        "```",
+        _clip_echo(traceback_text, TRACEBACK_CLIP_LEN).rstrip("\n"),
+        "```",
+        "",
+    ]
+    _write_or_shout(path, "\n".join(L) + "\n", "internal-error artifact")
+
+
+def write_refusal_artifact(path: Path, reason: str, db_path: str,
+                            attainable_maker_fee_bp: Sequence[float],
+                            windows: Sequence[Tuple[str, str, str]],
+                            grid_h: Sequence[int], grid_k: Sequence[int],
+                            grid_variant: Sequence[str], grid_tau: Sequence[float],
+                            grid_n: Sequence[int],
+                            grid_fee_bp: Sequence[float] = GRID_FEE_BP,
+                            grid_adv_bp: Sequence[float] = GRID_ADV_BP) -> None:
+    """TASK_902 item 2b — a failure at the FIRST data touch (`probe.report_bar_frequency`,
+    reached deep inside `run_sweep`, before `write_artifact` is ever callable) used to crash
+    uncaught with NO artifact written: a traceback, exit 1, nothing at `--out`. Since
+    orchestration PARSES THE ARTIFACT and never the exit code alone (D58, pre-902), that is
+    indistinguishable from a run that never started. This writes a small, clearly-labelled,
+    artifact-SHAPED refusal record to the SAME `--out` path instead: no cell table (none was
+    ever computed — inventing a full dropped-row table for a failure that happened before the
+    universe or even the grid size were resolved would fabricate structure this run never
+    reached), but every input the caller supplied, the reason, and an explicit `n_cells_recorded:
+    0` against the expected count so a completeness-checking reader sees the same gate-(ii)-style
+    violation a partial run would show.
+
+    TASK_902 fix cycle 2, BLOCKER — THIS FILE IS NOW ONLY EVER WRITTEN FOR A GOVERNED REFUSAL.
+    `main()` used to route EVERY `Exception` here, so an injected `KeyError`/`TypeError` in
+    `probe.report_bar_frequency` — an ordinary code defect — produced this exact artifact,
+    byte-identical prose to the legitimate `sqlite3.OperationalError` case, and the traceback was
+    thrown away. Discrimination is now by TYPE (`REFUSAL_EXCEPTIONS`), and anything outside that
+    closed set gets `write_internal_error_artifact` instead, which says DEFECT everywhere this
+    file says REFUSAL and carries the traceback."""
+    n_cells_expected = (len(list(grid_h)) * len(list(grid_k)) * len(list(grid_variant))
+                         * len(list(grid_tau)) * len(list(grid_n)) * len(list(windows))
+                         * len(list(grid_fee_bp)) * len(list(grid_adv_bp)))
+    L = [
+        "# TASK_897 -- gated_maker sweep artifact -- REFUSED BEFORE ANY CELL WAS MEASURED", "",
+        "> ## :warning: THIS RUN REFUSED AT THE FIRST DATA TOUCH -- **NO CELL IN THIS ARTIFACT "
+        "WAS EVER MEASURED**",
+        ">",
+        "> `run_sweep` raised before `write_artifact` was ever reachable (TASK_902 item 2b: this "
+        "used to be an uncaught traceback with NO artifact written at all -- indistinguishable, "
+        "to an orchestrator that parses the artifact and never the exit code alone, from a run "
+        "that never started). This file is a CONTROLLED REFUSAL record, not a completed sweep: "
+        "it has no cell table because no cell was ever reached, and the process exits non-zero "
+        "(TASK_902 item 1's exit-code contract treats 0 of the expected cells recorded as the "
+        "gate-(ii) violation it is).",
+        ">",
+        "> **A GOVERNED REFUSAL, i.e. a PRECONDITION this harness deliberately checks** -- the "
+        "exception was one of "
+        f"{_refusal_exception_names()} (a missing/unreadable "
+        "`--db-path`, or one of this harness's own gates). It is NOT an instrument defect: a "
+        "defect writes a DIFFERENT artifact, with a different title and banner and a full "
+        "traceback in it. Fix the invocation, not the instrument. (TASK_902 fix cycle 2's BLOCKER "
+        "was that a shipped `TypeError` and a missing DB used to produce byte-identical prose "
+        "here. Neither file quotes the other's banner text, deliberately: an orchestrator greps "
+        "these artifacts, so a cross-reference would make the two kinds match each other's "
+        "search strings.)",
+        "",
+        # item 11 (fix cycle 2): `db_path` and `reason` were clipped; these four were NOT, and
+        # every one of them is a caller-supplied SEQUENCE — unbounded in length through the public
+        # API (e.g. `run_sweep(grid_h=range(10**6))`), which is the same surface item 2's second
+        # root cause lived on. All echoes in this record are clipped now.
+        f"- **db_path (as supplied to this harness):** `{_clip_echo(db_path)}`",
+        f"- **attainable_maker_fee_bp_tiers:** {_clip_echo(list(attainable_maker_fee_bp))}",
+        f"- **windows:** {_clip_echo([{'name': n, 'start': s, 'end': e} for (n, s, e) in windows])}",
+        f"- **grid:** H={_clip_echo(list(grid_h))} k={_clip_echo(list(grid_k))} "
+        f"variant={_clip_echo(list(grid_variant))} tau={_clip_echo(list(grid_tau))} "
+        f"N={_clip_echo(list(grid_n))} fee_bp={_clip_echo(list(grid_fee_bp))} "
+        f"adv_bp={_clip_echo(list(grid_adv_bp))}",
+        f"- **Cells expected:** {n_cells_expected}  **recorded:** 0",
+        f"- **Refusal reason:** {_clip_echo(reason)}",
+        "",
+    ]
+    # MINOR 2: this write is itself guarded — a `--out` whose parent is an existing plain file
+    # used to raise `FileExistsError` out of `mkdir` here, INSIDE main()'s failure handler and
+    # outside its `except`, leaving no artifact at all and burying the original refusal.
+    _write_or_shout(path, "\n".join(L) + "\n", "refusal artifact")
 
 
 def main() -> None:
@@ -1497,7 +2154,16 @@ def main() -> None:
     ap.add_argument("--val-start", type=str, default="2024-06-01")
     ap.add_argument("--window-a", type=str, default="2024-11-01,2025-04-01")
     ap.add_argument("--window-b", type=str, default="2025-04-01,2026-03-01")
-    ap.add_argument("--out", type=str, default=str(_THIS.parent / "result.md"))
+    ap.add_argument(
+        "--out", type=str,
+        default=str(_REPO / "runs" / "897_corrected_809" / "result.md"),
+        help="TASK_902 item 7: defaults into the UNTRACKED runs/ tree ("
+             "runs/*/* is gitignored), never into the tracked experiments/897_corrected_809/ "
+             "directory a bare run used to write into by default (result.md there is tracked, "
+             "so a bare run's output was one `git add -A` away from being committed as source — "
+             "every 897 brief carried a 'never use the default --out' instruction discipline "
+             "because of this). Override freely; the scheduled gpu-server leg always passes its "
+             "own timestamped path explicitly.")
     ap.add_argument("--smoke", action="store_true", help="tiny pre-registered SMOKE grid, not the real one")
     ap.add_argument("--skip-inherited-ic-check", action="store_true",
                      help="Skip the pin-era inherited-IC GUARD (TASK_897 D60: gated against 806's "
@@ -1524,17 +2190,82 @@ def main() -> None:
     else:
         grid_h, grid_k, grid_variant, grid_tau, grid_n = GRID_H, GRID_K, GRID_VARIANT, GRID_TAU, GRID_N
 
-    cells, meta = run_sweep(
-        attainable_maker_fee_bp=tiers, db_path=db_path, train_start=args.train_start,
-        val_start=args.val_start, windows=windows, grid_h=grid_h, grid_k=grid_k,
-        grid_variant=grid_variant, grid_tau=grid_tau, grid_n=grid_n, seed=args.seed,
-        n_boot=args.n_boot, verify_inherited_ic=not args.skip_inherited_ic_check,
-    )
     out = Path(args.out)
+    # TASK_902 item 2b — `probe.report_bar_frequency` (called deep inside `run_sweep`) is this
+    # harness's FIRST data touch on every run, and it has no exception handling of its own: an
+    # absent/unreadable `--db-path` (or any other failure this harness did not anticipate) used
+    # to crash UNCAUGHT — a traceback, exit 1, and NO artifact written at all. The standing
+    # orchestration contract (D58, pre-902) is that orchestration PARSES THE ARTIFACT, never the
+    # exit code — a refusal that produces nothing to parse is indistinguishable from a run that
+    # never started. Catch it here and write a legible, clearly-labelled refusal record to the
+    # SAME `--out` path instead. `SystemExit` (every clean refusal already in this file, e.g.
+    # `assert_db_path_allowed`/`parse_fee_tiers`/gate (iv)) is a `BaseException`, NOT an
+    # `Exception`, so it is untouched by the `except` below and propagates exactly as before —
+    # same for `KeyboardInterrupt`.
+    #
+    # TASK_902 fix cycle 2, BLOCKER — TWO HANDLERS, NOT ONE, AND THE TRACEBACK IS NEVER
+    # DESTROYED. The single `except Exception` this replaced rendered EVERY escape as the
+    # governed-refusal artifact above: an injected `KeyError('nonexistent_key')` or
+    # `TypeError("unsupported operand type(s) for +: 'NoneType' and 'int'")` in
+    # `probe.report_bar_frequency` produced a file titled `REFUSED BEFORE ANY CELL WAS MEASURED`
+    # saying "This file is a CONTROLLED REFUSAL record", byte-identical prose to the legitimate
+    # missing-DB case, with exit 1 — so a shipped defect and a bad invocation were
+    # indistinguishable to the operator AND to the orchestrator (whose standing contract is to
+    # parse the artifact, never the exit code alone). Worse than the loud uncaught traceback it
+    # replaced. `reason = f"{type(exc).__name__}: {exc}"` was the only capture and
+    # `traceback.format_exc()` was called nowhere in this file, so the call stack was destroyed.
+    #
+    # Discrimination is by TYPE (`_is_governed_refusal` over the closed `REFUSAL_EXCEPTIONS` set,
+    # minus the inherited-but-defect classes), not by where the exception was caught, and BOTH
+    # paths now capture `traceback.format_exc()`.
+    try:
+        cells, meta = run_sweep(
+            attainable_maker_fee_bp=tiers, db_path=db_path, train_start=args.train_start,
+            val_start=args.val_start, windows=windows, grid_h=grid_h, grid_k=grid_k,
+            grid_variant=grid_variant, grid_tau=grid_tau, grid_n=grid_n, seed=args.seed,
+            n_boot=args.n_boot, verify_inherited_ic=not args.skip_inherited_ic_check,
+            scheduled_real_data_run=args.scheduled_real_data_run,
+        )
+    except Exception as exc:  # noqa: BLE001 — see the block comment above; the REFUSAL-vs-DEFECT
+        # discrimination is `_is_governed_refusal`, by TYPE, not by which clause caught it.
+        reason = f"{type(exc).__name__}: {exc}"
+        tb_text = traceback.format_exc()          # NEVER destroyed — the BLOCKER's second half.
+        if _is_governed_refusal(exc):
+            write_refusal_artifact(out, reason, db_path, tiers, windows, grid_h, grid_k,
+                                    grid_variant, grid_tau, grid_n)
+            print(f"[897-sweep] REFUSED before any cell was measured: {_clip_echo(reason)} Wrote "
+                  f"refusal artifact to {out}.", file=sys.stderr, flush=True)
+            # The refusal artifact is self-explanatory and the message above names the cause, but
+            # the stack is still the cheapest way to see WHICH data touch refused — surfaced on
+            # stderr only (never in the artifact, which stays the small legible record it was
+            # designed as).
+            print("[897-sweep] refusal traceback (diagnostic only — this was a governed refusal, "
+                  f"not a defect):\n{_clip_echo(tb_text, TRACEBACK_CLIP_LEN)}",
+                  file=sys.stderr, flush=True)
+        else:
+            write_internal_error_artifact(out, reason, tb_text, db_path, tiers, windows, grid_h,
+                                           grid_k, grid_variant, grid_tau, grid_n)
+            print(f"[897-sweep] UNEXPECTED INTERNAL ERROR — THIS IS A DEFECT IN THE INSTRUMENT, "
+                  f"NOT A GOVERNED REFUSAL: {_clip_echo(reason)} Wrote internal-error artifact to "
+                  f"{out}. Traceback follows:", file=sys.stderr, flush=True)
+            print(_clip_echo(tb_text, TRACEBACK_CLIP_LEN), file=sys.stderr, flush=True)
+        sys.exit(1)
+
     write_artifact(cells, meta, out)
     print(f"[897-sweep] DONE. {meta['n_cells_recorded']}/{meta['n_cells_expected']} cells "
           f"recorded (ok={meta['n_cells_ok']}). Wrote {out}. Runtime {meta['runtime_s']:.1f}s.",
           flush=True)
+    # TASK_902 item 1 / D58(a) — exit-code contract: non-zero on a gate-(ii) completeness
+    # violation, exit 0 for an honest empty result. See `exit_code_for`'s docstring.
+    code = exit_code_for(meta)
+    if code == 2:
+        # fix cycle 2, MAJOR — a zero-cell run is loud on stderr too, not only in the artifact.
+        print("[897-sweep] ZERO CELLS: at least one grid dimension was EMPTY, so no cell was "
+              "ever measured and gate (ii)'s recorded==expected check is satisfied trivially by "
+              "0==0. This is the instrument doing nothing, NOT an honest empty result — exiting "
+              "2. See the ZERO CELLS banner in the artifact.", file=sys.stderr, flush=True)
+    if code != 0:
+        sys.exit(code)
 
 
 if __name__ == "__main__":
