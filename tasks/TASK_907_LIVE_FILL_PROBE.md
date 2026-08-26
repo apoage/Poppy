@@ -1,3 +1,82 @@
+> **STATUS (2026-08-27, factory run 43): HALTED ON THE THREE-CYCLE RULE — NOT SHIPPED. Work is
+> BUILT, GREEN ON ITS OWN SUITE (152 passed), and LEFT IN THE TREE UNCOMMITTED. See D66.**
+> Preserved at `lore/handoff_2026-08-27_factory_run_43_907_halt.patch` (5553 lines, 20 files).
+>
+> **Phase 1 (shadow) is complete and phase 2 exists only as its refusal gate and rails — an
+> orchestrator scope split, flagged for the operator.** `place_order()` raises `NotImplementedError`
+> as its first statement; **no code path in this work can transmit an order**, re-enumerated after
+> every cycle (the only network primitive is `websockets.connect` against a hardcoded public
+> `wss://ws.kraken.com/v2`, sending exactly two public subscribe frames; `kraken_client`'s
+> `add_order`/`_private_request` are never imported; nothing anywhere catches `NotImplementedError`).
+> No credential is read, logged or referenced. Live order placement was deliberately deferred to its
+> own verified increment.
+>
+> **Why it halted, and the pattern that is the actual finding.** Three cycles, three real defects,
+> and every one was the SAME failure family — *silent absence presented as completeness* — at a
+> successively finer granularity:
+>
+> | cycle | defect | granularity |
+> |---|---|---|
+> | 1 | NaN markouts rendered as real numbers **and** a false `BELOW measured` verdict (`tier >= nan` is always False); overlapping recorded gaps double-counted coverage, so `assert_complete()` passed over a real 200s hole | per-sample, per-gap |
+> | 2 | sub-threshold accumulation: events 119s apart (just under a 120s threshold) for 10 days → `is_complete() → True`, full artifact, `recorded_gaps=0`. And `_find_unrecorded_gaps` counted **heartbeats** as events, so a live socket with a throttled book/trade subscription defeated both defenses at once | cumulative, per-capture |
+> | 3 | a declared pair with **ZERO** data-bearing events for the entire capture evades all three defenses: it never enters `data_ts`, so there is no timeline to find a jump in and no coverage record to be "degraded". Named in the top-line provenance, then silently absent from every downstream table | per-pair, total absence |
+>
+> Cycle 3's own docstring shows it reasoned carefully about a pair *degrading partway* (fixed by
+> measuring coverage over the capture's **global** span) — the case it did not reach is a pair dead
+> from t=0. **Each fix was genuinely better than the last and each was still one granularity short.**
+> That is why this is a decision rather than a fourth patch.
+>
+> **What cycle 3 built and got right** (and it is substantial — reuse it, do not rebuild):
+> three defenses that do not subsume one another (per-jump over all timestamps = "was the socket
+> dark?"; per-jump per-pair over book/trade only = "did we observe the market?"; cumulative
+> `coverage_by_pair`). Recorded gaps leave the **denominator** rather than being double-punished,
+> since `covers()` already drops markouts across them, so the gated quantity is the *undisclosed*
+> remainder. Union arithmetic throughout, so overlapping spans are never summed. Coverage window is
+> `BAR/4` and **must** be tighter than the gap threshold — with window == threshold, any cadence just
+> under the threshold reads as fully covered and the aggregate check becomes **structurally unable to
+> fire**; that relationship is pinned by a test. `is_complete()` is fail-CLOSED on
+> `coverage_evaluated`. `read_capture` refuses `gap_detect_threshold_s > BAR_INTERVAL_S` and the
+> default drops 120 → 60, because a *loose reader* threshold is the dangerous direction while a
+> stricter recorder is safe. The coverage bound is deliberately **not** a CLI flag — "a dial on a
+> fail-loud bound is a bypass with extra steps" — and that is tested. A single declared clock basis
+> (local receipt), with `read_capture` refusing any capture declaring another. Schema drift split into
+> three counters, persisted and surfaced, with a capture lacking counters saying the counts are
+> **UNKNOWN, not zero**. And the trade-print fallback is **excluded** from estimand 1 and reported as
+> a labelled secondary table, because after a fill goes badly aggressor flow is one-sided with the
+> move, so the print biases measured adverse selection **too pessimistic** — the one direction a
+> contaminant may not push, since it is the direction of this row's own preferred conclusion.
+> *(Orchestrator ruling: that exclusion CONFORMS to the pre-registration rather than amending it —
+> "mid price at t+h" never authorised a print as a mid — and both readings remain evaluable from the
+> artifact because the excluded samples are reported with full statistics.)*
+>
+> **The fix for the halting MAJOR is small and specified**, which is why D66 asks a question rather
+> than assuming: require every pair in `meta.pairs` (or every pair the recorder was configured to
+> subscribe to) to have at least one coverage record / one data-bearing event before
+> `assert_complete()` passes. Related and worth folding in: `assert_complete()` currently trusts the
+> *shape* of `coverage_by_pair` rather than verifying it covers every pair that should have been
+> checked — 4 of 5 hand-crafted metadata shapes bypassed it (not reachable from the real
+> `read_capture` path today, but it is the same missing cross-check).
+>
+> **Also disclosed, deliberately open:** `covers()` still uses the heartbeat-inclusive span, bounded
+> downstream by the staleness cap into `n_markouts_dropped_no_mid` (judged adequate — no fabricated
+> number results). The aggregate bound is per-pair pooled over book+trade rather than per-channel,
+> because the channels have different natural cadences; the shape pooling could hide (book dies,
+> trades stay dense) is caught from the other side by the mid-source split, and a test **proves that
+> interlock** rather than arguing it. The 2% / 15s bound is a judgement anchored to the estimand, not
+> an empirical calibration — no live cadence data exists to check it against, and the refusal message
+> says re-cut or re-run, **explicitly not widen the bound**.
+>
+> **DO NOT LAUNCH THE CAPTURE YET, for a second independent reason:** Kraken v2's message schema is
+> **unverified against the live feed** (the agents had no network). The failure symptom to watch in the
+> first minutes of any launch is "connected but zero events recorded". Cycle 3's drift detector makes
+> that loud rather than silent, but it has never met the real wire.
+>
+> **Verification:** security ×1 + fail-closed ×3. Suite **152 passed** (53 → 121 → 152), selftest
+> 12/12, `py_compile` clean on all 19 lane files. Five mutations RED, plus two proofs needing no
+> mutation at all: a 59s-cadence fixture asserting both per-jump defenses are clean so only the
+> cumulative check can be firing, and a re-read of that identical fixture with the bound relaxed to
+> 0.999 that passes — making the refusal attributable to the bound and nothing else.
+
 # TASK_907 — the fill-model probe: measure realized adverse selection (the record's first empirical anchor)
 
 **Status**: READY 2026-08-25 (planner; seeded by the operator's D65 ruling — "(b) then (a)":
