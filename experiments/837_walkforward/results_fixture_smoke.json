@@ -2,7 +2,8 @@
   "task": "TASK_837",
   "smoke": true,
   "db": "fixtures/trading_fixture.db",
-  "generated": "2026-07-08T22:22:53+00:00",
+  "generated": "2026-08-26T22:54:34+00:00",
+  "swept_stale_scratch": [],
   "smoke_folds": {
     "root": "experiments/837_walkforward/folds/smoke",
     "n_checks": 34,
@@ -46,7 +47,7 @@
       "all_beat_reference": false,
       "note": "pooled view \u2014 NEVER read without the per-fold rows above (TASK_837: no pooled Sharpe without the per-fold view)"
     },
-    "ledger_row": "| 837/R4 | 2026-07-09 | H1 (learned) | Walk-forward (fixture-smoke-stub): per-fold eval vs each window's OWN corridor (smokefold1 + smokefold2) | smokefold1 net@21 +0.300 in [+1.869, +36.882] (ref +2.434, pos -0.045) \u00b7 smokefold2 net@21 -0.200 in [-4.345, +77.791] (ref -7.069, pos +0.050); pooled mean +0.050 min -0.200 over 2/2 folds. FIXTURE-SMOKE with STUB scorecards \u2014 plumbing proof only, no verdict. | per-fold positions above (never pooled alone) | experiments/837_walkforward/folds/smoke/walkforward_summary.json |"
+    "ledger_row": "| 837/R4 | 2026-08-27 | H1 (learned) | Walk-forward (fixture-smoke-stub): per-fold eval vs each window's OWN corridor (smokefold1 + smokefold2) | smokefold1 net@21 +0.300 in [+1.869, +36.882] (ref +2.434, pos -0.045) \u00b7 smokefold2 net@21 -0.200 in [-4.345, +77.791] (ref -7.069, pos +0.050); pooled mean +0.050 min -0.200 over 2/2 folds. FIXTURE-SMOKE with STUB scorecards \u2014 plumbing proof only, no verdict. | per-fold positions above (never pooled alone) | experiments/837_walkforward/folds/smoke/walkforward_summary.json |"
   },
   "negative_control": {
     "case": "control_noop",
@@ -59,7 +60,7 @@
       "rejected": true,
       "targeted_check": "ASSERT-1",
       "named_in_rejection": true,
-      "message": "[smokefold1] ASSERT-1 train/eval windows disjoint: parsed train end 2025-11-15 (<= 1763164800) vs eval start 2025-11-01 (>= 1761951600); loader bounds are end-INCLUSIVE (vectorbt_env.py:584)"
+      "message": "[smokefold1] ASSERT-1 train/eval windows disjoint: parsed train end 2025-11-15 (<= 1763164800) vs eval start 2025-11-01 (>= 1761955200); loader bounds are end-INCLUSIVE (vectorbt_env.py:660)"
     },
     {
       "case": "tampered_pit_universe",
@@ -90,10 +91,48 @@
       "message": "[smokefold1] eval job 837_smokefold1_eval_s0 references the fold's eval_pit file: --periods-file experiments/837_walkforward/folds/smoke/_negative/eval_job_on_leaky_universe/smokefold1/period_eval_leaky.json: identity==files.eval_pit (experiments/837_walkforward/folds/smoke/_negative/eval_job_on_leaky_universe/smokefold1/period_eval.json)=False; window 2025-11-01..2025-11-30==['2025-11-01', '2025-11-30']=True; assets==universe_pit symbols=False"
     }
   ],
+  "negative_materialize_refusal": [
+    {
+      "case": "no_flag_over_existing",
+      "rejected": true,
+      "hash_before": "6d2faab100f2411d687492e5789ffb6d7aa4efb9cedc480d54b5f2bece8bd538",
+      "hash_after": "6d2faab100f2411d687492e5789ffb6d7aa4efb9cedc480d54b5f2bece8bd538",
+      "content_untouched": true,
+      "message": "materialize: refusing to write into non-empty /tmp/837_decoy_lkflbhjd \u2014 it already holds 2 entries (provenance: recorded ? from 'fixtures/trading_fixture.db'). Re-materializing over an existing fold tree is an explicit act: pass --overwrite-existing (CLI) / allow_overwrite=True (API) to authorize it, or point --out-root at a fresh directory. Nothing was written."
+    },
+    {
+      "case": "inconsistent_provenance_even_with_flag",
+      "rejected": true,
+      "hash_before": "4aa9dee4db3464bb80b6f960d4f2ec4d8176051ea38633cbff892731194dc606",
+      "hash_after": "4aa9dee4db3464bb80b6f960d4f2ec4d8176051ea38633cbff892731194dc606",
+      "content_untouched": true,
+      "message": "materialize: /tmp/837_liar_32nt0ex7: REFUSING \u2014 its recorded provenance DISAGREES WITH ITSELF: it stores db_kind='fixture' while its universe_db='trading_data.db' re-derives as 'real'. That field is exactly what the fixture-over-real refusal is computed from, so a manifest that lies in it could authorize the one overwrite no flag may authorize. An internally inconsistent manifest is hand-edited or corrupt: fix or remove it deliberately. Nothing was written."
+    },
+    {
+      "case": "fixture_over_real_even_with_flag",
+      "rejected": true,
+      "hash_before": "00cf9f45567a5efd6a8caec1f190430c95e2ee36aa2abc9dc7be34f06463acb9",
+      "hash_after": "00cf9f45567a5efd6a8caec1f190430c95e2ee36aa2abc9dc7be34f06463acb9",
+      "content_untouched": true,
+      "message": "materialize: REFUSING to overwrite /tmp/837_realprov_bmtnoj9d \u2014 its recorded provenance says it was materialized from a REAL database ('trading_data.db') and this call's --db (fixtures/trading_fixture.db) is NOT POSITIVELY PROVEN real-classed (fixture): db '/home/lukas/Trader/fixtures/trading_fixture.db' NAMES the project fixture (fixtures/trading_fixture.db) \u2014 matched on the path itself, so it holds no matter which checkout this script runs from. Downgrading real fold rails to fixture-derived \u2014 or to unprovable \u2014 content is never an intended overwrite, so --overwrite-existing does NOT authorize it. Point --out-root at a scratch directory instead."
+    },
+    {
+      "case": "matching_provenance_with_flag",
+      "rejected": false,
+      "proceeded": true,
+      "content_identical_on_m4_contract": true,
+      "content_sha256": "48c1d8f3e11785ea5e7772d38413ceb02ab441d624059093304c248864a202bc",
+      "message": "authorized re-materialization over a tool-produced tree with matching provenance proceeds (B2 lockout fixed); content identity checked on the M4 contract, since the recorded content_sha256 covers volatile generated stamps"
+    }
+  ],
   "real_folds": {
     "root": "experiments/837_walkforward/folds/real",
+    "materialized_in": "experiments/837_walkforward/folds/real_smoke_scratch_q3y075hg \u2014 a unique per-run, gitignored scratch dir, deleted at the end of the run; NEVER the tracked tree",
     "n_checks": 36,
     "all_pass": true,
+    "tracked_content_verified_identical": true,
+    "tracked_tree_hash_unchanged": true,
+    "tracked_folds_real_sha256": "c10feda2f2e9c6df1325254b97204a9a0477ec19b1eb6f2c489a91b20ad89310",
     "corridors": {
       "fold1": {
         "0": {
@@ -120,7 +159,8 @@
         }
       }
     },
-    "universe_note": "PIT universes from the fixture's FULL ohlcv_daily panel (fixture daily == db daily, LEDGER 830/E0-REAL); scheduled re-materialization vs trading_data.db must reproduce them content-identically (M4 contract: volatile fields excluded \u2014 SPEC \u00a7PIT)."
+    "universe_note": "PIT universes from the fixture's FULL ohlcv_daily panel (fixture daily == db daily, LEDGER 830/E0-REAL); scheduled re-materialization vs trading_data.db must reproduce them content-identically (M4 contract: volatile fields excluded \u2014 SPEC \u00a7PIT). Verified HERE by diff against the tracked tree, not by writing to it (TASK_904A)."
   },
-  "verdict": "PASS \u2014 folds materialized with correct window boundaries; leak asserts + POLICY pre-registration PIN enforced IN CODE (good folds pass, the UNMUTATED control clone validates CLEAN, and all 5 corrupted folds are REJECTED each BY ITS TARGETED gate); corridors eval-slice-bounded; aggregation emits per-fold-first summary + LEDGER row. Plumbing proof \u2014 no training, no promotion claims."
+  "verdict": "PASS \u2014 folds materialized with correct window boundaries; leak asserts + POLICY pre-registration PIN enforced IN CODE (good folds pass, the UNMUTATED control clone validates CLEAN, and all 5 corrupted folds are REJECTED each BY ITS TARGETED gate); materialize() refuses to write into any non-empty out-root without an explicit opt-in, refuses fixture-over-real, and refuses fixture-derived content onto the canonical tracked real-fold tree by its identity (TASK_904A); corridors eval-slice-bounded; aggregation emits per-fold-first summary + LEDGER row; real-fold rails verified by diff against the tracked tree WITHOUT writing to it. Plumbing proof \u2014 no training, no promotion claims.",
+  "tracked_write_claim": "MEASURED: the tracked experiments/837_walkforward/folds/real/ tree is byte-for-byte unchanged across this run (content hash A/B, see real_folds.tracked_folds_real_sha256), and the real rails were materialized into a per-run gitignored scratch dir instead. NOT CLAIMED: 'zero writes to tracked paths' \u2014 this artifact (experiments/837_walkforward/results_fixture_smoke.json) is tracked and IS written by every smoke run, which is its purpose."
 }

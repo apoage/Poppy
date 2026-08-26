@@ -3,6 +3,67 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_904A — the walkforward smoke/materialize half of 904, and a fence re-derived twice before it held
+
+- **What shipped.** The D61(a) half: smoke out-rooting (real rails to a temp scratch, diffed, never to
+  tracked `folds/real/*`), the `--overwrite-existing` materialize gate, and the unified guarded
+  manifest reader — plus the fence those exist to serve, rebuilt **destination-first**. If the write
+  destination IS the canonical tracked `folds/real`, every write refuses unless `fold_set == "real"`
+  **and** a positively-proven real-classed `--db` **and** the explicit override are all present.
+  Caller *disagreement* with the destination is now disqualifying rather than disabling. The refusal
+  binds at a shared write choke point, so **bare `corridor` into the canonical tree now refuses too**,
+  with no writer restructured (that remains 904B).
+- **All three BLOCKERs across three cycles were the same defect at successive removes,** which is the
+  finding worth keeping. This row's own standing lens is *"what object does this guard actually
+  hold?"*, and it landed on the guard each time. Cycle 1: the fence asked the CALLER to self-report
+  `fold_set == "real"`, so `--fold-set smoke --out-root <canonical> --overwrite-existing` used a
+  perfectly legal value and wrote smoke content into the golden tree — and separately, the anchor was
+  `__file__`-relative, so running an identical copy of the script from a worktree made the fence
+  **silently inert**, while the suite had proved both fence directions by **monkeypatching that very
+  anchor**. Cycle 2 fixed the tree anchor and **the `__file__` anchor survived in the DB classifier**.
+  Cycle 3 named the root cause: **one classifier served two consumers of opposite polarity** —
+  "unknown ⇒ real" is conservative when protecting a directory and dangerous when authorizing a write.
+  It is now a tri-state with two differently-named functions carrying **different signatures**, so a
+  call-site swap raises `TypeError` rather than silently misfiring, and unprovable identity REFUSES.
+- **Fixture identity now rests on a TRACKED pin** (`fixtures/FIXTURE_IDENTITY.json`). That is the
+  load-bearing choice: the fixture itself is gitignored, but the pin survives into exactly the
+  worktree/reconstruction case that defeated cycle 2. Size is compared before hashing so the 24 GB
+  real DB is never read through.
+- **Three false claims in this row's record were corrected.** "Each of the 7 dropped tests ERRORS on
+  missing 904B symbols" — true for 4/7; the other three run to completion and document real unguarded
+  gaps, one of which is what moved the tracked pin during verification. "It does not matter which copy
+  of this script runs." And "a verifiably REAL-classed `--db` can never author this tree" — where
+  *verifiably* was the load-bearing word, satisfied by a **failure** to classify.
+- **NAMED REMAINDER (MAJOR).** The "renamed byte-identical copy cannot author this tree" guarantee is
+  contingent on the tracked pin's own correctness; with a stale or corrupt sha256 there, such a copy
+  classifies real and IS authorized — reachable only in the worktree case the pin leg was added for.
+  The **honesty half is closed** (the trust dependency is now disclosed in the design note and
+  `SPEC.md`, because "a claim in shipped text the code doesn't back" is this project's named recurring
+  defect and this row had already shipped two). The **mechanism half is open**: cross-verify the pin
+  against a locally-present fixture when one exists.
+- **Also carried.** `_prior_db_kind` deliberately relaxed one courtesy check, so "strictly more
+  refusals" is false as written and the CLAIM was corrected rather than the behaviour.
+  `aggregate --fold-root <canonical>` with the default `--out` now refuses (documented break; nothing
+  reads that path). `_guard_write_path` is a refusal choke point over writers that still write eagerly
+  and non-atomically — "the guard is correct and the writer is not two-phase" is the same family of
+  defect, verified not to bite today and left to **TASK_904B**.
+- **Process, recorded because it cost real time twice.** The tracked pin `1b31624a…` moved DURING
+  verification when a lens ran a dropped test that invokes bare `corridor`. It self-diagnosed and did
+  not attempt recovery; a second lens saw the drift independently; **neither misattributed it to the
+  diff under review**, and the orchestrator restored the exact bytes by explicit pathspec after reading
+  the full diff. **D61's premise "HEAD's latent landmine stands until 904A ships" was wrong as
+  written** — bare `corridor` is 904B's scope — and cycle 3 closed it anyway via the shared choke
+  point, under an explicitly authorised scope judgment.
+- **Unrelated finding for the planner.** `runs/875_wf/WF_SUMMARY.json` being 2 bytes `[]` is explained
+  by `runs/875_wf/NOTE_summary_key_mismatch.md` — the orchestrator read `tiers["21"]["sharpe"]` instead
+  of `sharpe_full`, so every seed was skipped — and its mtime (2026-08-06) predates the run-42 incident
+  by three weeks. The md5 `4c306427a8…` that this task's gate (iii) and the run-42 handoff both cite
+  does not reproduce against anything in the tree today, so the stub may be the honest output of a
+  known-broken key read rather than a casualty. This changes what to look for in the operator snapshot.
+- **Verification.** correctness + fail-closed ×3 + regression ×2 + security. **59 passed**; smoke wrote
+  only `results_fixture_smoke.json`; selftest 12/12; pin `1b31624a2da9984620567afc30df4cbf` unmoved and
+  orchestrator-verified at every stage.
+
 ## 2026-08-27 — TASK_881D — the checkpoint protection deleter ships, and D64's `--apply` freeze becomes a CODE GATE
 
 - **What shipped.** The D62(a)/D63(a) work that had been green-but-unshipped since factory run 42 is

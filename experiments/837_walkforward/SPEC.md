@@ -58,16 +58,110 @@ survivorship-leaky for fold evals) is emitted alongside as `period_*_leaky.json`
 `_comment` carrying `LEAKY-UNIVERSE`, order byte-identical (TASK_740 landmine), for
 continuity with 821-lineage numbers only.
 
-**Scheduled cross-check (pre-registered; M4 identity contract)**: re-running
-`materialize --fold-set real --db trading_data.db` on the server must reproduce
-`folds/real/` **content-identically**, where the contract is: all four `period_*.json`
-per fold **byte-identical** (they embed no volatile fields), and `universe_pit.json`
-identical on the DERIVATION fields (`as_of`, `as_of_ts_utc`, `rule`, `n_qualifying`,
-`n_selected`, `symbols`, `asset_ids`, `counts`). The volatile fields — `generated`
-(timestamp), `db` (source path), `minute_coverage_check` (VACUOUS on the fixture,
-CHECKED on the real db) — are **excluded from the contract** by definition (a literal
-byte-identity contract would be unsatisfiable). Any diff on a contract field is a
-finding (daily-parity break).
+**Scheduled cross-check (pre-registered; M4 identity contract)**:
+
+```bash
+# BOTH writing steps need the full three-part unlock (--fold-set real + a positively
+# proven real-classed --db + --overwrite-existing) to land in the tracked tree — the
+# identity fence binds at the shared write choke point, so `corridor` is gated too.
+python experiments/837_walkforward/walkforward.py materialize \
+    --fold-set real --db trading_data.db --overwrite-existing
+python experiments/837_walkforward/walkforward.py corridor \
+    --fold-set real --db trading_data.db --overwrite-existing
+```
+
+on the server must reproduce `folds/real/` **content-identically**, where the contract
+is: all four `period_*.json` per fold **byte-identical** (they embed no volatile fields),
+and `universe_pit.json` identical on the DERIVATION fields (`as_of`, `as_of_ts_utc`,
+`rule`, `n_qualifying`, `n_selected`, `symbols`, `asset_ids`, `counts`). The volatile
+fields — `generated` (timestamp), `db` (source path), `minute_coverage_check` (VACUOUS on
+the fixture, CHECKED on the real db) — are **excluded from the contract** by definition (a
+literal byte-identity contract would be unsatisfiable). Any diff on a contract field is a
+finding (daily-parity break). Run it against a scratch `--out-root` first and diff, if you
+want the cross-check without touching the tracked tree at all.
+
+**`--overwrite-existing` (TASK_904A)**: `materialize` refuses to write into a non-empty
+`--out-root` unless you pass this flag — the gate on overwriting an existing fold tree is
+the operator's explicit intent, because the default invocation is
+`materialize --db fixtures/trading_fixture.db --fold-set real --out-root folds/real` and
+an accidental bare `materialize` would otherwise silently replace real fold rails with
+fixture content. The flag authorizes the write above; it does **not** authorize
+fixture-over-real — a re-materialization whose recorded provenance says the target was
+built from a real database and whose `--db` is the fixture is refused outright (exit 1),
+flag or no flag. The manifest's `_provenance` block (db, db class, fold set, content hash)
+is **disclosure**: a re-materialization prints what it is replacing and flags any
+disagreement, but nothing inside the directory grants write permission.
+
+**The canonical `folds/real/` identity fence (TASK_904A, destination-first)** — scope, said
+precisely, because an earlier draft of this section over-claimed. The tracked
+`folds/real/` tree is fenced by the **destination's own identity**, never by this script's
+location and never by what the directory's manifest says about itself:
+
+- **Identity** = the canonical real-fold path of the git checkout the *destination* lives
+  in (found by walking up from `realpath(dest)` to the nearest `.git`), matched by path and
+  by `(st_dev, st_ino)`. So a copy of `walkforward.py` run from `/tmp` — or from a
+  HEAD-control worktree — that points `--out-root` at the real tree by absolute path is
+  fenced exactly the same. A genuine `/tmp` scratch copy outside any checkout is *not*
+  fenced, which is what scratch copies are for. If identity cannot be resolved the guard
+  **refuses**; it never goes inert.
+- **Unlock** = a conjunction that must AGREE with the destination: `--fold-set real` AND a
+  **positively proven** real-classed `--db` AND `--overwrite-existing`. "Positively proven"
+  is load-bearing and is the cycle-3 fix: the db class is a **tri-state**
+  (`fixture` / `real` / `unproven`) and the two consumers of it are deliberately *separate
+  functions of opposite polarity* — `_db_kind_protective` (collapses `unproven` → "real":
+  protect harder) for the recorded-provenance comparison, `_require_positively_real_db`
+  (collapses `unproven` → refuse) for authorization. Authorization is never granted by a
+  fallback, a default, or a failure to classify. Fixture identity is resolved
+  **destination-first** (the destination's own repo root, `_REPO` only as an extra
+  candidate) by path, by `(st_dev, st_ino)`, and by content against the tracked pin
+  `fixtures/FIXTURE_IDENTITY.json`; if it cannot be established at all, that is *not
+  positively real* and the write is refused. `FIXTURE_DB` is the CLI default value only,
+  never an identity oracle — as a `__file__`-anchored oracle it let an absolute path to the
+  real project fixture classify `real` from a worktree and overwrite the tree at exit 0.
+  Caller *disagreement* with the
+  destination is disqualifying, not exculpatory: `materialize --fold-set smoke --out-root
+  folds/real --overwrite-existing` is refused (it would write 8-asset smoke content into
+  the 64-asset real rails). A falsy `--db` is refused outright rather than silently
+  reclassifying.
+- **Where it binds**: at the shared write choke point, so it covers **`materialize` *and*
+  `corridor`** — `corridor` therefore also takes `--overwrite-existing` and needs the same
+  three-part unlock to write `folds/real/fold*/corridor.json` (bare `corridor` previously
+  rewrote those files with no gate at all). **`aggregate` has no unlock**: point its `--out`
+  at a run directory (e.g. `runs/<id>/WF_SUMMARY.json`) — the tracked fold tree is
+  pre-registered rails, not a results directory. The corridor/aggregate writers themselves
+  are **not** redesigned here (no idempotent recompute, no content-change detection, no
+  two-phase write) — that is TASK_904B.
+- **Net effect on refusals**, said precisely (an earlier draft over-claimed "only ever
+  refuses more"): **strictly more refusals for the canonical tree; one courtesy check for
+  un-provenanced directories was deliberately narrowed.** A hand-made non-empty scratch
+  directory whose `fold_manifest.json` records no `universe_db`/`fold_set`/`generated` used
+  to hit the fixture-over-real refusal, because the old prior-class derivation *invented*
+  `"real"` for it; `_prior_db_kind` now returns `(None, None)` for a directory that makes no
+  provenance claim, and the write proceeds. That is intended (see its docstring): inventing
+  a class for a directory that never recorded one locks out every hand-made scratch
+  out-root, the canonical tree is fenced separately and unconditionally by destination
+  identity (`_authorize_canonical_write` runs first, independent of `_prior_db_kind`), and
+  the relaxation only touches directories the operator already opted to overwrite.
+  A second, narrower consequence of the same shape, disclosed for completeness: because the
+  PRIOR-side classifier now recognises the fixture by basename and by pinned content as well
+  as by path, a recorded `universe_db` that names a fixture *copy* (e.g.
+  `backups/trading_fixture.db`, or a renamed byte-identical copy) reclassifies from "real" to
+  "fixture", so the fixture-over-real refusal no longer fires for it. That is the correct
+  class — such a tree really is fixture-provenance, and the refusal exists to protect
+  REAL-provenance trees — but it is a change in the *fewer refusals* direction and is not
+  **Trust dependency (cycle-3 re-verify, named remainder).** The "a renamed byte-identical
+  copy cannot author this tree" guarantee is contingent on the tracked pin
+  `fixtures/FIXTURE_IDENTITY.json` being correct. If that pin's sha256 is stale, hand-edited
+  or corrupt, a renamed byte-identical copy of the real fixture classifies as real and IS
+  authorized. It is reachable only where the `--db` path does not carry the fixture's
+  basename AND no local fixture file exists for inode comparison at any candidate root --
+  the worktree/reconstruction case the pin leg was added for. The bare-default
+  `--db fixtures/trading_fixture.db` path is unaffected (spelling evidence wins). This module
+  does not call `fixtures/fixture_identity.py::verify_or_die`, so nothing cross-checks the pin
+  against a live fixture file before trusting it. Open remainder, not fixed here.
+
+  covered by "strictly more". No manifest in the tree today is affected: the only recorded
+  values are `fixtures/trading_fixture.db` and `trading_data.db`, and neither changes class.
 
 **Pre-flight (M5 — REQUIRED before launching any fold training)**: on the fixture the
 `ASSERT-2 ingest-max ohlcv` gate is VACUOUS for the real folds (no pre-2025 minute rows;
@@ -218,6 +312,10 @@ fold_manifest AND both job manifests — the MAJOR-3 de-confound):
 A rejection by the WRONG gate fails the smoke (each case asserts its targeted check is
 named in the rejection) — a refactor that de-tooths any single gate breaks the smoke.
 Then the REAL fold rails (materialize + corridor + validate → `folds/real/`, tracked).
+Since TASK_904A both writing steps of that sequence need the three-part unlock spelled out
+above (`--fold-set real` + a real-classed `--db` + `--overwrite-existing`) to land in the
+tracked tree; `smoke` itself never writes there at all — it materializes the real rails
+into a per-run gitignored scratch root and *diffs* against the tracked tree.
 Artifact: `results_fixture_smoke.json`. PASS = correct window boundaries + the leak
 gates demonstrated in BOTH directions. Stub numbers are plumbing, not verdicts; smoke
 corridor Sharpes (9–28 decisions) are short-window noise by construction and graded by
