@@ -102,6 +102,8 @@
 > --overwrite-existing` targets the canonical tree. A source of truth independent of what the
 > directory says about itself.
 >
+> **CORRECTION (2026-08-27, planner):** the gate-(iii) md5 anchor for `runs/875_wf/WF_SUMMARY.json` (`4c306427a8f40f44f3058b34a7bad6a1`) does not reproduce against any file on any current host — the run-41 regeneration never durably survived (the run-42 incident + the backup's gitignore-shaped blind spot), and the 2-byte `[]` stub at the path today (md5 `d7517139…`, mtime 2026-08-06) is the known-broken orchestrator key-read's honest output (see `runs/875_wf/NOTE_summary_key_mismatch.md`), not an incident casualty. **Nothing is at risk:** the raw per-seed JSONs are intact and reproduce the LEDGER tallies exactly (planner-verified 2026-08-25, `grade_correct.py`: folds 5/5, medians +1.4957/+0.3995/+0.3108/+0.4121/−2.9566, 4 positive, 1 above floor). The summary file is re-derivable at will; treat the md5 anchor above as a historical reference, not a live pin.
+
 > **MINOR — a reported exit code is wrong.** The ship claim says the unified guarded reader makes a
 > FIFO "exit 2 (was a 124 hang)". Measured, every guarded-reader refusal path (`validate`,
 > `aggregate`, `materialize`; FIFO / dangling-symlink / directory / NUL-byte) exits **1** via the

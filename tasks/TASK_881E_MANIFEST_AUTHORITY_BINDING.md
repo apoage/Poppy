@@ -18,6 +18,14 @@ converse: "covered" must mean "someone with standing over THIS run dir declared 
 
 ## Scope
 
+4. **The in-run deleter's freeze relationship is decided here** (run-43 open item 5): 881D's
+   in-run pruner is deliberately NOT behind the D64 code gate today (a naive freeze would
+   convert "do not prune" into "kill the training run" — prune failure propagates to
+   `sys.exit(1)`). That is disclosed-only; this row owns giving it a real design: the in-run
+   deleter must respect the authority/freeze story WITHOUT being able to kill its parent
+   training process (e.g. refuse-and-skip pruning with a prominent durable log line, never an
+   exit-code change on the training path).
+
 1. **Authority binding on the coverage predicate only.** A `covers:`/`protect:` entry grants
    coverage only where the manifest's own `experiments/<id>/` has a declared relationship to
    the named run dir — id-correlation (the manifest's id matches the run dir's task/experiment

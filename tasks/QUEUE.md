@@ -3,55 +3,53 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-25 (planner, post the 897 verdict + run 42 + the D64 ruling).** **897 READ ALL FAIL —
-the minute surface is closed for real** (LEDGER `897/809-corrected`): 0/576 attainable-tier
-({8,16} bp) cells clear Sharpe ≥ 1.0 & PnL > 0, no cell even reaches Sharpe ≥ 0, **0/864 at any
-nonzero fee**, best attainable −5.045; 0/188 clear even at adv=0. The pre-cost edge is real
-(+204 Sharpe fee0/adv0) and the flat 5 bp adverse-selection term alone takes it to −634 — the
-killer is the cost of immediacy, not the venue fee. **With 875/892/898 and this, every measured
-surface is closed on honest evidence; there is no live edge thread.** Consequence → **D65
-(OPEN, the operator's): the venue/cost question, with numbers.** Run 41 shipped the D60 guard
-re-base and 901-as-measured-negative (the direction NOT closed; `CI lo > 0` is "not yet
-established", moot under ALL FAIL). Run 42 shipped nothing (honest `green: false`): 881D's
-D62/D63 work is built and green in the tree but hit a NEW wall — **D64 ruled 2026-08-25: ship
-881D with the `--apply` freeze turned into a CODE GATE, then TASK_881E (manifest authority
-binding) before any freeze lift.** Run-42 incident, recorded for every future brief: **a
-verification agent ran `rm -rf` on a relative path with cwd at the repo root and destroyed
-`experiments/` + `runs/`; all 255 tracked files restored from git, 7 checkpoints restored
-byte-identical from srv. Briefs now open with the mechanism: ABSOLUTE PATHS ONLY; `cd` does not
-persist across tool calls; nothing under the repo is ever an `rm -rf` target, including via
-symlink.** Two untracked casualties need the operator's pre-09:00 snapshot:
-`experiments/906_oos_nonstationarity/` and `runs/875_wf/WF_SUMMARY.json` (the run-41
-regenerated file — reject any 2-byte `[]` stub; the good file carries `folds_positive=4 /
-folds_above_own_floor=1`; the workstation's current copy IS the stub — planner error, owned:
-the 08-23 evidence mirror predated the regeneration). The standing lens from run 41 stays:
-**"what object does this guard actually hold, at the moment it acts?"** (seven defects across
-four rows were one defect; none was caught by the agent that wrote the code).
-**Ready (physically ordered): 1 TASK_907 (the live fill-model probe — operator-ruled D65:
-shadow-first, real phase armed only by operator flag + budget cap) → 2 TASK_881D (RESUME per
-D64: commit the in-tree green work + the `--apply` code gate + the PROTECTED.txt corpus; freeze
-lifts only via 881E + D35) → 3 TASK_881E (manifest authority binding, fail-closed) →
-4 TASK_904A (the verified half, D61(a)) → 5 TASK_905 (validate --fold-root false PASS) →
-6 TASK_902 (897 hardening — serves the record's future readers; the lane is closed) →
-7 TASK_904B (two-phase corridor writers; after 904A) → 8 TASK_906 (excess dispersion —
-archival/interpretive; the verdict had no near-band cells). FILLER: TASK_899 (data backfill —
-WAITING on the Q2-2026 dump). GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.** (D65 RULED by the operator 2026-08-25: probe first, then closure
-accepted and direction decided fresh with its results in hand.)
-_Next takeable: **TASK_881D per the D64 resume** — commit the green in-tree work, add the code
-gate, ship. No research measurement rows remain; every Ready row is integrity/ops until the
-operator rules D65._
+**2026-08-27 (planner, post run 43 + the D66 ruling).** Run 43 shipped three integrity rows —
+**881D** (`task881d-d64-code-gate`, `58c2d4b`: the protection deleter + D64's `--apply` freeze
+as a CODE GATE; 454 passed/1 skipped, final lens clean), **904A** (`7d98b3f`: smoke out-rooting
++ the destination-identity write fence; 59 passed), **902** (`aa2a802`: all 12 honesty items,
+no number moved — independently re-derived) — and HALTED **TASK_907 → D66** (built, green on
+its own 152-test suite, uncommitted as a patch): three cycles found one failure family at three
+granularities — *silent absence presented as completeness* (per-sample → per-capture →
+per-pair-total). **D66 ruled 2026-08-27 (planner): option (a), ONE more cycle, with two
+strengthening conditions (the declared-vs-observed reconciliation reads the SUBSCRIPTION CONFIG,
+not just `meta.pairs`; the cycle-4 panel carries a "name the next granularity" lens) and a
+pre-committed stop (any NEW absence granularity found → straight to the (b) restructure, no
+fifth cycle).** Phase-2 split CONFIRMED: rails + arming refusal built, no code path can
+transmit an order; the live-placement increment is its own future row. **907's launch has a
+planner-side precondition: the Kraken v2 schema verified against the live feed (a watched 60s
+capture smoke) BEFORE any multi-day capture starts.** Seeded: TASK_908 (904A's fixture pin-trust
+mechanism — the destination fence rests on `FIXTURE_IDENTITY.json`'s correctness and
+`walkforward.py` never calls `verify_or_die`) and TASK_909 (XS: the 897 suite's 3 standing red
+tests at HEAD — own them, fix or delete-with-prejudice; red suites train red-fatigue). The
+WF_SUMMARY.json recovery framing is CORRECTED (run-43 item 2, 904A banner): the 2-byte stub
+predates the incident by three weeks and is the known-broken orchestrator read's honest output;
+the raw data is intact and reproduces the LEDGER tallies exactly; `experiments/906_*`'s loss
+stands (implementation only — findings live in its banner). 881E gains a scope item (run-43
+item 5): the in-run deleter's freeze relationship gets a real design here — refuse-and-skip,
+never kill the training process.
+**Ready (physically ordered): 1 TASK_907 (D66 resume — cycle 4 with the two conditions, then
+ship phase 1; the shadow-capture launch is planner-side with the schema smoke first) →
+2 TASK_881E (manifest authority binding + the in-run deleter's freeze design; gates the
+`--apply` freeze lift) → 3 TASK_905 (validate --fold-root false PASS) → 4 TASK_904B (two-phase
+corridor writers — run-43 evidence: `_guard_write_path` is a refusal choke point over writers
+that still write eagerly and non-atomically) → 5 TASK_908 (fixture pin-trust mechanism) →
+6 TASK_909 (897 suite reds) → 7 TASK_906 (excess dispersion; archival). FILLER: TASK_899
+(WAITING on the Q2-2026 dump). GATED: TASK_880 (D34+D35).**
+**OPEN decisions: D43 only.**
+_Next takeable: **TASK_907 per D66(a)** — the named fix is fully specified in D66's DECIDED
+row; the work is built and green in `lore/`'s committed patch; re-apply, add the pair-level
+reconciliation, run the panel with the next-granularity lens, ship, then the planner launches
+the shadow capture._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` | M | **NEW 2026-08-25 — the operator's D65 ruling (b)-then-(a).** The tree carries 881D's UNCOMMITTED green work (run 42) — 907's commits use EXPLICIT PATHSPECS and verify `git diff --cached --name-status` (the run-41 commit-sweep lesson); 907 touches only `experiments/907_live_fill_probe/` + `runs/907_*`. The record's first empirical anchor for the never-validated maker-fill model: phase 1 SHADOW (websocket capture, touch-conditional markout distribution + touch rate — the OPTIMISTIC bound on adverse selection; zero money, srv, tmux+safe_run, fail-loud on gaps), phase 2 REAL micro-notional only on an explicit operator arm flag + budget cap, all rails in code (post-only, never a market order, caps, kill file, auto-cancel). **Pre-registered: the probe calibrates the model; it CANNOT reopen 897's ALL FAIL** (0/188 clear even at adv=0). |
-| 2 | `tasks/TASK_881D_PROTECTION_DELETER.md` (RESUME per D64) | M | The D62(a)/D63(a) work is BUILT, GREEN, and IN THE TREE (run 42 — no patch re-apply needed); 4/5 lenses clean and the fifth's finding is now ruled on. The resume: commit the in-tree work, ADD the `--apply` CODE GATE (parse/entry-time refusal unless the named override is present; refusal text names D64/TASK_881E), commit the three PROTECTED.txt corpus files (untracked never reaches srv, where ckpt_gc.py runs), re-run the suites, ship. The TTL BLOCKER fix is mutation-proven at the real drop site. **The freeze lifts only when 881E ships AND 880's D35 opens — enforced by the code gate, not the document.** |
-| 3 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` | S/M | **NEW 2026-08-25 — D64(a).** Bind the coverage predicate to manifest authority: a `covers:`/`protect:` line grants only where the manifest's own `experiments/<id>/` has a declared relationship to the named run dir — additive, fail-closed (can only REMOVE coverage). Gates the `--apply` freeze lift. The D64 repro must flip from 'covers, deletes' to 'refuses, deletes nothing', orchestrator-reproduced on the real tree. |
-| 4 | `tasks/TASK_904A_WALKFORWARD_SMOKE_OUTROOT.md` | S | **NEW 2026-08-24 — D61(a).** The twice-re-verified half of 904: smoke out-rooting (no writes to tracked `folds/real/*`), the `--overwrite-existing` materialize gate, the unified guarded manifest reader. Re-apply the committed patch `lore/handoff_2026-08-24_factory_run_41_904_cycle3.patch` with the 904B (corridor/aggregate writer) components EXCLUDED. 875's numbers and the fold-tree hash `1b31624a…` must not move. |
-| 5 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | **NEW 2026-08-24 — run 41.** `validate --fold-root <copy>` re-reads the ORIGINAL tree via the manifest's baked-in path and reports ALL PASS on a tampered copy — a false-PASS audit tool. Smoke's internal `_clone_fold_tree` already has the fix pattern. |
-| 6 | `tasks/TASK_902_897_INSTRUMENT_HARDENING.md` | S | Pays 897's named honesty debt — now serves the record's future readers, the lane being closed: D58 exit contract, the vacuous inherited-IC check (now TWO root causes — NaN, and an H with `tgt=None` recording "pass" for a comparison that never executed; **a check that did not execute a comparison is not a passed check**), the unrendered 639 disclosure, the tracked `--out` default, the run-40 guard-layer items, and 2b: an absent `--db-path` crashing uncaught BEFORE any artifact (a refusal the orchestrator cannot read is indistinguishable from a run that never started). CLAIMS/RENDERING only — NUMBERS byte-identical. |
-| 7 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | **NEW 2026-08-24 — D61(a).** PROPOSED until 904A ships (shared files). The corridor/aggregate writers redesigned two-phase: decide every fold, then write — a per-fold write-then-refuse loop cannot be fail-closed (cycle 3's BLOCKER: refusal printed "Nothing was written" while having written). Includes the residual bare-`open` readers (the ~10 enumerated in the cycle-3 re-verify). |
-| 8 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | **NEW 2026-08-24 — run 41's by-product finding.** The 809/897 per-decision series carries EXCESS DISPERSION across its OOS window (not monotone drift — corrected `d7b0d3f`). Archival/interpretive now: the 897 verdict (ALL FAIL, nearest cell −5.045) had no near-band reads for it to qualify. Its record-completeness value stands — WHY the series misbehaves. Scope 4 is the honest guard: exclude instrument artifacts FIRST (alias/identity, forward-filled stale prices, frozen-cell mask, universe turnover) — a drifting instrument looks identical to a drifting market here. |
+| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (RESUME per D66(a)) | M | Built, green on its own 152-test suite, uncommitted — the work is in the committed patch. Cycle 4: the declared-vs-observed reconciliation at PAIR level, read from the SUBSCRIPTION CONFIG (not just `meta.pairs`), plus `assert_complete()` verifying `coverage_by_pair` covers every declared pair. Cycle-4 panel MUST carry the "name the next absence granularity" lens; any new granularity → the (b) restructure, no fifth cycle. Phase-2 split confirmed (no code path can transmit an order). After ship: planner launches the shadow capture on srv — Kraken v2 schema smoke FIRST (watched 60s), then the capture's first minutes watched. |
+| 2 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` | S/M | The authority binding (a `covers:`/`protect:` line grants only where the manifest's own experiment id has standing — additive, fail-closed) + scope item 4 (run-43): the in-run deleter's freeze relationship gets a real design here (refuse-and-skip; never kill the training process). Gates the `--apply` freeze lift, with 880's D35. The D64 repro must flip to 'refuses, deletes nothing', orchestrator-reproduced. |
+| 3 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | `validate --fold-root <copy>` re-reads the ORIGINAL tree via the manifest's baked-in path and reports ALL PASS on a tampered copy — a false-PASS audit tool. Smoke's `_clone_fold_tree` already has the fix pattern. |
+| 4 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | The corridor/aggregate writers redesigned two-phase (decide every fold, then write). Run-43 addition to the case: `_guard_write_path` is a refusal choke point over writers that still write eagerly and non-atomically — the same latent family. Includes the residual bare-`open` readers enumerated in the cycle-3 re-verify. |
+| 5 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | **NEW 2026-08-27 — run-43 item 3.** The 904A destination fence's guarantee rests on `FIXTURE_IDENTITY.json`'s correctness; cross-verify the pin against a locally-present fixture (stale pin fails CLOSED toward refusal), wire `verify_or_die` into `walkforward.py`'s startup or document the exception. |
+| 6 | `tasks/TASK_909_897_RECOMPUTE_GATE_REDS.md` | XS | **NEW 2026-08-27 — run-43 item 4.** The 897 suite's 3 standing red tests at HEAD (`test_recompute_gate.py` → `recompute_best.py::single_cell_gate_lines`): own them — fix if the gate semantics are live, delete-with-prejudice (named in the commit) if the 897 verdict made them dead. |
+| 7 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (between-chunk sd 0.0949 vs SE 0.0354, VR 7.19). Archival/interpretive — the verdict had no near-band cells. The implementation was lost in the run-42 incident; findings survive in the banner; rebuild to spec. |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
