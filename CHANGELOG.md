@@ -3,6 +3,49 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_907 ADDENDUM A — the Kraken v2 book channel could not read the live wire, and the 4 rows it did read were wrong
+
+- **What shipped.** The phase-1 recorder's `book` channel is now a per-pair, per-connection maintained
+  order book (snapshot replaces; update applies deltas; `qty == 0` deletes; each side trimmed to depth
+  10), reconciled against the venue's own CRC32 checksum on **every** row. Emission is on top-of-book
+  change or a `book_keepalive_s` floor, evaluated when a frame arrives — never on a timer.
+- **Built on measured wire evidence, not recollection.** 5,737 raw frames captured from the live
+  Kraken v2 public feed on `gpu-server` (45s, BTC/USD + ETH/USD, depth 10, read-only, no credentials);
+  600 of them preserved as a permanent test fixture (sha256 `378fa3dc…`).
+- **Two defects, and the second was the dangerous one.** (1) **5,661 of 5,665 book rows carry an empty
+  side** — updates are one-sided — so the old both-sides-required check rejected 99.93% of the channel
+  (the planner's "3,538 mismatches in 75s"). (2) **v2 updates are INCREMENTAL price-level deltas, not
+  top-of-book**, so the four rows the old code accepted recorded a *wrong* top of book as a real
+  observation (a delta at 2505.76 while the true best bid was 2505.81). **Fixing only (1) would have
+  turned 5,661 honest refusals into 5,661 silently wrong mids — strictly worse than the bug.**
+- **The checksum is a free declared-vs-observed check at the wire boundary**, verified 5,665/5,665
+  against the live feed before any code was written. It is over the wire's STRING forms, so frames are
+  decoded with `parse_float=str` — load-bearing, and pinned.
+- **A BLOCKER found by the fail-closed lens, and the lesson in it.** The checksum reconciled the
+  maintained STATE while the emitted event was a SEPARATE derivation, with nothing reconciling the
+  two: reinstalling the original defect left the suite GREEN while corrupting **482 of 590 emitted
+  tops** on real frames. The single hand-checked frame happened to be the one row shape where that bug
+  is invisible. **One hand-check is not a proof.** Closed structurally — one function now returns the
+  checksum and the top from the same ordered structure — plus a whole-fixture check of all 590 emitted
+  events against an independent re-derivation. Re-verified by the orchestrator on an isolated copy.
+- **Also closed:** the declaration is now read back and rendered next to the cadence table (it was
+  write-only, so a 5.0s cadence could not be told from a 5.0s market); per-row book validation was
+  unreachable by any test and is now reachable and pinned; a circular checksum assertion was replaced
+  with hand-derived and venue-supplied literals; the post-reconnect dark window and a per-pair drift
+  escape are now recorded gaps.
+- **A spec error was corrected rather than blamed on the code.** ADDENDUM A.4(4) described the
+  keepalive as a timer. A timer would write a top of book that no frame confirmed at that timestamp —
+  an inference from absence recorded as an observation. Emission is frame-driven; a quiet book emits
+  nothing and must read as un-observed.
+- **Verification.** Suite 173 → **217 passed**; selftest 12/12; safety invariant re-checked (`except`
+  7→7, no `open`/`subprocess`/`os.environ`, `WS_URL` unchanged, two public subscribe frames, one
+  `ws.send`). Panel: correctness + fail-closed (opus) + regression; fix pass at opus.
+- **STILL GATED.** The live re-smoke against the real feed is planner-side and NOT discharged here.
+  D67(b)'s launch preconditions all still bind, and (ii) hand-computed span comparison and (iii) fixed
+  pair set are now MORE load-bearing, because the defects they defend against are ADDENDUM B and are
+  not fixed. **Remainder → ADDENDUM B (the D67(a) five-boundary restructure): specced in the task
+  file, all five boundaries reproduced first-hand this run, NOT started.**
+
 ## 2026-08-27 — TASK_905 — `validate --fold-root` audited the ORIGINAL tree: a false PASS on a corrupted copy, closed
 
 - **What shipped.** `validate_folds` now resolves every fold artifact against the tree it was actually
