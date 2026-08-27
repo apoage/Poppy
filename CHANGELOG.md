@@ -3,6 +3,45 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_905 — `validate --fold-root` audited the ORIGINAL tree: a false PASS on a corrupted copy, closed
+
+- **What shipped.** `validate_folds` now resolves every fold artifact against the tree it was actually
+  pointed at (`fold_root/<fold_id>/<basename>`, and `fold_root/<basename>` for the two job manifests)
+  instead of re-joining the manifest's recorded repo-relative path onto `_REPO`. A resolved path that
+  lands outside `--fold-root` is refused **before any `open()`**, with containment checked on
+  `os.path.realpath` of both sides (TASK_886/888's lesson: a `startswith` on unnormalized strings
+  catches `..` but not a planted symlink).
+- **The defect it closes, reproduced first-hand twice.** `cp -r` a fold tree, tamper one
+  `period_*.json` in the copy, run `validate --fold-root <copy>`: HEAD reports `ALL 34/36 checks PASS`,
+  exit 0 — because the tampered file was never opened and the untouched original was validated instead.
+  A tool whose entire job is detecting fold corruption reported clean on a corrupted tree. Post-fix the
+  same input exits 1 and names the file.
+- **Option (a) over option (b), deliberately.** Refusing when `--fold-root` disagrees with the
+  manifest would close the false PASS too, but a relocated tree is by definition not the tree the
+  manifest describes — (b) would refuse every legitimate audit, which is the entire purpose of the flag
+  (restored backup, staged copy on `gpu-server`, candidate re-materialization).
+- **A MAJOR found by the panel and fixed.** The new guard raised immediately from inside the fold loop,
+  breaking `validate_folds`' documented "listing EVERY violation" contract: earlier folds' violations
+  vanished from the raised message (the only thing on stderr) and later folds were never evaluated —
+  order-dependent, silently incomplete output, in precisely the multi-problem backup scenario the flag
+  serves. Now recorded via `rec()` like every other check, with one terminal raise carrying all of them;
+  the refusal itself is unchanged and still precedes any read.
+- **A second bug was fixed silently and is disclosed.** `fold_train_files` now compares the recorded
+  manifest strings directly instead of re-deriving one side via `os.path.relpath(p, _REPO)`. The two
+  spellings agree only in-repo, so HEAD **falsely rejected** every train job on any tree materialized
+  outside the repo. Beneficial (a false-refusal closure, not an under-detection) and gate-neutral, but
+  unrequested — recorded here rather than only in a code comment.
+- **Verification.** Gates (i)–(iv) all re-verified after the fix: false-PASS repro both directions;
+  pristine relocated copy still passes; in-place invocation byte-identical to HEAD (stdout md5
+  `5df05024fef118fcc2d3a8211a72ce76`), unchanged across the fix pass; `runs/875_wf` untouched (md5
+  `e87b080d4ea092e85b98deef1af7805a`, 269 files) with the grader reproducing `positive: 4 | above own
+  floor: 1`. Nine degrade-path inputs (missing path, file-not-dir, empty dir, missing manifests,
+  truncated JSON, missing fold subdir, relative root, trailing slash, symlinked root) all refuse loudly
+  — no false PASS, no bare traceback. Escape refusal proven to precede any `open()` by running it with
+  a real readable target present and again deleted: byte-identical output. Suite 66 → 69; selftest
+  12/12; smoke PASS.
+
+
 ## 2026-08-27 — TASK_909 — the 897 suite's 3 reds were not dead tests: a verified-deployed artifact had silently regressed
 
 - **What shipped.** The three standing red tests in `experiments/897_corrected_809/test_recompute_gate.py` are green,

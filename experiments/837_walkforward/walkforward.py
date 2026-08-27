@@ -1370,6 +1370,71 @@ def _pf_from_cmd(cmd):
     return toks[toks.index("--periods-file") + 1] if "--periods-file" in toks else None
 
 
+# =============================================================================
+# TASK_905 — resolve fold artifacts against the tree ``validate`` is ACTUALLY pointed
+# at, not against ``_REPO``
+# =============================================================================
+# The defect (measured, factory run 41): every path recorded in fold_manifest.json /
+# the job manifests is a REPO-RELATIVE string written at materialize time (``_rel(v)``);
+# ``validate`` used to re-join every one of them onto this script's OWN ``_REPO``, so
+# ``validate --fold-root <copy>`` silently re-read the ORIGINAL tree no matter what
+# directory it was pointed at — a `cp -r`'d copy, a restored backup, a staged copy on
+# gpu-server all validated the WRONG FILES with a clean exit 0.
+#
+# Decision (scope item 1, recorded here per the task banner requirement): resolve
+# relative to ``--fold-root`` itself (option a), not option b ("keep _REPO resolution,
+# refuse when --fold-root disagrees with the manifest's own tree"). Option b closes the
+# false PASS too, but leaves the tool unusable for the exact audit case ``--fold-root``
+# exists to serve — a relocated tree is, by definition, not the tree the manifest
+# describes, so b's refusal would fire on every legitimate use. Materialize always
+# writes per-fold artifacts at ``<out_root>/<fold_id>/<basename>`` and the two job
+# manifests at ``<out_root>/<basename>`` (``_materialize_writes``), so the RECORDED
+# path's prefix is discarded entirely and rebuilt from ``fold_root`` + ``fold_id`` (or
+# ``fold_root`` alone) + the recorded basename — this resolves correctly under ANY
+# relocation, in-repo or not, without needing to know the tree's original location.
+#
+# Scope item 2 (fail-closed, not optional): a resolved path must never land outside the
+# named ``fold_root`` — not via a literal ``..`` in a recorded string, and not via a
+# tampered ``fold_id`` (attacker-controlled JSON) or a symlink planted inside the copy.
+# ``_require_within_fold_root`` checks containment on ``os.path.realpath`` of BOTH
+# sides (this repo has been bitten twice by realpath-vs-abspath divergence —
+# TASK_886/888 — a bare ``startswith`` on unnormalized strings misses a symlink escape
+# even when it catches a ``..`` escape) and raises loud, never redirects silently.
+#
+# It raises so that the REFUSAL happens strictly BEFORE the caller can ``open()`` the
+# out-of-root path — that ordering is the whole guarantee and is unchanged. But its
+# callers inside ``validate_folds`` CATCH it and funnel it through ``rec()`` onto the
+# aggregate ``fails`` list, exactly like every other check, so the scan still completes
+# and the single terminal raise carries EVERY violation (panel FINDING 1). The escape is
+# not softened by this: a recorded failure is still a non-empty ``fails`` list, still a
+# terminal ``LeakError``, still exit 1 — and the out-of-root bytes are still never read.
+def _require_within_fold_root(fold_root, path, what):
+    root_r = os.path.realpath(fold_root)
+    p_r = os.path.realpath(path)
+    if not (p_r == root_r or p_r.startswith(root_r + os.sep)):
+        raise LeakError(
+            f"validate: {what} resolves to {p_r}, OUTSIDE --fold-root {root_r} — "
+            f"refusing rather than silently reading a different tree (TASK_905 fail-"
+            f"closed escape guard)")
+    return p_r
+
+
+def _resolve_fold_artifact(fold_root, fid, recorded, what):
+    """Resolve a per-fold artifact path RECORDED in fold_manifest.json (e.g.
+    ``f["files"]["train_pit"]`` or a job manifest's ``--periods-file``) against
+    ``fold_root`` — the tree actually being validated — via ``fold_root/fid/basename``.
+    See the module note above for why (TASK_905)."""
+    p = os.path.join(fold_root, fid, os.path.basename(recorded))
+    return _require_within_fold_root(fold_root, p, what)
+
+
+def _resolve_root_artifact(fold_root, recorded, what):
+    """Same as ``_resolve_fold_artifact`` for artifacts recorded directly under
+    ``fold_root`` with no ``fold_id`` subdirectory (the two job manifests)."""
+    p = os.path.join(fold_root, os.path.basename(recorded))
+    return _require_within_fold_root(fold_root, p, what)
+
+
 def validate_folds(fold_root, db_path, verbose=True):
     """THE leak gates (module docstring ASSERT-1 / ASSERT-2 / POLICY-PIN). Parses
     fold_manifest.json + every generated periods-file/universe/manifest/corridor under
@@ -1387,189 +1452,231 @@ def validate_folds(fold_root, db_path, verbose=True):
     con = _ro_connect(db_path)
     checks, fails = [], []
 
-    def rec(fold, name, ok, detail):
-        checks.append({"fold": fold, "check": name, "ok": bool(ok), "detail": detail})
-        if not ok:
-            fails.append(f"[{fold}] {name}: {detail}")
-        if verbose:
-            print(f"  [{'PASS' if ok else 'FAIL'}] {fold} :: {name} — {detail}")
+    # FINDING 3 (panel, correctness NIT): the read-only sqlite handle used to
+    # leak on EVERY early raise out of this body — the unguarded corridor-JSON
+    # parse below could already reach `con.close()`-never-runs, and Finding 1's
+    # aggregate-raise fix must not add a second trigger. One try/finally closes
+    # both, and keeps the aggregate raise itself OUTSIDE the guarded region so
+    # the LeakError still propagates unchanged.
+    try:
 
-    pinned = load_pinned_universe()
-    fold_train_files = {}
-    fold_uni_syms = {}
+        def rec(fold, name, ok, detail):
+            checks.append({"fold": fold, "check": name, "ok": bool(ok), "detail": detail})
+            if not ok:
+                fails.append(f"[{fold}] {name}: {detail}")
+            if verbose:
+                print(f"  [{'PASS' if ok else 'FAIL'}] {fold} :: {name} — {detail}")
 
-    # ---- POLICY-PIN (MAJOR-1): everything below is checked against constants ----
-    fold_set = man.get("fold_set")
-    policy = POLICY.get(fold_set)
-    if policy is None:
-        rec("*", "POLICY-PIN fold set", False,
-            f"unknown fold_set '{fold_set}' — only the pre-registered sets "
-            f"{sorted(POLICY)} validate (the harness implements splits, never invents)")
-    else:
-        man_ids = sorted(f["fold_id"] for f in man["folds"])
-        rec("*", "POLICY-PIN fold-set completeness", man_ids == sorted(policy["folds"]),
-            f"manifest folds {man_ids} == pre-registered {sorted(policy['folds'])}")
-        rec("*", "POLICY-PIN manifest rule params",
-            man.get("n_assets") == policy["n_assets"]
-            and man.get("min_days") == policy["min_days"],
-            f"manifest n_assets={man.get('n_assets')} min_days={man.get('min_days')} == "
-            f"pre-registered {policy['n_assets']}/{policy['min_days']}")
+        pinned = load_pinned_universe()
+        fold_train_files = {}
+        fold_uni_syms = {}
 
-    for f in man["folds"]:
-        fid = f["fold_id"]
-        files = {k: os.path.join(_REPO, v) for k, v in f["files"].items()}
-        try:
-            tr0, tr1, tr_assets = _read_periods(files["train_pit"])
-            ev0, ev1, ev_assets = _read_periods(files["eval_pit"])
-            lt0, lt1, lt_assets = _read_periods(files["train_leaky"])
-            le0, le1, le_assets = _read_periods(files["eval_leaky"])
-        except Exception as e:  # unparseable artifact = leak-gate failure, not a crash
-            rec(fid, "artifacts-parse", False, f"unreadable periods file: {e}")
-            continue
-        fold_train_files[fid] = {os.path.relpath(files["train_pit"], _REPO),
-                                 os.path.relpath(files["train_leaky"], _REPO)}
+        # ---- POLICY-PIN (MAJOR-1): everything below is checked against constants ----
+        fold_set = man.get("fold_set")
+        policy = POLICY.get(fold_set)
+        if policy is None:
+            rec("*", "POLICY-PIN fold set", False,
+                f"unknown fold_set '{fold_set}' — only the pre-registered sets "
+                f"{sorted(POLICY)} validate (the harness implements splits, never invents)")
+        else:
+            man_ids = sorted(f["fold_id"] for f in man["folds"])
+            rec("*", "POLICY-PIN fold-set completeness", man_ids == sorted(policy["folds"]),
+                f"manifest folds {man_ids} == pre-registered {sorted(policy['folds'])}")
+            rec("*", "POLICY-PIN manifest rule params",
+                man.get("n_assets") == policy["n_assets"]
+                and man.get("min_days") == policy["min_days"],
+                f"manifest n_assets={man.get('n_assets')} min_days={man.get('min_days')} == "
+                f"pre-registered {policy['n_assets']}/{policy['min_days']}")
 
-        # ---- POLICY-PIN (MAJOR-1): parsed windows == the pre-registered constants ----
-        if policy is not None:
-            pol = policy["folds"].get(fid)
-            rec(fid, "POLICY-PIN fold windows pre-registered",
-                pol is not None and (tr0, tr1) == tuple(pol["train"])
-                and (ev0, ev1) == tuple(pol["eval"]),
-                (f"parsed train {tr0}..{tr1} / eval {ev0}..{ev1} == pre-registered "
-                 f"{pol['train'][0]}..{pol['train'][1]} / {pol['eval'][0]}..{pol['eval'][1]}"
-                 if pol else f"fold_id '{fid}' is NOT in the pre-registered {fold_set} set"))
+        for f in man["folds"]:
+            fid = f["fold_id"]
+            # FINDING 1 (panel, correctness lens): the containment guard REFUSES before
+            # any open() — that property is load-bearing and unchanged — but the refusal
+            # is RECORDED like every other check instead of raising out of this loop.
+            # Raising here made the audit order-dependent and silently incomplete:
+            # violations already collected for earlier folds were discarded from the
+            # raised message (the only thing the CLI puts on stderr, hence the only thing
+            # a CI grep sees), and folds AFTER the escaping one were never evaluated at
+            # all. `validate_folds` promises "EVERY violation"; an escape in a partially
+            # restored backup is exactly when the operator most needs the other findings.
+            try:
+                files = {k: _resolve_fold_artifact(fold_root, fid, v, f"{fid} files.{k}")
+                         for k, v in f["files"].items()}
+            except LeakError as e:
+                rec(fid, "artifacts resolve INSIDE --fold-root", False, str(e))
+                continue
+            try:
+                tr0, tr1, tr_assets = _read_periods(files["train_pit"])
+                ev0, ev1, ev_assets = _read_periods(files["eval_pit"])
+                lt0, lt1, lt_assets = _read_periods(files["train_leaky"])
+                le0, le1, le_assets = _read_periods(files["eval_leaky"])
+            except Exception as e:  # unparseable artifact = leak-gate failure, not a crash
+                rec(fid, "artifacts-parse", False, f"unreadable periods file: {e}")
+                continue
+            # TASK_905: compare the RECORDED strings directly (both files.* and a job's
+            # --periods-file were written by the same `_rel(v)` call at materialize time),
+            # never a path recomputed relative to _REPO — that recomputation is exactly
+            # what silently diverged for any tree materialized outside the repo (the two
+            # spellings agree only in-repo; see the CLI's own note on this at the smoke
+            # real-fold scratch dir). Membership is about recorded IDENTITY, not about
+            # where the bytes physically sit.
+            fold_train_files[fid] = {f["files"]["train_pit"], f["files"]["train_leaky"]}
 
-        # ---- ASSERT-1: no train/eval overlap, from the PARSED files, dual parse ----
-        t_end = max(_max_end_epoch(tr1), _max_end_epoch(lt1))
-        e_start = min(_min_start_epoch(ev0), _min_start_epoch(le0))
-        rec(fid, "ASSERT-1 train/eval windows disjoint", t_end < e_start,
-            f"parsed train end {tr1} (<= {t_end}) vs eval start {ev0} (>= {e_start}); "
-            f"loader bounds are end-INCLUSIVE (vectorbt_env.py:660)")
-        rec(fid, "windows well-formed",
-            tr0 < tr1 and ev0 < ev1 and (tr0, tr1) == (lt0, lt1) and (ev0, ev1) == (le0, le1),
-            f"train {tr0}..{tr1}, eval {ev0}..{ev1}, leaky dates match pit dates")
-
-        # ---- ASSERT-2a: what a training loader WOULD ingest from the train file ----
-        s_ts = min(_min_start_epoch(tr0), _min_start_epoch(lt0))
-        e_ts = t_end
-        for table in ("ohlcv", "ohlcv_daily"):
-            mx = con.execute(f"SELECT MAX(timestamp) FROM {table} "
-                             f"WHERE timestamp >= ? AND timestamp <= ?",
-                             (s_ts, e_ts)).fetchone()[0]
-            if mx is None:
-                detail = (f"VACUOUS — db has no {table} rows in the parsed train bounds "
-                          f"(loader would load nothing here)")
-                if table == "ohlcv" and fold_set == "real":
-                    detail += ("; *** WARNING: these manifests are LAUNCH-READY against "
-                               "trading_data.db, where this assert HAS teeth — run "
-                               "`validate --db trading_data.db` (read-only) BEFORE "
-                               "launching train jobs (SPEC pre-flight) ***")
-                    print(f"  [WARN] {fid} :: ASSERT-2 ingest-max ohlcv is VACUOUS on "
-                          f"this db — pre-flight `validate --db trading_data.db` "
-                          f"required before any fold training launch")
-                rec(fid, f"ASSERT-2 ingest-max {table}", True, detail)
-            else:
-                rec(fid, f"ASSERT-2 ingest-max {table}", mx < e_start,
-                    f"max ingestable ts {datetime.fromtimestamp(mx, timezone.utc):%Y-%m-%d %H:%M} "
-                    f"UTC < eval start (>= {e_start})")
-
-        # ---- ASSERT-2b: PIT universe re-derivation from data <= train-end ONLY,
-        # with the rule parameters PINNED to POLICY (MAJOR-1: the artifact's own rule
-        # block is tamperable and is itself checked, never trusted) ----
-        try:
-            with open(files["universe"]) as fh:
-                uni = json.load(fh)
-            exp_n = policy["n_assets"] if policy else uni["rule"]["n_assets_cap"]
-            exp_min = policy["min_days"] if policy else uni["rule"]["min_days"]
+            # ---- POLICY-PIN (MAJOR-1): parsed windows == the pre-registered constants ----
             if policy is not None:
-                rec(fid, "POLICY-PIN universe rule",
-                    uni["rule"]["n_assets_cap"] == exp_n
-                    and uni["rule"]["min_days"] == exp_min,
-                    f"artifact rule cap={uni['rule']['n_assets_cap']} min_days="
-                    f"{uni['rule']['min_days']} == pre-registered {exp_n}/{exp_min} "
-                    f"(re-derivation params are PINNED, never read from the artifact)")
-            ok_asof = uni["as_of"] == tr1
-            re_uni = derive_pit_universe(db_path, as_of=tr1, n_assets=exp_n,
-                                         min_days=exp_min)
-            same = re_uni["symbols"] == uni["symbols"]
-            rec(fid, "ASSERT-2 PIT universe re-derivation", ok_asof and same,
-                f"as_of=={tr1}: {ok_asof}; re-derived {re_uni['n_selected']} symbols "
-                f"{'IDENTICAL (incl. order)' if same else 'MISMATCH — tampered or derived with post-train-end data'}")
-            rec(fid, "periods-files carry the PIT universe",
-                tr_assets == uni["symbols"] and ev_assets == uni["symbols"],
-                "train/eval pit files carry universe_pit.json symbols verbatim "
-                "(same order train==eval — TASK_740 landmine)")
-            fold_uni_syms[fid] = uni["symbols"]
-        except LeakError as e:
-            rec(fid, "ASSERT-2 PIT universe re-derivation", False, str(e))
-        rec(fid, "leaky files carry the pinned 64 byte-identically",
-            lt_assets == pinned and le_assets == pinned,
-            "LEAKY-UNIVERSE label + pinned order preserved")
-        rec(fid, "leaky files labeled LOUDLY",
-            "LEAKY-UNIVERSE" in json.load(open(files["train_leaky"]))["_comment"]
-            and "LEAKY-UNIVERSE" in json.load(open(files["eval_leaky"]))["_comment"],
-            "_comment contains LEAKY-UNIVERSE")
+                pol = policy["folds"].get(fid)
+                rec(fid, "POLICY-PIN fold windows pre-registered",
+                    pol is not None and (tr0, tr1) == tuple(pol["train"])
+                    and (ev0, ev1) == tuple(pol["eval"]),
+                    (f"parsed train {tr0}..{tr1} / eval {ev0}..{ev1} == pre-registered "
+                     f"{pol['train'][0]}..{pol['train'][1]} / {pol['eval'][0]}..{pol['eval'][1]}"
+                     if pol else f"fold_id '{fid}' is NOT in the pre-registered {fold_set} set"))
 
-        # ---- corridor artifact bounds (if computed): never loaded past eval-end ----
-        cpath = os.path.join(os.path.dirname(files["universe"]), "corridor.json")
-        if os.path.exists(cpath):
-            with open(cpath) as fh:
-                cor = json.load(fh)
-            ok = (cor["panel_window"][1] == ev1
-                  and cor["panel_last_day_ts"] < _min_start_epoch(_date_add(ev1, 1))
-                  and cor["eval_window"] == [ev0, ev1])
-            rec(fid, "corridor panel bounded at eval-end", ok,
-                f"panel {cor['panel_window'][0]}..{cor['panel_window'][1]}, last day ts "
-                f"{cor['panel_last_day_ts']} < {ev1}+1d; eval slice {cor['eval_window']}")
+            # ---- ASSERT-1: no train/eval overlap, from the PARSED files, dual parse ----
+            t_end = max(_max_end_epoch(tr1), _max_end_epoch(lt1))
+            e_start = min(_min_start_epoch(ev0), _min_start_epoch(le0))
+            rec(fid, "ASSERT-1 train/eval windows disjoint", t_end < e_start,
+                f"parsed train end {tr1} (<= {t_end}) vs eval start {ev0} (>= {e_start}); "
+                f"loader bounds are end-INCLUSIVE (vectorbt_env.py:660)")
+            rec(fid, "windows well-formed",
+                tr0 < tr1 and ev0 < ev1 and (tr0, tr1) == (lt0, lt1) and (ev0, ev1) == (le0, le1),
+                f"train {tr0}..{tr1}, eval {ev0}..{ev1}, leaky dates match pit dates")
 
-    # ---- manifest cross-checks: a train job may ONLY reference a train periods-file ----
-    for kind in ("train", "eval"):
-        mpath = os.path.join(_REPO, man["manifests"][kind])
-        if not os.path.exists(mpath):
-            rec("*", f"{kind}_jobs.manifest exists", False, mpath)
-            continue
-        with open(mpath) as fh:
-            lines = [ln.strip() for ln in fh
-                     if ln.strip() and not ln.strip().startswith("#")]
-        for ln in lines:
-            job, dev, mem, cmd = ln.split(None, 3)
-            fid = next((f["fold_id"] for f in man["folds"] if f"_{f['fold_id']}_" in job),
-                       None)
-            pf = _pf_from_cmd(cmd)
-            if fid is None or pf is None:
-                rec("*", f"manifest line parse ({job})", False,
-                    f"cannot map job to a fold / no --periods-file in: {ln[:120]}")
+            # ---- ASSERT-2a: what a training loader WOULD ingest from the train file ----
+            s_ts = min(_min_start_epoch(tr0), _min_start_epoch(lt0))
+            e_ts = t_end
+            for table in ("ohlcv", "ohlcv_daily"):
+                mx = con.execute(f"SELECT MAX(timestamp) FROM {table} "
+                                 f"WHERE timestamp >= ? AND timestamp <= ?",
+                                 (s_ts, e_ts)).fetchone()[0]
+                if mx is None:
+                    detail = (f"VACUOUS — db has no {table} rows in the parsed train bounds "
+                              f"(loader would load nothing here)")
+                    if table == "ohlcv" and fold_set == "real":
+                        detail += ("; *** WARNING: these manifests are LAUNCH-READY against "
+                                   "trading_data.db, where this assert HAS teeth — run "
+                                   "`validate --db trading_data.db` (read-only) BEFORE "
+                                   "launching train jobs (SPEC pre-flight) ***")
+                        print(f"  [WARN] {fid} :: ASSERT-2 ingest-max ohlcv is VACUOUS on "
+                              f"this db — pre-flight `validate --db trading_data.db` "
+                              f"required before any fold training launch")
+                    rec(fid, f"ASSERT-2 ingest-max {table}", True, detail)
+                else:
+                    rec(fid, f"ASSERT-2 ingest-max {table}", mx < e_start,
+                        f"max ingestable ts {datetime.fromtimestamp(mx, timezone.utc):%Y-%m-%d %H:%M} "
+                        f"UTC < eval start (>= {e_start})")
+
+            # ---- ASSERT-2b: PIT universe re-derivation from data <= train-end ONLY,
+            # with the rule parameters PINNED to POLICY (MAJOR-1: the artifact's own rule
+            # block is tamperable and is itself checked, never trusted) ----
+            try:
+                with open(files["universe"]) as fh:
+                    uni = json.load(fh)
+                exp_n = policy["n_assets"] if policy else uni["rule"]["n_assets_cap"]
+                exp_min = policy["min_days"] if policy else uni["rule"]["min_days"]
+                if policy is not None:
+                    rec(fid, "POLICY-PIN universe rule",
+                        uni["rule"]["n_assets_cap"] == exp_n
+                        and uni["rule"]["min_days"] == exp_min,
+                        f"artifact rule cap={uni['rule']['n_assets_cap']} min_days="
+                        f"{uni['rule']['min_days']} == pre-registered {exp_n}/{exp_min} "
+                        f"(re-derivation params are PINNED, never read from the artifact)")
+                ok_asof = uni["as_of"] == tr1
+                re_uni = derive_pit_universe(db_path, as_of=tr1, n_assets=exp_n,
+                                             min_days=exp_min)
+                same = re_uni["symbols"] == uni["symbols"]
+                rec(fid, "ASSERT-2 PIT universe re-derivation", ok_asof and same,
+                    f"as_of=={tr1}: {ok_asof}; re-derived {re_uni['n_selected']} symbols "
+                    f"{'IDENTICAL (incl. order)' if same else 'MISMATCH — tampered or derived with post-train-end data'}")
+                rec(fid, "periods-files carry the PIT universe",
+                    tr_assets == uni["symbols"] and ev_assets == uni["symbols"],
+                    "train/eval pit files carry universe_pit.json symbols verbatim "
+                    "(same order train==eval — TASK_740 landmine)")
+                fold_uni_syms[fid] = uni["symbols"]
+            except LeakError as e:
+                rec(fid, "ASSERT-2 PIT universe re-derivation", False, str(e))
+            rec(fid, "leaky files carry the pinned 64 byte-identically",
+                lt_assets == pinned and le_assets == pinned,
+                "LEAKY-UNIVERSE label + pinned order preserved")
+            rec(fid, "leaky files labeled LOUDLY",
+                "LEAKY-UNIVERSE" in json.load(open(files["train_leaky"]))["_comment"]
+                and "LEAKY-UNIVERSE" in json.load(open(files["eval_leaky"]))["_comment"],
+                "_comment contains LEAKY-UNIVERSE")
+
+            # ---- corridor artifact bounds (if computed): never loaded past eval-end ----
+            cpath = os.path.join(os.path.dirname(files["universe"]), "corridor.json")
+            if os.path.exists(cpath):
+                with open(cpath) as fh:
+                    cor = json.load(fh)
+                ok = (cor["panel_window"][1] == ev1
+                      and cor["panel_last_day_ts"] < _min_start_epoch(_date_add(ev1, 1))
+                      and cor["eval_window"] == [ev0, ev1])
+                rec(fid, "corridor panel bounded at eval-end", ok,
+                    f"panel {cor['panel_window'][0]}..{cor['panel_window'][1]}, last day ts "
+                    f"{cor['panel_last_day_ts']} < {ev1}+1d; eval slice {cor['eval_window']}")
+
+        # ---- manifest cross-checks: a train job may ONLY reference a train periods-file ----
+        for kind in ("train", "eval"):
+            try:  # FINDING 1: record, never raise out of the scan (see the fold loop)
+                mpath = _resolve_root_artifact(fold_root, man["manifests"][kind],
+                                               f"manifests.{kind}")
+            except LeakError as e:
+                rec("*", f"{kind}_jobs.manifest resolves INSIDE --fold-root", False,
+                    str(e))
                 continue
-            if not os.path.exists(os.path.join(_REPO, pf)):
-                rec(fid, f"{kind} job {job} periods-file exists", False, pf)
+            if not os.path.exists(mpath):
+                rec("*", f"{kind}_jobs.manifest exists", False, mpath)
                 continue
-            p0, p1, pf_assets = _read_periods(os.path.join(_REPO, pf))
-            fdef = next(f for f in man["folds"] if f["fold_id"] == fid)
-            if kind == "train":
-                member = pf in fold_train_files.get(fid, set())
-                dates_ok = (_max_end_epoch(p1)
-                            < _min_start_epoch(fdef["eval_window"][0]))
-                rec(fid, f"train job {job} references a fold TRAIN periods-file",
-                    member and dates_ok,
-                    f"--periods-file {pf}: membership in the fold's train files="
-                    f"{member}; parsed window {p0}..{p1} ends before eval start "
-                    f"{fdef['eval_window'][0]}={dates_ok}")
-            else:
-                # MAJOR-2 fix: window equality alone let ANY same-window file through
-                # (incl. period_eval_leaky.json — the survivorship-leaky universe would
-                # silently become the graded unseen-years number). Require file IDENTITY
-                # with the fold's eval_pit AND assets == the PIT universe.
-                exp_pf = fdef["files"]["eval_pit"]
-                ident = pf == exp_pf
-                win_ok = [p0, p1] == fdef["eval_window"]
-                assets_ok = (fid in fold_uni_syms
-                             and pf_assets == fold_uni_syms[fid])
-                rec(fid, f"eval job {job} references the fold's eval_pit file",
-                    ident and win_ok and assets_ok,
-                    f"--periods-file {pf}: identity==files.eval_pit ({exp_pf})={ident}; "
-                    f"window {p0}..{p1}=={fdef['eval_window']}={win_ok}; "
-                    f"assets==universe_pit symbols={assets_ok}")
-    con.close()
+            with open(mpath) as fh:
+                lines = [ln.strip() for ln in fh
+                         if ln.strip() and not ln.strip().startswith("#")]
+            for ln in lines:
+                job, dev, mem, cmd = ln.split(None, 3)
+                fid = next((f["fold_id"] for f in man["folds"] if f"_{f['fold_id']}_" in job),
+                           None)
+                pf = _pf_from_cmd(cmd)
+                if fid is None or pf is None:
+                    rec("*", f"manifest line parse ({job})", False,
+                        f"cannot map job to a fold / no --periods-file in: {ln[:120]}")
+                    continue
+                try:  # FINDING 1: record, never raise out of the scan
+                    resolved_pf = _resolve_fold_artifact(
+                        fold_root, fid, pf, f"{kind} job {job} --periods-file")
+                except LeakError as e:
+                    rec(fid, f"{kind} job {job} --periods-file resolves INSIDE "
+                             f"--fold-root", False, str(e))
+                    continue
+                if not os.path.exists(resolved_pf):
+                    rec(fid, f"{kind} job {job} periods-file exists", False, pf)
+                    continue
+                p0, p1, pf_assets = _read_periods(resolved_pf)
+                fdef = next(f for f in man["folds"] if f["fold_id"] == fid)
+                if kind == "train":
+                    member = pf in fold_train_files.get(fid, set())
+                    dates_ok = (_max_end_epoch(p1)
+                                < _min_start_epoch(fdef["eval_window"][0]))
+                    rec(fid, f"train job {job} references a fold TRAIN periods-file",
+                        member and dates_ok,
+                        f"--periods-file {pf}: membership in the fold's train files="
+                        f"{member}; parsed window {p0}..{p1} ends before eval start "
+                        f"{fdef['eval_window'][0]}={dates_ok}")
+                else:
+                    # MAJOR-2 fix: window equality alone let ANY same-window file through
+                    # (incl. period_eval_leaky.json — the survivorship-leaky universe would
+                    # silently become the graded unseen-years number). Require file IDENTITY
+                    # with the fold's eval_pit AND assets == the PIT universe.
+                    exp_pf = fdef["files"]["eval_pit"]
+                    ident = pf == exp_pf
+                    win_ok = [p0, p1] == fdef["eval_window"]
+                    assets_ok = (fid in fold_uni_syms
+                                 and pf_assets == fold_uni_syms[fid])
+                    rec(fid, f"eval job {job} references the fold's eval_pit file",
+                        ident and win_ok and assets_ok,
+                        f"--periods-file {pf}: identity==files.eval_pit ({exp_pf})={ident}; "
+                        f"window {p0}..{p1}=={fdef['eval_window']}={win_ok}; "
+                        f"assets==universe_pit symbols={assets_ok}")
+    finally:
+        con.close()
 
     if fails:
         raise LeakError("LEAK ASSERT FAILED — fold artifacts REJECTED:\n  "
@@ -1856,21 +1963,25 @@ def _stub_scorecard(path, fid, net21, gross, pct_hold):
 
 
 def _clone_fold_tree(smoke_root, case):
-    """Copy the fold tree for a control/negative run and re-point EVERY repo-relative
-    path inside it — fold_manifest.json AND both job manifests. MAJOR-3 fix: the job
-    manifests were previously left pointing at the original tree, so even a PRISTINE
-    copy was rejected on paths and the negative tests had zero discriminating power."""
+    """Copy the fold tree for a control/negative run. MAJOR-3 (original fix, now
+    superseded): the job manifests were left pointing at the original tree because
+    ``validate_folds`` resolved every path from this script's ``_REPO``, so even a
+    PRISTINE copy was rejected on paths and the negative tests had zero discriminating
+    power — the fix at the time was to re-point every repo-relative path inside the
+    clone with an ``old_rel``->``new_rel`` text replace.
+
+    TASK_905: that text-replace was this exact defect's other face — the CLI's
+    ``validate --fold-root <copy>`` had NO such rewrite and silently re-read the
+    ORIGINAL tree on any plain ``cp -r`` copy. The fix now lives once, in
+    ``validate_folds`` itself (``_resolve_fold_artifact`` / ``_resolve_root_artifact``):
+    every artifact is resolved against the ``fold_root`` it is actually pointed at, so
+    a clone validates correctly with its manifest content UNCHANGED — the rewrite this
+    function used to do is no longer needed for either caller. CLI and smoke helper now
+    share the one implementation (870 remainder, scoped to this surface)."""
     neg_root = os.path.join(smoke_root, "_negative", case)
     if os.path.exists(neg_root):
         shutil.rmtree(neg_root)
     shutil.copytree(smoke_root, neg_root, ignore=shutil.ignore_patterns("_negative"))
-    old_rel, new_rel = _rel(smoke_root), _rel(neg_root)
-    for name in ("fold_manifest.json", "train_jobs.manifest", "eval_jobs.manifest"):
-        p = os.path.join(neg_root, name)
-        with open(p) as fh:
-            txt = fh.read()
-        with open(p, "w") as fh:
-            fh.write(txt.replace(old_rel, new_rel))
     return neg_root
 
 
@@ -2347,13 +2458,19 @@ def run_smoke(args):
     # (fixture-derived) materialization is DIFFED against the tracked tree per the M4
     # identity contract (SPEC.md:61-70); any mismatch is a smoke FAILURE (refuse), never
     # a silent overwrite of tracked content.
-    # NOTE 1: the scratch dir lives INSIDE the repo (folds/real_smoke_scratch_*/,
-    # gitignored) rather than in system /tmp: validate_folds' membership check compares
-    # ``os.path.relpath(p, _REPO)`` (written into fold_manifest.json) against ``_rel(p)``
-    # (written into the job manifests) — the two AGREE only for in-repo paths (_rel()
-    # falls back to an absolute path outside the repo, relpath does not), a pre-existing
-    # divergence never exercised before because materialize() only ever wrote in-repo.
-    # Out of scope to fix that divergence itself here — staying in-repo sidesteps it.
+    # NOTE 1 (rewritten, TASK_905): the scratch dir lives INSIDE the repo
+    # (folds/real_smoke_scratch_*/, gitignored) purely by convention now — it is no
+    # longer load-bearing. It USED to be: validate_folds' membership check compared
+    # ``os.path.relpath(p, _REPO)`` (recomputed from fold_manifest.json's recorded path)
+    # against ``_rel(p)`` (written into the job manifests), and those two spellings agree
+    # ONLY for in-repo paths (_rel() falls back to an absolute path outside the repo,
+    # relpath does not), so an out-of-repo scratch dir produced a FALSE REJECTION —
+    # "membership in the fold's train files=False" on every train job even though the
+    # file was correct. TASK_905 removed that recomputation: membership now compares the
+    # RECORDED strings on both sides (validate_folds, "Membership is about recorded
+    # IDENTITY"), which is spelling-independent, so an out-of-repo scratch dir validates
+    # correctly. Kept in-repo anyway for the gitignore/cleanup convention and because
+    # _hash_tree/_diff_real_fold_tree comparisons below read easier under _rel().
     # NOTE 2: the name is UNIQUE per run (mkdtemp), not a fixed constant: this repo runs
     # parallel factory lanes routinely, and two concurrent `smoke` runs sharing one fixed
     # scratch path would race (one rmtree-ing the other's tree mid-validate). ----
