@@ -3,6 +3,84 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_909 — the 897 suite's 3 reds were not dead tests: a verified-deployed artifact had silently regressed
+
+- **What shipped.** The three standing red tests in `experiments/897_corrected_809/test_recompute_gate.py` are green,
+  and the 897 suite is **253 passed, zero skips** (from `3 failed, 250 passed`). **The fix was RECOVERY, not
+  deletion.** Their target, `runs/809_decision_rule_rescue/recompute_best.py::single_cell_gate_lines`, was real,
+  reviewed, and deployed — the workstation's copy of the file had reverted to a pre-fix revision.
+- **The gate semantics were LIVE, and the row's first answer was wrong.** Cycle 1 inspected the stale local file,
+  found no `single_cell_gate_lines` anywhere on disk, concluded it "never existed", and chose
+  delete-with-prejudice — which would have destroyed the last in-repo evidence that a deployed repair had
+  vanished. A verification lens refuted the premise from the tracked record:
+  `tasks/TASK_897_CORRECTED_809_REMEASURE.md:300-303` attests that on 2026-08-23 the 13 launch-critical files
+  "incl. the gitignored `recompute_best.py` repair" were **sha256-verified IDENTICAL on both hosts post-deploy**.
+  The delete was reversed.
+- **What was actually wrong, measured on both hosts.** Workstation: 4549 bytes, mtime **2026-06-22 22:11** — the June
+  pre-fix revision, two-criterion gate still at line 90 (`sh_reb >= 1.0 and lo > 0`, no `PnL > 0`), and
+  `single_cell_gate_lines` present in **no** `.py` file anywhere on disk. `gpu-server`: 7780 bytes, mtime
+  **2026-08-22 01:46**, sha256 `783b2ea35754d057bed2509b6ea3ffa1f3022473eb9247c706cd0091f4931ffc`, carrying the
+  repaired three-criterion gate (`c_sharpe` / `c_pnl` / `c_ci`) whose own docstring names
+  `test_recompute_gate.py::test_volatility_drag_cell_is_failed_by_the_pnl_criterion` as its pin. Recovered from srv,
+  sha256 re-verified after transfer, installed; the pre-fix copy is retained out-of-tree.
+- **The CHANGELOG's 2026-08-22 claim was TRUE; it was the working tree that was false.** An earlier reading of this
+  incident — that the record asserted a repair which never landed — is **retracted here**: the repair landed and was
+  deployed. What is striking is that the 2026-08-22 entry named this exact hazard two bullets after asserting the
+  fix — *"`recompute_best.py`'s repair lives under gitignored `runs/`, so staging it is a manual step invisible to the
+  clean-tree gate"* — and that is the hazard that fired.
+- **Blast radius, bounded by measurement rather than assumed.** Every `*.py` under
+  `experiments/897_corrected_809/` and `runs/809_decision_rule_rescue/` was sha256-compared across both hosts. Three
+  others differ, and all three are **tracked, clean vs HEAD, and last modified by today's `aa2a802` (TASK_902)** —
+  i.e. srv is legitimately behind on tracked code, which is the deploy contract working. **The only anomalous file
+  was the one git cannot protect.**
+- **This row's tracked diff is empty, and that is the finding.** The test file was restored to its HEAD state and the
+  actual repair is a gitignored file, so git cannot record this fix at all. The sha256 above is now its only durable
+  in-repo record. Seeded as **D69** (recommendation: a tracked identity pin for load-bearing gitignored artifacts,
+  reusing the `FIXTURE_IDENTITY.json` / `frame_symbols_sha256` pattern the repo already has, so a divergence fails
+  LOUD).
+- **Standing lesson.** The row's own premise — that a suite staying red at HEAD trains red-fatigue — is correct, but
+  the cure it reached for was deletion, and deleting a red test is the one remedy that destroys the evidence instead
+  of reading it. **A red test at HEAD is evidence, not noise.** "This function never existed" is a claim about
+  history that only git history and the written record can settle, never a stale working file.
+- **Verification.** 897 suite `250 passed` (post-delete) → **`253 passed in 157.49s`** (post-recovery), zero skips,
+  orchestrator-rerun. `python -m trader selftest` 12/12. Panel: correctness + regression at cycle 1 (the correctness
+  lens carried the refuting BLOCKER), plus an escalated correctness re-verify of the recovery, which the orchestrator
+  did not self-review. No 897 number moved: no artifact, `result.md`, or LEDGER row was touched, and no rendered
+  verdict anywhere echoes this script's output.
+- **Gate (i) is narrowly MISSED, and it is named rather than papered over.** The row demands "fully green at HEAD
+  with zero skips of this file's tests". Greenness rests on a **gitignored** file, so on a fresh clone or a new host
+  the three tests SKIP (measured by the re-verify lens: removing the lineage file yields `3 skipped`). **The fix is
+  not reproducible from the repository** — it is srv-anchored, with the sha256 above as its only tracked trace.
+  Remainder, carried by **D69**: land the gate somewhere tracked, or pin gitignored launch-critical artifacts by hash.
+- **The revert MECHANISM is not closed, and that is the unfenced risk.** Forensics: the June copy retained mtime
+  `2026-06-22 22:11:53.288988169` *with* June content, so it was replaced by an **mtime-preserving** copy — a restore
+  or sync, not an author's edit. **All ~120 `runs/*` subdirectories had their directory mtimes rewritten in one
+  sequential sweep, `2026-08-25 22:24:50` → `22:31:19`, outside any logged factory window**
+  (`.dark-factory/run-20260825.jsonl` ends `21:48:02`); `runs/809_decision_rule_rescue/` falls at `22:30:05`. The
+  `.pyc` that the 2026-08-22 01:40 test run must have produced is absent while `decide.cpython-310.pyc` (June)
+  survived. Two out-of-repo trees hold copies: `/home/lukas/trdr03/...` is bit-identical to the pre-fix revision,
+  `/home/lukas/trdr2/...` is a third divergent revision (4178 B, 2026-06-29). **Hypothesis, explicitly NOT
+  established:** 2026-08-25 is the run-42 incident date, and a recovery that restored gitignored `runs/` artifacts
+  from an older local tree with preserved mtimes would explain the sweep, the June mtime, the missing `.pyc` and the
+  silent reversion together — i.e. the run-42 *recovery* may itself have re-introduced stale gitignored artifacts.
+  Unverified; the lens declined to attribute it. **The same event would have reverted any other gitignored `runs/`
+  artifact, and most have no srv counterpart to diff against.**
+- **Provenance and artifact safety, independently re-derived.** `.dark-factory/run-20260822.jsonl` logs four `Edit`
+  calls against the literal path at `01:38:46/01:39:04/01:39:18/01:39:31`, then `test_recompute_gate.py`'s `Write` at
+  `01:40:11` (committed `c8a406c`) and a `pytest` run at `01:40:17` — no "other revision" reading survives. The
+  installed file was read adversarially and is **inert by inspection**: no `open`/`write`, no `subprocess`, no socket,
+  no credential or `os.environ` read, no sqlite reference, no deleter, no artifact write. Its three criteria were
+  boundary-probed (`1.0` PASS / `0.999999` FAIL; `pnl=0.0` FAIL / `1e-18` PASS; `nan` and `inf` FAIL on every term),
+  matching `TASK_897_CORRECTED_809_REMEASURE.md:254` exactly. The restored tests discriminate four ways: pre-fix copy
+  → 3 failed; dropping `c_pnl` from the conjunction → 2 failed; moving the qualifier to its own line → 1 failed;
+  installed artifact → 3 passed.
+- **Remainders, all pre-existing and faithfully restored rather than introduced here.** Both the artifact
+  (`recompute_best.py:56`) and the tracked test (`test_recompute_gate.py:9`) cite "TASK_897 line 45" for the band's
+  criteria; that line now reads unrelated text and the criteria live at `:254` — the honesty-debt class `aa2a802`
+  (TASK_902) was chartered to retire. `test_recompute_gate.py:44`'s "import is side-effect-free" is true of the DB but
+  the module prints at import. And the frozen artifact reads `ci_lo_UNCALIBRATED` while the current pipeline publishes
+  `ci_lo_ADVISORY`; compatible today, exercised by no test, since nothing in the suite runs `main()`.
+
 ## 2026-08-27 — TASK_902 — the 897 instrument's honesty debt, retired deliberately, with no number moved
 
 - **What shipped.** All 12 scope items: D58's exit-code contract; the vacuous-inherited-IC rule; a
