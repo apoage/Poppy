@@ -1,0 +1,392 @@
+"""TASK_881E — authority binding for the manifest coverage predicate (D64's amendment).
+
+D64 (ruled 2026-08-25) froze `ckpt_gc.py --apply` because the coverage predicate
+(`resolve_coverage`) has no AUTHORITY BINDING: a grammatically perfect `covers:`/`protect:` line
+in ANY `experiments/<id>/PROTECTED.txt` grants coverage over ANY run dir it names, with no check
+that `<id>` has any relationship to that run dir. This row adds the binding as a CONJUNCT
+(`resolve_bound_coverage`, `tools/ckpt_gc.py`) — id-correlation, or an explicit
+`_AUTHORITY_ALLOWLIST` entry — flag-gated (`--bind-authority` / `authority_binding=`) and default
+OFF, per config.json's "new behavior ships flag-gated, default OFF" invariant. Default OFF is
+also what keeps the pre-existing 881/881D/881I/881G suites green without modification: those
+suites use placeholder manifest ids (`999_x`, `e1`, `e2`, `hostile_unrelated`, ...) throughout,
+by design, to isolate COVERAGE from CORRELATION — under the binding those ids would not
+correlate with the run dirs they cover, which is exactly why the binding must not be the default
+until a caller opts in.
+
+Gate-numbering: this file uses TASK_881E's own three acceptance gates, exactly as written in
+`tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md`:
+  (i)   the D64 repro flips from "covers, deletes" to "refuses, deletes nothing"
+  (ii)  every protection the CURRENT corpus grants is re-derived under the binding (a diff)
+  (iii) the 881D/881I/881G suites stay green; canon pins re-pinned only where legitimate
+
+Sandboxed under tmp_path throughout. Nothing here ever touches the real `runs/`,
+`jax_ckpt_fast/`, or `experiments/` — gate (ii)'s corpus diff runs as a standalone script
+against the real tree (see the task report), never as a pytest here, so a real-tree read is
+never accidentally exercised by `pytest tools/tests`.
+"""
+
+import importlib.util
+import os
+import subprocess
+import sys
+
+import pytest
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+GC_PATH = os.path.join(REPO, "tools", "ckpt_gc.py")
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+
+_spec = importlib.util.spec_from_file_location("ckpt_gc", GC_PATH)
+gc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gc)
+
+from mcts_trader.training import safe_checkpoint as sc  # noqa: E402
+
+D64_OVERRIDE_FLAG = "--i-have-read-d64-and-accept-the-unbound-coverage-risk"
+D64_OVERRIDE_TOKEN = "I-HAVE-READ-D64"
+D64_OVERRIDE = f"{D64_OVERRIDE_FLAG}={D64_OVERRIDE_TOKEN}"
+
+
+def _mk_ckpt(root, name, mtime=None):
+    p = os.path.join(root, name)
+    os.makedirs(p, exist_ok=True)
+    (open(os.path.join(p, "checkpoint"), "w")).close()
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    return p
+
+
+def _run_gc(args, cwd):
+    return subprocess.run([sys.executable, GC_PATH] + args, cwd=cwd,
+                          capture_output=True, text=True)
+
+
+def _d64_hostile_tree(tmp_path):
+    """D64's OWN hostile scenario (mirrors test_ckpt_881_protection_model.py's own
+    `_d64_hostile_tree`, rebuilt here so this file is self-contained): a run dir whose only
+    coverage comes from a `covers:` line in a totally unrelated experiment id."""
+    runs = tmp_path / "runs"
+    for i in (1, 2, 3):
+        _mk_ckpt(str(runs / "target_run"), f"checkpoint_{i}")
+    hostile = tmp_path / "experiments" / "hostile_unrelated"
+    hostile.mkdir(parents=True)
+    (hostile / "PROTECTED.txt").write_text("covers: runs/target_run\n")
+    return runs / "target_run"
+
+
+_D64_APPLY_ARGS = ["--roots", "runs", "--experiments-dir", "experiments",
+                   "--min-free-gb", "99999", "--keep-unscored", "0", "--keep-latest", "1"]
+
+
+def _survivors(run_dir):
+    return sorted(p.name for p in run_dir.iterdir())
+
+
+# ==================================================================== gate (i): the D64 repro
+# "the unrelated-hostile_unrelated manifest no longer covers ... a manifest with no declared
+# relationship refuses" — reproduced BOTH directions, on isolated scratch trees, using the exact
+# grammatically-well-formed shape the module docstring and D64 itself name: a `covers:` line in
+# an UNRELATED `experiments/<id>/PROTECTED.txt`.
+
+def test_d64_repro_flag_omitted_still_covers_and_deletes(tmp_path):
+    """Direction A — flag OMITTED (default OFF) reproduces HEAD's behaviour EXACTLY: the hostile
+    manifest still covers, and --apply (with the D64 override) still deletes."""
+    run_dir = _d64_hostile_tree(tmp_path)
+    r = _run_gc(_D64_APPLY_ARGS + ["--apply", D64_OVERRIDE], cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" not in r.stdout, r.stdout
+    assert _survivors(run_dir) == ["checkpoint_3"], (
+        f"pre-fix behaviour must be unchanged when --bind-authority is omitted: {r.stdout}")
+
+
+def test_d64_repro_bind_authority_refuses_and_deletes_nothing(tmp_path):
+    """Direction B (post-fix) — the SAME hostile tree, `--bind-authority` given: the manifest id
+    ('hostile_unrelated', task number None) has no declared relationship to 'runs/target_run'
+    (task number None too — a fresh, unrelated pairing exactly like D64's own scenario), so the
+    run dir REFUSES wholesale and every checkpoint survives."""
+    run_dir = _d64_hostile_tree(tmp_path)
+    r = _run_gc(_D64_APPLY_ARGS + ["--apply", D64_OVERRIDE, "--bind-authority"], cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" in r.stdout, r.stdout
+    assert _survivors(run_dir) == ["checkpoint_1", "checkpoint_2", "checkpoint_3"], (
+        f"post-fix must delete NOTHING: {r.stdout}")
+    # Scope item 2: names the manifest that WOULD have standing, not "an experiments/<id>/
+    # PROTECTED.txt" (any id) — D64's own attack shape.
+    assert "hostile_unrelated" in r.stdout
+    assert "no declared relationship" in r.stdout
+    assert "_AUTHORITY_ALLOWLIST" in r.stdout
+
+
+def test_d64_repro_correlated_manifest_still_covers_under_the_binding(tmp_path):
+    """Scope item 3's second clause: "the same content under the CORRELATED manifest still
+    covers" — identical `covers:` line, but the manifest now lives at an id sharing the run
+    dir's own task number, and --bind-authority does NOT refuse it."""
+    runs = tmp_path / "runs"
+    _mk_ckpt(str(runs / "832_target_run"), "checkpoint_1")
+    _mk_ckpt(str(runs / "832_target_run"), "checkpoint_2")
+    correlated = tmp_path / "experiments" / "832_correlated"
+    correlated.mkdir(parents=True)
+    (correlated / "PROTECTED.txt").write_text("covers: runs/832_target_run\n")
+    r = _run_gc(["--roots", "runs", "--experiments-dir", "experiments", "--min-free-gb", "1e18",
+               "--bind-authority"], cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" not in r.stdout, (
+        f"a correlated manifest (same task number, 832) must still cover: {r.stdout}")
+
+
+def test_d64_repro_uncorrelated_manifest_refuses_under_the_binding(tmp_path):
+    """Scope item 3's third clause: "a manifest with no declared relationship refuses" —
+    restated as a direct unit case distinct from the hostile-id repro above (a mismatched, but
+    non-adversarially-named, id)."""
+    runs = tmp_path / "runs"
+    _mk_ckpt(str(runs / "832_target_run"), "checkpoint_1")
+    mismatched = tmp_path / "experiments" / "737_unrelated_experiment"
+    mismatched.mkdir(parents=True)
+    (mismatched / "PROTECTED.txt").write_text("covers: runs/832_target_run\n")
+    r = _run_gc(["--roots", "runs", "--experiments-dir", "experiments", "--min-free-gb", "1e18",
+               "--bind-authority"], cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" in r.stdout, r.stdout
+
+
+# ============================================================== unit-level: resolve_bound_coverage
+
+def test_resolve_bound_coverage_with_no_citations_is_byte_identical_to_resolve_coverage(
+        monkeypatch):
+    """The "additive by construction" claim, exercised directly: omitting citations/scan_dirs
+    returns EXACTLY resolve_coverage's own dict — the flag-off case every existing test relies
+    on."""
+    named = {"/a/runs/x", "/a/runs/y/ckpt"}
+    run_dirs = ["/a/runs/x", "/a/runs/y"]
+    monkeypatch.setattr(gc.os.path, "exists", lambda p: True)
+    base = gc.resolve_coverage(run_dirs, named)
+    bound = gc.resolve_bound_coverage(run_dirs, named)
+    assert bound == base
+    bound2 = gc.resolve_bound_coverage(run_dirs, named, citations={"/a/runs/x": ["x"]})
+    assert bound2 == base, "citations alone (no scan_dirs) must still be a no-op"
+
+
+def test_resolve_bound_coverage_can_only_remove_never_add(tmp_path):
+    """A direct, constructive proof of the non-negotiable: build a tree where the base predicate
+    covers 2 run dirs (one correlated, one not) and confirm the bound predicate's covered set is
+    a SUBSET of the base predicate's — never a superset, never a disjoint addition."""
+    runs = tmp_path / "runs"
+    _mk_ckpt(str(runs / "832_a"), "checkpoint_1")
+    _mk_ckpt(str(runs / "unrelated_b"), "checkpoint_1")
+    exp = tmp_path / "experiments" / "832_owner"
+    exp.mkdir(parents=True)
+    (exp / "PROTECTED.txt").write_text(
+       f"covers: {runs / '832_a'}\ncovers: {runs / 'unrelated_b'}\n")
+
+    manifests = gc.load_manifests([str(tmp_path / "experiments")])
+    named = manifests.protect | manifests.covers
+    run_dirs = [str(runs / "832_a"), str(runs / "unrelated_b")]
+
+    base = gc.resolve_coverage(run_dirs, named, set(manifests.dangling))
+    bound = gc.resolve_bound_coverage(run_dirs, named, set(manifests.dangling),
+                                      citations=manifests.citations,
+                                      scan_dirs=[str(tmp_path / "experiments")])
+
+    assert base[str(runs / "832_a")] is True
+    assert base[str(runs / "unrelated_b")] is True
+    assert bound[str(runs / "832_a")] is True, "the correlated grant must survive the binding"
+    assert bound[str(runs / "unrelated_b")] is False, "the uncorrelated grant must be removed"
+    for rd in run_dirs:
+        assert (not base[rd]) or (bound[rd] in (True, False))
+        assert bound[rd] <= base[rd], f"{rd}: bound coverage exceeded base coverage"
+
+
+def test_protect_file_entries_are_untouched_by_the_binding(tmp_path):
+    """Scope item 1 binds `covers:`/`protect:` MANIFEST entries only — an operator
+    `--protect-file` entry (a different, explicit trust mechanism) has no manifest id to
+    correlate and must not be refused by the binding."""
+    runs = tmp_path / "runs"
+    ck = _mk_ckpt(str(runs / "unrelated_name"), "checkpoint_1")
+    pf = tmp_path / "protect.txt"
+    pf.write_text(f"{ck}\n")
+    r = _run_gc(["--roots", "runs", "--protect-file", str(pf), "--min-free-gb", "1e18",
+               "--bind-authority"], cwd=str(tmp_path))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" not in r.stdout, (
+        f"a --protect-file entry must satisfy coverage under the binding too: {r.stdout}")
+
+
+def test_authority_correlated_id_correlation():
+    assert gc._authority_correlated("832_linear_imprint", "runs/832_e5/ckpt_imprint_full")
+    assert gc._authority_correlated("861_search_teacher_imprint", "runs/861_ref/ckpt_ref_s0")
+    assert not gc._authority_correlated("hostile_unrelated", "runs/target_run")
+    assert not gc._authority_correlated("828_stage3_train", "jax_ckpt_fast/e5exit2_pq_s0"), (
+        "measured on the live corpus (gate ii): this real grant does NOT id-correlate and is "
+        "not silently rescued by a loosened number match")
+
+
+def test_authority_allowlist_escape_hatch():
+    """The 'explicit per-experiment allow-list' half of scope item 1, exercised directly (empty
+    by shipped default — see tools/ckpt_gc.py's own _AUTHORITY_ALLOWLIST docstring)."""
+    assert gc._AUTHORITY_ALLOWLIST == {}, (
+        "TASK_881E ships this EMPTY — a real grant needing an exception is a finding for the "
+        "operator (gate ii), not something this row resolves by pre-populating the list")
+    orig = dict(gc._AUTHORITY_ALLOWLIST)
+    try:
+        gc._AUTHORITY_ALLOWLIST["828_stage3_train"] = ("jax_ckpt_fast/e5exit2_pq_s0",)
+        assert gc._authority_correlated("828_stage3_train", "jax_ckpt_fast/e5exit2_pq_s0")
+        assert not gc._authority_correlated("828_stage3_train", "jax_ckpt_fast/some_other_run")
+    finally:
+        gc._AUTHORITY_ALLOWLIST.clear()
+        gc._AUTHORITY_ALLOWLIST.update(orig)
+
+
+# ========================================================= gate (iii) sibling: the flag itself
+
+def test_bind_authority_flag_exists_with_an_unused_first_letter():
+    """Sanity check for the NAMING CONSTRAINT this row's own addition must respect: `--b` was
+    unused before this row (no HEAD long option starts with 'b'), so it cannot steal an
+    abbreviation. Full behavioural class coverage lives in
+    test_ckpt_881i_manifest_ingestion.py::test_head_option_abbreviations_still_resolve, which
+    this row does not modify."""
+    r = _run_gc(["--help"], cwd=REPO)
+    assert "--bind-authority" in r.stdout
+
+
+def test_refusal_text_default_off_is_byte_identical_to_pre_881e_wording(tmp_path):
+    """The flag-off refusal text is UNCHANGED — this is what makes the flag genuinely additive
+    at the text level too, not just at the coverage-boolean level."""
+    runs = tmp_path / "runs"
+    _mk_ckpt(str(runs / "my_run"), "checkpoint_1")
+    r = _run_gc(["--roots", "runs", "--min-free-gb", "1e18"], cwd=str(tmp_path))
+    assert "to an experiments/<id>/PROTECTED.txt" in r.stdout, r.stdout
+
+
+# =============================================================== scope item 4: the in-run pruner
+
+def test_in_run_pruner_authority_binding_default_off_is_unaffected(tmp_path, monkeypatch):
+    """`authority_binding` defaults False: an unrelated-id manifest still covers exactly like
+    HEAD's shipped behaviour — no existing caller (train_jax_fast.py never passes this kwarg
+    today) is affected by the parameter merely existing."""
+    sc._reset_protection_cache_for_test()
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "my_run"
+    _mk_ckpt(str(run_dir), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+    msgs, had_failure = sc.prune_run_dir_by_score(
+        str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), apply=False)
+    assert not any("REFUSE" in m for m in msgs), msgs
+    assert not had_failure
+    sc._reset_protection_cache_for_test()
+
+
+def test_in_run_pruner_authority_binding_on_refuses_uncorrelated_id(tmp_path, monkeypatch):
+    """`authority_binding=True` wires the SAME binding into the in-run pruner: an uncorrelated
+    id no longer covers."""
+    sc._reset_protection_cache_for_test()
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "my_run"
+    _mk_ckpt(str(run_dir), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+    msgs, had_failure = sc.prune_run_dir_by_score(
+        str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), apply=False,
+        authority_binding=True)
+    assert any("REFUSE" in m for m in msgs), msgs
+    assert any("no declared relationship" in m or "no manifest names it at all" in m
+              for m in msgs), msgs
+    assert not had_failure
+    sc._reset_protection_cache_for_test()
+
+
+# ========================= scope item 4's TEETH: proof, not a design argument (see task report)
+
+def test_authority_binding_refusal_never_sets_had_failure_or_raises(tmp_path, monkeypatch):
+    """THE PROOF: construct a refusal caused SPECIFICALLY by the authority binding (a manifest
+    that covers under the OLD predicate but not the bound one) and demonstrate the deleting call
+    — `apply=True`, the exact call shape train_jax_fast.py uses — returns cleanly with
+    `had_failure=False` and a non-empty, informative message. No exception anywhere in the call
+    stack; nothing resembling `sys.exit`."""
+    sc._reset_protection_cache_for_test()
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "my_run"
+    ck = _mk_ckpt(str(run_dir), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+
+    msgs, had_failure = sc.prune_run_dir_by_score(
+        str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), apply=True,
+        authority_binding=True)
+
+    assert had_failure is False, (
+        "an authority-binding refusal must never be reported as a delete FAILURE — that is the "
+        "flag `train_jax_fast.py` turns into sys.exit(1)")
+    assert len(msgs) > 0 and any(len(m) > 0 for m in msgs), "the refusal must be a NON-EMPTY log line"
+    assert any("REFUSE" in m for m in msgs), msgs
+    assert os.path.isdir(ck), "the checkpoint must survive an authority-binding refusal"
+    sc._reset_protection_cache_for_test()
+
+
+def test_authority_binding_refusal_leaves_the_training_exit_path_unchanged(tmp_path, monkeypatch):
+    """One level up: reconstruct train_jax_fast.py's own `ckpt_prune_failed` bookkeeping
+    (train_jax_fast.py:747-771) around the call and confirm the flag it feeds `sys.exit(1)` from
+    stays False after an authority-binding refusal — the exact mechanism the task asks to be
+    proven, not merely argued."""
+    sc._reset_protection_cache_for_test()
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "my_run"
+    _mk_ckpt(str(run_dir), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+
+    ckpt_prune_failed = False
+    try:
+        msgs, had_failure = sc.prune_run_dir_by_score(
+            str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), apply=True,
+            authority_binding=True)
+    except Exception as e:  # mirrors train_jax_fast.py's own defense-in-depth catch
+        ckpt_prune_failed = True
+        msgs, had_failure = [f"raised {type(e).__name__}: {e}"], True
+    if had_failure:
+        ckpt_prune_failed = True
+
+    assert ckpt_prune_failed is False, (
+        f"train_jax_fast.py's own exit-code flag would have gone True — the run would "
+        f"sys.exit(1) after finishing: {msgs}")
+    sc._reset_protection_cache_for_test()
+
+
+def test_collect_protection_returns_citations_as_a_fourth_element(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    _mk_ckpt(str(runs_root / "my_run"), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+    got = sc.collect_protection(roots=(str(runs_root),), scan_dirs=(str(exp_root),))
+    assert got is not None
+    named, protect, missing, citations = got
+    assert len(named) == 1
+    assert citations, "citations must be populated from the SAME scan that produced named"
+
+
+def test_get_protection_return_arity_is_unchanged(tmp_path, monkeypatch):
+    """The PUBLIC `get_protection` contract stays a 3-tuple — existing callers (this repo's own
+    test_ckpt_881_protection_model.py included) must not need to change."""
+    sc._reset_protection_cache_for_test()
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    _mk_ckpt(str(runs_root / "my_run"), "checkpoint_1")
+    exp_root = tmp_path / "experiments"
+    (exp_root / "999_x").mkdir(parents=True)
+    (exp_root / "999_x" / "PROTECTED.txt").write_text("covers: runs/my_run\n")
+    named, protect, missing = sc.get_protection(roots=(str(runs_root),),
+                                                scan_dirs=(str(exp_root),), ttl_seconds=1000)
+    assert len(named) == 1
+    assert sc.get_protection_citations(), "citations reachable via the new accessor"
+    sc._reset_protection_cache_for_test()
