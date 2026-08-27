@@ -3,6 +3,42 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-27 — TASK_911 — identity pins for load-bearing gitignored files, and the second missing file they immediately found
+
+- **What shipped (D69, scope 1-3 + gates (i)+(ii)).** `config/gitignored_pins.json` pins
+  `{path, sha256, provenance, why_load_bearing}` for 6 gitignored files that suites or launches depend
+  on; `tools/verify_gitignored_pins.py` verifies and promotes them; `experiments/897_corrected_809/`
+  gains a `pytest_sessionstart` gate that aborts the whole session **before collection** on divergence.
+  Git cannot protect these files, and an mtime-preserving restore can write stale content over a
+  deployed repair — which is exactly what happened to `recompute_best.py` (TASK_909).
+- **It found a second casualty on its first run.** `runs/875_wf/orch_wf875.sh` is absent from the
+  workstation **and** from `gpu-server`, and no sha256 of it was ever recorded anywhere —
+  `lore/notes_2026-08-19.md` says it was "sha256-verified identical" on 2026-08-19 but never wrote the
+  value down. The entry is left `null`/MISSING and was **NOT guessed**; seeded as **D71**. The bare
+  whole-manifest invocation therefore exits 1 on this host, which is the fail-closed behaviour the row
+  demands ("missing must be as loud as diverged"), not a defect.
+- **A MAJOR in the escape hatch, closed.** `--promote-pin` exists so a legitimately re-derived file can
+  be re-pinned with evidence — but `--provenance`/`--why` were optional and `load_manifest` checked
+  **key presence**, so a re-pin could write `provenance: null, why_load_bearing: null` and those nulls
+  passed validation forever after. The one path built to preserve an audit trail could silently
+  discard it. Now refused on write (before hashing, before the manifest is opened) and caught on read
+  by truthiness; `sha256: null` stays exempt as a documented load-bearing value.
+- **Three MINORs closed.** `OSError` on a directory or unreadable pin raised uncaught, which inside
+  `pytest_sessionstart` becomes a pytest `INTERNALERROR` instead of the clean refusal — now a
+  structured result. Manifest paths had no containment check, so a `..` entry hashed a file outside the
+  repo — now `realpath` on both sides, matching TASK_905's `_require_within_fold_root` shipped the same
+  night. And `--noconftest` bypasses the gate: **documented rather than fought**, since it is structural
+  to any conftest-hosted hook and shared with the `FIXTURE_IDENTITY` precedent this row follows.
+- **What the panel cleared under attack.** The gate fires identically under full-suite, single-file,
+  `-k`, `--collect-only`, `-p no:cacheprovider`, and a foreign cwd (exit 2, before any test ran); and
+  the null-hash entry does **not** bless later-appearing content (`UNPINNED`, never `OK`) — which would
+  have been the D69 defect rebuilt inside its own detector.
+- **Verification.** 897 suite 253 → **256 passed**; module suite 30 → **54 passed**; selftest 12/12.
+  Gate (i) mutation-proven. `recompute_best.py` `783b2ea3…` and `runs/875_wf` (md5 `e87b080d…`, 269
+  files) verified unchanged before and after. **Gate (iii) is planner work** — it requires writing under
+  `.dark-factory/`, which the lane guard correctly denies; the entry point and 0/1/2 exit contract are
+  handed over in the task banner.
+
 ## 2026-08-27 — TASK_907 ADDENDUM A — the Kraken v2 book channel could not read the live wire, and the 4 rows it did read were wrong
 
 - **What shipped.** The phase-1 recorder's `book` channel is now a per-pair, per-connection maintained

@@ -1,0 +1,56 @@
+{
+  "_meta": {
+    "task": "TASK_911 (D69) -- identity pins for load-bearing gitignored artifacts",
+    "purpose": "runs/ is gitignored by design, so git's clean-tree gate cannot see these files change. A backup restore or mtime-preserving sync can silently overwrite a deployed repair with stale content (D69's forensics, 2026-08-25: runs/809_decision_rule_rescue/recompute_best.py regressed to its June revision this way, and the only in-repo detector was a red test the factory nearly deleted). This manifest pins {path, sha256, provenance, why_load_bearing} for every gitignored file a suite, gate, or launch note is known to depend on, so a divergence is a loud, checkable fact instead of an invisible one.",
+    "discovery_rule": "A file belongs here iff a suite, gate, or launch note names it. Do not add speculative entries.",
+    "verifier": "tools/verify_gitignored_pins.py -- import verify_all()/refuse_on_divergence() for programmatic use, or run `python -m tools.verify_gitignored_pins` for a CLI check of the whole manifest (exit 0 = all OK, 1 = at least one DIVERGED or MISSING, 2 = no DIVERGED/MISSING but at least one UNPINNED).",
+    "promote_path": "Deliberate re-pin ONLY: `python -m tools.verify_gitignored_pins --promote-pin <path> --provenance '<...>' --why '<...>' --evidence '<re-derivation evidence, named>'`. Never re-pins silently; the tool refuses --promote-pin without --evidence. A divergence found by a plain verify run is a FINDING for the operator, never auto-repromoted.",
+    "sha256_null_means": "the manifest names this path as load-bearing but no known-good sha256 has ever been recorded for it in this repo (it has never been seen present-and-verified from this host). Such an entry always reports MISSING or UNPINNED, never OK -- it exists so the gap itself is tracked and visible, not so it can be silently satisfied."
+  },
+  "pins": [
+    {
+      "path": "runs/806_predictability_probe/probe.py",
+      "sha256": "ab1789791c3bde0e8d7fda4e00af6ca495acfc09ea6ad54b97052631e09a1c15",
+      "provenance": "TASK_806 (predictability probe). Inherited byte-verbatim by the 808/809 lineage (GUARDS.md: 'import probe', never re-derived).",
+      "why_load_bearing": "Imported directly by experiments/897_corrected_809/alias_read_layer.py, test_alias_read_layer.py, sweep_gated_maker.py and test_sweep_guards.py for Config/_to_epoch/load_universe_trainlocked/build_aligned_ohlcv/features_linear_xs. test_sweep_guards.py::test_the_lineage_really_has_no_alias_handling reads this file's SOURCE TEXT and asserts it still contains no alias-handling symbols -- a stale or mutated copy would silently falsify that claim.",
+      "seeded_by": "TASK_911 discovery sweep (2026-08-27), confirming the D69 casualty-list entry."
+    },
+    {
+      "path": "runs/808_linear_backtest/backtest.py",
+      "sha256": "e1b1376cad70fea95fa6adc2aec44fa78ad76a4a14482425aded058570249a7f",
+      "provenance": "TASK_808 (linear cost-aware backtest). Inherited byte-verbatim by decide.py/recompute_best.py for _sharpe/_cumulative_pnl_and_maxdd/_block_bootstrap_sharpe_ci/cost model (GUARDS.md).",
+      "why_load_bearing": "Imported directly by experiments/897_corrected_809/sweep_gated_maker.py ('import backtest # 808 lineage') and named alongside probe.py/decide.py in test_sweep_guards.py::test_the_lineage_really_has_no_alias_handling's source-text assertion.",
+      "seeded_by": "TASK_911 discovery sweep (2026-08-27) -- ADDED beyond the task's literal 3-file 809-lineage list because it is independently named by a suite (test_sweep_guards.py) and imported by sweep_gated_maker.py; the discovery rule ('a suite... names it') clearly covers it. Reported in the TASK_911 delivery report."
+    },
+    {
+      "path": "runs/809_decision_rule_rescue/decide.py",
+      "sha256": "fa163c54e0f6926cbf2130b72e5ceeb035282e83e8fd7389065b1f45fd6b422c",
+      "provenance": "TASK_809 (decision rule rescue), audited per runs/809_decision_rule_rescue/GUARDS.md (G11/G12).",
+      "why_load_bearing": "Imported directly by experiments/897_corrected_809/sweep_gated_maker.py as the 809 lineage decision engine (_run_decision), and its source text is read+asserted alias-free by test_sweep_guards.py (both the :465-468 loop and the :1716 lineage_src check).",
+      "seeded_by": "TASK_911 discovery sweep (2026-08-27), confirming the D69 casualty-list entry."
+    },
+    {
+      "path": "runs/809_decision_rule_rescue/recompute_best.py",
+      "sha256": "783b2ea35754d057bed2509b6ea3ffa1f3022473eb9247c706cd0091f4931ffc",
+      "provenance": "TASK_809, REPAIRED per D69 (RULED 2026-08-27): the operator's 2026-08-25 backup restore (mtime-preserving copy sweep) silently wrote the June revision of this file back over a deployed repair; git could not protect it because runs/ has never been tracked. This sha256 is the RECOVERED, currently-deployed repair -- the value TASK_911 was handed to pin, verified byte-identical on this host before any TASK_911 edit.",
+      "why_load_bearing": "Imported directly by experiments/897_corrected_809/test_recompute_gate.py -- the single-cell mechanical PASS/FAIL gate under test. A stale/reverted copy silently reintroduces the two defects that suite exists to catch: the missing PnL>0 criterion and a PASS token that reads as a verdict on a separate, greppable-away line. This is the file D69 was about.",
+      "seeded_by": "TASK_911 D69 casualty list (mandatory seed, task file scope item 1)."
+    },
+    {
+      "path": "runs/875_wf/grade_correct.py",
+      "sha256": "4ccba7d4d23d6ac319981e1a1c4ec900ffb0c2f786eae065909834060a0f7d07",
+      "provenance": "TASK_875 walk-forward battery (LEDGER row 875/wf-generalization). Read-only re-grader over the raw per-seed JSONs. md5 e87b080d4ea092e85b98deef1af7805a is independently cited as the gate-(iv) identity for this file by TASK_911's own scope fence -- both hashes verified against the SAME bytes during this task.",
+      "why_load_bearing": "The sole re-derivation path for the LEDGER's 875/wf-generalization numbers -- experiments/892_action_ev/test_903_constant_provenance.py::gate_875c1_walkforward_numbers runs this script and diffs its output against the LEDGER row verbatim. A stale copy would silently change what that provenance gate re-derives.",
+      "note": "gate-(iv) territory (another task) -- TASK_911 reads and hashes this file only, never modifies it.",
+      "seeded_by": "TASK_911 D69 casualty list (mandatory seed, task file scope item 1)."
+    },
+    {
+      "path": "runs/875_wf/orch_wf875.sh",
+      "sha256": null,
+      "provenance": "TASK_875's orchestration battery script (the 8h57m walk-forward launcher, LEDGER:97). Gitignored and, per experiments/892_action_ev/PROVENANCE_AUDIT_903.md and test_903_constant_provenance.py, has NEVER been committed to this repo (git log --all -- '*orch_wf875*' returns nothing, re-verified during this task).",
+      "why_load_bearing": "Named explicitly in the D69 casualty list and cited by runs/875_wf/NOTE_summary_key_mismatch.md as the source of the WF_SUMMARY.json key-mismatch fake-null (it reads 'sharpe'/'teacher.floor_inenv', the real schema keys are 'sharpe_full'/'tiers[21].teacher_floor_inenv').",
+      "status_note": "FINDING (TASK_911, 2026-08-27): this file is ABSENT on the workstation and no sha256 for it has ever been recorded anywhere in this repo. lore/notes_2026-08-19.md:200-203 records that runs/875_wf/ (18/18 entries) PLUS orch_wf875.sh were mirrored from gpu-server to the workstation and 'sha256-verified identical' at that time -- but the hash value itself was never written down, and the file is no longer present in runs/875_wf/ on this host as of this task's verification sweep, while its 18 sibling entries + grade_correct.py still are. sha256 is left null rather than guessed. This is reported as a named finding for the operator, NOT silently re-pinned and NOT silently dropped from the manifest -- see the TASK_911 delivery report.",
+      "seeded_by": "TASK_911 D69 casualty list (mandatory seed, task file scope item 1)."
+    }
+  ]
+}
