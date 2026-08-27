@@ -3,53 +3,54 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-27 (planner, post run 43 + the D66 ruling).** Run 43 shipped three integrity rows —
-**881D** (`task881d-d64-code-gate`, `58c2d4b`: the protection deleter + D64's `--apply` freeze
-as a CODE GATE; 454 passed/1 skipped, final lens clean), **904A** (`7d98b3f`: smoke out-rooting
-+ the destination-identity write fence; 59 passed), **902** (`aa2a802`: all 12 honesty items,
-no number moved — independently re-derived) — and HALTED **TASK_907 → D66** (built, green on
-its own 152-test suite, uncommitted as a patch): three cycles found one failure family at three
-granularities — *silent absence presented as completeness* (per-sample → per-capture →
-per-pair-total). **D66 ruled 2026-08-27 (planner): option (a), ONE more cycle, with two
-strengthening conditions (the declared-vs-observed reconciliation reads the SUBSCRIPTION CONFIG,
-not just `meta.pairs`; the cycle-4 panel carries a "name the next granularity" lens) and a
-pre-committed stop (any NEW absence granularity found → straight to the (b) restructure, no
-fifth cycle).** Phase-2 split CONFIRMED: rails + arming refusal built, no code path can
-transmit an order; the live-placement increment is its own future row. **907's launch has a
-planner-side precondition: the Kraken v2 schema verified against the live feed (a watched 60s
-capture smoke) BEFORE any multi-day capture starts.** Seeded: TASK_908 (904A's fixture pin-trust
-mechanism — the destination fence rests on `FIXTURE_IDENTITY.json`'s correctness and
-`walkforward.py` never calls `verify_or_die`) and TASK_909 (XS: the 897 suite's 3 standing red
-tests at HEAD — own them, fix or delete-with-prejudice; red suites train red-fatigue). The
-WF_SUMMARY.json recovery framing is CORRECTED (run-43 item 2, 904A banner): the 2-byte stub
-predates the incident by three weeks and is the known-broken orchestrator read's honest output;
-the raw data is intact and reproduces the LEDGER tallies exactly; `experiments/906_*`'s loss
-stands (implementation only — findings live in its banner). 881E gains a scope item (run-43
-item 5): the in-run deleter's freeze relationship gets a real design here — refuse-and-skip,
-never kill the training process.
-**Ready (physically ordered): 1 TASK_907 (D66 resume — cycle 4 with the two conditions, then
-ship phase 1; the shadow-capture launch is planner-side with the schema smoke first) →
-2 TASK_881E (manifest authority binding + the in-run deleter's freeze design; gates the
-`--apply` freeze lift) → 3 TASK_905 (validate --fold-root false PASS) → 4 TASK_904B (two-phase
-corridor writers — run-43 evidence: `_guard_write_path` is a refusal choke point over writers
-that still write eagerly and non-atomically) → 5 TASK_908 (fixture pin-trust mechanism) →
-6 TASK_909 (897 suite reds) → 7 TASK_906 (excess dispersion; archival). FILLER: TASK_899
-(WAITING on the Q2-2026 dump). GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.**
-_Next takeable: **TASK_907 per D66(a)** — the named fix is fully specified in D66's DECIDED
-row; the work is built and green in `lore/`'s committed patch; re-apply, add the pair-level
-reconciliation, run the panel with the next-granularity lens, ship, then the planner launches
-the shadow capture._
+**2026-08-27 (planner, post run 44 + the D67/D68/D69 rulings + the schema smoke).** Run 44
+shipped **TASK_909** (`29bfd3a` — as a RECOVERY, not the expected dead-test cleanup: the three
+reds were a live detector; a verified-deployed, gitignored `recompute_best.py` repair had
+silently reverted to its June bytes on this workstation, recovered from srv, tests green with
+nothing deleted). **TASK_907 halted again — D66's pre-committed stop FIRED** (four new absence
+granularities, three independent parties, the Condition-2 lens briefed blind and converging).
+**D67 ruled: the restructure is confirmed but WIDENED to all five declaration boundaries** (two
+of the four escapes aren't in the gate at all — `estimands.py`, `cli.py` — so a gate-only
+restructure would fix neither), under the unifying principle: **every declared quantity is
+reconciled against what was observed at every boundary, and no fail-loud check may be
+denominated in the quantity it is checking.** **D67(b): the shadow capture may launch before
+the analysis lands** (shadow costs nothing; the event stream is re-analysable; calendar is the
+pole) under four binding preconditions — and the FIRST of them has already fired honestly:
+**the planner-run schema smoke (75s, srv, watched) found the book channel rejects the live v2
+update shape en masse (3,538+ mismatches in 75s; the 25 parsed book events + 19 trades are
+sane; the schema-drift gap machinery fired correctly). The capture does NOT launch until the
+book-channel normalization handles the live update shape and a re-smoke is clean.** D68 ruled:
+TASK_910 pins the no-order-path invariant as mechanism (XS, additive), and the notional caps
+become MANDATORY at arming (`--budget-cap-usd` + `--max-order-usd`, enforced at the order
+boundary; values remain the operator's); 907's gate (ii) wording corrected (it claimed the caps
+fire — they did not). D69 ruled: TASK_911 seeds tracked identity pins for load-bearing
+gitignored files; the regression mechanism is recorded as confirmed-by-correlation — **the
+operator's 2026-08-25 backup restore (mtime sweep 22:24–22:31 across ~120 `runs/*` dirs) wrote
+stale gitignored content over deployed repairs; a restore/sync must never overwrite newer
+content silently**. Standing lessons carried forward: a red test at HEAD is EVIDENCE (consult
+the tracked record before any delete-with-prejudice); "what object does this guard actually
+hold, at the moment it acts?"; absolute paths only, `cd` does not persist, nothing under the
+repo is ever an `rm -rf` target.
+**Ready (physically ordered): 1 TASK_907 (D67(a) restructure across all five boundaries + the
+book-channel schema fix with a watched re-smoke gating the capture launch) → 2 TASK_910 (D68(a)
+safety pins; XS) → 3 TASK_881E (authority binding + in-run deleter freeze design) → 4 TASK_905
+→ 5 TASK_904B → 6 TASK_908 → 7 TASK_911 → 8 TASK_906 (archival). FILLER: TASK_899 (WAITING on
+the Q2-2026 dump). GATED: TASK_880 (D34+D35).**
+**OPEN decisions: D43 only.** (D67/D68/D69 seeded RULED planner-side; operator may override.)
+_Next takeable: **TASK_907's D67(a) re-cut** — the spec is D67's DECIDED row + the five
+boundaries named in the run-44 banner; cycle-4's green work (173 tests) is reused, not rebuilt;
+the capture launch is planner-side, gated on the re-smoke._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (RESUME per D66(a)) | M | Built, green on its own 152-test suite, uncommitted — the work is in the committed patch. Cycle 4: the declared-vs-observed reconciliation at PAIR level, read from the SUBSCRIPTION CONFIG (not just `meta.pairs`), plus `assert_complete()` verifying `coverage_by_pair` covers every declared pair. Cycle-4 panel MUST carry the "name the next absence granularity" lens; any new granularity → the (b) restructure, no fifth cycle. Phase-2 split confirmed (no code path can transmit an order). After ship: planner launches the shadow capture on srv — Kraken v2 schema smoke FIRST (watched 60s), then the capture's first minutes watched. |
-| 2 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` | S/M | The authority binding (a `covers:`/`protect:` line grants only where the manifest's own experiment id has standing — additive, fail-closed) + scope item 4 (run-43): the in-run deleter's freeze relationship gets a real design here (refuse-and-skip; never kill the training process). Gates the `--apply` freeze lift, with 880's D35. The D64 repro must flip to 'refuses, deletes nothing', orchestrator-reproduced. |
-| 3 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | `validate --fold-root <copy>` re-reads the ORIGINAL tree via the manifest's baked-in path and reports ALL PASS on a tampered copy — a false-PASS audit tool. Smoke's `_clone_fold_tree` already has the fix pattern. |
-| 4 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | The corridor/aggregate writers redesigned two-phase (decide every fold, then write). Run-43 addition to the case: `_guard_write_path` is a refusal choke point over writers that still write eagerly and non-atomically — the same latent family. Includes the residual bare-`open` readers enumerated in the cycle-3 re-verify. |
-| 5 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | **NEW 2026-08-27 — run-43 item 3.** The 904A destination fence's guarantee rests on `FIXTURE_IDENTITY.json`'s correctness; cross-verify the pin against a locally-present fixture (stale pin fails CLOSED toward refusal), wire `verify_or_die` into `walkforward.py`'s startup or document the exception. |
-| 6 | `tasks/TASK_909_897_RECOMPUTE_GATE_REDS.md` | XS | **NEW 2026-08-27 — run-43 item 4.** The 897 suite's 3 standing red tests at HEAD (`test_recompute_gate.py` → `recompute_best.py::single_cell_gate_lines`): own them — fix if the gate semantics are live, delete-with-prejudice (named in the commit) if the 897 verdict made them dead. |
-| 7 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (between-chunk sd 0.0949 vs SE 0.0354, VR 7.19). Archival/interpretive — the verdict had no near-band cells. The implementation was lost in the run-42 incident; findings survive in the banner; rebuild to spec. |
+| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (D67(a) re-cut) | M | Restructure the absence-defenses across ALL FIVE declaration boundaries (gate + `estimands.py` horizon omission + `cli.py` cross-capture clobber + the two in-gate defects), under the D67 principle (declared-vs-observed at every boundary; no check denominated in the quantity it checks). PLUS the launch-gating schema fix: the book channel must handle the live v2 update shape (the planner's 75s smoke measured 3,538+ mismatches; parsed snapshots/trades are sane; drift-gap machinery works). Cycle-4's green work (173 tests, in tree + committed patch) is reused. Launch = planner, after a clean watched re-smoke + the D67(b) preconditions. |
+| 2 | `tasks/TASK_910_PIN_NO_ORDER_PATH.md` | XS | **NEW 2026-08-27 — D68(a).** Pin the no-order-path invariant as mechanism: exactly-two-subscribe-frames (count ALL frames), pinned WS_URL literal, refusal classes re-raised above the broad catch, credential fence globbed to `*.py` + env/order tokens; caps mandatory at arming (D68(b) shape). Mutation-tested at each site. |
+| 3 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` | S/M | The authority binding (fail-closed) + the in-run deleter's freeze design (refuse-and-skip, never kill training). Gates the `--apply` freeze lift, with 880's D35. |
+| 4 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | `validate --fold-root <copy>` re-reads the ORIGINAL tree — a false-PASS audit tool. |
+| 5 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + the residual bare-`open` readers; `_guard_write_path` is a refusal choke point over eager writers (same family). |
+| 6 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | The 904A destination fence's pin-trust mechanism: cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
+| 7 | `tasks/TASK_911_GITIGNORED_IDENTITY_PINS.md` | S | **NEW 2026-08-27 — D69(a).** Tracked `{path, sha256, provenance}` manifest for load-bearing gitignored files (the 809 lineage incl. the repaired `recompute_best.py`, 875_wf's grader + orchestrator script), checked at suite start-up AND the factory's own startup gate, fail-loud on divergence. |
+| 8 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival/interpretive; implementation lost to the run-42 incident, findings in the banner; rebuild to spec). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.

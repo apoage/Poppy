@@ -85,7 +85,12 @@ Own them, one way or the other: **fix** the tests/code if the gate semantics are
 or repair it; a skipped test that never runs again is a lie of omission in the suite). The
 decision turns on whether `recompute_best.py`'s gate still has a consumer after the 897 verdict
 (ALL FAIL, lane closed) — if nothing reads it, deleting the dead gate's tests AND saying so in
-the commit is the honest close.
+the commit is the honest close. **AMENDED per D69 (run 44 — this row's delete path nearly
+destroyed the evidence of a silent regression): a red test at HEAD is EVIDENCE, not noise;
+consult the tracked record (CHANGELOG, banners, git history) BEFORE any deletion, and "the
+function never existed" is a claim about history that only the record can settle, never a stale
+working file. (Outcome for the record: the reds were a LIVE detector — the deployed repair had
+silently regressed on the workstation; recovered from srv; tests green with nothing deleted.)**
 
 ## Acceptance (gates)
 

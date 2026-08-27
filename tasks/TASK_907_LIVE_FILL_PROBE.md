@@ -334,7 +334,12 @@ order. Credentials via the existing `KRAKEN_API_KEY`/`KRAKEN_API_SECRET` env plu
 
 - (i) Shadow artifact produced with the pre-registered estimands; gaps fail-loud.
 - (ii) Phase 2 refuses to start without the arm flag AND budget cap; a fixture-mode test proves
-  the rails (kill file, caps, auto-cancel, post-only) fire.
+  the rails (kill file, caps, auto-cancel, post-only) fire. **AMENDED 2026-08-27 per D68 (run 44
+  measured this NOT MET — the caps were opt-in and defaulted OFF): the caps are MANDATORY at
+  arming (`--budget-cap-usd` AND `--max-order-usd` both required, `check_total_cap` called
+  unconditionally, enforced at the order boundary); the safety pins land in TASK_910, and until
+  910 ships the honest statement is: rails built, cap enforcement pending 910, and phase 2
+  cannot arm before both.**
 - (iii) The artifact states in its first box: **this probe calibrates a model; it cannot reopen
   897's ALL FAIL** (the verdict's robustness argument quoted).
 - (iv) No number in the artifact comes from a run whose capture had an unrecorded gap.
