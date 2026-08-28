@@ -3,54 +3,47 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-27 (planner, post run 44 + the D67/D68/D69 rulings + the schema smoke).** Run 44
-shipped **TASK_909** (`29bfd3a` — as a RECOVERY, not the expected dead-test cleanup: the three
-reds were a live detector; a verified-deployed, gitignored `recompute_best.py` repair had
-silently reverted to its June bytes on this workstation, recovered from srv, tests green with
-nothing deleted). **TASK_907 halted again — D66's pre-committed stop FIRED** (four new absence
-granularities, three independent parties, the Condition-2 lens briefed blind and converging).
-**D67 ruled: the restructure is confirmed but WIDENED to all five declaration boundaries** (two
-of the four escapes aren't in the gate at all — `estimands.py`, `cli.py` — so a gate-only
-restructure would fix neither), under the unifying principle: **every declared quantity is
-reconciled against what was observed at every boundary, and no fail-loud check may be
-denominated in the quantity it is checking.** **D67(b): the shadow capture may launch before
-the analysis lands** (shadow costs nothing; the event stream is re-analysable; calendar is the
-pole) under four binding preconditions — and the FIRST of them has already fired honestly:
-**the planner-run schema smoke (75s, srv, watched) found the book channel rejects the live v2
-update shape en masse (3,538+ mismatches in 75s; the 25 parsed book events + 19 trades are
-sane; the schema-drift gap machinery fired correctly). The capture does NOT launch until the
-book-channel normalization handles the live update shape and a re-smoke is clean.** D68 ruled:
-TASK_910 pins the no-order-path invariant as mechanism (XS, additive), and the notional caps
-become MANDATORY at arming (`--budget-cap-usd` + `--max-order-usd`, enforced at the order
-boundary; values remain the operator's); 907's gate (ii) wording corrected (it claimed the caps
-fire — they did not). D69 ruled: TASK_911 seeds tracked identity pins for load-bearing
-gitignored files; the regression mechanism is recorded as confirmed-by-correlation — **the
-operator's 2026-08-25 backup restore (mtime sweep 22:24–22:31 across ~120 `runs/*` dirs) wrote
-stale gitignored content over deployed repairs; a restore/sync must never overwrite newer
-content silently**. Standing lessons carried forward: a red test at HEAD is EVIDENCE (consult
-the tracked record before any delete-with-prejudice); "what object does this guard actually
-hold, at the moment it acts?"; absolute paths only, `cd` does not persist, nothing under the
-repo is ever an `rm -rf` target.
-**Ready (physically ordered): 1 TASK_907 (D67(a) restructure across all five boundaries + the
-book-channel schema fix with a watched re-smoke gating the capture launch) → 2 TASK_910 (D68(a)
-safety pins; XS) → 3 TASK_881E (authority binding + in-run deleter freeze design) → 4 TASK_905
-→ 5 TASK_904B → 6 TASK_908 → 7 TASK_911 → 8 TASK_906 (archival). FILLER: TASK_899 (WAITING on
+**2026-08-28 (planner, post run 45 + D70/D71 ruled + THE CAPTURE IS LIVE).** Run 45 shipped
+**905** (validate `--fold-root` false-PASS closed), **907 ADDENDUM A** (`30c5ce1` — the book
+channel now reads the live wire; the run's finding: the emitted top-of-book was a separate
+derivation never reconciled against the CRC-verified state — one function now returns both, and
+the hand-check lesson is recorded: ONE hand-check is not a proof, and the original smoke's
+single sample landed on the one shape where the defect was invisible), and **911** (`86150d9` —
+identity pins for gitignored files; caught a real casualty on its first run). **D70 ruled
+(2026-08-28): 881E's authority binding ships DEFAULT-ON** (the flag-gating invariant protects
+canon numerics; this row changes no numeric — a flag-gated safety binding on a remote deleter is
+a safety feature that is off). Placeholder-id fixtures opt INTO the flat namespace via a named
+test-only escape; the resume carries the missing measurement (binding-ON breakage split by real
+vs placeholder; gate-(ii) coverage diff against the real corpus). **D71 RULED 2026-08-28:
+RESOLVED BY RECOVERY** — the run-45 "gone from both hosts" was a path miss: the original always
+lived at gpu-server's repo ROOT; recovered (sha `f889577ccc525482…` matches the 08-23 record),
+restored to `runs/875_wf/`, pinned via the 911 promote path with full provenance; all 6 pins
+verify GREEN. Lesson: absence claims must name the exact paths checked. **THE 907 SHADOW
+CAPTURE IS LIVE** (tmux `c907` on srv, launched 2026-08-28 07:07 CEST): the watched re-smoke
+passed decisively — 1,956 book events across all four pairs in 75s, ZERO schema mismatches,
+zero gaps, and the normalization-fidelity sample verified BY HAND against the venue's REST
+ticker (BTC bid/ask 79666.7/79666.8 — identical on both feeds at the same second). D67(b)'s
+preconditions ride the launch record: fixed pair set (restarts use the identical config or are
+a new capture), the T+1h span check is the planner's, and Addendum B's open absence-defects are
+compensated by exactly that.
+**Ready (physically ordered): 1 TASK_907 Addendum B (the D67(a) five-boundary restructure —
+specced in the run-44 banner, first-hand reproduced; runs IN PARALLEL with the live capture) →
+2 TASK_910 (D68(a) safety pins; XS) → 3 TASK_881E (resume per D70: default-ON + fixture updates
++ the missing measurement; gates the `--apply` freeze lift) → 4 TASK_904B (two-phase writers) →
+5 TASK_908 (fixture pin-trust mechanism) → 6 TASK_906 (archival). FILLER: TASK_899 (WAITING on
 the Q2-2026 dump). GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.** (D67/D68/D69 seeded RULED planner-side; operator may override.)
-_Next takeable: **TASK_907's D67(a) re-cut** — the spec is D67's DECIDED row + the five
-boundaries named in the run-44 banner; cycle-4's green work (173 tests) is reused, not rebuilt;
-the capture launch is planner-side, gated on the re-smoke._
+**OPEN decisions: D43 only.**
+_Next takeable: **TASK_907 Addendum B** — the row's own spec, with the five boundaries named;
+the capture is already accumulating, so the analysis restructure no longer costs calendar time._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (D67(a) re-cut) | M | Restructure the absence-defenses across ALL FIVE declaration boundaries (gate + `estimands.py` horizon omission + `cli.py` cross-capture clobber + the two in-gate defects), under the D67 principle (declared-vs-observed at every boundary; no check denominated in the quantity it checks). PLUS the launch-gating schema fix: the book channel must handle the live v2 update shape (the planner's 75s smoke measured 3,538+ mismatches; parsed snapshots/trades are sane; drift-gap machinery works). Cycle-4's green work (173 tests, in tree + committed patch) is reused. Launch = planner, after a clean watched re-smoke + the D67(b) preconditions. |
-| 2 | `tasks/TASK_910_PIN_NO_ORDER_PATH.md` | XS | **NEW 2026-08-27 — D68(a).** Pin the no-order-path invariant as mechanism: exactly-two-subscribe-frames (count ALL frames), pinned WS_URL literal, refusal classes re-raised above the broad catch, credential fence globbed to `*.py` + env/order tokens; caps mandatory at arming (D68(b) shape). Mutation-tested at each site. |
-| 3 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` | S/M | The authority binding (fail-closed) + the in-run deleter's freeze design (refuse-and-skip, never kill training). Gates the `--apply` freeze lift, with 880's D35. |
-| 4 | `tasks/TASK_905_VALIDATE_FOLD_ROOT_RESOLUTION.md` | S | `validate --fold-root <copy>` re-reads the ORIGINAL tree — a false-PASS audit tool. |
-| 5 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + the residual bare-`open` readers; `_guard_write_path` is a refusal choke point over eager writers (same family). |
-| 6 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | The 904A destination fence's pin-trust mechanism: cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
-| 7 | `tasks/TASK_911_GITIGNORED_IDENTITY_PINS.md` | S | **NEW 2026-08-27 — D69(a).** Tracked `{path, sha256, provenance}` manifest for load-bearing gitignored files (the 809 lineage incl. the repaired `recompute_best.py`, 875_wf's grader + orchestrator script), checked at suite start-up AND the factory's own startup gate, fail-loud on divergence. |
-| 8 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival/interpretive; implementation lost to the run-42 incident, findings in the banner; rebuild to spec). |
+| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B — the D67(a) restructure) | M | The five-boundary declared-vs-observed restructure, specced with first-hand reproductions (the run-44 banner): gate + `estimands.py` horizon omission + `cli.py` cross-capture clobber + the resume-path session-1 snapshot + the denominator-shrinks-with-failure aggregate. Principle: every declared quantity reconciled against observed at every boundary; no fail-loud check denominated in the quantity it checks. The capture is LIVE — the restructure costs no calendar time and its artifacts are re-derivable from the event stream. |
+| 2 | `tasks/TASK_910_PIN_NO_ORDER_PATH.md` | XS | D68(a): pin the no-order-path invariant as mechanism (all-frames assertion, pinned WS_URL, refusal re-raises, credential fence glob + tokens); caps mandatory at arming. |
+| 3 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (resume per D70) | S/M | Default-ON authority binding + the placeholder-fixture opt-in escape + the missing measurement (binding-ON breakage split, coverage diff vs the real corpus). Re-apply the committed halt patch first. Gates the `--apply` freeze lift with 880's D35. |
+| 4 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
+| 5 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
+| 6 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.

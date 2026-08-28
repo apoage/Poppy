@@ -46,11 +46,12 @@
     },
     {
       "path": "runs/875_wf/orch_wf875.sh",
-      "sha256": null,
-      "provenance": "TASK_875's orchestration battery script (the 8h57m walk-forward launcher, LEDGER:97). Gitignored and, per experiments/892_action_ev/PROVENANCE_AUDIT_903.md and test_903_constant_provenance.py, has NEVER been committed to this repo (git log --all -- '*orch_wf875*' returns nothing, re-verified during this task).",
-      "why_load_bearing": "Named explicitly in the D69 casualty list and cited by runs/875_wf/NOTE_summary_key_mismatch.md as the source of the WF_SUMMARY.json key-mismatch fake-null (it reads 'sharpe'/'teacher.floor_inenv', the real schema keys are 'sharpe_full'/'tiers[21].teacher_floor_inenv').",
+      "sha256": "f889577ccc525482f9fb786865ca12bf2a95f88cfb8d7b0cd706cd60eac8e2c4",
+      "provenance": "original recovered from gpu-server repo root (/home/operator/Trader/orch_wf875.sh), sha256 f889577ccc525482\u2026 prefix recorded 2026-08-23 in lore notes_2026-08-19.md addendum 8; restored 2026-08-28 per D71",
+      "why_load_bearing": "the 875 walk-forward battery orchestrator \u2014 load-bearing LEDGER provenance (LEDGER 875/wf-generalization, D71)",
       "status_note": "FINDING (TASK_911, 2026-08-27): this file is ABSENT on the workstation and no sha256 for it has ever been recorded anywhere in this repo. lore/notes_2026-08-19.md:200-203 records that runs/875_wf/ (18/18 entries) PLUS orch_wf875.sh were mirrored from gpu-server to the workstation and 'sha256-verified identical' at that time -- but the hash value itself was never written down, and the file is no longer present in runs/875_wf/ on this host as of this task's verification sweep, while its 18 sibling entries + grade_correct.py still are. sha256 is left null rather than guessed. This is reported as a named finding for the operator, NOT silently re-pinned and NOT silently dropped from the manifest -- see the TASK_911 delivery report.",
-      "seeded_by": "TASK_911 D69 casualty list (mandatory seed, task file scope item 1)."
+      "seeded_by": "TASK_911 D69 casualty list (mandatory seed, task file scope item 1).",
+      "promotion_evidence": "sha256 of srv root copy == the hash prefix verified identical on both hosts 2026-08-23 (planner mirror record); the file is the ORIGINAL, not a reconstruction"
     }
   ]
 }
