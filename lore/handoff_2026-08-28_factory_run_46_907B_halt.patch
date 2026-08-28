@@ -1,0 +1,2108 @@
+diff --git a/experiments/907_live_fill_probe/capture.py b/experiments/907_live_fill_probe/capture.py
+index d224f3c..83f9c2a 100644
+--- a/experiments/907_live_fill_probe/capture.py
++++ b/experiments/907_live_fill_probe/capture.py
+@@ -92,6 +92,7 @@ rendered from it.
+ from __future__ import annotations
+ 
+ import json
++import bisect
+ import math
+ import os
+ from dataclasses import dataclass, field
+@@ -104,7 +105,7 @@ except ImportError:  # pragma: no cover
+ 
+ GAP_REASONS = frozenset({
+     "disconnect", "seq_discontinuity", "heartbeat_timeout", "clock_jump", "resume",
+-    "schema_drift",
++    "schema_drift", "book_checksum_mismatch",
+ })
+ 
+ #: The ONLY clock basis this format accepts for gap accounting (see the module docstring).
+@@ -156,11 +157,41 @@ DEFAULT_MAX_UNCOVERED_FRACTION = 0.02
+ DEFAULT_GAP_DETECT_THRESHOLD_S = BAR_INTERVAL_S
+ MAX_GAP_DETECT_THRESHOLD_S = BAR_INTERVAL_S
+ 
++#: Cycle 2 (run-45) — the keepalive reconciliation (spec lines 816-821). Addendum A made the
++#: recorder emit a book event on top-of-book CHANGE **or** a `book_keepalive_s` timer floor, and
++#: declare both keys into `meta_start`. Nothing read them: a two-hour FROZEN book, emitting an
++#: identical top of book every 5.0s, reported `uncovered_fraction 0.0`, `accounted_s 7200.0` and a
++#: PASSING `assert_complete()` — indistinguishable from a healthy one.
++#:
++#: The shipped record carries no per-event flag saying "this one was keepalive-driven", and the
++#: live capture forbids adding one, so the detection is READER-SIDE and value-based: a run of
++#: consecutive book events for one pair whose top of book (bid, ask, and both sizes) is UNCHANGED
++#: and which lasts longer than this many seconds is a STALE run, and its repeats do not count as
++#: observations of the market. The threshold is the bar interval, for the same reason the
++#: gap-detect threshold is: a stretch long enough to empty a whole bar of new book information is
++#: long enough to flag, and anything shorter is absorbed by the coverage window anyway.
++STALE_BOOK_MIN_RUN_S = BAR_INTERVAL_S
++
++#: How far past its DECLARED `book_keepalive_s` floor a book inter-event interval may stretch
++#: before it is counted as an overrun (the mirror direction of the same reconciliation). 2x: the
++#: floor is a rate LIMIT the recorder promised to respect, and a single missed timer tick is
++#: scheduler noise, while 6x (the 30s-hole case) is the recorder's own declaration contradicted.
++BOOK_KEEPALIVE_OVERRUN_FACTOR = 2.0
++
+ 
+ class CaptureFormatError(ValueError):
+     """A capture line or file violates the append-only capture contract."""
+ 
+ 
++def _fmt_uncovered_fraction(value: Optional[float]) -> str:
++    """Render `PairCoverage.uncovered_fraction` — including its NO-CLAIM sentinel (cycle 2).
++
++    The sentinel must never render as a percentage: `0.000%` is the instrument's strongest
++    coverage claim, and `None` means it made none at all.
++    """
++    return "NO CLAIM (accounted_s=0)" if value is None else f"{value * 100:.3f}%"
++
++
+ def _require_finite(value: Any, what: str, where: str) -> float:
+     """Coerce to float and REFUSE anything non-finite.
+ 
+@@ -251,19 +282,25 @@ class CaptureWriter:
+         self._fh: TextIO = open(path, "a", buffering=1)
+         self._lock_held = False
+         self._acquire_exclusive_lock()
+-        if not self._is_resume:
+-            meta: Dict[str, Any] = {
+-                "type": "meta_start", "capture_id": capture_id, "pairs": list(pairs),
+-                "format_version": CURRENT_FORMAT_VERSION, "clock_basis": CLOCK_BASIS,
+-            }
++
++        def _declaration_fields(record_type: str) -> Dict[str, Any]:
++            """The subscription-config fields common to `meta_start` and `meta_resume` (B1,
++            run-45): every writer session declares its OWN config, not just the first. Before
++            this, the resume branch below wrote only a gap record and silently DISCARDED
++            `pairs`/`channels`/`heartbeat_timeout_s` — so a config change on restart (e.g. a pair
++            added to the subscription) was invisible to the reader, and the declared side of
++            gate (iv) stayed pinned to session 1's config forever.
++            """
++            fields: Dict[str, Any] = {"type": record_type, "capture_id": capture_id,
++                                       "pairs": list(pairs)}
+             if self.channels is not None:
+-                meta["channels"] = list(self.channels)
++                fields["channels"] = list(self.channels)
+             if heartbeat_timeout_s is not None:
+                 # Declared so the artifact can print the recorder's liveness knob next to the
+                 # reader's gap-detect knob. The two used to be independently configured with no
+                 # code coupling them and nothing stating either one in the output.
+-                meta["heartbeat_timeout_s"] = _require_finite(
+-                    heartbeat_timeout_s, "heartbeat_timeout_s", f"{path}: meta_start")
++                fields["heartbeat_timeout_s"] = _require_finite(
++                    heartbeat_timeout_s, "heartbeat_timeout_s", f"{path}: {record_type}")
+             if book_emission_policy is not None:
+                 # ADDENDUM A (run 45): the book channel is no longer sampled verbatim — it is
+                 # emitted on change-or-keepalive. An undeclared emission policy would be a
+@@ -272,14 +309,28 @@ class CaptureWriter:
+                 # and printed next to the cadence table by `render._render_coverage_block` — a
+                 # declaration written but never read is the very failure A.4(4) names, so the
+                 # write end and the read end land together.
+-                meta["book_emission_policy"] = str(book_emission_policy)
++                fields["book_emission_policy"] = str(book_emission_policy)
+             if book_keepalive_s is not None:
+-                meta["book_keepalive_s"] = _require_finite(
+-                    book_keepalive_s, "book_keepalive_s", f"{path}: meta_start")
++                fields["book_keepalive_s"] = _require_finite(
++                    book_keepalive_s, "book_keepalive_s", f"{path}: {record_type}")
++            return fields
++
++        if not self._is_resume:
++            meta = _declaration_fields("meta_start")
++            meta["format_version"] = CURRENT_FORMAT_VERSION
++            meta["clock_basis"] = CLOCK_BASIS
+             self._write(meta)
+         else:
+-            last_ts = _last_event_ts(path)
++            # B1 (run-45): declare THIS session's config into the capture BEFORE the resume gap,
++            # so a reader sees "session 2 declared X" as a fact about the capture rather than
++            # losing it the moment the process exits. `ts` is informational provenance only —
++            # `meta_resume` is not in `_EVENT_TYPES_FOR_LAST_TS`, so it never enters gap
++            # arithmetic, exactly like `meta_start`.
+             now = _now()
++            resume_meta = _declaration_fields("meta_resume")
++            resume_meta["ts"] = now
++            self._write(resume_meta)
++            last_ts = _last_event_ts(path)
+             if last_ts is not None and now > last_ts:
+                 self.write_gap(GapRecord(last_ts, now, resume_gap_reason,
+                                           detail="recorder restarted; wire state during the "
+@@ -425,16 +476,27 @@ class ChannelCadence:
+ 
+ @dataclass(frozen=True)
+ class PairCoverage:
+-    """Aggregate DATA-BEARING coverage for one pair over the capture's whole data span.
++    """Aggregate DATA-BEARING coverage for one pair over the capture's whole CAPTURE span.
+ 
+-    `accounted_s` is the time the capture CLAIMS to have observed: its data span minus the union
+-    of its recorded gaps. Recorded gaps are honest, disclosed absence and markouts across them
+-    are already dropped by `covers()`, so they are excluded from the denominator rather than
+-    counted against it. What this measures is the UNDISCLOSED remainder: accounted time that no
++    `accounted_s` is the time the capture CLAIMS to have observed: its span minus the union of
++    its recorded gaps. Recorded gaps are honest, disclosed absence and markouts across them are
++    already dropped by `covers()`, so they are excluded from the denominator rather than counted
++    against it. What this measures is the UNDISCLOSED remainder: accounted time that no
+     data-bearing event came within `window_s` of.
+ 
+-    Computed over the capture's GLOBAL data span, not the pair's own — otherwise a pair that goes
+-    dead on day 2 of a 10-day capture would be judged over day 1 alone and pass.
++    `span_s` (and the `recorded_gap_s`/`accounted_s`/`covered_s` derived from it) is denominated
++    over the capture's whole CAPTURE span — `[start_ts, end_ts]`, ALL events including heartbeats
++    — not the pair's own data-bearing span (B2/run-45). Heartbeats prove the socket was up, which
++    is exactly what makes their span the right denominator for "did we observe the market?": a
++    pair whose data-bearing events stop 2 hours into a 2-hour-plus-tail capture while heartbeats
++    keep flowing must have that dead tail counted AS un-observed time, not excluded from the
++    denominator along with the events that would have proven it dead. Denominating over the
++    pair's OWN data span was the run-45 BLOCKER: a 7200s capture carrying 130.5s of data reported
++    `accounted_s=130, span_s=130` — the denominator collapsed together with the numerator, so
++    `uncovered_fraction` read 0.000% against a true 98.188% of the capture un-observed. Also
++    computed over the capture's GLOBAL span rather than the pair's own for the reason already
++    documented here — otherwise a pair that goes dead on day 2 of a 10-day capture would be
++    judged over day 1 alone and pass.
+     """
+     pair: str
+     n_data_events: int
+@@ -443,19 +505,114 @@ class PairCoverage:
+     recorded_gap_s: float
+     accounted_s: float
+     covered_s: float
++    #: Seconds of this pair's accounted time during which the recorder's `book` channel emitted a
++    #: BYTE-IDENTICAL top of book on its declared keepalive timer (cycle 2, run-45 — the keepalive
++    #: MAJOR, spec lines 816-821). Those emissions are excluded from `covered_s`: a keepalive
++    #: proves the recorder's own timer, not that the market was observed. Zero whenever the
++    #: capture declares no `book_emission_policy`/`book_keepalive_s` — there is then no declared
++    #: quantity to reconcile the observed cadence against, which is the D67 precondition.
++    stale_book_s: float = 0.0
++    #: `covered_s` recomputed as if every keepalive repeat HAD counted as an observation — i.e.
++    #: the coverage this pair would have had if its book had never gone stale (cycle 3, run-45).
++    #: This is the counterfactual that SEPARATES the two kinds of un-observed time, and the
++    #: separation is the whole point: `covered_s` is the honest number (what the market actually
++    #: showed us) while this one isolates GENUINE DATA ABSENCE — time no event of any kind, stale
++    #: or fresh, came near. Their difference is exactly the stale contribution, so a pair can be
++    #: graded on each independently instead of on their sum. Equal to `covered_s` whenever
++    #: `stale_book_s == 0`, which is every capture that declares no keepalive policy and every
++    #: pair whose book never froze — so nothing about pre-cycle-3 degradation semantics moves.
++    #: `None` means "not separately accounted" and resolves to `covered_s`, so a HAND-BUILT
++    #: `PairCoverage` (every synthetic fixture in this suite) behaves exactly as it did before
++    #: this field existed: its whole un-observed fraction is genuine absence and refuses. That is
++    #: the fail-CLOSED direction — an unaccounted coverage record must not be able to claim its
++    #: absence was merely a frozen book and slip out of the whole-capture gate.
++    covered_s_counting_stale: Optional[float] = None
++    #: The longest CONTIGUOUS observed run inside accounted time, seconds. Used only by the
++    #: refusal's remedy text (cycle 3, item 2): it is the measurable difference between "there is
++    #: a healthy stretch of this capture a re-cut could keep" and "there is not", and the old
++    #: single remedy ("re-cut around the degraded stretch") was vacuous for the second case.
++    longest_observed_run_s: float = 0.0
+ 
+     @property
+     def uncovered_s(self) -> float:
+         return max(0.0, self.accounted_s - self.covered_s)
+ 
+     @property
+-    def uncovered_fraction(self) -> float:
+-        # A zero-length (or fully gap-covered) span has nothing to be uncovered: the capture
+-        # makes no coverage claim at all, and `assert_complete`'s other checks own that case.
++    def uncovered_s_counting_stale(self) -> float:
++        covered = (self.covered_s if self.covered_s_counting_stale is None
++                   else self.covered_s_counting_stale)
++        return max(0.0, self.accounted_s - covered)
++
++    @property
++    def uncovered_fraction(self) -> Optional[float]:
++        """The un-observed fraction of accounted time — or `None`, "NO CLAIM MADE", fail-CLOSED.
++
++        Spec B2 item 3 is unconditional: this branch is fail-CLOSED and `0.0` is the one value
++        that must never be returned here. `0.0` is indistinguishable from a measured "0% of this
++        pair's accounted time was un-observed", which is the single strongest coverage claim the
++        instrument can make — and `accounted_s <= 0` is precisely the state in which it has
++        measured nothing at all. Cycle 1 left this returning `0.0` under a comment arguing the
++        enumeration of reachable cases was safe; the enumeration missed a third case (a recorded
++        gap that SWALLOWS REAL EVENTS — 1442 data events inside a 7200s gap gave `accounted_s=0`,
++        `uncovered_fraction=0.0`, `degraded_coverage_pairs()==[]` and a PASSING `assert_complete`),
++        which is now refused outright by `CaptureMetadata.events_inside_recorded_gaps`.
++
++        A SENTINEL rather than `1.0`: the requirement is that this branch cannot BACK a `0.0`, not
++        that it must claim total absence. Returning `1.0` manufactures a refusal for captures with
++        nothing hidden — a genuinely zero-length span, or a span whose absence is fully and
++        honestly disclosed by the gap ledger — which contradicts gate (iv)'s own purpose (refuse
++        what is UNDISCLOSED, not whatever makes the arithmetic degenerate). `None` is neither: it
++        is not a percentage, it cannot be compared against the bound, and every consumer must
++        handle it explicitly. `render` prints it as `NO CLAIM`, `degraded_coverage_pairs` cannot
++        grade it as within-bound, and `no_claim_coverage_pairs` names it in the artifact.
++        """
+         if self.accounted_s <= 0.0:
+-            return 0.0
++            return None
+         return min(1.0, self.uncovered_s / self.accounted_s)
+ 
++    @property
++    def uncovered_fraction_counting_stale(self) -> Optional[float]:
++        """`uncovered_fraction` with the keepalive-stale repeats counted BACK IN as observations
++        — the GENUINE-DATA-ABSENCE fraction (cycle 3, run-45).
++
++        This is the quantity the whole-capture aggregate gate is denominated in. The distinction
++        it draws is the one the cycle-3 BLOCKER turned on:
++
++          * un-observed because NOTHING arrived — a throttling subscription, a dead channel, a
++            cadence that never resolves the minute grid. An INSTRUMENT defect. It refuses the
++            whole capture, exactly as it did before this property existed.
++          * un-observed because the recorder emitted only keepalives while the real top of book
++            sat still. A MARKET FACT (a thin pair in an overnight lull) that is byte-identical on
++            disk to a frozen book state machine — so the consequence must not depend on telling
++            those apart. It is DISCLOSED per pair and the pair is EXCLUDED from the report;
++            see `stale_book_excluded_pairs`.
++
++        Identical to `uncovered_fraction` whenever `stale_book_s == 0`, i.e. for every pair the
++        detection never fired on. Same fail-CLOSED `None` sentinel, same reason.
++        """
++        if self.accounted_s <= 0.0:
++            return None
++        return min(1.0, self.uncovered_s_counting_stale / self.accounted_s)
++
++
++@dataclass(frozen=True)
++class SessionDeclaration:
++    """One writer session's declared subscription config (B1, run-45).
++
++    Written once per `CaptureWriter` process: `kind="start"` for the file's first session
++    (`meta_start`), `kind="resume"` for every later session that reopened the same file
++    (`meta_resume`). Before B1, a resumed session's `pairs`/`channels`/`heartbeat_timeout_s` were
++    silently DISCARDED — `capture.py`'s resume branch wrote only a gap record — so a config
++    change on restart (e.g. subscribing to a newly-added pair) was invisible to the reader: the
++    declared side of gate (iv) stayed pinned to session 1's config forever, and the new pair's
++    total absence read as "never declared" rather than "declared and dead", which is a WEAKER
++    refusal than the one that shape deserves (or, at the boundary, no refusal at all).
++    """
++    kind: str  # "start" | "resume"
++    pairs: List[str]
++    channels: Optional[List[str]]
++    heartbeat_timeout_s: Optional[float]
++
+ 
+ @dataclass
+ class CaptureMetadata:
+@@ -489,6 +646,12 @@ class CaptureMetadata:
+     #: `None` means `meta_start` carried no `pairs` field at all, which is a REFUSAL, not a
+     #: fallback: `CaptureWriter` writes the field unconditionally at every format version.
+     declared_pairs: Optional[List[str]] = None
++    #: B1 (run-45): one entry per writer session that declared a config (`meta_start` plus every
++    #: `meta_resume`), in file order. `declared_pairs`/`channels` are the UNION across every
++    #: session here — reconciling only the FIRST session's declaration is exactly the defect a
++    #: pair added on restart escaped through. A single-session capture (the historical shape;
++    #: still real, still produced by this writer) has exactly one entry with `kind="start"`.
++    sessions: List[SessionDeclaration] = field(default_factory=list)
+     # --- recorder health counters, read back from the last `counters` record ---
+     counters_present: bool = False
+     n_json_decode_errors: int = 0
+@@ -530,6 +693,24 @@ class CaptureMetadata:
+     #: fail-CLOSED: a capture with data events but no coverage accounting is refused rather than
+     #: waved through, so the aggregate check cannot be bypassed by constructing the object.
+     coverage_evaluated: bool = False
++    #: Cycle 2 (run-45): data-bearing events whose timestamp falls STRICTLY INSIDE a recorded gap
++    #: span — a self-contradictory ledger, and the third `accounted_s <= 0` case the cycle-1
++    #: enumeration missed. Human-readable descriptors, capped; the full count is
++    #: `n_events_inside_recorded_gaps`. Strictly inside on purpose: every gap the production
++    #: recorder writes ends AT an event (`_record_gap` ends at `_last_event_ts`/`now`,
++    #: `_close_dark_window` closes at the first event after the outage), so boundary contact is
++    #: the normal, healthy shape and only containment is the contradiction.
++    events_inside_recorded_gaps: List[str] = field(default_factory=list)
++    n_events_inside_recorded_gaps: int = 0
++    #: Cycle 2 (run-45), the MIRROR of the staleness check over the same Addendum-A declaration:
++    #: book inter-event intervals that EXCEED the declared `book_keepalive_s` floor by more than
++    #: `BOOK_KEEPALIVE_OVERRUN_FACTOR`, after removing recorded-gap time. The recorder DECLARED it
++    #: would emit at least every `book_keepalive_s`; an interval well past that contradicts the
++    #: declaration, and at a 5s floor against the reader's 60s gap-detect threshold a 30s book
++    #: silence is invisible to every other check here. DISCLOSED, deliberately not refused — a
++    #: scheduler hiccup must not retro-refuse a multi-day capture that cannot be repeated.
++    book_keepalive_overruns: Dict[str, int] = field(default_factory=dict)
++    book_keepalive_max_interval_s: Dict[str, float] = field(default_factory=dict)
+ 
+     def missing_channels(self) -> List[str]:
+         """DECLARED data channels that carried zero events.
+@@ -565,11 +746,49 @@ class CaptureMetadata:
+         """
+         return not self.declared_pairs
+ 
++    def declared_channels_explicitly_empty(self) -> bool:
++        """True iff `channels` was declared as an EXPLICIT empty list (defect #4, run-45).
++
++        `channels=None` ("undeclared") is a legitimate, disclosed fallback that SOFTENS the
++        per-cell check — synthetic/replay/v1 fixtures produce it, and `CaptureWriter` only emits
++        the field when its caller supplies one. `channels=[]` is a different shape: a capture
++        that explicitly declares it subscribed to NO data channel at all, which cannot describe a
++        capture that has data — the identical shape `declared_pairs=[]` is refused for one field
++        over, and `missing_channels()`'s `if not self.channels: return []` treated the two
++        identically (silently disabling both per-capture channel checks), which is the
++        inconsistency this method exists to name and `assert_complete` to refuse.
++        """
++        return self.channels is not None and len(self.channels) == 0
++
++    def disclosed_empty_trade_cells(self) -> List[str]:
++        """Pairs whose declared `trade` channel carried ZERO events while `book` proves the pair
++        is alive (in-gate MAJOR #1, run-45) — DISCLOSED, never refused.
++
++        The over-refusal this closes: a legitimately quiet pair (a live book, no prints in the
++        window) used to be indistinguishable from a dead subscription, and `capture.py`'s
++        per-cell check refused the WHOLE render over it — discarding every number from every
++        OTHER, healthy pair in the same capture. The asymmetry is deliberate: missing `book` on
++        an observed pair still REFUSES via `pair_reconciliation_gaps`'s
++        `declared_channel_without_data` (an actively-printing pair must have a book, so its
++        absence is a broken subscription, not a market fact) — only the missing-`trade`-with-
++        book-alive direction is downgraded to disclosure.
++        """
++        if not self.channels or "trade" not in self.channels:
++            return []
++        declared = set(self.declared_pairs or [])
++        observed = set(self.observed_pairs)
++        out = []
++        for pair in sorted(declared & observed):
++            chans = set(self.observed_pair_channels.get(pair, ()))
++            if "book" in chans and "trade" not in chans:
++                out.append(pair)
++        return out
++
+     def pair_reconciliation_gaps(self) -> Dict[str, List[str]]:
+         """Defense 4: reconcile the DECLARED subscription against what was actually observed.
+ 
+         Returns a dict of failure-kind -> offending items, every value empty when the capture
+-        reconciles. All five directions are failures, because each one is a way for the artifact's
++        reconciles. All six directions are failures, because each one is a way for the artifact's
+         provenance and its tables to describe different captures:
+ 
+           * ``declared_without_data``    — declared pair, ZERO book/trade events all capture. The
+@@ -582,13 +801,23 @@ class CaptureMetadata:
+             ``pair:channel``. `missing_channels()` is a CAPTURE-WIDE sum, so "BTC has book+trade,
+             ETH has trades only" leaves it blind; per-pair coverage pools book+trade, so a dense
+             trade stream hides it there too. The cell simply has no cadence row and no presence
+-            anywhere — absence again, one granularity down.
++            anywhere — absence again, one granularity down. ASYMMETRIC (in-gate MAJOR #1,
++            run-45): a missing `trade` cell on a pair whose `book` is present is NOT counted here
++            — see `disclosed_empty_trade_cells` — because no prints in the window is a market
++            fact an alive book proves, not a broken subscription. A missing `book` cell (or a
++            missing `trade` cell where `book` is ALSO absent — which cannot happen once the pair
++            is `declared & observed`, since that requires at least one channel) still refuses.
+           * ``observed_undeclared`` / ``coverage_undeclared`` — data (or a coverage record) for a
+             pair the capture never declared. Unattributable in the other direction: a number backed
+             by a pair no subscription asked for is not a number this instrument measured.
+-
+-        When `channels` is undeclared the per-cell check is skipped — the same disclosed fallback
+-        the rest of this module uses for `channels=None`, and `render` prints
++          * ``observed_channel_undeclared`` — data on a channel the capture never declared at all
++            (in-gate MAJOR #5, run-45), as ``pair:channel``. `channels=["trade"]` on a capture
++            full of `book` events used to reconcile perfectly (this key did not exist), so every
++            primary estimand number rested on a channel the capture never declared — the mirror
++            of `declared_channel_without_data` one level up, over CHANNELS rather than pairs.
++
++        When `channels` is undeclared the per-cell checks are skipped — the same disclosed
++        fallback the rest of this module uses for `channels=None`, and `render` prints
+         ``channels=undeclared`` so the reader is told which check was available.
+         """
+         declared = set(self.declared_pairs or [])
+@@ -600,26 +829,111 @@ class CaptureMetadata:
+             "declared_channel_without_data": [],
+             "observed_undeclared": sorted(observed - declared),
+             "coverage_undeclared": sorted(p for p in self.coverage_by_pair if p not in declared),
++            "observed_channel_undeclared": [],
+         }
+         if self.channels:
+-            gaps["declared_channel_without_data"] = sorted(
++            declared_channel_set = set(self.channels)
++            cell_gaps = []
++            for pair in sorted(declared & observed):
++                observed_chans = set(self.observed_pair_channels.get(pair, ()))
++                for channel in self.channels:
++                    if channel in observed_chans:
++                        continue
++                    if channel == "trade" and "book" in observed_chans:
++                        continue  # disclosed, not gated — see `disclosed_empty_trade_cells`
++                    cell_gaps.append(f"{pair}:{channel}")
++            gaps["declared_channel_without_data"] = sorted(cell_gaps)
++            gaps["observed_channel_undeclared"] = sorted(
+                 f"{pair}:{channel}"
+-                for pair in declared & observed
+-                for channel in self.channels
+-                if channel not in set(self.observed_pair_channels.get(pair, ())))
++                for pair in sorted(observed)
++                for channel in self.observed_pair_channels.get(pair, ())
++                if channel not in declared_channel_set)
+         return gaps
+ 
+     def degraded_coverage_pairs(self) -> List[str]:
+         """Pairs whose CUMULATIVE un-observed fraction of accounted time exceeds the declared
+-        bound — the aggregate defense.
++        bound THROUGH GENUINE DATA ABSENCE — the aggregate defense, and a WHOLE-CAPTURE refusal.
+ 
+         The per-jump checks are threshold checks on the LARGEST single hole; they say nothing
+         about a degradation spread thinly across the whole capture. A capture whose book/trade
+         events arrive every 59s for ten days clears every per-jump check at a 60s threshold while
+         never once resolving the minute grid its estimands are denominated in.
++
++        Denominated in `uncovered_fraction_counting_stale`, NOT `uncovered_fraction` (cycle 3,
++        run-45). The two are equal for every pair whose book never went stale — which is every
++        pair in every pre-cycle-2 fixture and every capture declaring no keepalive policy — so
++        this check's behaviour on ordinary coverage degradation (the throttling subscription
++        pinned by `test_coverage_aggregate.py::test_a_throttling_subscription_beside_a_healthy_one
++        _is_caught_per_pair`) is unchanged, deliberately: THAT refusal is about an instrument
++        defect and stays whole-capture. What moves out of here is only the contribution of stale
++        keepalive time, whose consequence is `stale_book_excluded_pairs` — because a frozen top of
++        book is, from disk, indistinguishable from an honest overnight lull on a thin pair, and a
++        consequence that discards a healthy multi-day capture cannot rest on a distinction the
++        reader provably cannot make. A pair over the bound BOTH ways is still named here: it fails
++        even with every keepalive granted to it.
+         """
+         return [pair for pair, cov in sorted(self.coverage_by_pair.items())
+-                if cov.uncovered_fraction > self.max_uncovered_fraction]
++                if cov.uncovered_fraction_counting_stale is not None
++                and cov.uncovered_fraction_counting_stale > self.max_uncovered_fraction]
++
++    def stale_book_excluded_pairs(self) -> List[str]:
++        """Pairs EXCLUDED from the report because STALE BOOK TIME — and only stale book time —
++        pushed them past the declared coverage bound (cycle 3, run-45).
++
++        The cycle-3 BLOCKER: cycle 2 correctly stopped counting keepalive-frozen book time as
++        observation, then routed the result into `degraded_coverage_pairs`, i.e. into a
++        whole-capture refusal that runs before any number is built and is independent of
++        `--pairs`. Measured on a 3-pair capture with two perfectly healthy pairs and one thin pair
++        whose real top of book sat still for one overnight stretch: `rc=1`, no artifact, every
++        number from both healthy pairs discarded, and the refusal's own remedies ("re-cut", "re-run
++        the recorder") unusable on data already recorded.
++
++        The asymmetry this spec already established for the empty-trade cell (`
++        disclosed_empty_trade_cells`) is the one applied here: an INSTRUMENT DEFECT refuses, a
++        MARKET FACT is disclosed. A pair listed here keeps its coverage row and its stale
++        disclosure, is named loudly in the artifact, and contributes NO estimand numbers — its
++        minute-grid claim is compromised and the artifact says so. Every other pair renders. If
++        EVERY pair lands here the artifact has no estimand section at all, which `cli.main`'s
++        unconditional zero-estimand refusal turns back into an `rc=1`.
++
++        Membership is exact, not heuristic: over the bound on the honest fraction AND within it on
++        the genuine-absence fraction. A pair over the bound both ways belongs to
++        `degraded_coverage_pairs` instead and refuses the whole capture as before.
++        """
++        out = []
++        for pair, cov in sorted(self.coverage_by_pair.items()):
++            honest = cov.uncovered_fraction
++            absent = cov.uncovered_fraction_counting_stale
++            if honest is None or absent is None:
++                continue  # NO CLAIM — `no_claim_coverage_pairs` owns that shape
++            if honest > self.max_uncovered_fraction >= absent:
++                out.append(pair)
++        return out
++
++    def no_claim_coverage_pairs(self) -> List[str]:
++        """Pairs whose `uncovered_fraction` is the NO-CLAIM sentinel (cycle 2, run-45).
++
++        `accounted_s <= 0` means this pair's coverage arithmetic has no denominator, so it has
++        made no coverage claim at all. That is NOT the same as "0% un-observed" (the value cycle 1
++        returned) and it is NOT the same as a bound violation either — the two reachable honest
++        shapes are a genuinely zero-length capture span and a span whose absence the gap ledger
++        discloses in full. Named here so the artifact prints `NO CLAIM` instead of a percentage,
++        and so `degraded_coverage_pairs` cannot silently grade an absent claim as within-bound.
++        The dishonest shape that used to hide in this branch — a gap swallowing real events — is
++        refused separately by `events_inside_recorded_gaps`.
++        """
++        return [pair for pair, cov in sorted(self.coverage_by_pair.items())
++                if cov.uncovered_fraction is None]
++
++    def stale_book_pairs(self) -> List[str]:
++        """Pairs with ANY keepalive-driven STALE book time (cycle 2, run-45). Disclosure only,
++        at any magnitude: a pair loses exactly its stale seconds out of `covered_s` and nothing
++        more. The graduated consequence lives one step further on — a pair whose stale seconds
++        push it past the declared bound is named by `stale_book_excluded_pairs` and drops out of
++        the report; a pair that stays inside the bound is disclosed here and nothing else happens
++        to it. Neither path refuses the capture (cycle 3)."""
++        return [pair for pair, cov in sorted(self.coverage_by_pair.items())
++                if cov.stale_book_s > 0.0]
+ 
+     def is_complete(self) -> bool:
+         """Metadata is 'complete' iff there is a meta_start, every DECLARED data channel has at
+@@ -634,17 +948,26 @@ class CaptureMetadata:
+         raises. `test_declared_pairs.py::test_is_complete_and_assert_complete_never_disagree`
+         pins that.
+         """
+-        return (self.had_meta_start and (self.n_book + self.n_trade) > 0
++        return (bool(self.had_meta_start) and (self.n_book + self.n_trade) > 0
+                 and not self.missing_channels()
++                and not self.declared_channels_explicitly_empty()
+                 and not self.unrecorded_gaps
+                 and not self.unrecorded_data_gaps
++                and not self.events_inside_recorded_gaps
+                 and self.coverage_evaluated
+                 and not self.declared_pair_set_missing()
+                 and not any(self.pair_reconciliation_gaps().values())
+                 and not self.degraded_coverage_pairs())
+ 
+     def assert_complete(self) -> None:
+-        if self.had_meta_start is False:
++        # `not self.had_meta_start`, NOT `is False` (in-gate defect #3, run-45): `had_meta_start`
++        # is typed `bool` but nothing stops a hand-built `CaptureMetadata` from carrying an
++        # int-like falsy value (e.g. `0`). `0 is False` is `False` in Python — the two are equal
++        # but not identical — so an IDENTITY check here let `is_complete()` (which uses `and`,
++        # i.e. truthiness) read as incomplete while this raising twin sailed past the check
++        # entirely. `bool(...)` above and `not self.had_meta_start` below are the same falsiness
++        # test, so the two can no longer diverge on this field.
++        if not self.had_meta_start:
+             raise CaptureFormatError(f"{self.path}: no meta_start record — refusing to treat "
+                                       f"this as a capture at all")
+         if (self.n_book + self.n_trade) == 0:
+@@ -660,6 +983,17 @@ class CaptureMetadata:
+                 f"json_decode_errors={self.n_json_decode_errors}, "
+                 f"schema_mismatch={self.n_schema_mismatch}, "
+                 f"unrecognized_frames={self.n_unrecognized_frames}.")
++        if self.declared_channels_explicitly_empty():
++            raise CaptureFormatError(
++                f"{self.path}: GATE (iv) REFUSAL — this capture DECLARES AN EXPLICITLY EMPTY "
++                f"CHANNEL SET (`meta_start`/`meta_resume` `channels` is `[]`, not absent). The "
++                f"identical shape as `declared_pairs=[]` (refused above) one field over: a "
++                f"capture that explicitly subscribed to nothing cannot describe a capture that "
++                f"has data. Contrast `channels` being ABSENT (`None`), which is the legitimate, "
++                f"disclosed 'undeclared' fallback synthetic/replay/v1 fixtures produce and which "
++                f"only softens the per-cell check — an explicit empty list is a different, "
++                f"nonsensical declaration and is refused rather than silently treated the same "
++                f"as undeclared.")
+         if self.unrecorded_gaps:
+             spans = ", ".join(f"[{g.start_ts:.0f}, {g.end_ts:.0f}] ({g.duration_s:.1f}s)"
+                                for g in self.unrecorded_gaps)
+@@ -674,6 +1008,16 @@ class CaptureMetadata:
+                                for g in self.unrecorded_data_gaps[:8])
+             more = ("" if len(self.unrecorded_data_gaps) <= 8
+                     else f" (+{len(self.unrecorded_data_gaps) - 8} more)")
++            # B2/B-ii (run-45): state the TRUE un-observed fraction of the capture span here too,
++            # not just the raw gap spans — this check (defense 2, per-jump, anchored to the
++            # capture span since B2 item 1) is now often what catches a pair whose data-bearing
++            # events stop long before the capture ends, and a reader must not have to cross-
++            # reference the aggregate table to learn the magnitude of what this refusal is about.
++            cov_detail = "; ".join(
++                f"{p}: {_fmt_uncovered_fraction(cov.uncovered_fraction)} of {cov.span_s:.0f}s "
++                f"capture span un-observed (accounted_s={cov.accounted_s:.0f}, "
++                f"n_data_events={cov.n_data_events})"
++                for p, cov in sorted(self.coverage_by_pair.items())) or "(no coverage record)"
+             raise CaptureFormatError(
+                 f"{self.path}: GATE (iv) REFUSAL — {len(self.unrecorded_data_gaps)} "
+                 f"DATA-BEARING discontinuit(y/ies) with no recorded gap covering them: "
+@@ -683,7 +1027,36 @@ class CaptureMetadata:
+                 f"never expires and no gap is ever written — while the book/trade subscription "
+                 f"silently throttles passes the all-event check above and is caught here. "
+                 f"Threshold: {self.gap_detect_threshold_s}s; declared recorder "
+-                f"heartbeat_timeout_s: {self.declared_heartbeat_timeout_s}.")
++                f"heartbeat_timeout_s: {self.declared_heartbeat_timeout_s}. Aggregate data-bearing "
++                f"coverage over the capture span, for reference — the TRUE un-observed fraction, "
++                f"not the 0.000% a data-span-denominated statistic would report: {cov_detail}.")
++        if self.events_inside_recorded_gaps:
++            shown = "; ".join(self.events_inside_recorded_gaps[:8])
++            more = ("" if self.n_events_inside_recorded_gaps <= 8
++                    else f" (+{self.n_events_inside_recorded_gaps - 8} more)")
++            raise CaptureFormatError(
++                f"{self.path}: GATE (iv) REFUSAL — SELF-CONTRADICTORY GAP LEDGER: "
++                f"{self.n_events_inside_recorded_gaps} data-bearing event(s) carry a timestamp "
++                f"lying STRICTLY INSIDE a recorded gap span: {shown}{more}. A recorded gap is a "
++                f"claim that the wire was NOT observed across that span; a book/trade event "
++                f"inside it is a claim that it WAS. Both cannot be true, and the direction this "
++                f"resolves in silently is the dangerous one: recorded-gap time is removed from "
++                f"the coverage denominator, so a gap that swallows its own events drives "
++                f"`accounted_s` to 0 — which used to read as `uncovered_fraction = 0.000%`, an "
++                f"empty `degraded_coverage_pairs()`, and a PASSING completeness check over a "
++                f"capture whose own table said `{self.n_book + self.n_trade} data events | "
++                f"whole span recorded as gap | 0 accounted`. `n_gaps_outside_event_span` only "
++                f"checks the opposite direction and cannot see this. Every gap this recorder "
++                f"writes ends AT an event (`_record_gap` at `_last_event_ts`/`now`, "
++                f"`_close_dark_window` at the first event after the outage), so this shape is not "
++                f"one it can produce under a monotonic clock — the two diagnoses to check first "
++                f"are a hand-built or externally-merged gap ledger, and a BACKWARD step of the "
++                f"local clock (this format's `clock_basis` is {CLOCK_BASIS!r}, and only FORWARD "
++                f"jumps are detected, as `clock_jump` gaps). Remedy: this is a defect in the gap "
++                f"LEDGER, not in the data — re-derive the ledger (or re-cut the capture to the "
++                f"span the gaps actually describe). Do NOT delete the events to make the ledger "
++                f"true, and do NOT delete the gap to make the events true; either one picks a "
++                f"side of a contradiction the recorder never resolved.")
+         if not self.coverage_evaluated:
+             raise CaptureFormatError(
+                 f"{self.path}: GATE (iv) REFUSAL — data-bearing coverage was never evaluated for "
+@@ -709,6 +1082,33 @@ class CaptureMetadata:
+         recon = self.pair_reconciliation_gaps()
+         if any(recon.values()):
+             detail = "; ".join(f"{kind}={items}" for kind, items in sorted(recon.items()) if items)
++            # in-gate defect #6 (run-45): the remedy text used to be one paragraph for every
++            # failure kind, and it was unachievable for a "zero events for the WHOLE capture"
++            # kind — re-cutting to a NARROWER window can only REDUCE a print count, so it cannot
++            # manufacture events that were never received, and "re-run against a subscription
++            # that delivers" IS dropping the pair from the declaration, which the same paragraph
++            # forbade in its next breath. Split per failure kind instead.
++            dead_kinds = ("declared_without_data", "declared_without_coverage",
++                          "declared_channel_without_data")
++            mirror_kinds = ("observed_undeclared", "coverage_undeclared",
++                            "observed_channel_undeclared")
++            remedies = []
++            if any(recon.get(k) for k in dead_kinds):
++                remedies.append(
++                    "for a DEAD subscription (zero events for a declared pair/channel for the "
++                    "WHOLE capture): a narrower re-cut cannot manufacture events that were never "
++                    "received, so it is not an available remedy here — re-run the recorder "
++                    "against a subscription verified to deliver this pair/channel and record a "
++                    "FRESH capture; do not hand-edit THIS capture's declaration to match what it "
++                    "already contains, and do not widen the bound to admit it")
++            if any(recon.get(k) for k in mirror_kinds):
++                remedies.append(
++                    "for data or a coverage record attributed to an UNDECLARED pair/channel: "
++                    "the subscription config used for the NEXT recording must be corrected to "
++                    "include what was actually received, and that new capture's own declaration "
++                    "will then be the one reconciled against it; this capture's declaration must "
++                    "not be edited after the fact to match what it happened to record")
++            remedy = " Remedy split by failure kind — " + "; ".join(remedies) + "."
+             raise CaptureFormatError(
+                 f"{self.path}: GATE (iv) REFUSAL — DECLARED/OBSERVED pair reconciliation failed. "
+                 f"Declared (from meta_start `pairs`, i.e. the recorder's subscription config): "
+@@ -726,20 +1126,62 @@ class CaptureMetadata:
+                 f"crash (the 893 lesson) — a crash is attributable, a missing row reads as "
+                 f"'nothing to report'. Data or coverage for an UNDECLARED pair is the same failure "
+                 f"mirrored: a number backed by a pair no subscription asked for is not a number "
+-                f"this instrument measured. Remedy: re-cut the capture to a window where every "
+-                f"declared subscription delivered, or re-run the recorder against a subscription "
+-                f"that does. NOT 'drop the pair from the declaration' and NOT 'widen the bound' — "
+-                f"either one launders the absence into a completeness claim, which is the whole "
+-                f"thing gate (iv) exists to prevent.")
++                f"this instrument measured. NOT 'drop the pair from the declaration' and NOT "
++                f"'widen the bound' — either one launders the absence into a completeness claim, "
++                f"which is the whole thing gate (iv) exists to prevent.{remedy}")
+         degraded = self.degraded_coverage_pairs()
+         if degraded:
+             detail = "; ".join(
+-                f"{p}: {self.coverage_by_pair[p].uncovered_fraction * 100:.2f}% of "
+-                f"{self.coverage_by_pair[p].accounted_s:.0f}s accounted time un-observed "
+-                f"({self.coverage_by_pair[p].n_data_events} data events)"
++                f"{p}: "
++                f"{_fmt_uncovered_fraction(self.coverage_by_pair[p].uncovered_fraction_counting_stale)}"
++                f" of {self.coverage_by_pair[p].accounted_s:.0f}s accounted time un-observed with "
++                f"NOTHING arriving at all "
++                f"({self.coverage_by_pair[p].n_data_events} data events"
++                + (f"; separately, {self.coverage_by_pair[p].stale_book_s:.0f}s was a STALE "
++                   f"keepalive-driven book — a frozen top of book emitted on the recorder's "
++                   f"declared {self.declared_book_keepalive_s}s timer, which proves the "
++                   f"recorder's clock and not the market — taking the honest un-observed fraction "
++                   f"to "
++                   f"{_fmt_uncovered_fraction(self.coverage_by_pair[p].uncovered_fraction)}; the "
++                   f"stale share is NOT what breached the bound here and on its own would have "
++                   f"excluded the pair rather than refused the capture"
++                   if self.coverage_by_pair[p].stale_book_s > 0.0 else "")
++                + ")"
+                 for p in degraded)
++            # Item 2 (cycle 3): the remedy is split by FAILURE KIND, as in-gate defect #6 required
++            # for the thin-cell case, and every branch names an action achievable on data ALREADY
++            # RECORDED. "Re-cut the capture around the degraded stretch" is vacuous when the whole
++            # capture IS the stretch — for a pair with no observed run long enough to carry even
++            # one bar of the minute grid these estimands are denominated in, there is no narrower
++            # window to cut to and saying so is the honest remedy.
++            recuttable = [p for p in degraded
++                          if self.coverage_by_pair[p].longest_observed_run_s >= BAR_INTERVAL_S]
++            unrecuttable = [p for p in degraded if p not in recuttable]
++            remedies = []
++            if recuttable:
++                runs = ", ".join(
++                    f"{p} (longest contiguous observed run "
++                    f"{self.coverage_by_pair[p].longest_observed_run_s:.0f}s)"
++                    for p in recuttable)
++                remedies.append(
++                    f"for pair(s) that DO still have a healthy stretch inside this file — {runs} "
++                    f"— re-cut THIS capture to a window contained in that stretch and re-run the "
++                    f"reader over the cut; that is achievable on data already recorded, and the "
++                    f"cut window must still be longer than the longest pre-registered horizon or "
++                    f"the horizons it cannot form become zero-sample rows")
++            if unrecuttable:
++                remedies.append(
++                    f"for pair(s) with NO observed run as long as one {BAR_INTERVAL_S:g}s bar — "
++                    f"{unrecuttable} — re-cutting is VACUOUS: there is no narrower window of this "
++                    f"file in which the pair is covered, so no reader-side action on this capture "
++                    f"can produce a number for it. The achievable actions are to record a FRESH "
++                    f"capture against a subscription verified to deliver this pair, and, if the "
++                    f"other pairs in this file are wanted meanwhile, to re-cut the file to exclude "
++                    f"this pair's records entirely so its absence is a stated non-subscription "
++                    f"rather than a silent hole. Neither one is 'widen the bound'")
++            remedy = " Remedy split by failure kind — " + "; ".join(remedies) + "."
+             worst = max((self.coverage_by_pair[p] for p in degraded),
+-                         key=lambda c: c.uncovered_fraction)
++                         key=lambda c: c.uncovered_fraction_counting_stale or 0.0)
+             raise CaptureFormatError(
+                 f"{self.path}: GATE (iv) REFUSAL — AGGREGATE data-bearing coverage below the "
+                 f"declared bound for pair(s) {degraded}: {detail}. Bound: at most "
+@@ -751,8 +1193,10 @@ class CaptureMetadata:
+                 f"are denominated in — a capture that never observed the market faster than once "
+                 f"per {worst.span_s / max(1, worst.n_data_events):.0f}s on average must not "
+                 f"render as fully covered. Heartbeats are excluded: they prove the socket, not "
+-                f"the market. Re-cut the capture around the degraded stretch, or re-run the "
+-                f"recorder — do not widen the bound.")
++                f"the market. Keepalive-STALE book time is excluded from this check too and has "
++                f"its own per-pair consequence — what is measured here is time in which NOTHING "
++                f"arrived, an instrument defect, and it refuses the whole capture. Do NOT widen "
++                f"the bound.{remedy}")
+ 
+ 
+ def read_capture(path: str,
+@@ -798,6 +1242,64 @@ def read_capture(path: str,
+         meta.truncated_tail = True
+ 
+     pairs_seen: set = set()
++    # B1 (run-45): the declared side of gate (iv) is the UNION of every writer session's
++    # declaration (`meta_start` plus every `meta_resume`), not session 1's alone — see the
++    # `SessionDeclaration`/`sessions` docstrings. `*_field_seen` distinguishes "no session ever
++    # declared this field" (stays `None`, the fail-closed sentinel) from "a session declared it
++    # as empty" (a real empty set/list, itself still a completeness failure elsewhere).
++    declared_pairs_field_seen = False
++    declared_pairs_accum: set = set()
++    channels_field_seen = False
++    channels_accum: set = set()
++
++    def _validate_declared_pairs(declared: Any, record_type: str) -> List[str]:
++        # Shape-check before use. `pairs` is the DECLARED side of defense 4, and a bare
++        # string here would be iterated character-by-character into a declared set of
++        # single letters that no observed pair can ever match — turning a malformed
++        # declaration into a reconciliation failure with an unreadable cause. Refuse at
++        # the source instead.
++        if (not isinstance(declared, list)
++                or not all(isinstance(p, str) and p for p in declared)):
++            raise CaptureFormatError(
++                f"{path}: {record_type} `pairs` must be a list of non-empty strings, got "
++                f"{declared!r} — refusing. This field is the declared side of gate (iv)'s "
++                f"pair reconciliation; a declaration that cannot be read cannot be "
++                f"reconciled, and guessing at its meaning is how a completeness claim "
++                f"gets made about a set nobody stated.")
++        return list(declared)
++
++    def _validate_declared_channels(channels: Any, record_type: str) -> List[str]:
++        unknown = [c for c in channels if c not in DATA_CHANNELS]
++        if unknown:
++            raise CaptureFormatError(
++                f"{path}: {record_type} declares unknown data channel(s) {unknown} "
++                f"(known: {list(DATA_CHANNELS)})")
++        return list(channels)
++
++    #: Cycle 2 (run-45), the keepalive reconciliation — STREAMING so a multi-day capture never
++    #: holds one tuple per book event in memory: per pair, the current run's top-of-book value and
++    #: its first/last timestamps. A run ends the moment the value changes; runs longer than
++    #: `STALE_BOOK_MIN_RUN_S` are recorded in `stale_runs` and their repeats are excluded from
++    #: coverage. See `STALE_BOOK_MIN_RUN_S` for why this is value-based and reader-side.
++    book_run: Dict[str, Dict[str, Any]] = {}
++    stale_runs: Dict[str, List[Tuple[float, float]]] = {}
++
++    def _close_book_run(pair: str) -> None:
++        run = book_run.get(pair)
++        if run is None:
++            return
++        duration = run["last"] - run["start"]
++        if run["n"] > 1 and duration > STALE_BOOK_MIN_RUN_S:
++            stale_runs.setdefault(pair, []).append((run["start"], run["last"]))
++
++    def _note_book_top(pair: str, ts: float, top: Tuple[Any, Any, Any, Any]) -> None:
++        run = book_run.get(pair)
++        if run is not None and run["top"] == top:
++            run["last"] = max(run["last"], ts)
++            run["n"] += 1
++            return
++        _close_book_run(pair)
++        book_run[pair] = {"top": top, "start": ts, "last": ts, "n": 1}
+ 
+     def _note_data_event(channel: str, pair: Any, ts: float, where: str) -> None:
+         if not isinstance(pair, str) or not pair:
+@@ -813,23 +1315,23 @@ def read_capture(path: str,
+         if t == "meta_start":
+             meta.had_meta_start = True
+             declared = obj.get("pairs")
++            session_pairs: List[str] = []
+             if declared is not None:
+-                # Shape-check before use. `pairs` is the DECLARED side of defense 4, and a bare
+-                # string here would be iterated character-by-character into a declared set of
+-                # single letters that no observed pair can ever match — turning a malformed
+-                # declaration into a reconciliation failure with an unreadable cause. Refuse at
+-                # the source instead.
+-                if (not isinstance(declared, list)
+-                        or not all(isinstance(p, str) and p for p in declared)):
+-                    raise CaptureFormatError(
+-                        f"{path}: meta_start `pairs` must be a list of non-empty strings, got "
+-                        f"{declared!r} — refusing. This field is the declared side of gate (iv)'s "
+-                        f"pair reconciliation; a declaration that cannot be read cannot be "
+-                        f"reconciled, and guessing at its meaning is how a completeness claim "
+-                        f"gets made about a set nobody stated.")
+-                meta.declared_pairs = sorted(set(declared))
+-                pairs_seen.update(declared)
+-            meta.channels = list(obj["channels"]) if obj.get("channels") is not None else None
++                session_pairs = _validate_declared_pairs(declared, "meta_start")
++                declared_pairs_field_seen = True
++                declared_pairs_accum |= set(session_pairs)
++                pairs_seen.update(session_pairs)
++            session_channels: Optional[List[str]] = None
++            if obj.get("channels") is not None:
++                session_channels = _validate_declared_channels(obj["channels"], "meta_start")
++                channels_field_seen = True
++                channels_accum |= set(session_channels)
++            # `meta.channels` is set from session 1 alone for the reader's OWN per-capture
++            # semantics that predate B1 (`missing_channels()`, the per-cell reconciliation) —
++            # B1's union lives in `declared_pairs`/the post-loop `channels` union below; this
++            # assignment is superseded there but kept here so a single-session capture (still
++            # the common shape) never depends on the post-loop step existing.
++            meta.channels = session_channels
+             meta.clock_basis = obj.get("clock_basis")
+             hb = obj.get("heartbeat_timeout_s")
+             if hb is not None:
+@@ -879,12 +1381,36 @@ def read_capture(path: str,
+                     f"reader does gap accounting on {CLOCK_BASIS!r} only. A gap ledger keyed "
+                     f"on a different clock than the events it is compared against is unsound; "
+                     f"refusing rather than mixing bases.")
+-            if meta.channels is not None:
+-                unknown = [c for c in meta.channels if c not in DATA_CHANNELS]
+-                if unknown:
+-                    raise CaptureFormatError(
+-                        f"{path}: meta_start declares unknown data channel(s) {unknown} "
+-                        f"(known: {list(DATA_CHANNELS)})")
++            meta.sessions.append(SessionDeclaration(
++                kind="start", pairs=sorted(session_pairs), channels=session_channels,
++                heartbeat_timeout_s=meta.declared_heartbeat_timeout_s))
++        elif t == "meta_resume":
++            # B1 (run-45): a LATER writer session's own declared config — see
++            # `SessionDeclaration`. Unioned into `declared_pairs`/`channels` below (post-loop),
++            # never allowed to REPLACE session 1's declaration (that would just move which
++            # single session's config gets presented as the whole capture's).
++            if not meta.had_meta_start:
++                raise CaptureFormatError(
++                    f"{path}: meta_resume record with no preceding meta_start — a resumption "
++                    f"declaration is meaningless without a first session to resume from.")
++            declared = obj.get("pairs")
++            session_pairs = []
++            if declared is not None:
++                session_pairs = _validate_declared_pairs(declared, "meta_resume")
++                declared_pairs_field_seen = True
++                declared_pairs_accum |= set(session_pairs)
++                pairs_seen.update(session_pairs)
++            session_channels = None
++            if obj.get("channels") is not None:
++                session_channels = _validate_declared_channels(obj["channels"], "meta_resume")
++                channels_field_seen = True
++                channels_accum |= set(session_channels)
++            resume_hb = obj.get("heartbeat_timeout_s")
++            if resume_hb is not None:
++                resume_hb = _require_finite(resume_hb, "heartbeat_timeout_s", f"{path}: meta_resume")
++            meta.sessions.append(SessionDeclaration(
++                kind="resume", pairs=sorted(session_pairs), channels=session_channels,
++                heartbeat_timeout_s=resume_hb))
+         elif t == "meta_end":
+             meta.closed_cleanly = True
+         elif t == "book":
+@@ -895,6 +1421,8 @@ def read_capture(path: str,
+             _require_price(obj.get("bid"), "bid", where)
+             _require_price(obj.get("ask"), "ask", where)
+             _note_data_event("book", obj.get("pair"), ts, where)
++            _note_book_top(obj["pair"], ts, (obj.get("bid"), obj.get("ask"),
++                                              obj.get("bid_sz"), obj.get("ask_sz")))
+         elif t == "trade":
+             where = f"{path}: trade record"
+             meta.n_trade += 1
+@@ -919,6 +1447,14 @@ def read_capture(path: str,
+         else:
+             raise CaptureFormatError(f"{path}: unknown record type {t!r}")
+ 
++    # B1 (run-45): `declared_pairs`/`channels` are the UNION across every writer session that
++    # declared one — `meta_start` plus every `meta_resume` — never session 1's alone. A
++    # single-session capture (still the common, real shape) reduces to exactly the old
++    # behaviour: one session in the union is the same as no union at all.
++    meta.declared_pairs = sorted(declared_pairs_accum) if declared_pairs_field_seen else None
++    if channels_field_seen:
++        meta.channels = sorted(channels_accum)
++
+     meta.pairs = sorted(p for p in pairs_seen if p)
+     # The OBSERVED side of defense 4, built from the data-bearing events alone. `data_ts` only ever
+     # gains a (pair, channel) key when an event was actually appended to it, so a declared cell that
+@@ -947,12 +1483,20 @@ def read_capture(path: str,
+     # --- defense 2: the SAME per-jump check, data-bearing events only, per pair ---------------
+     # Heartbeats are deliberately absent from `data_ts`. A degraded session whose heartbeats keep
+     # flowing normally passes the check above and is caught here.
++    # B2 item 1 (run-45): anchor the per-pair scan to the CAPTURE span (all events, heartbeats
++    # included) — heartbeats prove the socket was up, which is exactly what makes their span the
++    # right bound for "did we observe the market?". Without this, a pair whose data-bearing
++    # events stop long before the capture's own end (or start long after it) has no interior jump
++    # for the loop to find — the edge hole was invisible.
++    capture_span = ((meta.start_ts, meta.end_ts)
++                     if meta.start_ts is not None and meta.end_ts is not None else None)
+     all_data_ts: List[float] = []
+     unrecorded_data: List[GapRecord] = []
+     for pair in sorted(data_ts):
+         pair_ts = sorted(t for chan_ts in data_ts[pair].values() for t in chan_ts)
+         all_data_ts.extend(pair_ts)
+-        for g in _find_unrecorded_gaps(pair_ts, meta.gaps, gap_detect_threshold_s):
++        for g in _find_unrecorded_gaps(pair_ts, meta.gaps, gap_detect_threshold_s,
++                                        span=capture_span):
+             unrecorded_data.append(GapRecord(
+                 g.start_ts, g.end_ts, g.reason,
+                 detail=f"pair {pair}: data-bearing (book+trade, heartbeats EXCLUDED) — "
+@@ -965,10 +1509,81 @@ def read_capture(path: str,
+ 
+     # --- defense 3: the AGGREGATE, cumulative, data-bearing coverage check ---------------------
+     meta.cadence = _cadence_stats(data_ts)
+-    if meta.data_start_ts is not None and meta.data_end_ts is not None:
++    # B2 item 2 (run-45): denominate over the CAPTURE span (`capture_span`, all events including
++    # heartbeats), NOT the data span (`meta.data_start_ts`/`meta.data_end_ts`) — the data span is
++    # exactly the quantity that collapses together with the numerator when book/trade goes dark,
++    # which is how `accounted_s=130, span_s=130` (both denominator AND numerator collapsed to the
++    # 130.5s of data) read as `uncovered_fraction=0.000%` against a true 98.188%. The data span is
++    # still computed above (`meta.data_start_ts`/`data_end_ts`) and reconciled against the capture
++    # span for disclosure (see `render._render_coverage_block`).
++    # --- cycle 2: the KEEPALIVE reconciliation (spec lines 816-821) ---------------------------
++    # D67 in one line: reconcile the DECLARED emission policy against the OBSERVED cadence. The
++    # precondition is a declaration to reconcile against — a capture that declares no
++    # `book_emission_policy`/`book_keepalive_s` (every synthetic/replay/v1 fixture, and every
++    # pre-Addendum-A capture) makes no keepalive claim, so there is nothing to contradict and
++    # nothing fires. Both directions of the reconciliation are computed here:
++    #   * STALE   — the recorder emitted on its timer while the top of book never moved. GATED,
++    #               via `covered_s` below: those repeats are not observations of the market.
++    #   * OVERRUN — the recorder emitted SLOWER than the floor it declared. DISCLOSED only.
++    for pair in list(book_run):
++        _close_book_run(pair)
++    declares_keepalive = (meta.declared_book_emission_policy is not None
++                          and meta.declared_book_keepalive_s is not None)
++    if not declares_keepalive:
++        stale_runs = {}
++    else:
++        floor = meta.declared_book_keepalive_s or 0.0
++        overrun_threshold = floor * BOOK_KEEPALIVE_OVERRUN_FACTOR
++        for pair in sorted(data_ts):
++            book_list = sorted(data_ts[pair].get("book", ()))
++            n_over, worst = 0, 0.0
++            for i in range(1, len(book_list)):
++                prev_t, cur_t = book_list[i - 1], book_list[i]
++                interval = cur_t - prev_t
++                if interval <= overrun_threshold:
++                    continue
++                gap_covered = sum(max(0.0, min(e, cur_t) - max(s, prev_t)) for s, e in merged)
++                if (interval - gap_covered) <= overrun_threshold:
++                    continue  # a DISCLOSED outage, not the recorder ignoring its own floor
++                n_over += 1
++                worst = max(worst, interval)
++            if n_over:
++                meta.book_keepalive_overruns[pair] = n_over
++                meta.book_keepalive_max_interval_s[pair] = worst
++
++    # --- cycle 2: the gap ledger must not contradict the events it is filed against ------------
++    # A recorded gap claims the wire was NOT observed across its span; a data-bearing event
++    # strictly inside it claims it WAS. `n_gaps_outside_event_span` only ever checked the opposite
++    # direction, so a gap that SWALLOWS its own events drove `accounted_s` to 0 and read as
++    # `uncovered_fraction = 0.000%` with a PASSING completeness check.
++    if merged:
++        inside: List[str] = []
++        n_inside = 0
++        # `merged` is sorted and DISJOINT (`_merge_gap_spans`), so a binary search over its start
++        # points finds the only span that can contain `t` — O(log m) per event rather than O(m),
++        # which matters at multi-day capture sizes.
++        gap_starts = [lo for lo, _ in merged]
++        for pair in sorted(data_ts):
++            for channel in sorted(data_ts[pair]):
++                for t in data_ts[pair][channel]:
++                    i = bisect.bisect_right(gap_starts, t) - 1
++                    if i < 0:
++                        continue
++                    g_lo, g_hi = merged[i]
++                    if g_lo < t < g_hi:
++                        n_inside += 1
++                        if len(inside) < 8:
++                            inside.append(f"{pair}:{channel} at {t:.3f} inside recorded gap "
++                                           f"[{g_lo:.3f}, {g_hi:.3f}]")
++        meta.events_inside_recorded_gaps = inside
++        meta.n_events_inside_recorded_gaps = n_inside
++
++    # --- defense 3: the AGGREGATE, cumulative, data-bearing coverage check (continued) ---------
++    if capture_span is not None and data_ts:
++        span_lo, span_hi = capture_span
+         meta.coverage_by_pair = {
+-            pair: _pair_coverage(pair, data_ts[pair], merged,
+-                                  meta.data_start_ts, meta.data_end_ts, coverage_window_s)
++            pair: _pair_coverage(pair, data_ts[pair], merged, span_lo, span_hi, coverage_window_s,
++                                  stale_spans=_merge_spans(stale_runs.get(pair, [])))
+             for pair in sorted(data_ts)
+         }
+     meta.coverage_evaluated = True
+@@ -1055,6 +1670,33 @@ def _measure_intersection(a: List[Tuple[float, float]],
+     return total
+ 
+ 
++def _subtract_spans(a: List[Tuple[float, float]],
++                     b: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
++    """union(a) MINUS union(b), as a sorted disjoint span list. Both inputs must already be
++    merged. Used to cut recorded-gap time out of the observed runs before measuring the LONGEST
++    one — a run that is only contiguous because a disclosed outage sits inside it is not a
++    contiguous stretch a re-cut could keep."""
++    out: List[Tuple[float, float]] = []
++    j = 0
++    for lo, hi in a:
++        cur = lo
++        k = j
++        while k < len(b) and b[k][0] < hi:
++            g_lo, g_hi = b[k]
++            if g_hi > cur:
++                if g_lo > cur:
++                    out.append((cur, min(g_lo, hi)))
++                cur = max(cur, g_hi)
++                if cur >= hi:
++                    break
++            k += 1
++        if cur < hi:
++            out.append((cur, hi))
++        while j < len(b) and b[j][1] <= hi:
++            j += 1
++    return [(lo, hi) for lo, hi in out if hi > lo]
++
++
+ def _pctile(sorted_vals: List[float], pct: float) -> Optional[float]:
+     """Linear-interpolation percentile over an already-sorted, all-finite list."""
+     if not sorted_vals:
+@@ -1090,14 +1732,37 @@ def _cadence_stats(data_ts: Dict[str, Dict[str, List[float]]]) -> List[ChannelCa
+ 
+ def _pair_coverage(pair: str, by_channel: Dict[str, List[float]],
+                     merged_gaps: List[Tuple[float, float]],
+-                    span_lo: float, span_hi: float, window_s: float) -> PairCoverage:
++                    span_lo: float, span_hi: float, window_s: float,
++                    stale_spans: Optional[List[Tuple[float, float]]] = None) -> PairCoverage:
+     """Aggregate data-bearing coverage for one pair over [span_lo, span_hi].
+ 
+     An instant counts as OBSERVED iff a book/trade event for this pair lies within +/- window_s
+     of it, so `covered` is the measure of the union of those event windows, clipped to the span
+     and with the recorded-gap time removed (that time is already out of the denominator).
++
++    `stale_spans` (cycle 2, run-45) are this pair's KEEPALIVE-STALE book runs: stretches over
++    which the recorder kept emitting book events on its declared `book_keepalive_s` timer while
++    the top of book never moved. A book event strictly inside such a run is the recorder's timer
++    firing, not an observation of the market, so it is dropped from the coverage event list — but
++    the run's FIRST event is kept (that one really did carry the value), and TRADE events inside
++    the run are kept untouched (a print is an independent observation of the market and does not
++    depend on the book channel being fresh). What survives is the honest picture: a frozen book
++    covers only the window around the moment it froze.
+     """
++    stale = _merge_spans(list(stale_spans or []))
++    stale_starts = [lo for lo, _ in stale]
++
++    def _is_stale_repeat(t: float) -> bool:
++        i = bisect.bisect_right(stale_starts, t) - 1
++        if i < 0:
++            return False
++        lo, hi = stale[i]
++        return lo < t <= hi  # the run's FIRST event (t == lo) is a real observation
++
++    book_ts = [t for t in by_channel.get("book", ()) if not _is_stale_repeat(t)]
++    other_ts = [t for ch, ts in by_channel.items() if ch != "book" for t in ts]
+     ts_list = sorted(t for ts in by_channel.values() for t in ts)
++    observing_ts = sorted(book_ts + other_ts)
+     span = [(span_lo, span_hi)]
+     gaps_clipped = _merge_spans(
+         [(max(s, span_lo), min(e, span_hi)) for s, e in merged_gaps
+@@ -1105,17 +1770,41 @@ def _pair_coverage(pair: str, by_channel: Dict[str, List[float]],
+     span_s = span_hi - span_lo
+     recorded_gap_s = _measure_intersection(gaps_clipped, span)
+     accounted_s = max(0.0, span_s - recorded_gap_s)
+-    ev = _merge_spans([(t - window_s, t + window_s) for t in ts_list])
+-    covered_in_span = _measure_intersection(ev, span)
+-    covered_in_gaps = _measure_intersection(ev, gaps_clipped)
+-    covered_s = max(0.0, covered_in_span - covered_in_gaps)
++
++    def _covered(event_ts: List[float]) -> Tuple[float, List[Tuple[float, float]]]:
++        ev = _merge_spans([(t - window_s, t + window_s) for t in event_ts])
++        covered_in_span = _measure_intersection(ev, span)
++        covered_in_gaps = _measure_intersection(ev, gaps_clipped)
++        return max(0.0, covered_in_span - covered_in_gaps), ev
++
++    covered_s, covered_spans = _covered(observing_ts)
++    # The counterfactual (cycle 3): the SAME arithmetic with the keepalive repeats counted back
++    # in. It is computed here rather than derived from `covered_s + stale_book_s` because the two
++    # are not additive — a stale run can overlap a trade window, a recorded gap, or the span
++    # edges, and every one of those would double-count. Recomputing is the only way the two
++    # numbers stay reconcilable at the boundaries this row exists to get right.
++    covered_s_counting_stale = (covered_s if not stale
++                                 else _covered(ts_list)[0])
++    stale_clipped = _merge_spans(
++        [(max(s, span_lo), min(e, span_hi)) for s, e in stale
++         if min(e, span_hi) > max(s, span_lo)])
++    stale_book_s = _measure_intersection(stale_clipped, span)
++    # Longest contiguous OBSERVED run inside accounted time — the remedy-text discriminator.
++    observed_runs = [(max(lo, span_lo), min(hi, span_hi)) for lo, hi in covered_spans
++                     if min(hi, span_hi) > max(lo, span_lo)]
++    observed_minus_gaps = _subtract_spans(observed_runs, gaps_clipped)
++    longest_observed_run_s = max((hi - lo for lo, hi in observed_minus_gaps), default=0.0)
+     return PairCoverage(pair=pair, n_data_events=len(ts_list), window_s=window_s,
+                          span_s=span_s, recorded_gap_s=recorded_gap_s,
+-                         accounted_s=accounted_s, covered_s=min(covered_s, accounted_s))
++                         accounted_s=accounted_s, covered_s=min(covered_s, accounted_s),
++                         stale_book_s=stale_book_s,
++                         covered_s_counting_stale=min(covered_s_counting_stale, accounted_s),
++                         longest_observed_run_s=longest_observed_run_s)
+ 
+ 
+ def _find_unrecorded_gaps(sorted_ts: List[float], recorded_gaps: List[GapRecord],
+-                           threshold_s: float) -> List[GapRecord]:
++                           threshold_s: float,
++                           span: Optional[Tuple[float, float]] = None) -> List[GapRecord]:
+     """Scan consecutive raw event timestamps for a jump > threshold whose UNCOVERED portion
+     (jump duration minus the UNION of the recorded gaps overlapping it) still exceeds the
+     threshold. This is the independent check: it does NOT trust the recorder's own gap list, it
+@@ -1125,11 +1814,30 @@ def _find_unrecorded_gaps(sorted_ts: List[float], recorded_gaps: List[GapRecord]
+ 
+     Coverage is computed over MERGED (disjoint) spans, so overlapping or duplicated gap records
+     cannot double-count their way over a real hole.
++
++    `span`, when given, is a known BOUND `(span_lo, span_hi)` for `sorted_ts` (B2 item 1,
++    run-45): the loop below only ever looks strictly BETWEEN consecutive elements of `sorted_ts`,
++    so a hole at an EDGE of the timeline — before the first element or after the last — has no
++    consecutive pair spanning it and is invisible without this. An interior hole was already
++    caught (cycles 2/3); leading, trailing and both-edge holes were not. Passing the capture's
++    all-event span (heartbeats included) as `span` for a per-pair DATA-BEARING scan is exactly
++    how the run-45 BLOCKER (a pair whose data stops long before the capture ends, heartbeats
++    still flowing) is now caught: the trailing interval becomes a candidate jump like any other.
+     """
+     merged, _, _ = _merge_gap_spans(recorded_gaps)
++    ts = list(sorted_ts)
++    if span is not None:
++        span_lo, span_hi = span
++        if not ts:
++            ts = [span_lo, span_hi]
++        else:
++            if span_lo < ts[0]:
++                ts = [span_lo] + ts
++            if span_hi > ts[-1]:
++                ts = ts + [span_hi]
+     unrecorded = []
+-    for i in range(1, len(sorted_ts)):
+-        prev_t, cur_t = sorted_ts[i - 1], sorted_ts[i]
++    for i in range(1, len(ts)):
++        prev_t, cur_t = ts[i - 1], ts[i]
+         jump = cur_t - prev_t
+         if jump <= threshold_s:
+             continue
+diff --git a/experiments/907_live_fill_probe/cli.py b/experiments/907_live_fill_probe/cli.py
+index 676452e..c0aa486 100644
+--- a/experiments/907_live_fill_probe/cli.py
++++ b/experiments/907_live_fill_probe/cli.py
+@@ -11,7 +11,7 @@ import argparse
+ import sys
+ import time
+ from pathlib import Path
+-from typing import List, Optional
++from typing import Dict, List, Optional
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ from capture import (  # noqa: E402
+@@ -68,19 +68,109 @@ def main(argv: Optional[List[str]] = None) -> int:
+     estimand1_by_pair = {}
+     estimand1_fallback_by_pair = {}
+     estimand2_by_pair = {}
++    #: B4 (run-45): which `--capture` backed each pair's numbers. `cli.py` used to key
++    #: `estimand1_by_pair` etc. on PAIR ALONE inside the loop over a repeatable `--capture`, so
++    #: two captures both carrying the same pair silently overwrote — the LAST `--capture` on the
++    #: command line won, order-dependently, under a provenance block that named both files.
++    pair_capture_path: Dict[str, str] = {}
++    #: B5: the pair set `--pairs` is reconciled against — per capture, DECLARED **∩** OBSERVED
++    #: (spec line 628), then unioned across the supplied captures. Cycle 1 used declared ∪
++    #: observed; that is a strictly larger set, so a `--pairs` naming a pair that was declared but
++    #: never delivered a single event (or observed but never declared) fell through this
++    #: reconciliation and was caught only by the generic zero-estimand refusal below — code and
++    #: spec disagreeing silently. The intersection is the right operand for an OPERATOR filter:
++    #: it is the set of pairs this instrument can actually back a number for, and a filter naming
++    #: anything else is a declaration the instrument contradicts.
++    reconcilable: set = set()
++    #: Kept alongside for the refusal message only — a reader needs to see WHICH half of the
++    #: intersection a named pair fell out of.
++    declared_all: set = set()
++    observed_all: set = set()
++    #: Pairs dropped by the stale-book exclusion (cycle 3) — named in the zero-estimand refusal so
++    #: "this invocation measured nothing" can never read as "the captures held nothing".
++    excluded_all: set = set()
+     try:
+         for capture_path in args.capture:
+             meta, results = run_shadow(capture_path,
+                                         gap_detect_threshold_s=args.gap_detect_threshold_s,
+                                         pairs=pairs_filter)
+             captures.append(meta)
++            declared_all |= set(meta.declared_pairs or [])
++            observed_all |= set(meta.observed_pairs)
++            reconcilable |= set(meta.declared_pairs or []) & set(meta.observed_pairs)
++            # Cycle 3 (run-45), THE BLOCKER: a pair whose keepalive-STALE book time alone pushed
++            # it past the coverage bound is EXCLUDED from the report and disclosed by name — it
++            # does not refuse the capture. `read_capture` has already separated that case from
++            # ordinary coverage degradation (which still refuses whole-capture, in
++            # `assert_complete`, before this line is ever reached), so all that is left here is
++            # to make sure the pair contributes no number. Dropping it at the SOURCE — before any
++            # estimand is computed — is what makes `render`'s fail-closed mirror check reachable
++            # rather than decorative.
++            stale_excluded = set(meta.stale_book_excluded_pairs())
++            excluded_all |= stale_excluded
+             for pair, result in results.items():
++                if pair in stale_excluded:
++                    continue
++                if pair in pair_capture_path and pair_capture_path[pair] != capture_path:
++                    raise CaptureFormatError(
++                        f"B4 REFUSAL: pair {pair!r} appears in more than one supplied "
++                        f"--capture: {pair_capture_path[pair]!r} and {capture_path!r}. Do NOT "
++                        f"silently pool: pooling markouts across captures separated by an outage "
++                        f"or session boundary is a DIFFERENT estimand than the pre-registered "
++                        f"one, and if it is wanted it must be declared, not defaulted into by a "
++                        f"last-`--capture`-wins overwrite. Re-run with non-overlapping captures, "
++                        f"or pass --pairs to select a disjoint subset per invocation.")
++                pair_capture_path[pair] = capture_path
+                 estimand1_by_pair[pair] = compute_estimand1(result)
+                 estimand1_fallback_by_pair[pair] = compute_estimand1_trade_fallback(result)
+                 estimand2_by_pair[pair] = compute_estimand2(result)
++
++        if pairs_filter is not None:
++            # B5: `--pairs` is a THIRD operator declaration, reconciled against nothing before —
++            # `--pairs SOL/USD` against a capture without it used to yield exit 0 and a
++            # gate-passing artifact with zero estimand sections and no line saying a filter was
++            # applied.
++            unknown = [p for p in pairs_filter if p not in reconcilable]
++            if unknown:
++                raise CaptureFormatError(
++                    f"B5 REFUSAL: --pairs named {unknown}, which no supplied --capture both "
++                    f"declared AND observed (declared ∩ observed, unioned across all supplied "
++                    f"captures: {sorted(reconcilable)}; declared anywhere: {sorted(declared_all)}; "
++                    f"observed anywhere: {sorted(observed_all)}). An operator filter naming a pair "
++                    f"the instrument contradicts is a loud refusal, not a quietly empty report — "
++                    f"and a pair that was DECLARED but never delivered an event is exactly as "
++                    f"unable to back a number as one that was never declared at all.")
++
++        # B5, UNCONDITIONALLY (cycle 2, run-45): "An artifact with zero estimand sections must
++        # never exit 0 carrying a gate-passing disclosure box" is a statement about the ARTIFACT,
++        # not about the `--pairs` flag. Cycle 1 nested this inside `if pairs_filter is not None:`,
++        # so an entirely ordinary capture — a quiet market: dense healthy book, zero prints —
++        # rendered rc=0 with the full gate-(iv) disclosure box, the line "captures that actually
++        # contributed at least one pair's numbers: 0 []", and no estimand section at all.
++        # `shadow_engine.run_shadow` builds its results from TRADE-bar buckets, so a book-only
++        # pair never enters them; the filter was never the only way to reach zero sections.
++        if not estimand1_by_pair and not estimand2_by_pair:
++            raise CaptureFormatError(
++                f"B5 REFUSAL: this invocation produced ZERO estimand sections. An artifact with "
++                f"zero estimand sections must never exit 0 carrying a gate-passing disclosure "
++                f"box — the box would certify the gates a report passed while the report makes "
++                f"no measurement at all. Captures supplied: {list(args.capture)}; "
++                f"declared ∩ observed across them: {sorted(reconcilable)}; "
++                f"--pairs filter: {pairs_filter if pairs_filter is not None else 'none'}. The "
++                f"usual causes are a filter that selected nothing and a capture carrying no "
++                f"TRADE-bar data for any pair (a book-only capture: the estimands are bucketed "
++                f"on trade bars, so a live book with zero prints yields no section)."
++                + (f" Pairs EXCLUDED for stale book time (cycle 3): {sorted(excluded_all)} — "
++                   f"every pair that could have backed a number had its own top of book frozen "
++                   f"past the coverage bound, so this is a ZERO-ESTIMAND artifact and refuses "
++                   f"here rather than rendering an exclusion notice with nothing beside it."
++                   if excluded_all else ""))
++
+         report = render_report(
+             captures, estimand1_by_pair, estimand2_by_pair,
+-            estimand1_trade_fallback_by_pair=estimand1_fallback_by_pair)
++            estimand1_trade_fallback_by_pair=estimand1_fallback_by_pair,
++            pair_capture_path=pair_capture_path, pairs_filter=pairs_filter,
++            captures_declared=list(args.capture))
+     except CaptureFormatError as exc:
+         sys.stderr.write(f"REFUSED (gate iv): {exc}\n")
+         return 1
+diff --git a/experiments/907_live_fill_probe/estimands.py b/experiments/907_live_fill_probe/estimands.py
+index 01cd4c4..5ae87ad 100644
+--- a/experiments/907_live_fill_probe/estimands.py
++++ b/experiments/907_live_fill_probe/estimands.py
+@@ -142,17 +142,21 @@ def _compute_estimand1(result: ShadowPairResult, mid_source: str) -> Estimand1Re
+     kept = [m for m in result.markouts if m.mid_source == mid_source]
+     by_horizon: Dict[str, HorizonAdverseSelection] = {}
+     for horizon in HORIZONS_S:
++        # B3 (run-45): ALL FOUR pre-registered horizons (`HORIZONS_S`) appear here, ALWAYS — a
++        # horizon that drew zero samples is a RESULT about the instrument (this probe's window
++        # was too short for the 1h markout to ever form), not the absence of a row, and it used
++        # to be silently omitted (`if not raw: continue`). Zero-sample and all-non-finite are the
++        # SAME reported shape (n_used=0, nothing evaluable, no verdict) — they differ only in
++        # `n_samples`, so one branch below covers both; no separate early `continue`.
+         samples = [m for m in kept if m.horizon == horizon]
+         raw = [m.adverse_selection_bp for m in samples]
+-        if not raw:
+-            continue  # a horizon with no samples at all is omitted entirely (not reported as 0)
+         finite = [m for m in samples if math.isfinite(m.adverse_selection_bp)]
+         vals = sorted(m.adverse_selection_bp for m in finite)
+         ages = sorted(m.mid_age_s for m in finite if math.isfinite(m.mid_age_s))
+         n_dropped = len(raw) - len(vals)
+         if not vals:
+-            # Every sample at this horizon was non-finite. Emit the horizon anyway so the
+-            # artifact SAYS so, with nothing evaluable and no verdict.
++            # Either zero samples at all, or every sample at this horizon was non-finite. Emit
++            # the horizon anyway so the artifact SAYS so, with nothing evaluable and no verdict.
+             by_horizon[horizon] = HorizonAdverseSelection(
+                 horizon=horizon, n_samples=len(raw), n_used=0, n_dropped_nonfinite=n_dropped,
+                 mean_bp=None, median_bp=None, deciles_bp={},
+diff --git a/experiments/907_live_fill_probe/recorder.py b/experiments/907_live_fill_probe/recorder.py
+index 09bb944..46d9566 100644
+--- a/experiments/907_live_fill_probe/recorder.py
++++ b/experiments/907_live_fill_probe/recorder.py
+@@ -127,6 +127,22 @@ BOOK_EMISSION_POLICY = "change_or_keepalive"
+ DEFAULT_BOOK_KEEPALIVE_S = 5.0
+ 
+ 
++#: Cycle 2 (run-45): how many CONSECUTIVE connections may reconcile the SAME subscribe-ack symbol
++#: mismatch before it is ruled a static misconfiguration and the recorder terminates.
++#:
++#: Defect #2's "abort loudly" was neither: it raised `_GapAlreadyRecorded`, the idiom for a
++#: TRANSIENT failure, so `run()` backed off to `backoff_max_s` (60s) and retried forever. For a
++#: STATIC mismatch (Kraken's legacy `XBT/USD` against a config declaring `BTC/USD`) every
++#: reconnect re-subscribes identically and reconciles false again — an unbounded ~60s reconnect
++#: storm against the venue for the life of a multi-day process, with no terminal signal.
++#:
++#: 3, not 1: a multi-day capture is expensive and unrepeatable, so the DISTINCTION between
++#: transient and non-transient is the fix, not a hair-trigger abort. One connection's ack set can
++#: be incomplete or raced; the same mismatch surviving three independent subscribe cycles is the
++#: configuration, not the wire. At `backoff_base_s=2.0` that is ~6s of retry before terminating.
++SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS = 3
++
++
+ class _GapAlreadyRecorded(ConnectionError):
+     """Raised internally by `_consume` when it has ALREADY written the gap record for the
+     condition forcing reconnect (heartbeat timeout, schema drift, book checksum mismatch) —
+@@ -134,6 +150,19 @@ class _GapAlreadyRecorded(ConnectionError):
+     """
+ 
+ 
++class SubscriptionConfigMismatch(RuntimeError):
++    """TERMINAL, non-transient: the venue's own subscribe ACK named symbols this recorder's
++    configuration never declared, and did so again on every one of
++    `SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS` consecutive connections.
++
++    Deliberately NOT a subclass of `_GapAlreadyRecorded`/`ConnectionError`: `run()`'s reconnect
++    loop treats every one of those as "retry after backoff", which is the correct response to a
++    transport failure and the wrong one to a configuration that cannot fix itself. This escapes
++    `run()` entirely so the process exits loudly (`main()`'s `finally` still closes the capture
++    cleanly), rather than storming the venue until someone notices.
++    """
++
++
+ @dataclass
+ class RecorderConfig:
+     pairs: List[str]
+@@ -202,6 +231,12 @@ class ParsedFrame:
+     #: another that had gone 100% unreadable (e.g. lost its snapshot after a reconnect and never
+     #: got another): no gap, no escalation, and nothing anywhere gates on `n_schema_mismatch`.
+     book_row_mismatch_pairs: List[str] = field(default_factory=list)
++    #: `(channel, symbol)` echoed back by a `subscribe` ACK frame (in-gate defect #2, run-45).
++    #: Kraken's subscribe-ack echoes the VENUE's own spelling of the symbol it subscribed —
++    #: taken verbatim, no normalisation — and is the one free signal available in the first
++    #: second of a connection, previously discarded entirely (recorder.py's method-response
++    #: branch returned unconditionally without looking at the frame's content).
++    subscribe_acks: List[Tuple[str, str]] = field(default_factory=list)
+ 
+     @property
+     def is_silent(self) -> bool:
+@@ -543,7 +578,20 @@ def _parse_frame(msg: Dict[str, Any], now: float,
+     if channel in NON_DATA_CHANNELS:
+         return out  # recognized, legitimately eventless (status/subscription state)
+     if channel is None and ("method" in msg or "result" in msg or "error" in msg):
+-        return out  # a method response / subscribe-ack — recognized, legitimately eventless
++        # A method response / subscribe-ack — recognized, legitimately eventless. In-gate defect
++        # #2 (run-45): a `subscribe` ACK echoes the VENUE's own spelling of the symbol it just
++        # subscribed to — the one free, in-band signal available in the first second of a
++        # connection, previously discarded here entirely. Extracted (not normalised: the whole
++        # point is to catch a spelling MISMATCH against `cfg.pairs`) so `LiveRecorder._consume`
++        # can reconcile subscription vs. config at connection START instead of days later at
++        # read time.
++        if msg.get("method") == "subscribe" and isinstance(msg.get("result"), dict):
++            result = msg["result"]
++            sym = result.get("symbol")
++            chan = result.get("channel")
++            if isinstance(sym, str) and sym and isinstance(chan, str) and chan:
++                out.subscribe_acks.append((chan, sym))
++        return out
+ 
+     out.unrecognized_frames += 1
+     return out
+@@ -614,6 +662,19 @@ class LiveRecorder:
+         #: counted it as observed.
+         self._dark_since: Optional[float] = None
+         self._dark_reason: str = ""
++        #: In-gate defect #2 (run-45): the subscribe ACK symbols seen so far THIS connection
++        #: (channel -> set of venue-echoed symbols), and whether the one-shot reconciliation
++        #: against `cfg.pairs` has already run for it. Both reset per-connection in `_consume`,
++        #: same as the book state — a stale ack from a PRIOR connection must not be reconciled
++        #: against this one's config.
++        self._acked_symbols: Dict[str, set] = {}
++        self._subscription_ack_reconciled = False
++        #: Cycle 2 (run-45): the ack mismatch seen on the PREVIOUS connection and how many
++        #: consecutive connections have now reconciled that same mismatch. Instance state, NOT
++        #: reset per-connection — the whole question is whether the mismatch survives a reconnect
++        #: (static misconfiguration) or does not (a raced/partial ack, i.e. transient).
++        self._ack_mismatch_signature: Optional[Tuple[str, ...]] = None
++        self._ack_mismatch_streak = 0
+ 
+     @property
+     def unparsed(self) -> int:
+@@ -639,6 +700,12 @@ class LiveRecorder:
+                         await ws.send(json.dumps(sub))
+                     backoff = self.cfg.backoff_base_s
+                     await self._consume(ws)
++            except SubscriptionConfigMismatch:
++                # Cycle 2 (run-45): NON-TRANSIENT. Must be caught BEFORE the two clauses below —
++                # `except Exception` would swallow it into "write a disconnect gap and back off",
++                # which is precisely the unbounded reconnect storm this exists to end. The gap
++                # record is already written; re-raise so the process exits loudly.
++                raise
+             except _GapAlreadyRecorded as exc:
+                 logger.warning("907 recorder: reconnecting after %s; backing off %.1fs",
+                                 exc, backoff)
+@@ -662,6 +729,8 @@ class LiveRecorder:
+         # makes a reconnect discard stale book state and wait for fresh snapshots.
+         self._book_states = {}
+         self._book_mismatch_streak = {}
++        self._acked_symbols = {}
++        self._subscription_ack_reconciled = False
+         while not self._stop:
+             try:
+                 raw = await asyncio.wait_for(ws.recv(), timeout=self.cfg.heartbeat_timeout_s)
+@@ -712,12 +781,30 @@ class LiveRecorder:
+                 self._book_mismatch_streak[mismatched_pair] = (
+                     self._book_mismatch_streak.get(mismatched_pair, 0) + 1)
+ 
++            # In-gate defect #2 (run-45): accumulate the venue's own echoed subscription
++            # symbols. Taken verbatim — no normalisation — because the whole point is to catch
++            # a SPELLING mismatch (e.g. Kraken's legacy `XBT/USD` vs. a config declaring
++            # `BTC/USD`) against `cfg.pairs`.
++            for chan, sym in parsed.subscribe_acks:
++                self._acked_symbols.setdefault(chan, set()).add(sym)
++
+             if parsed.events:
+                 self._frames_since_last_event = 0
++                saw_heartbeat = False
+                 for ev in parsed.events:
+                     if ev["kind"] == "book":
+                         self._book_mismatch_streak[ev["pair"]] = 0
++                    elif ev["kind"] == "heartbeat":
++                        saw_heartbeat = True
+                     self._emit(ev)
++                if saw_heartbeat and not self._subscription_ack_reconciled:
++                    # Reconcile at capture START, after the first heartbeat cycle — not days
++                    # later at read time (`capture.py`'s reconciliation used to be the SOLE
++                    # comparison site). One shot per connection: by the first heartbeat, every
++                    # subscribe ACK the venue was going to send this connection has had its
++                    # chance to arrive. AFTER emitting this frame's events (not mid-loop), so a
++                    # mismatch abort never drops an event this same frame already delivered.
++                    self._reconcile_subscribe_acks()
+             elif not parsed.book_desyncs:
+                 self._check_schema_drift()
+ 
+@@ -731,7 +818,15 @@ class LiveRecorder:
+                     logger.error("907 recorder: BOOK CHECKSUM MISMATCH for %s — %s; dropping "
+                                  "book state and forcing reconnect", pair, detail)
+                 combined = "; ".join(f"{pair}: {detail}" for pair, detail in parsed.book_desyncs)
+-                self._record_gap("schema_drift", f"book checksum mismatch — {combined}",
++                # A checksum desync is a DIFFERENT diagnosis than sustained unparseable traffic
++                # (`_check_schema_drift`'s `schema_drift` reason): the wire is readable and our
++                # own maintained book state has desynced from the venue's. `GAP_REASONS` used to
++                # be a closed enum with no entry for this (Addendum A's scope fence forbade
++                # touching it), so both conditions wrote `reason="schema_drift"`, disambiguated
++                # only by free text in `detail` — a reader had to parse prose to tell "we could
++                # not read the wire" apart from "our book desynced". This pass owns `capture.py`.
++                self._record_gap("book_checksum_mismatch",
++                                  f"book checksum mismatch — {combined}",
+                                   dark_until_next_event=True)
+                 raise _GapAlreadyRecorded("book checksum mismatch — forcing reconnect")
+ 
+@@ -744,6 +839,71 @@ class LiveRecorder:
+                     and self._frames_since_counters_flush >= COUNTERS_FLUSH_EVERY_N_FRAMES):
+                 self._flush_counters(now)
+ 
++    def _reconcile_subscribe_acks(self) -> None:
++        """In-gate defect #2 (run-45): reconcile the venue's OWN echoed subscription symbols
++        against `cfg.pairs` at connection START — after the first heartbeat cycle — instead of
++        `capture.py`'s read-time reconciliation being the SOLE comparison site.
++
++        Demonstrated with Kraken's legacy `XBT/USD` spelling against a config declaring
++        `BTC/USD`: the old behaviour let a capture record three to seven days complete,
++        unrenderable and not cheaply repeatable, with `n_schema_mismatch == 0` and
++        `n_unrecognized_frames == 0` throughout — the recorder saw no drift at all, because
++        nothing ever compared the wire's own symbol against the subscription config until a
++        human tried to render the finished capture. Refusing is right; only the TIMING was the
++        defect. One shot per connection (`_subscription_ack_reconciled`): the first heartbeat is
++        used as "the ACKs have had their chance to arrive", not a recurring check.
++        """
++        self._subscription_ack_reconciled = True
++        if not self._acked_symbols:
++            return  # this venue/mock never sent an ack this connection — nothing to reconcile
++        configured = set(self.cfg.pairs)
++        acked: set = set()
++        for symbols in self._acked_symbols.values():
++            acked |= symbols
++        unexpected = sorted(acked - configured)
++        if not unexpected:
++            # The mismatch did NOT survive this reconnect: it was transient (a raced or partial
++            # ack set), so the streak resets and nothing terminal is armed.
++            self._ack_mismatch_signature = None
++            self._ack_mismatch_streak = 0
++            return
++        # Cycle 2 (run-45): distinguish NON-TRANSIENT from transient. The same offending symbol
++        # set recurring across independent subscribe cycles is a static misconfiguration; every
++        # reconnect will re-subscribe identically and reconcile false again, so retrying is a
++        # ~60s reconnect storm against the venue with no terminal signal, for the life of a
++        # multi-day process.
++        signature = tuple(unexpected)
++        if signature == self._ack_mismatch_signature:
++            self._ack_mismatch_streak += 1
++        else:
++            self._ack_mismatch_signature = signature
++            self._ack_mismatch_streak = 1
++        detail = (
++            f"subscribe ACK named symbol(s) {unexpected} this recorder's configuration never "
++            f"declared (configured: {sorted(configured)}; acked by channel: "
++            f"{ {chan: sorted(syms) for chan, syms in self._acked_symbols.items()} }) — a "
++            f"subscription/config spelling mismatch caught at CONNECTION START via the venue's "
++            f"own ack, rather than days later at read time; identical mismatch on "
++            f"{self._ack_mismatch_streak} consecutive connection(s)")
++        if self._ack_mismatch_streak >= SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS:
++            terminal = (
++                f"TERMINAL — {detail}. Ruled a STATIC misconfiguration, not a transient wire "
++                f"fault: {self._ack_mismatch_streak} consecutive connections each re-subscribed "
++                f"with the identical config and got back the identical unexpected symbol(s), so "
++                f"no further reconnect can change the outcome. Retrying past this point is a "
++                f"reconnect storm against the venue with no terminal signal. The recorder is "
++                f"stopping; correct the subscription config (the venue's own spelling is the "
++                f"authority) and start a FRESH capture.")
++            logger.critical("907 recorder: SUBSCRIBE ACK MISMATCH, TERMINAL — %s", terminal)
++            # Written into the capture BEFORE the raise, so the outcome reaches the artifact
++            # (`render._render_capture_meta_block` prints every gap's reason and detail).
++            self._record_gap("schema_drift", terminal, dark_until_next_event=True)
++            self._stop = True
++            raise SubscriptionConfigMismatch(terminal)
++        logger.error("907 recorder: SUBSCRIBE ACK MISMATCH — %s", detail)
++        self._record_gap("schema_drift", detail, dark_until_next_event=True)
++        raise _GapAlreadyRecorded("subscribe ack mismatch — forcing reconnect")
++
+     def _check_schema_drift(self) -> None:
+         """The "connected but recording nothing" detector — see the module docstring.
+ 
+diff --git a/experiments/907_live_fill_probe/render.py b/experiments/907_live_fill_probe/render.py
+index 0eb26db..4f41d69 100644
+--- a/experiments/907_live_fill_probe/render.py
++++ b/experiments/907_live_fill_probe/render.py
+@@ -41,7 +41,10 @@ from pathlib import Path
+ from typing import Dict, List, Optional
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+-from capture import CaptureFormatError, CaptureMetadata  # noqa: E402
++from capture import (  # noqa: E402
++    BOOK_KEEPALIVE_OVERRUN_FACTOR as CAPTURE_BOOK_KEEPALIVE_OVERRUN_FACTOR,
++    CaptureFormatError, CaptureMetadata, _fmt_uncovered_fraction,
++)
+ from estimands import Estimand1Result, Estimand2Result  # noqa: E402
+ from reference_fill_model import MODEL_ADVERSE_SELECTION_BP_TIERS  # noqa: E402
+ 
+@@ -74,6 +77,74 @@ def _assert_all_captures_complete(captures: List[CaptureMetadata]) -> None:
+         meta.assert_complete()  # raises CaptureFormatError with the specific reason
+ 
+ 
++def _assert_no_excluded_pair_backs_a_number(captures: List[CaptureMetadata],
++                                             reported_pairs: List[str]) -> None:
++    """Fail-CLOSED (cycle 3, run-45): a pair excluded for stale book time must not appear with
++    numbers. The exclusion is applied by the caller (`cli.main` drops those pairs before the
++    estimands are computed); this is the enforcement at the point the ARTIFACT is built, so the
++    invariant cannot be lost by a second caller. The reverse of gate (iv)'s usual direction and
++    deliberately so — the failure mode being closed is a compromised minute-grid claim silently
++    reaching a table under an exclusion notice that says it did not.
++    """
++    excluded = {p for meta in captures for p in meta.stale_book_excluded_pairs()}
++    offending = sorted(set(reported_pairs) & excluded)
++    if offending:
++        raise CaptureFormatError(
++            f"GATE (iv) REFUSAL — estimand numbers were supplied for pair(s) {offending}, which "
++            f"this report's own capture(s) EXCLUDE for stale book time. The artifact would carry "
++            f"a section stating those pairs contribute no number and a table of their numbers at "
++            f"the same time. Drop them before rendering (see `cli.main`), or do not exclude "
++            f"them — not both.")
++
++
++def _render_stale_exclusion_block(captures: List[CaptureMetadata]) -> Optional[str]:
++    """The cycle-3 per-pair consequence, at the TOP of the artifact and impossible to miss.
++
++    A pair here WAS subscribed, WAS received, and has a coverage row and a cadence row below —
++    it is excluded because its own top of book stopped moving for long enough that its
++    minute-grid claim no longer holds. That is a different statement from "never subscribed" and
++    from "the capture is broken", and the reader must not be able to confuse it with either.
++    Returns `None` when nothing was excluded, so a healthy capture's artifact is unchanged.
++    """
++    rows = []
++    for meta in captures:
++        for pair in meta.stale_book_excluded_pairs():
++            cov = meta.coverage_by_pair[pair]
++            rows.append(
++                f"| {pair} | `{meta.path}` | {cov.stale_book_s:.0f} | "
++                f"{_fmt_uncovered_fraction(cov.uncovered_fraction)} | "
++                f"{_fmt_uncovered_fraction(cov.uncovered_fraction_counting_stale)} | "
++                f"{meta.max_uncovered_fraction * 100:.2f}% |")
++    if not rows:
++        return None
++    return "\n".join([
++        "## PAIRS EXCLUDED FROM THIS REPORT — stale book (read this before any number below)",
++        "",
++        "**The pairs in this table were subscribed, were received, and are NOT reported.** They "
++        "each have a coverage row and a cadence row in the provenance section below; what they do "
++        "not have is a number. Do not read their absence from the estimand sections as \"this "
++        "pair was never subscribed\" or as \"nothing was wrong\" — read it as: **this pair's "
++        "minute-grid claim is COMPROMISED and no estimand may be denominated in it.**",
++        "",
++        "Over the stretches counted below, the recorder emitted `book` events on its declared "
++        "keepalive timer while the top of book (bid, ask and both sizes) never moved. A keepalive "
++        "proves the recorder's clock, not that the market was observed, so those seconds are not "
++        "observation and the pair falls past the declared coverage bound on them alone. From the "
++        "capture file, \"the venue told us nothing changed\" and \"our book state machine froze\" "
++        "are byte-identical — so this is DISCLOSED per pair and the pair is dropped, never a "
++        "refusal of the whole capture (which would discard every healthy pair beside it).",
++        "",
++        "| pair | source capture | stale book (s) | un-observed (honest) | un-observed (nothing "
++        "arriving at all) | bound |",
++        "|---" * 6 + "|",
++        *rows,
++        "",
++        "Every OTHER pair in this artifact is reported normally; their numbers are unaffected by "
++        "the exclusions above.",
++        "",
++    ])
++
++
+ def _render_capture_meta_block(captures: List[CaptureMetadata]) -> str:
+     lines = ["## Capture provenance (gate iv)", ""]
+     for meta in captures:
+@@ -86,6 +157,33 @@ def _render_capture_meta_block(captures: List[CaptureMetadata]) -> str:
+                       f"(book={meta.n_book}, trade={meta.n_trade}), "
+                       f"span=[{meta.start_ts:.0f}, {meta.end_ts:.0f}], "
+                       f"recorded_gaps={len(meta.gaps)}, closed_cleanly={meta.closed_cleanly}")
++        # B1 (run-45): sessions — so an old single-session capture is never presented as
++        # indistinguishable from a reconciled multi-session one. `declared_pairs`/`channels` above
++        # are already the UNION across every session; this line is what lets a reader see WHICH
++        # sessions contributed to that union, and notice when they disagree.
++        lines.append(f"  - sessions: {len(meta.sessions)} "
++                      f"({', '.join(s.kind for s in meta.sessions) or 'none'})")
++        if len(meta.sessions) > 1:
++            for i, s in enumerate(meta.sessions):
++                lines.append(f"    - session {i} ({s.kind}): pairs={s.pairs}, "
++                              f"channels={s.channels if s.channels is not None else 'undeclared'}, "
++                              f"heartbeat_timeout_s={s.heartbeat_timeout_s}")
++            distinct_pair_decls = {tuple(s.pairs) for s in meta.sessions if s.pairs}
++            distinct_channel_decls = {tuple(s.channels) for s in meta.sessions
++                                       if s.channels is not None}
++            # cycle 2 (run-45), MINOR 2: `heartbeat_timeout_s` is the THIRD field a session
++            # declares, and it was excluded from this comparison — so two sessions differing only
++            # in the recorder's own liveness knob never tripped the banner, even though that knob
++            # is exactly what "no gap was recorded" is evidence of. The raw values were printed
++            # above, so no information was lost; the FLAG was.
++            distinct_hb_decls = {s.heartbeat_timeout_s for s in meta.sessions
++                                  if s.heartbeat_timeout_s is not None}
++            if (len(distinct_pair_decls) > 1 or len(distinct_channel_decls) > 1
++                    or len(distinct_hb_decls) > 1):
++                lines.append("    - **HETEROGENEOUS DECLARATIONS**: this capture's sessions did "
++                              "not all declare the same config — the reconciliation above uses "
++                              "the UNION of all of them, never the first session presented as "
++                              "the whole.")
+         # Recorder health. "Connected but recording nothing" is invisible unless these are said
+         # out loud, and Kraken v2's live schema is UNVERIFIED by this row.
+         if meta.counters_present:
+@@ -153,6 +251,35 @@ def _render_coverage_block(meta: CaptureMetadata) -> str:
+         f"{len(meta.unrecorded_data_gaps)} over data-bearing events alone (both must be 0 for "
+         f"this report to exist).",
+     ]
++    # B2 item 2 (run-45): coverage above is denominated in the CAPTURE span (all events,
++    # heartbeats included) — state the DATA-BEARING span next to it so the reconciliation is
++    # visible rather than implied: the gap between the two IS the quantity that used to collapse
++    # the denominator together with the numerator (the run-45 BLOCKER).
++    if meta.start_ts is not None and meta.end_ts is not None:
++        capture_span_s = meta.end_ts - meta.start_ts
++        if meta.data_start_ts is not None and meta.data_end_ts is not None:
++            data_span_s = meta.data_end_ts - meta.data_start_ts
++            lines.append(
++                f"    - capture span (all events, heartbeats included): {capture_span_s:.1f}s "
++                f"[{meta.start_ts:.0f}, {meta.end_ts:.0f}]; data-bearing span (book/trade only): "
++                f"{data_span_s:.1f}s [{meta.data_start_ts:.0f}, {meta.data_end_ts:.0f}] — the "
++                f"per-pair coverage table above is denominated in the CAPTURE span, reconciled "
++                f"against this data span; the difference between the two "
++                f"({capture_span_s - data_span_s:.1f}s) is what a data-span-denominated "
++                f"statistic would have silently excluded from its own denominator.")
++        else:
++            lines.append(
++                f"    - capture span (all events, heartbeats included): {capture_span_s:.1f}s "
++                f"[{meta.start_ts:.0f}, {meta.end_ts:.0f}]; data-bearing span: NONE (zero "
++                f"book/trade events).")
++    disclosed_trade = meta.disclosed_empty_trade_cells()
++    if disclosed_trade:
++        lines.append(
++            f"    - **disclosed empty trade cell(s)** (in-gate MAJOR #1, run-45): {disclosed_trade} "
++            f"— a live `book` proves the pair's subscription and symbol are alive; zero prints in "
++            f"the window is a market fact, not a broken subscription, so it is DISCLOSED here "
++            f"rather than refusing the whole render (a missing `book` cell on an observed pair "
++            f"still refuses — see the provenance section above if this capture did that).")
+     if not meta.coverage_by_pair:
+         lines.append("    - per-pair coverage: NOT APPLICABLE (no data-bearing span).")
+     else:
+@@ -164,9 +291,69 @@ def _render_coverage_block(meta: CaptureMetadata) -> str:
+             lines.append(
+                 f"| {pair} | {cov.n_data_events} | {cov.span_s:.0f} | "
+                 f"{cov.recorded_gap_s:.0f} | {cov.accounted_s:.0f} | {cov.covered_s:.0f} | "
+-                f"{cov.uncovered_fraction * 100:.3f}% | "
++                f"{_fmt_uncovered_fraction(cov.uncovered_fraction)} | "
+                 f"{meta.max_uncovered_fraction * 100:.2f}% |")
+         lines.append("")
++        # cycle 2 (run-45): the NO-CLAIM sentinel, said out loud. `accounted_s <= 0` means this
++        # pair's coverage arithmetic had no denominator, so it made no claim — which is a
++        # different statement from "0% un-observed" (the value this branch used to return) and
++        # must never be read as the strongest coverage claim the instrument can make.
++        no_claim = meta.no_claim_coverage_pairs()
++        if no_claim:
++            lines.append(
++                f"    - **NO COVERAGE CLAIM** for pair(s) {no_claim}: their accounted time is "
++                f"zero (a zero-length capture span, or a span whose absence the gap ledger "
++                f"discloses in full), so no un-observed fraction exists to report. Read as "
++                f"\"this instrument measured nothing here\", NOT as \"nothing was missed\".")
++    # cycle 2 (run-45), the keepalive reconciliation: the declared emission policy checked against
++    # the observed cadence, in BOTH directions. Emitted only when there is something to say, so a
++    # capture with a healthy book renders byte-identically to before.
++    stale_pairs = meta.stale_book_pairs()
++    if stale_pairs:
++        detail = ", ".join(
++            f"{p}: {meta.coverage_by_pair[p].stale_book_s:.0f}s"
++            for p in stale_pairs)
++        lines.append(
++            f"    - **STALE (keepalive-driven) BOOK TIME** — {detail}. Over these stretches the "
++            f"recorder kept emitting `book` events on its declared "
++            f"`book_keepalive_s`={meta.declared_book_keepalive_s}s timer while the top of book "
++            f"(bid, ask and both sizes) never moved. A keepalive proves the RECORDER's clock, not "
++            f"that the market was observed, so those repeats are EXCLUDED from the observed "
++            f"seconds above — only the first event of each frozen run counts. A pair whose stale "
++            f"time pushes it past the declared bound is EXCLUDED from this report by name (see "
++            f"the section at the top of this artifact); a short frozen stretch that stays inside "
++            f"the bound is disclosed here and nothing more. Neither refuses the capture: from "
++            f"disk, a venue that told us nothing changed and a book state machine that froze are "
++            f"byte-identical, so this cannot carry an instrument-defect consequence.")
++    # cycle 3 (run-45), THE BLOCKER: the per-pair consequence of stale book time, said where the
++    # coverage numbers are and again in its own section above. Emitted only when a pair actually
++    # crossed the bound on stale time alone, so a healthy capture renders byte-identically.
++    excluded = meta.stale_book_excluded_pairs()
++    if excluded:
++        lines.append(
++            f"    - **EXCLUDED FROM THIS REPORT (stale book): {excluded}** — the un-observed "
++            f"fraction printed for these pairs in the table above is over the "
++            f"{meta.max_uncovered_fraction * 100:.2f}% bound, and it is over it BECAUSE of the "
++            f"stale seconds named just above: with those keepalives counted back in each of them "
++            f"sits inside the bound "
++            + ", ".join(
++                f"({p}: "
++                f"{_fmt_uncovered_fraction(meta.coverage_by_pair[p].uncovered_fraction_counting_stale)}"
++                f" un-observed with nothing arriving at all)" for p in excluded)
++            + ". These pairs carry NO estimand numbers anywhere in this artifact.")
++    if meta.book_keepalive_overruns:
++        detail = ", ".join(
++            f"{p}: {n} interval(s), worst {meta.book_keepalive_max_interval_s[p]:.1f}s"
++            for p, n in sorted(meta.book_keepalive_overruns.items()))
++        lines.append(
++            f"    - **BOOK KEEPALIVE OVERRUN** (the mirror direction of the same declaration) — "
++            f"{detail}. The recorder DECLARED it would emit a book event at least every "
++            f"{meta.declared_book_keepalive_s}s; these intervals exceed that floor by more than "
++            f"{CAPTURE_BOOK_KEEPALIVE_OVERRUN_FACTOR:g}x with no recorded gap explaining them. "
++            f"DISCLOSED, not refused: the reader's own gap-detect threshold is "
++            f"{meta.gap_detect_threshold_s:g}s, so a hole this size is invisible to every other "
++            f"check here and a reader must be told rather than have a multi-day capture "
++            f"retro-refused over scheduler noise.")
+     # A.4(4): the cadence table alone cannot say whether a book median of 5.0s is the MARKET's
+     # rate or the RECORDER's rate limit — so the declared floor is stated immediately above it,
+     # unconditionally (an undeclared floor is itself the thing a reader must be told). This is
+@@ -241,6 +428,12 @@ def _render_estimand1_section(pair: str, e1: Estimand1Result) -> str:
+     for horizon in ("1m", "5m", "20m", "1h"):
+         h = e1.by_horizon.get(horizon)
+         if h is None:
++            # B3 (run-45): `compute_estimand1` now always emits all four pre-registered horizons,
++            # so this should be unreachable in practice — but the render must not be ABLE to drop
++            # a pre-registered horizon silently if it ever is missing (e.g. a hand-built
++            # `Estimand1Result` in a test). A stated row, not a silent skip.
++            lines.append(f"| {horizon} | (MISSING — pre-registered horizon absent from this "
++                          f"result; not omitted, not zero) | | | | | | | | | | | | | | |")
+             continue
+         if h.deciles_bp:
+             deciles = " | ".join(f"{h.deciles_bp[d]:.2f}"
+@@ -271,6 +464,8 @@ def _render_estimand1_section(pair: str, e1: Estimand1Result) -> str:
+     for horizon in ("1m", "5m", "20m", "1h"):
+         h = e1.by_horizon.get(horizon)
+         if h is None:
++            lines.append(f"- {horizon}: (MISSING — pre-registered horizon absent from this "
++                          f"result; not omitted, not zero; no comparison was or could be run)")
+             continue
+         if not h.is_evaluable:
+             # No finite median exists. A comparison did not run, so no verdict is emitted —
+@@ -338,12 +533,24 @@ def render_report(captures: List[CaptureMetadata],
+                    estimand2_by_pair: Dict[str, Estimand2Result],
+                    generated_ts: Optional[float] = None,
+                    estimand1_trade_fallback_by_pair: Optional[
+-                       Dict[str, Estimand1Result]] = None) -> str:
++                       Dict[str, Estimand1Result]] = None,
++                   pair_capture_path: Optional[Dict[str, str]] = None,
++                   pairs_filter: Optional[List[str]] = None,
++                   captures_declared: Optional[List[str]] = None) -> str:
+     """Build the full markdown artifact. Raises `CaptureFormatError` (refuses to render
+     anything) if any supplied capture is absent, incomplete, or internally inconsistent —
+     gate (iv). The disclosure box (gate iii) is unconditionally the first content emitted.
++
++    `pair_capture_path` (B4, run-45): which supplied capture backed each pair's numbers — stated
++    so a reader never has to guess which of several provenance-listed captures a given number
++    came from. `pairs_filter`/`captures_declared` (B4/B5): the applied `--pairs` filter and the
++    raw `--capture` list, stated next to the declared/observed sets and reconciled against how
++    many captures actually contributed a pair's numbers.
+     """
+     _assert_all_captures_complete(captures)  # gate (iv) — raises before any number is built
++    fallback = estimand1_trade_fallback_by_pair or {}
++    pairs = sorted(set(estimand1_by_pair) | set(estimand2_by_pair) | set(fallback))
++    _assert_no_excluded_pair_backs_a_number(captures, pairs)
+ 
+     generated_ts = generated_ts if generated_ts is not None else time.time()
+     parts = [
+@@ -358,18 +565,42 @@ def render_report(captures: List[CaptureMetadata],
+         f"Model tiers compared: {MODEL_ADVERSE_SELECTION_BP_TIERS} bp  \n"
+         f"Gap-accounting clock basis: local receipt time (single basis; venue timestamps are "
+         f"recorded as `venue_ts` and used by nothing)\n", "",
+-        _render_capture_meta_block(captures),
+     ]
+-    fallback = estimand1_trade_fallback_by_pair or {}
+-    pairs = sorted(set(estimand1_by_pair) | set(estimand2_by_pair) | set(fallback))
++    # cycle 3 (run-45): the exclusion notice goes ABOVE the provenance block — a reader must meet
++    # it before the tables that would otherwise read as a complete picture.
++    exclusion_block = _render_stale_exclusion_block(captures)
++    if exclusion_block is not None:
++        parts.append(exclusion_block)
++    parts.append(_render_capture_meta_block(captures))
++    if captures_declared is not None or pairs_filter is not None:
++        contributing = sorted(set((pair_capture_path or {}).values()))
++        line = (f"**Command-line reconciliation (B4/B5, run-45):** captures declared on the "
++                f"command line: {len(captures_declared or [])} {captures_declared or []}; "
++                f"captures that actually contributed at least one pair's numbers: "
++                f"{len(contributing)} {contributing}.")
++        if pairs_filter is not None:
++            line += (f" `--pairs` filter applied: {pairs_filter} (reconciled against the "
++                     f"declared/observed union of every supplied capture — a pair named here "
++                     f"that no capture declared or observed is a refusal, not a silent empty "
++                     f"report).")
++        else:
++            line += " No `--pairs` filter applied (every pair found is reported)."
++        parts.append(line + "\n")
+     for pair in pairs:
+         e1 = estimand1_by_pair.get(pair)
+         e2 = estimand2_by_pair.get(pair)
+-        parts.append(f"## {pair}\n")
++        source = (pair_capture_path or {}).get(pair)
++        heading = f"## {pair}" + (f" (source capture: `{source}`)" if source else "") + "\n"
++        parts.append(heading)
+         if e1 is not None:
+             parts.append(_render_estimand1_section(pair, e1))
+         e1f = fallback.get(pair)
+-        if e1f is not None and e1f.by_horizon:
++        # B3 (run-45): `by_horizon` is no longer a usable proxy for "the fallback source was
++        # actually used" — `compute_estimand1_trade_fallback` now ALWAYS populates all four
++        # pre-registered horizons (n_used=0 when unused), so `by_horizon` truthiness alone would
++        # render an empty secondary table on every pure-book-mid capture. `total_used` is the
++        # real signal: at least one trade-print-backed sample actually exists.
++        if e1f is not None and e1f.total_used > 0:
+             parts.append(_render_estimand1_section(pair, e1f))
+         if e2 is not None:
+             parts.append(_render_estimand2_section(pair, e2))
+diff --git a/experiments/907_live_fill_probe/test_coverage_aggregate.py b/experiments/907_live_fill_probe/test_coverage_aggregate.py
+index 9162b8f..7cba64e 100644
+--- a/experiments/907_live_fill_probe/test_coverage_aggregate.py
++++ b/experiments/907_live_fill_probe/test_coverage_aggregate.py
+@@ -228,9 +228,14 @@ def test_recorded_gaps_leave_the_denominator_rather_than_counting_against_covera
+     """A RECORDED gap is honest, disclosed absence and markouts across it are already dropped by
+     `covers()`, so it must not be double-punished as un-observed time. A dense capture with a
+     recorded 2-hour outage is still complete."""
++    # FIXTURE CORRECTED (cycle 2, run-45): the gap used to start at 3600.0 while `_write_capture`
++    # emits this stretch's last TRADE at 3600.001 — i.e. the ledger claimed the outage began
++    # BEFORE the last event it recorded, which is a (small) self-contradiction the new
++    # `events_inside_recorded_gaps` check correctly refuses. 3600.001 is the shape the production
++    # recorder actually writes: `_record_gap` starts every gap at `_last_event_ts`.
+     path = _write_capture(tmp_path / "gapped.jsonl", {
+         "BTC/USD": [(0.0, 3600.0, 1.0), (10800.0, 14400.0, 1.0)],
+-    }, span_s=14400.0, gaps=[(3600.0, 10800.0, "disconnect")])
++    }, span_s=14400.0, gaps=[(3600.001, 10800.0, "disconnect")])
+     meta = read_capture(path)
+     cov = meta.coverage_by_pair["BTC/USD"]
+     assert cov.recorded_gap_s == pytest.approx(7200.0, abs=1.0)
+@@ -427,10 +432,31 @@ def test_the_199_bad_frames_pattern_is_gated_exactly_when_it_degrades_REALIZED_C
+         slow.assert_complete()
+ 
+ 
+-def test_uncovered_fraction_is_zero_when_there_is_nothing_to_cover(tmp_path):
+-    """A zero-length or fully-gap-covered span makes no coverage claim, so it must not divide by
+-    zero nor read as 100% uncovered."""
+-    path = _write_capture(tmp_path / "z.jsonl", {"BTC/USD": [(0.0, 0.0, 1.0)]}, span_s=0.0)
+-    meta = read_capture(path)
+-    assert meta.coverage_by_pair["BTC/USD"].uncovered_fraction == 0.0
+-    assert meta.degraded_coverage_pairs() == []
++def test_uncovered_fraction_is_no_claim_when_there_is_nothing_to_cover(tmp_path):
++    """A zero-length or fully-gap-covered span MAKES NO COVERAGE CLAIM — this test's own words,
++    unchanged since it was written. Cycle 2 (run-45) made the value match them: it must not divide
++    by zero, must not read as 100% uncovered, and must not read as `0.0` either, which is the
++    instrument's STRONGEST coverage claim and the one value spec B2 item 3 forbids in that branch.
++
++    RENAMED from `test_uncovered_fraction_is_zero_when_there_is_nothing_to_cover` — the old name
++    asserted the forbidden value in the node ID itself. The FIXTURE is corrected too: it used
++    `_write_capture`, which offsets each trade +0.001s from its book event, so its "zero-duration"
++    capture actually had `span_s=0.001` and `accounted_s=0.001` — a genuine, fully-covered 0.0
++    that never reached the `accounted_s <= 0` branch this test claims to be about. Written by hand
++    here so every event really does sit at one instant and the branch is exercised end to end."""
++    path = tmp_path / "z.jsonl"
++    with open(path, "w") as fh:
++        fh.write(json.dumps({"type": "meta_start", "capture_id": "z", "pairs": ["BTC/USD"],
++                              "format_version": 2, "clock_basis": "local_receipt",
++                              "channels": ["book", "trade"]}) + "\n")
++        fh.write(json.dumps({"type": "book", "pair": "BTC/USD", "ts": T0, "bid": 50000.0,
++                              "ask": 50001.0, "bid_sz": 1.0, "ask_sz": 1.0}) + "\n")
++        fh.write(json.dumps({"type": "trade", "pair": "BTC/USD", "ts": T0, "price": 50000.5,
++                              "volume": 0.1, "side": "buy"}) + "\n")
++    meta = read_capture(str(path))
++    assert meta.coverage_by_pair["BTC/USD"].span_s == 0.0
++    assert meta.coverage_by_pair["BTC/USD"].uncovered_fraction is None
++    assert meta.no_claim_coverage_pairs() == ["BTC/USD"]
++    assert meta.degraded_coverage_pairs() == [], (
++        "NO CLAIM is not a bound violation — nothing is hidden in a zero-length span")
++    meta.assert_complete()
+diff --git a/experiments/907_live_fill_probe/test_declared_pairs.py b/experiments/907_live_fill_probe/test_declared_pairs.py
+index 7f21049..f595feb 100644
+--- a/experiments/907_live_fill_probe/test_declared_pairs.py
++++ b/experiments/907_live_fill_probe/test_declared_pairs.py
+@@ -187,6 +187,16 @@ def test_a_declared_channel_of_one_pair_with_zero_events_is_refused(tmp_path):
+     t=0. `missing_channels()` is a capture-wide sum (BTC's book keeps it non-zero) and per-pair
+     coverage POOLS book+trade (ETH's dense trades keep it covered), so the cell is absent from the
+     cadence table and from everything else with nothing flagging it.
++
++    This direction — a missing `book` cell — REFUSES, and stays refusing after ADDENDUM B's
++    asymmetric fix below: an actively-printing pair (it has trades) must have a book, so a book's
++    total absence is a broken subscription or schema drift, never a market fact. Contrast the
++    MIRROR case, `test_the_mirror_missing_trade_with_book_alive_is_disclosed_not_refused` below:
++    a missing `trade` cell on a pair whose `book` IS present is treated differently — a live book
++    proves the socket and symbol are alive, so zero prints in the window is a fact about the
++    market (nothing traded), not about a dead subscription, and it is DISCLOSED rather than
++    refused (ADDENDUM B in-gate MAJOR #1, run-45: this was the over-refusal that discarded a
++    whole healthy multi-pair render over exactly this shape one field over).
+     """
+     path = _write_capture(tmp_path / "dead_cell.jsonl",
+                            {"BTC/USD": BOTH, "ETH/USD": ("trade",)})
+@@ -205,11 +215,47 @@ def test_a_declared_channel_of_one_pair_with_zero_events_is_refused(tmp_path):
+         == ["book", "trade", "book+trade"]
+ 
+     assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == ["ETH/USD:book"]
++    assert meta.disclosed_empty_trade_cells() == [], (
++        "this is the BOOK-missing direction, not the trade-missing one — the disclosure list "
++        "must stay empty here, or the asymmetry below is not really an asymmetry")
+     assert not meta.is_complete()
+     with pytest.raises(CaptureFormatError, match="ETH/USD:book"):
+         meta.assert_complete()
+ 
+ 
++def test_the_mirror_missing_trade_with_book_alive_is_disclosed_not_refused(tmp_path):
++    """THE MIRROR of the test above (ADDENDUM B, in-gate MAJOR #1, run-45), added here because
++    that test asserted the direction SYMMETRICALLY before this addendum — editing it to add this
++    explicit mirror expectation is AUTHORISED by the addendum spec, precisely so the asymmetry is
++    not later mistaken for a weakening of the check.
++
++    ETH/USD is declared, observed, densely covered by its `book` channel, and perfectly
++    reconciled at PAIR level — but it never printed a single trade for the whole capture. Unlike
++    the `book`-missing direction, a live, densely-updating `book` is itself proof the pair's
++    symbol and subscription are alive; zero prints in the window is then a MARKET FACT (this pair
++    just didn't trade), not evidence of a broken subscription. So this direction is DISCLOSED, not
++    refused — this is the fix for the run-45 over-refusal MAJOR, where exactly this shape on ONE
++    pair discarded a whole render's numbers for every OTHER, healthy pair in the same capture.
++    """
++    path = _write_capture(tmp_path / "dead_trade_cell.jsonl",
++                           {"BTC/USD": BOTH, "ETH/USD": ("book",)})
++    meta = read_capture(path)
++
++    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"]
++    assert meta.observed_pairs == ["BTC/USD", "ETH/USD"], "reconciles at PAIR level"
++    assert meta.observed_pair_channels["ETH/USD"] == ["book"]
++    assert meta.missing_channels() == []
++    assert meta.degraded_coverage_pairs() == []
++    assert meta.unrecorded_data_gaps == []
++
++    # the cell is absent from `declared_channel_without_data` (it must NOT gate)...
++    assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == []
++    # ...and it IS the one thing named as disclosed
++    assert meta.disclosed_empty_trade_cells() == ["ETH/USD"]
++    assert meta.is_complete(), "a disclosed, non-gating shape must not read as incomplete"
++    meta.assert_complete()  # must not raise — this is the fix, verified positively, not by proxy
++
++
+ def test_an_undeclared_channels_capture_still_reconciles_at_pair_level(tmp_path):
+     """The `channels=None` fallback is the module's existing, disclosed precedent (synthetic and
+     v1 fixtures omit it). It may soften the per-CELL check — the artifact prints
+diff --git a/experiments/907_live_fill_probe/test_estimands.py b/experiments/907_live_fill_probe/test_estimands.py
+index 2330e0d..7e3368c 100644
+--- a/experiments/907_live_fill_probe/test_estimands.py
++++ b/experiments/907_live_fill_probe/test_estimands.py
+@@ -42,10 +42,19 @@ def test_estimand1_model_tier_comparison():
+     assert h.model_tiers_meet_or_exceed_median[10.0] is True
+ 
+ 
+-def test_estimand1_empty_horizon_omitted():
++def test_estimand1_zero_sample_horizons_are_reported_never_omitted():
++    """B3 (run-45), superseding the old `test_estimand1_empty_horizon_omitted`: a pre-registered
++    horizon that drew zero samples is a RESULT about the instrument, not the absence of a row.
++    All four pre-registered horizons (`HORIZONS_S`) must appear, each explicitly zero-sample and
++    not-evaluable, even when the pair had NO markouts at all."""
+     r = ShadowPairResult(pair="BTC/USD")  # no markouts at all
+     e1 = compute_estimand1(r)
+-    assert e1.by_horizon == {}
++    assert set(e1.by_horizon) == {"1m", "5m", "20m", "1h"}
++    for h in e1.by_horizon.values():
++        assert h.n_samples == 0
++        assert h.n_used == 0
++        assert h.is_evaluable is False
++        assert h.median_bp is None
+ 
+ 
+ def test_estimand2_rates():
+@@ -126,11 +135,16 @@ def test_percentile_refuses_a_nonfinite_sample_as_a_backstop():
+         _percentile([], 50)
+ 
+ 
+-def test_estimand1_still_omits_a_horizon_with_no_samples_at_all():
+-    """Distinct from the all-NaN case: zero samples is an ABSENT horizon (omitted); samples that
+-    all turned out invalid is a REPORTED horizon with nothing evaluable."""
++def test_estimand1_zero_samples_and_all_nan_render_the_same_reported_shape():
++    """Superseding the old `test_estimand1_still_omits_a_horizon_with_no_samples_at_all` (B3,
++    run-45): zero samples and all-non-finite samples are now the SAME reported shape (n_used=0,
++    nothing evaluable, no verdict) — they differ only in `n_samples`, which is exactly what a
++    reader needs to tell "we measured nothing" apart from "we measured only non-finite junk"."""
+     r = ShadowPairResult(pair="BTC/USD")
+-    assert compute_estimand1(r).by_horizon == {}
++    h = compute_estimand1(r).by_horizon["1m"]
++    assert h.n_samples == 0
++    assert h.n_used == 0
++    assert h.is_evaluable is False
+ 
+ 
+ def test_estimand2_carries_the_drop_counters_for_disclosure():
+diff --git a/experiments/907_live_fill_probe/test_mid_source.py b/experiments/907_live_fill_probe/test_mid_source.py
+index 7fd1ffb..3ebcdd3 100644
+--- a/experiments/907_live_fill_probe/test_mid_source.py
++++ b/experiments/907_live_fill_probe/test_mid_source.py
+@@ -118,7 +118,12 @@ def test_the_mid_staleness_cap_is_one_bar_interval(tmp_path):
+     ones = [m for m in r.markouts if m.horizon == "1m"]
+     assert len(ones) == 1 and ones[0].mid_source == MID_SOURCE_TRADE
+     assert ones[0].mid_age_s == pytest.approx(BAR_SECONDS)
+-    assert compute_estimand1(r).by_horizon == {}, "and it stays out of the primary estimand"
++    # B3 (run-45): all four pre-registered horizons are always reported now (never omitted), so
++    # the primary (book-mid) estimand still shows "1m" — but with n_used=0, since the only 1m
++    # sample here is TRADE-sourced and stays out of the primary estimand.
++    e1 = compute_estimand1(r)
++    assert set(e1.by_horizon) == {"1m", "5m", "20m", "1h"}
++    assert e1.by_horizon["1m"].n_used == 0, "and it stays out of the primary estimand"
+     # 5m (target 390): the last print is 300s stale, far past the cap -> dropped and counted
+     assert [m for m in r.markouts if m.horizon == "5m"] == []
+     assert r.n_markouts_dropped_no_mid >= 1
+@@ -232,8 +237,13 @@ def test_a_print_only_capture_leaves_the_primary_estimand_empty(tmp_path):
+     _, results = run_shadow(path)
+     r = results["BTC/USD"]
+     assert r.n_markouts_from_trade_fallback == 1
+-    assert compute_estimand1(r).by_horizon == {}, (
+-        "the primary estimand must be EMPTY — its only sample was a print, not a mid")
++    # B3 (run-45): all four pre-registered horizons are always reported (never omitted) — the
++    # primary estimand's "1m" row is still present, but with n_used=0, since its only sample was
++    # a print, not a mid.
++    e1_primary = compute_estimand1(r)
++    assert set(e1_primary.by_horizon) == {"1m", "5m", "20m", "1h"}
++    assert e1_primary.by_horizon["1m"].n_used == 0, (
++        "the primary estimand must have NOTHING USABLE — its only sample was a print, not a mid")
+     assert compute_estimand1_trade_fallback(r).by_horizon["1m"].n_used == 1
+ 
+ 

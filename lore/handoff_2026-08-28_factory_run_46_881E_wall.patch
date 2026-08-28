@@ -1,0 +1,759 @@
+diff --git a/mcts_trader/training/safe_checkpoint.py b/mcts_trader/training/safe_checkpoint.py
+index 31d04b6..640551d 100644
+--- a/mcts_trader/training/safe_checkpoint.py
++++ b/mcts_trader/training/safe_checkpoint.py
+@@ -53,6 +53,25 @@ WHAT *IS* SHARED, so the disclosure is not read as "the in-run pruner has no pro
+ the no-coverage refusal itself (``resolve_coverage`` in ``prune_run_dir_by_score``), the
+ ``protect:``/``covers:`` manifest semantics, ``plan()``'s retention arithmetic, the stale-scan
+ refusal, and the force-rescan-before-delete rule. What is NOT shared is the D64 freeze.
++
++TASK_881E UPDATE (2026-08-27, DEFAULT flipped 2026-08-28 per D70): the authority binding
++recommended above now EXISTS — ``tools/ckpt_gc.py``'s
++``resolve_bound_coverage``/``_AUTHORITY_ALLOWLIST`` — and this module's
++``prune_run_dir_by_score`` takes it through its ``authority_binding`` parameter. D70 (2026-08-28,
++planner ruling, OVERRIDES config.json's general "new behavior ships flag-gated, default OFF"
++invariant for THIS row: "a flag-gated safety binding on a remote deleter is a safety feature that
++is off ... default-OFF leaves the default path exactly as vulnerable as D64 measured") makes
++``authority_binding`` default **True** here too — the in-run pruner is called with a literal
++``apply=True`` on every score-retention save of every live training run, unconditionally, so
++leaving IT off by default would leave exactly the live, unattended path D70 is about still
++unbound. A caller that needs the pre-D70 flat-namespace behaviour (this row's own test suite,
++built on placeholder ids by the thousand) passes ``authority_binding=False`` explicitly — the
++named, test-only escape hatch. What THIS row proves is that turning it on cannot kill the
++training process: a binding-driven refusal reaches the exact same refuse-and-skip branch,
++``(msgs, False)``, that the no-manifest-at-all refusal already used — never ``had_failure=True``,
++never a raise, never an exit-code change on the training path. See ``prune_run_dir_by_score``'s
++own docstring for the parameter and ``tools/tests/test_ckpt_881e_authority_binding.py`` for the
++constructed proof.
+ """
+ 
+ import json
+@@ -143,15 +162,16 @@ def retention_policy_available() -> Tuple[bool, str]:
+ # `ttl_seconds` rather than "until the process exits". Module-level and NOT thread-safe by
+ # design (this package has one in-run pruner call site per process).
+ _PROTECTION_CACHE: Dict[str, Any] = {"named": set(), "protect": set(), "missing": set(),
++                                     "citations": {},   # TASK_881E — see collect_protection
+                                      "ts": 0.0, "attempted": False, "stale": False}
+ _DEFAULT_PROTECTION_TTL_SECONDS = 300.0
+ 
+ 
+ def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
+                        scan_dirs: Sequence[str] = ("experiments",)
+-                       ) -> Optional[Tuple[set, set, set]]:
+-    """One manifest + advisory scan, for IN-RUN use. -> ``(named, protect, missing)`` or
+-    ``None`` on failure.
++                       ) -> Optional[Tuple[set, set, set, dict]]:
++    """One manifest + advisory scan, for IN-RUN use. -> ``(named, protect, missing, citations)``
++    or ``None`` on failure.
+ 
+     ``named`` is the gate-(i) coverage set (manifest ``protect:``/``covers:`` paths only —
+     never the advisory scan, exactly like ``tools/ckpt_gc.py``'s own ``resolve_coverage``).
+@@ -162,6 +182,11 @@ def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
+     one deleter refuses while the other prunes. (TASK_881D: sourced from ``manifests.dangling``
+     — ``tools/ckpt_gc.py``'s 881I-shipped ``ManifestSet`` names this field ``dangling``, not
+     ``missing``; this function's own return-tuple name is unchanged, only its source field.)
++    ``citations`` (TASK_881E) is ``manifests.citations`` verbatim — realpath -> [f"{kind}: "
++    f"{path} <- {source}:{lineno}", ...] — carried through so a deleting call can resolve the
++    TASK_881E authority binding (``gc.resolve_bound_coverage``) from the SAME scan that produced
++    ``named``/``missing``, never a second, separately-timed one (see this module's own docstring
++    on why a second scan of the same tree is the bug class this file exists to avoid).
+ 
+     Returns ``None`` on ANY failure (module unloadable, incomplete manifest scan, incomplete
+     advisory scan) rather than an empty result — the distinction is load-bearing: an empty
+@@ -186,7 +211,7 @@ def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
+         logging.error(f"[ckpt-retention] advisory scan INCOMPLETE ({e}) — reporting failure")
+         return None
+     return (set(manifests.protect) | set(manifests.covers), set(manifests.protect) | scanned,
+-            set(manifests.dangling))
++            set(manifests.dangling), dict(manifests.citations))
+ 
+ 
+ def get_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
+@@ -260,12 +285,21 @@ def get_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
+                 f"{ttl_seconds:.0f}s retries.")
+         else:
+             (_PROTECTION_CACHE["named"], _PROTECTION_CACHE["protect"],
+-             _PROTECTION_CACHE["missing"]) = got
++             _PROTECTION_CACHE["missing"], _PROTECTION_CACHE["citations"]) = got
+             _PROTECTION_CACHE["stale"] = False
+     return (_PROTECTION_CACHE["named"], _PROTECTION_CACHE["protect"],
+             _PROTECTION_CACHE["missing"])
+ 
+ 
++def get_protection_citations() -> dict:
++    """TASK_881E: the ``citations`` half of the SAME cached scan ``get_protection`` just served
++    — never a second, separately-timed manifest scan (see ``collect_protection``'s docstring).
++    ``get_protection``'s own return stays the 3-tuple it has always been (every existing caller,
++    including this module's own test suite, unpacks exactly 3 values); this accessor is the
++    additive way a caller opts into the 4th field without that signature changing under it."""
++    return _PROTECTION_CACHE["citations"]
++
++
+ def protection_cache_is_stale() -> bool:
+     """True when the most recent protection-scan attempt FAILED (or was INCOMPLETE) and the
+     sets ``get_protection`` returns are therefore a retained last-known-good pair.
+@@ -283,6 +317,7 @@ def _reset_protection_cache_for_test() -> None:
+     _PROTECTION_CACHE["named"] = set()
+     _PROTECTION_CACHE["protect"] = set()
+     _PROTECTION_CACHE["missing"] = set()
++    _PROTECTION_CACHE["citations"] = {}
+     _PROTECTION_CACHE["attempted"] = False
+     _PROTECTION_CACHE["stale"] = False
+     _PROTECTION_CACHE["ts"] = 0.0
+@@ -293,7 +328,8 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
+                            keep_best: int = 3, keep_latest: int = 1, keep_unscored: int = 2,
+                            under_floor: bool = False,
+                            ttl_seconds: float = _DEFAULT_PROTECTION_TTL_SECONDS,
+-                           apply: bool = True) -> Tuple[List[str], bool]:
++                           apply: bool = True,
++                           authority_binding: bool = True) -> Tuple[List[str], bool]:
+     """Prune ONE run dir using the EXACT SAME policy ``tools/ckpt_gc.py``'s offline ``plan()``
+     uses — same function, same manifest/advisory sources.
+ 
+@@ -324,6 +360,24 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
+     training stop pruning, which D64's ruling explicitly preferred not to do by shipping TASK_881D
+     rather than blocking training); closing it properly is TASK_881E's authority binding.
+ 
++    ``authority_binding`` (TASK_881E, default **True** since D70 2026-08-28 — see this module's
++    own docstring for why the default flipped): when True, coverage is resolved through
++    ``gc.resolve_bound_coverage`` instead of ``gc.resolve_coverage`` directly, ANDing in the
++    same id-correlation check ``ckpt_gc.py --bind-authority`` applies offline, fed from the
++    SAME scan ``get_protection`` just ran (``get_protection_citations()`` — never a second,
++    separately-timed scan) and from THIS call's own ``roots``, which scope the correlation to the
++    run dir's OWN owning task segment (``gc._run_dir_task_number``; the offline tool passes its
++    ``--roots`` at the same point, so the two deleters correlate identically). A run dir whose
++    path designates no single owner under those roots correlates with nothing and is REFUSED —
++    fail-closed, never a grant. A run dir the binding refuses reaches the EXACT SAME "REFUSE"
++    branch, `return`, and `(msgs, False)` shape below that a no-manifest-at-all refusal already
++    used before this row — refuse-and-skip, never `had_failure=True`, never an exception. That
++    is the whole of scope item 4's "must not be able to kill its parent training process": there
++    is no new failure path, only a narrower input to the one that already degrades safely.
++    Passing ``authority_binding=False`` explicitly (the named, test-only escape hatch) reproduces
++    this function's PRE-D70 behaviour exactly (``resolve_bound_coverage`` with
++    ``citations=None``/``scan_dirs=None`` returns ``resolve_coverage``'s own result unchanged).
++
+     Returns ``(messages, had_failure)``. Never raises for a DESIGNED refusal (unresolved run
+     dir, unavailable policy module, a stale protection cache) or for a failed delete — those are
+     reported in ``messages``, and ``had_failure`` tells the caller whether a delete FAILED
+@@ -346,12 +400,26 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
+                     f"has succeeded yet) — REFUSING to prune {run_dir} this call rather than "
+                     f"delete against a possibly-incomplete protection set.")
+         return msgs, False
+-    coverage = gc.resolve_coverage([str(run_dir)], named, missing)
++    # TASK_881E/D70: `authority_binding` (default True) ANDs the id-correlation check onto
++    # coverage, fed from the citations half of the SAME scan `get_protection` just (re)ran above
++    # — see this function's own docstring. Explicitly False (the escape hatch), byte-for-byte
++    # `gc.resolve_coverage`'s own result.
++    coverage = gc.resolve_bound_coverage(
++        [str(run_dir)], named, missing,
++        citations=(get_protection_citations() if authority_binding else None),
++        scan_dirs=(list(scan_dirs) if authority_binding else None),
++        roots=([str(r) for r in roots] if authority_binding else None))
+     if not coverage.get(str(run_dir)):
+-        msgs.append(f"  [CKPT] REFUSE {run_dir}: no manifest declares coverage for it, or a "
+-                    f"manifest entry pointing into it names a path that does not exist — add "
+-                    f"or fix a `protect:`/`covers:` entry in an experiments/<id>/PROTECTED.txt "
+-                    f"or SPEC.md (see tools/ckpt_gc.py's module docstring). Nothing pruned.")
++        if authority_binding:
++            hint = gc.authority_binding_refusal_hint(
++                str(run_dir), [str(r) for r in roots], named, get_protection_citations(),
++                list(scan_dirs))
++            msgs.append(f"  [CKPT] REFUSE {run_dir}: {hint}. Nothing pruned.")
++        else:
++            msgs.append(f"  [CKPT] REFUSE {run_dir}: no manifest declares coverage for it, or a "
++                        f"manifest entry pointing into it names a path that does not exist — add "
++                        f"or fix a `protect:`/`covers:` entry in an experiments/<id>/PROTECTED.txt "
++                        f"or SPEC.md (see tools/ckpt_gc.py's module docstring). Nothing pruned.")
+         return msgs, False
+     # TASK_881 MAJOR D — resolve IDENTICALLY to the offline tool. `gc.collect` realpaths an
+     # explicitly-passed root, so an honest spelling (`jax_ckpt_fast/run_a`, where the root is a
+diff --git a/tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md b/tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md
+index bcda445..80e7e07 100644
+--- a/tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md
++++ b/tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md
+@@ -55,3 +55,88 @@ converse: "covered" must mean "someone with standing over THIS run dir declared
+ The parse/strip grammar (881I, settled). 880's D35 gate mechanics. Any change to what the
+ deleter deletes. **Note the sequencing: this row ships BEFORE any `--apply` freeze lift — D64's
+ code gate (shipped with 881D) is what enforces that.**
++
++---
++
++**STATUS: IMPLEMENTED 2026-08-28 (implementer; per D70's resume instructions), pending operator
++review of one disclosed finding below — not a blocker to the code as shipped.**
++
++- Preserved patch (`lore/handoff_2026-08-27_factory_run_45_881E_halt.patch`) re-applied clean to
++  `mcts_trader/training/safe_checkpoint.py` and `tools/ckpt_gc.py`; preserved test file restored
++  to `tools/tests/test_ckpt_881e_authority_binding.py`.
++- D70 override applied: `--bind-authority`/`authority_binding` now default **True** in both
++  `tools/ckpt_gc.py` (`main()`, `ap.set_defaults(bind_authority=True)`) and
++  `mcts_trader/training/safe_checkpoint.py::prune_run_dir_by_score` (`authority_binding: bool =
++  True`). Named test-only escape hatch: `--no-bind-authority` (CLI) / `authority_binding=False`
++  (Python callers) — used only by this repo's own test suites (881_protection_model, 881i,
++  881e's own pre-D70 tests rewritten), never by production callers.
++- Breakage classification (31 failures surfaced when the default flipped): **all 31 were bucket
++  (b), fixture convenience** — placeholder manifest ids (`999_x`, `e1`, `hostile_unrelated`, ...)
++  used on purpose to isolate coverage mechanics from authority correlation, none encoding a real
++  protection relationship. Fixed via the escape hatch (helper-level in
++  `test_ckpt_881_protection_model.py::_run_gc`; per-call-site elsewhere). Full test-by-test
++  breakdown in the implementer's report (session transcript / verification pass).
++- Gate (ii) coverage diff against the REAL corpus (`runs/` + `experiments/`, this host):
++  **the coverage/deletion DECISIONS are identical between bound and unbound dry runs — the
++  binding removes nothing currently active (flag-was-theatre evidence recorded). Raw stdout is
++  NOT byte-identical** (an earlier "zero byte difference" claim was an overstatement, corrected
++  by the run-45 flow-verifier and re-measured in cycle 2): `diff` exits 1 on 15 lines, one per
++  refused `runs/875_wf/*` dir, because bound mode prints the id-correlation-aware refusal hint and
++  unbound prints the pre-881E generic text. stderr IS byte-identical (sha256 match), and the
++  refused-set, per-run-dir keep/prune decisions and reclaim totals are all identical.
++  One DISCLOSED, non-active, pre-existing finding:
++  `experiments/828_stage3_train/PROTECTED.txt`'s three `protect: jax_ckpt_fast/e5exit2_pq_s{0,1,2}`
++  entries do not id-correlate (role-named, no task-number segment) and are currently DANGLING on
++  this host — precisely: unreachable via the `jax_ckpt_fast` symlink right now (its realpath
++  `/mnt/scratch/...` does not exist; the physical disk IS mounted, at
++  `/run/mnt/scratch`, and does hold the real `e5exit2_pq_s*`) — in both bound and
++  unbound modes alike, so no active removal occurs here. Reproduced on an isolated tmp tree with
++  the path made reachable: BOUND refuses those run dirs, UNBOUND keeps them. The direction is
++  fail-SAFE (nothing is deleted; they become un-prunable), so this is an operator decision, not a
++  safety hole — but the mismatch is real and will bite when the path is reachable again (e.g. on
++  gpu-server). Cycle 2's narrowing does not change this case either way. This exact case was already
++  pre-identified by the preserved patch's own comments and is already pinned as a passing
++  regression test (`test_authority_correlated_id_correlation`). Per scope item 1, `_AUTHORITY_ALLOWLIST`
++  is shipped EMPTY on purpose — this is an operator call (populate the allowlist, or accept the
++  gap), not resolved by this row. Recommend a follow-up DECISIONS.md row.
++- All local suites green except one PRE-EXISTING, unrelated failure independent of this row:
++  `test_ckpt_881i_manifest_ingestion.py::test_apply_behaviour_is_parity_with_head_on_a_scratch_tree`
++  fails identically against pristine git HEAD's `ckpt_gc.py` with zero 881E changes involved (its
++  `ra` call never passes the D64 override, so 881D's freeze — already shipped, unrelated to this
++  row — refuses it regardless). Not fixed (out of scope); flagged for separate attention.
++- `python -m trader selftest`: all 12 checks PASS.
++
++**CYCLE 2 (fix pass, 2026-08-28) — one BLOCKER closed: the correlation is now scoped to the run
++dir's OWN owning segment.**
++
++- Defect: `_authority_correlated` decided by plain set membership against `_path_task_numbers`,
++  which read EVERY segment of the run dir's full absolute realpath. D64 binds to "the run dir's
++  task/experiment segment" — SINGULAR. Measured consequences, all reproduced: an inner non-task
++  segment granted standing (`50_bogus` covered `runs/47_task/50_epoch`, where `50_epoch` is an
++  epoch counter); a shared numeric CONTAINER granted standing over unrelated children (live shape:
++  `runs/000_smoke/` holds 30 entries owned by other tasks — `753_step7`, `769_value_clip`,
++  `771_chain_bugfix`, ... — so a future `experiments/000_*/PROTECTED.txt` would have gained standing
++  over all thirty); and ancestors ABOVE the roots leaked in (`/mnt/2tb_disk/runs/target` -> "2",
++  `/tmp/claude-1000/1585d253-.../runs/x` -> "1585").
++- Fix: `_path_task_numbers` DELETED; `_run_dir_task_number(run_dir, roots)` is now the ONE place
++  the number is computed, for the coverage decision and the refusal text alike. It reads only the
++  segments RELATIVE to a configured root, unions across all containing roots (so nested roots
++  cannot launder ambiguity by ordering), and returns `None` — no correlation, i.e. REFUSE — when
++  the run dir is unrooted, carries no digit-led relative segment, or has two segments that
++  DISAGREE about the owner. `roots` is threaded through `_authority_correlated`,
++  `_path_authorized`, `resolve_bound_coverage`, `main()` (`--roots`) and
++  `safe_checkpoint.prune_run_dir_by_score` (its own `roots=`). Binding-active-with-`roots`-omitted
++  refuses rather than grants, and never raises (a raise in the in-run pruner would flip
++  `train_jax_fast.py`'s exit code). `_AUTHORITY_ALLOWLIST` unchanged (empty, explicit).
++- Real corpus is UNAFFECTED by the narrowing: for all 18 discovered run dirs the set of
++  correlating manifest ids is identical before and after (`runs/875_wf/f*_s*` still resolves to
++  its owner "875" — an owner dir with un-numbered children — and `runs/832_e5` / `runs/861_*`
++  still correlate). Gate (ii) re-run post-fix: decisions identical bound vs unbound, as above.
++- Tests: 5 contract tests written RED-first (3 failed pre-fix, exactly the 3 defect shapes; the 2
++  regression guards passed pre-fix and still pass), plus unit-level and in-run-pruner guards.
++  `tools/tests/test_ckpt_881e_authority_binding.py` 29 passed;
++  `test_ckpt_881_protection_model.py` + `test_ckpt_881i_manifest_ingestion.py` 325 passed,
++  1 skipped, 1 failed (the SAME pre-existing, unrelated
++  `test_apply_behaviour_is_parity_with_head_on_a_scratch_tree`); canon pins
++  (`D64_GATE_DIGESTS`, `AMENDED_INGESTION_NAMES`) untouched and passing;
++  `python -m trader selftest` 12/12 PASS.
+diff --git a/tools/ckpt_gc.py b/tools/ckpt_gc.py
+index eeabbbf..32d4adf 100644
+--- a/tools/ckpt_gc.py
++++ b/tools/ckpt_gc.py
+@@ -89,9 +89,13 @@ SAFETY (all enforced, not documented-and-hoped)
+   D64 documents, with no override and no acknowledgement. This is DISCLOSED, not fixed: gating the
+   in-run pruner into refusing would make every live training run stop pruning, which is a worse
+   outcome than the disclosed gap — D64 deliberately shipped TASK_881D rather than blocking
+-  training. Closing it properly is TASK_881E's authority binding (recommended to the planner, not
+-  done here). Read "the ``--apply`` freeze" anywhere in this file as "the offline CLI's ``--apply``
+-  freeze".
++  training. TASK_881E/D70 closes this properly: the authority binding (``resolve_bound_coverage``
++  below) is now DEFAULT ON for both deleters — this CLI (``--bind-authority``, on unless
++  ``--no-bind-authority`` is given) and the in-run pruner (``prune_run_dir_by_score(...,
++  authority_binding=True)``, its own new default — see ``mcts_trader/training/safe_checkpoint.py``).
++  Read "the ``--apply`` freeze" anywhere in this file as "the offline CLI's ``--apply`` freeze";
++  the freeze itself is a SEPARATE, still-standing gate (D64's code gate) that this row does not
++  lift.
+ * a run dir with no manifest coverage is refused wholesale (see above) — checked BEFORE anything
+   else, including the disk floor. THIS one is shared: the in-run pruner performs the same
+   no-coverage refusal through the same ``resolve_coverage``, so the coverage refusal covers both
+@@ -942,6 +946,266 @@ def resolve_coverage(run_dirs: list[str], named: set[str],
+     return out
+ 
+ 
++# ======================================================================================
++# TASK_881E — AUTHORITY BINDING (D64's amendment). Everything below is NEW: `resolve_coverage`
++# above is UNTOUCHED, byte for byte, and stays the whole of gate (i)'s predicate on its own. The
++# binding lives here as a CONJUNCT applied ON TOP of it (`resolve_bound_coverage`), never as a
++# rewrite of it — see that function's docstring for the "can only ever REMOVE coverage" argument,
++# which follows from `resolve_bound_coverage` calling `resolve_coverage` first and only ever
++# flipping a True to False afterward, never the reverse.
++#
++# WHAT "id-correlation" MEANS (scope item 1): a `covers:`/`protect:` entry's SOURCE manifest
++# lives at `experiments/<id>/PROTECTED.txt` (or `.../SPEC.md`) — `<id>` is the manifest's own
++# directory name, one level under whichever `--experiments-dir` scan root found it
++# (`_manifest_id_of`). A run dir's own "task/experiment segment" is the leading digit run of the
++# segments of its path RELATIVE TO A CONFIGURED ROOT, and only when those agree on ONE number
++# (`_task_number`/`_run_dir_task_number`) — the convention this repo already uses everywhere
++# (`experiments/832_linear_imprint`, `runs/832_e5`; `experiments/861_search_teacher_imprint`,
++# `runs/861_ref`). Correlation holds when the two numbers match. NOTE the cycle-2 BLOCKER this
++# scoping closes: reading EVERY segment of the full absolute realpath instead (the first
++# implementation) let an inner non-task segment (`runs/47_task/50_epoch` -> "50", an epoch
++# counter), a shared numeric CONTAINER (`runs/000_smoke/769_value_clip`, 30 unrelated tasks under
++# one `000_` parent, live in this repo), and ancestors above the roots entirely
++# (`/mnt/2tb_disk/...` -> "2") each confer standing D64 never granted. `_run_dir_task_number` is
++# the ONE place that number is computed, for the decision and the refusal text alike.
++# `_AUTHORITY_ALLOWLIST` is the scope item 1 ESCAPE HATCH ("or an
++# explicit per-experiment allow-list") for a real grant whose run dir was never given the task
++# number at all (measured on the live corpus: `experiments/828_stage3_train/PROTECTED.txt`
++# protects `jax_ckpt_fast/e5exit2_pq_s0`, named by role/exit-condition, not by task number) — kept
++# EMPTY by this row on purpose: gate (ii)'s coverage diff is what decides whether a given real
++# grant needs one, and that is an operator call (a mismatch is a FINDING to report, not something
++# this row may resolve by quietly widening the list).
++#
++# WIRED IN BY DEFAULT since D70 (2026-08-28, planner ruling — OVERRIDES config.json's general
++# "new behavior ships flag-gated, default OFF" invariant for THIS row: D70's own text is "a
++# flag-gated safety binding on a remote deleter is a safety feature that is off ... this row
++# changes no numeric — it narrows who may authorize a delete"). `main()`'s `--bind-authority` is
++# ON unless `--no-bind-authority` is explicitly given (the named, test-only escape hatch D70
++# requires), and `resolve_bound_coverage(..., citations=None, scan_dirs=None)` — reached only via
++# that escape hatch, or by a caller (like the in-run pruner, see safe_checkpoint.py) that passes
++# `authority_binding=False` explicitly — returns `resolve_coverage`'s own result completely
++# unchanged. Every pre-881E test built on placeholder ids (`999_x`/`e1`/`hostile_unrelated`/...)
++# covering unrelated-by-name run dirs ON PURPOSE, to isolate coverage from correlation, opts into
++# that unbound behaviour via the escape hatch (D70's required classification: fixture
++# CONVENIENCE, not a real protection relationship — see the TASK_881E task report for the
++# test-by-test breakdown). TASK_881E ships the binding ON and PROVES it (gate i's repro); the
++# `--apply` freeze itself lifts on a LATER, separate action per D64's own ruling ("only when
++# 881E ships AND 880's D35 gate opens"), not by this row.
++# ======================================================================================
++
++_TASK_NUMBER_RE = re.compile(r"^(\d+)")
++
++
++def _task_number(name: str) -> str | None:
++    """The leading digit run of one path SEGMENT (never a whole path) — "832" from
++    "832_linear_imprint" or "832_e5", `None` from "e5exit2_pq_s0" or "runs"."""
++    m = _TASK_NUMBER_RE.match(name)
++    return m.group(1) if m else None
++
++
++def _manifest_id_of(source: str, scan_dirs: list[str]) -> str | None:
++    """The `<id>` of a manifest's own `experiments/<id>/` — the first path segment after
++    whichever `scan_dirs` entry `source` (a `ManifestEntry.source`/citation path) was found
++    under. `None` if `source` cannot be placed under any of `scan_dirs` (never true of a source
++    `load_manifests` itself produced when the SAME `scan_dirs` list is passed here — this
++    function fails closed rather than guess when it is)."""
++    rp = os.path.realpath(source)
++    for sd in scan_dirs:
++        prefix = os.path.realpath(sd) + os.sep
++        if rp.startswith(prefix):
++            return rp[len(prefix):].split(os.sep, 1)[0]
++    return None
++
++
++def _run_dir_task_number(run_dir: str, roots: list[str]) -> str | None:
++    """The ONE task number `run_dir` itself designates, scoped to `roots`. THE single source of
++    truth for both the coverage decision (`_authority_correlated`) and the refusal-hint text —
++    there is deliberately no second way to compute this number.
++
++    Only the segments of `run_dir`'s path RELATIVE to a configured root are read. That scoping is
++    the whole of the cycle-2 BLOCKER fix: D64 binds coverage to "the run dir's task/experiment
++    segment", SINGULAR — the run's OWN owning id — and the previous implementation instead scanned
++    every segment of the full absolute realpath, so `/mnt/2tb_disk/runs/target` inherited "2" and
++    a scratch path `/tmp/claude-1000/1585d253-.../runs/x` inherited "1585". Segments ABOVE a root
++    are not this repo's task namespace and confer nothing.
++
++    FAIL-CLOSED — `None` (which `_authority_correlated` turns into "no correlation", i.e. REFUSE;
++    never into a grant) whenever the run dir designates no single owner:
++
++    * it resolves under no configured root at all (or IS a root);
++    * no relative segment is digit-led (`jax_ckpt_fast/e5exit2_pq_s0`, the disclosed 828 case);
++    * two or more DIFFERENT digit-led relative segments disagree about who owns it. `runs/000_smoke`
++      is a live shared scratch CONTAINER holding 30 entries belonging to unrelated tasks
++      (`753_step7`, `769_value_clip`, `771_chain_bugfix`, ...), so `runs/000_smoke/769_value_clip`
++      is owned by 769 and by 000 in equal measure by shape alone; likewise `runs/47_task/50_epoch`,
++      where `50_epoch` is an epoch counter and not a task id at all. Ambiguity is REFUSED, never
++      resolved by preferring one end of the path — picking the outer end hands a container id
++      standing over every child, picking the inner end hands an epoch counter standing over its
++      own run.
++
++    A single number, carried by one relative segment or repeated across several, is the owner:
++    `runs/832_e5` -> "832", `runs/875_wf/f1_s0` -> "875" (an owner dir with un-numbered children —
++    the real nested shape on this host's corpus), `runs/861/861_ref` -> "861".
++
++    Roots are considered ALL of them, not first-match, and their numbers are UNIONED, so a nested
++    root pair (`runs` and `runs/000_smoke`) cannot be used to launder an ambiguous run dir into an
++    unambiguous one by ordering.
++    """
++    rp = os.path.realpath(run_dir)
++    nums: set[str] = set()
++    rooted = False
++    for r in roots:
++        rr = os.path.realpath(r)
++        prefix = rr + os.sep
++        if rp == rr or not rp.startswith(prefix):
++            continue
++        rooted = True
++        nums |= {n for seg in rp[len(prefix):].split(os.sep)
++                 for n in (_task_number(seg),) if n is not None}
++    if not rooted or len(nums) != 1:
++        return None
++    return next(iter(nums))
++
++
++# Scope item 1's "explicit per-experiment allow-list": `{experiment_id: (run_dir_prefix, ...)}`.
++# A run dir under one of an id's listed prefixes is authorized for that id even with no numeric
++# correlation. EMPTY by construction — see the section banner above for why this row does not
++# populate it itself.
++_AUTHORITY_ALLOWLIST: dict[str, tuple[str, ...]] = {}
++
++
++def _authority_correlated(manifest_id: str, run_dir: str, roots: list[str]) -> bool:
++    """Does `manifest_id` have a DECLARED relationship to `run_dir` (scope item 1)? Either
++    automatic id-correlation, or an explicit `_AUTHORITY_ALLOWLIST` entry.
++
++    `roots` is the CONFIGURED checkpoint roots (`--roots` offline, `prune_run_dir_by_score`'s own
++    `roots=` in-run) and is what scopes the correlation to the run dir's OWN owning segment —
++    see `_run_dir_task_number`. An empty/omitted `roots` therefore correlates NOTHING (refuse),
++    which is the intended fail-closed direction: never a grant."""
++    num = _task_number(manifest_id)
++    own = _run_dir_task_number(run_dir, roots)
++    if num is not None and own is not None and num == own:
++        return True
++    run_rp = os.path.realpath(run_dir)
++    for prefix in _AUTHORITY_ALLOWLIST.get(manifest_id, ()):
++        prefix_rp = os.path.realpath(prefix)
++        if run_rp == prefix_rp or run_rp.startswith(prefix_rp + os.sep):
++            return True
++    return False
++
++
++# `ManifestSet.citations`' own, and only, line shape (`load_manifests`'s `_classify`): one
++# whitespace-free `entry.path` token (the manifest grammar guarantees this — 881G's item
++# micro-grammar never accepts a second token), so this format can never be produced with a
++# literal ' <- ' inside the path half, and parsing it back out here is safe. This file alone
++# produces this text; nothing external ever feeds it.
++_CITATION_LINE_RE = re.compile(r"^(?:protect|covers): \S+ <- (.+):(\d+)$")
++
++
++def _citation_manifest_ids(citation_lines: list[str], scan_dirs: list[str]) -> set[str]:
++    """The experiment id(s) of every manifest that cited this granted path, read back out of
++    `ManifestSet.citations`'s own format (see `_CITATION_LINE_RE`)."""
++    ids = set()
++    for line in citation_lines:
++        m = _CITATION_LINE_RE.match(line)
++        if not m:
++            continue
++        mid = _manifest_id_of(m.group(1), scan_dirs)
++        if mid is not None:
++            ids.add(mid)
++    return ids
++
++
++def _named_entries_under(run_dir: str, named: set[str]) -> list[str]:
++    """The subset of `named` that grants coverage to `run_dir` — the same test
++    `resolve_coverage` runs inline (kept as a private duplicate rather than a shared helper so
++    `resolve_coverage` itself stays byte-for-byte untouched; see the section banner)."""
++    rp = os.path.realpath(run_dir)
++    prefix = rp + os.sep
++    return [p for p in named if p == rp or p.startswith(prefix)]
++
++
++def _path_authorized(p: str, run_dir: str, citations: dict[str, list[str]],
++                     scan_dirs: list[str], roots: list[str]) -> bool:
++    """Is granted path `p` authorized to cover `run_dir` under the binding? A path with NO
++    citation (an operator `--protect-file` entry, never manifest-sourced) is untouched by the
++    binding — scope item 1 binds `covers:`/`protect:` MANIFEST entries only. A manifest-sourced
++    path is authorized only if at least one manifest that cited it correlates (fail-closed: a
++    citation whose source id cannot be determined authorizes nothing)."""
++    cite_lines = citations.get(p, [])
++    if not cite_lines:
++        return True
++    ids = _citation_manifest_ids(cite_lines, scan_dirs)
++    return any(_authority_correlated(mid, run_dir, roots) for mid in ids)
++
++
++def resolve_bound_coverage(run_dirs: list[str], named: set[str], missing: set[str] | None = None,
++                           *, citations: dict[str, list[str]] | None = None,
++                           scan_dirs: list[str] | None = None,
++                           roots: list[str] | None = None) -> dict[str, bool]:
++    """`resolve_coverage`'s own predicate, ANDed with the TASK_881E authority binding.
++
++    ADDITIVE BY CONSTRUCTION, not by care: this function's first act is to call
++    `resolve_coverage(run_dirs, named, missing)` UNCHANGED and use its dict as the starting
++    point. `citations`/`scan_dirs` omitted (either one) short-circuits to returning that dict
++    EXACTLY — the binding is off. When both are given, a run dir already `False` stays `False`
++    (no `and` can revive it), and one already `True` can only be pulled DOWN to `False` by the
++    `all(...)`-style `any(_path_authorized(...))` check below, never pushed up: there is no
++    branch anywhere in this function that sets a dir `True` the base predicate marked `False`. So
++    for every `rd`, `bound[rd] => resolve_coverage(...)[rd]` holds by inspection, which is the
++    "can only ever REMOVE coverage" guarantee scope item 1 requires.
++
++    `roots` is the CONFIGURED checkpoint roots, threaded down to `_run_dir_task_number` so the
++    correlation is scoped to each run dir's OWN owning segment (cycle-2 BLOCKER — see that
++    function). It is keyword-optional ONLY so that omitting it cannot raise inside the in-run
++    pruner's `apply=True` path (a raise there flips `train_jax_fast.py`'s exit code); omitting it
++    while the binding is ACTIVE correlates nothing and therefore REFUSES every manifest-sourced
++    grant. Fail-closed in the "refuses more" direction, never in the granting one.
++    """
++    coverage = resolve_coverage(run_dirs, named, missing)
++    if citations is None or scan_dirs is None:
++        return coverage
++    roots = list(roots) if roots else []
++    out = {}
++    for rd in run_dirs:
++        if not coverage[rd]:
++            out[rd] = False
++            continue
++        under = _named_entries_under(rd, named)
++        out[rd] = any(_path_authorized(p, rd, citations, scan_dirs, roots) for p in under)
++    return out
++
++
++def authority_binding_refusal_hint(run_dir: str, roots: list[str], named: set[str],
++                                   citations: dict[str, list[str]],
++                                   scan_dirs: list[str]) -> str:
++    """Scope item 2 — actionable refusal text naming the manifest that WOULD have standing over
++    `run_dir`, instead of "an experiments/<id>/PROTECTED.txt" (any id), which is D64's own
++    attack shape. Callers must only use this once the binding is ACTUALLY active — with no
++    binding, any id currently has standing, and this text would be false."""
++    citing_ids: set[str] = set()
++    for p in _named_entries_under(run_dir, named):
++        citing_ids |= _citation_manifest_ids(citations.get(p, []), scan_dirs)
++    num = _run_dir_task_number(run_dir, roots)
++    if num is not None:
++        standing = (f"add it to experiments/{num}_*/PROTECTED.txt (an experiment id starting "
++                    f"with {num!r} — this run dir's own task-number segment) or a "
++                    f"`protected:`/`covers:` block in that experiment's SPEC.md, or add a "
++                    f"reviewed exception for the citing id to tools/ckpt_gc.py's "
++                    f"_AUTHORITY_ALLOWLIST (TASK_881E, D64)")
++    else:
++        standing = (f"this run dir's path designates no single owning task number under the "
++                    f"configured roots {sorted(roots)!r} (it carries none, or two segments "
++                    f"disagree — e.g. a shared numeric container holding another task's run, "
++                    f"which is refused rather than resolved), so no id-correlated manifest can "
++                    f"grant it coverage — only a reviewed exception in tools/ckpt_gc.py's "
++                    f"_AUTHORITY_ALLOWLIST can (TASK_881E, D64)")
++    if citing_ids:
++        return (f"{sorted(citing_ids)} names this run dir but has no declared relationship to "
++                f"it under TASK_881E's authority binding (D64) — {standing}")
++    return f"no manifest names it at all — {standing}"
++
++
+ _BRACE_EXPANSION_CAP = 64
+ 
+ 
+@@ -3716,6 +3980,32 @@ def main() -> int:
+     ap.add_argument("--write-index", action="store_true",
+                     help="write the auditable checkpoints_index.json per run dir "
+                          "(implied by --apply)")
++    # TASK_881E — the authority binding. D70 (2026-08-28, planner ruling, OVERRIDES the task
++    # file's own "flag-gated, default OFF" framing and config.json's general invariant for THIS
++    # row specifically): "a flag-gated safety binding on a remote deleter is a safety feature
++    # that is off" — this changes no canon NUMERIC, only who may authorize a delete, so it ships
++    # DEFAULT ON. First letter 'b' is unused by every other long option, so `--bind-authority`
++    # cannot steal an abbreviation any HEAD prefix resolves to (see the NAMING CONSTRAINT note
++    # above --experiments-dir/--verify-manifests); `--no-bind-authority` is the named,
++    # explicit, TEST-ONLY escape hatch D70 requires — production callers should never pass it.
++    ap.add_argument("--bind-authority", dest="bind_authority", action="store_true",
++                    help="TASK_881E (D64/D70): require a covers:/protect: entry's OWN manifest "
++                         "id to have a DECLARED relationship (id-correlation, or an explicit "
++                         "tools/ckpt_gc.py _AUTHORITY_ALLOWLIST entry) to the run dir it grants "
++                         "coverage over. Additive only — can only REMOVE coverage a manifest "
++                         "would otherwise grant, never add any. DEFAULT ON since D70 "
++                         "(2026-08-28) — this flag is now a no-op spelled out for clarity; use "
++                         "--no-bind-authority to opt OUT.")
++    ap.add_argument("--no-bind-authority", dest="bind_authority", action="store_false",
++                    help="TEST-ONLY escape hatch (D70, 2026-08-28): explicitly opt OUT of the "
++                         "TASK_881E authority binding and restore the pre-881E flat coverage "
++                         "namespace (any covers:/protect: entry, from any manifest id, anywhere "
++                         "under a scanned directory, covers). Exists so fixtures built on "
++                         "placeholder manifest ids (999_x, hostile_unrelated, e1, ...) as pure "
++                         "coverage-isolation convenience can keep doing so without asserting a "
++                         "correlation relationship they were never designed to have. Production "
++                         "callers must not pass this.")
++    ap.set_defaults(bind_authority=True)
+     ap.add_argument("--apply", action="store_true", help="actually delete (default: dry run)")
+     # D64 (2026-08-25, planner ruling; TASK_881D resume) — the `--apply` FREEZE IS NOW CODE, not
+     # a written convention. Spelled `--i-have-read-d64-and-accept-the-unbound-coverage-risk`
+@@ -3926,7 +4216,16 @@ def main() -> int:
+               "listed above is invisible from this root but visible when rooted at directly.",
+               file=sys.stderr)
+ 
+-    coverage = resolve_coverage(list(runs.keys()), named, missing_named)
++    # TASK_881E/D70: the authority binding is ON BY DEFAULT (`bind_authority` defaults True —
++    # see `--bind-authority`/`--no-bind-authority` above); only the named test-only escape hatch
++    # (`--no-bind-authority`) reaches the `citations=None, scan_dirs=None` branch, which is
++    # byte-for-byte what `resolve_coverage(list(runs.keys()), named, missing_named)` returns on
++    # its own (see `resolve_bound_coverage`'s docstring) — the pre-881E/pre-D70 behavior.
++    coverage = resolve_bound_coverage(
++        list(runs.keys()), named, missing_named,
++        citations=(manifests.citations if a.bind_authority else None),
++        scan_dirs=(scan_dirs if a.bind_authority else None),
++        roots=(roots if a.bind_authority else None))
+     resolved_runs = {rd: ck for rd, ck in runs.items() if coverage.get(rd)}
+     unresolved_runs = {rd: ck for rd, ck in runs.items() if not coverage.get(rd)}
+ 
+@@ -3939,6 +4238,17 @@ def main() -> int:
+     # was silently destroying score data on the very trees it was protecting.
+     index_rows: dict[str, list[dict]] = {}
+     for rd in sorted(unresolved_runs):
++        # TASK_881E scope item 2: under the (default-ON, D70) binding the generic "an
++        # experiments/<id>/PROTECTED.txt" (any id) is exactly D64's attack shape, so name the
++        # manifest that WOULD have standing instead. Only reachable via the `--no-bind-authority`
++        # test-only escape hatch does the OLD wording still print — and only there is it still
++        # accurate, since with the binding truly off any id does have standing.
++        if a.bind_authority:
++            hint = authority_binding_refusal_hint(rd, roots, named, manifests.citations,
++                                                  scan_dirs)
++            print(f"[ckpt_gc] REFUSE run dir {rd}: {hint}. Nothing under {rd} will be pruned "
++                  f"or written until then, dry-run or --apply.")
++            continue
+         print(f"[ckpt_gc] REFUSE run dir {rd}: no manifest declares coverage for it (or a "
+               f"manifest entry pointing into it names a path that does not exist) — "
+               f"add a `protect: <path>` (real checkpoints, cited from a LEDGER/SPEC "
+diff --git a/tools/tests/test_ckpt_881_protection_model.py b/tools/tests/test_ckpt_881_protection_model.py
+index 55b05e4..578b4a1 100644
+--- a/tools/tests/test_ckpt_881_protection_model.py
++++ b/tools/tests/test_ckpt_881_protection_model.py
+@@ -90,7 +90,14 @@ def _mk_ckpt(root, name, mtime=None):
+ 
+ 
+ def _run_gc(args, cwd):
+-    return subprocess.run([sys.executable, GC_PATH] + args, cwd=cwd,
++    # TASK_881E/D70 (2026-08-28): the authority binding is DEFAULT ON since D70's ruling. This
++    # suite's placeholder manifest ids (999_x, e1, hostile_unrelated, my_run, ...) are fixture
++    # CONVENIENCE for testing D64/gate-i/ii/iii/iv/v mechanics that are ORTHOGONAL to authority
++    # correlation (that is exclusively test_ckpt_881e_authority_binding.py's job) -- none of them
++    # encode a real protection relationship. `--no-bind-authority` is the named, test-only escape
++    # hatch D70 requires: applied here, once, at this suite's single subprocess entry point, so
++    # this suite keeps exercising exactly what it always exercised rather than the new binding.
++    return subprocess.run([sys.executable, GC_PATH] + args + ["--no-bind-authority"], cwd=cwd,
+                           capture_output=True, text=True)
+ 
+ 
+@@ -613,9 +620,12 @@ def test_the_cycle3_split_token_closure_is_doubly_redundant_and_both_halves_are_
+     variant = tmp_path / "ckpt_gc_variant.py"
+     variant.write_text(src)
+     run_dir = _d64_hostile_tree(tmp_path)
++    # TASK_881E/D70 escape hatch: this mutation test is about the D64 override multiplicity
++    # rule, not authority correlation — 'hostile_unrelated' is fixture convenience here too.
+     r = subprocess.run([sys.executable, str(variant), "--apply"]
+                        + [f"{D64_OVERRIDE_FLAG}=NOT_THE_TOKEN", f"--i={D64_OVERRIDE_TOKEN}"]
+-                       + _D64_APPLY_ARGS, cwd=str(tmp_path), capture_output=True, text=True)
++                       + _D64_APPLY_ARGS + ["--no-bind-authority"],
++                       cwd=str(tmp_path), capture_output=True, text=True)
+     if expect_bypass:
+         assert r.returncode == 0, r.stdout + r.stderr
+         assert "mode=APPLY" in r.stdout, r.stdout
+@@ -833,9 +843,11 @@ def test_gate_iii_offline_and_inrun_deleters_agree(tmp_path, monkeypatch):
+         f.write(json.dumps({"epoch": 1, "score": 0.1, "path": drop_old, "step": 100}) + "\n")
+ 
+     # In-run pruner, dry-run, pointed at the sandbox roots/experiments — never the real ones.
++    # TASK_881E/D70 escape hatch: '999_x'/'my_run' is fixture convenience for gate (iii) parity,
++    # not a real protection relationship — see this file's `_run_gc` comment.
+     msgs, had_failure = sc.prune_run_dir_by_score(
+         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
+-        keep_best=1, keep_latest=1, keep_unscored=0, apply=False)
++        keep_best=1, keep_latest=1, keep_unscored=0, apply=False, authority_binding=False)
+     assert not had_failure
+     in_run_would_delete = {m for m in msgs if "would delete" in m}
+     assert any("checkpoint_100" in m for m in in_run_would_delete)
+@@ -861,7 +873,7 @@ def test_gate_iii_ttl_rescan_picks_up_manifest_added_mid_run(tmp_path, monkeypat
+     # No manifest yet -> refused.
+     msgs, _ = sc.prune_run_dir_by_score(
+         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), ttl_seconds=0.05,
+-        apply=False)
++        apply=False, authority_binding=False)
+     assert any("REFUSE" in m for m in msgs)
+ 
+     # A manifest is dropped mid-"run" (SERVER.md's documented normal workflow).
+@@ -880,7 +892,7 @@ def test_gate_iii_ttl_rescan_picks_up_manifest_added_mid_run(tmp_path, monkeypat
+     time.sleep(0.06)
+     msgs2, _ = sc.prune_run_dir_by_score(
+         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), ttl_seconds=0.05,
+-        apply=False)
++        apply=False, authority_binding=False)
+     assert not any("REFUSE" in m for m in msgs2), (
+         f"manifest added mid-run must be honoured within the TTL: {msgs2}")
+     sc._reset_protection_cache_for_test()
+@@ -1506,7 +1518,7 @@ def test_major_d_parity_offline_and_inrun_agree_on_a_symlinked_checkpoint_root(t
+     msgs, had_failure = sc.prune_run_dir_by_score(
+         str(tmp_path / "ckroot" / "run_a"), roots=(str(tmp_path / "ckroot"),),
+         scan_dirs=(str(exp_root),), keep_best=0, keep_latest=1, keep_unscored=0,
+-        under_floor=True, apply=True)
++        under_floor=True, apply=True, authority_binding=False)
+     assert not had_failure, msgs
+     assert not any("REFUSE" in m for m in msgs), msgs
+     assert not os.path.isdir(old) and os.path.isdir(new), (
+@@ -1538,7 +1550,8 @@ def test_inrun_pruner_refuses_a_symlinked_run_dir_the_offline_tool_cannot_see(tm
+ 
+     msgs, had_failure = sc.prune_run_dir_by_score(
+         str(link), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
+-        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
++        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
++        authority_binding=False)
+     assert not had_failure
+     assert any("ESCAPE" in m for m in msgs), msgs
+     assert os.path.isdir(old) and os.path.isdir(new), (
+@@ -1804,7 +1817,8 @@ def test_blocker_a_inrun_pruner_refusal_also_leaves_the_index_alone(tmp_path, mo
+     msgs, had_failure = sc.prune_run_dir_by_score(
+         str(run_dir), roots=(str(tmp_path / "runs"),),
+         scan_dirs=(str(tmp_path / "experiments"),),
+-        keep_best=1, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
++        keep_best=1, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
++        authority_binding=False)
+     assert not had_failure
+     assert any("REFUSED" in m for m in msgs), msgs
+     assert _index_scores(run_dir) == before, (
+@@ -2068,7 +2082,8 @@ def test_minor_non_utf8_scores_file_does_not_raise_out_of_the_inrun_pruner(tmp_p
+         f.write(b'{"epoch": 1, "score": \xff\xfe 3.0}\n')
+     msgs, had_failure = sc.prune_run_dir_by_score(          # must not raise
+         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
+-        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
++        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
++        authority_binding=False)
+     assert any("REFUSED" in m for m in msgs), msgs
+     assert os.path.isdir(str(run_dir / "snapshot_ep1"))
+     sc._reset_protection_cache_for_test()
+@@ -2204,12 +2219,15 @@ def test_red_when_the_deleting_call_reads_the_ttl_cache_at_its_real_drop_site(tm
+         "    named, protect, missing = get_protection(roots, scan_dirs, ttl_seconds, "
+         "force_rescan=False)")
+ 
+-    mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3, apply=False)
++    # TASK_881E/D70 escape hatch: 'e1'/'r1' is fixture convenience for the TTL-cache mutation
++    # under test, not a real protection relationship.
++    mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3, apply=False,
++                                  authority_binding=False)
+     (tmp_path / "experiments" / "e1").mkdir(parents=True)
+     (tmp_path / "experiments" / "e1" / "PROTECTED.txt").write_text(
+         "protect: runs/r1/snapshot_ep10\n")
+     msgs, _ = mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3,
+-                                            apply=True)
++                                            apply=True, authority_binding=False)
+     assert not os.path.isdir(str(run_dir / "snapshot_ep10")), (
+         "the mutation did not reproduce the BLOCKER: " + "\n".join(msgs))
+     assert any("DELETE" in m for m in msgs), msgs
+diff --git a/tools/tests/test_ckpt_881i_manifest_ingestion.py b/tools/tests/test_ckpt_881i_manifest_ingestion.py
+index 294b5dd..cc1bd3d 100644
+--- a/tools/tests/test_ckpt_881i_manifest_ingestion.py
++++ b/tools/tests/test_ckpt_881i_manifest_ingestion.py
+@@ -1814,8 +1814,12 @@ def test_apply_behaviour_is_parity_with_head_on_a_scratch_tree(tmp_path):
+                      cwd=str(a), timeout=30)
+     # D64: the override now REQUIRES its exact literal value and refuses an abbreviated option
+     # spelling — imported from the protection-model suite so there is one spelling repo-wide.
++    # TASK_881E/D70 escape hatch: `_apply_tree`'s manifest id is fixture convenience for gate (i)
++    # coverage, not a real protection relationship, and HEAD (`ra`, above) predates the binding
++    # entirely — `--no-bind-authority` keeps this a parity check of the score-based keep/delete
++    # arithmetic, which is what this test is actually about.
+     rb = _cli("--roots", "runs", "--keep-best", "2", "--apply",
+-             _pm.D64_OVERRIDE, cwd=str(b), timeout=30)
++             _pm.D64_OVERRIDE, "--no-bind-authority", cwd=str(b), timeout=30)
+ 
+     assert ra.returncode == rb.returncode == 0, ra.stdout + ra.stderr + rb.stdout + rb.stderr
+     # TASK_881D: `--apply` now implies `--write-index` (an auditable `checkpoints_index.json`

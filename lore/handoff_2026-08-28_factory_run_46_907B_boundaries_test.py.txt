@@ -1,0 +1,1380 @@
+"""TASK_907 ADDENDUM B (run 45) — the D67(a) five-boundary restructure: declared-vs-observed at
+B1 (recorder config -> capture, across sessions), B2 (capture span -> data span), B3
+(pre-registered horizons -> estimand results), B4 (--capture set -> report), B5 (--pairs filter ->
+report) — plus the six in-gate defects the restructure closes (over-refusal MAJOR, recorder-side
+early reconciliation, the twins-diverge identity bug, channels=[] vs declared_pairs=[], the
+observed_channel_undeclared mirror, and the split remedy text).
+
+Every fixture here is built with the real production modules (`CaptureWriter`, `LiveRecorder`) —
+no monkeypatching, no bypass. Each test names the boundary/defect it closes.
+"""
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from capture import (  # noqa: E402
+    GAP_REASONS, CaptureFormatError, CaptureMetadata, CaptureWriter, PairCoverage, read_capture,
+)
+from estimands import compute_estimand1, compute_estimand2  # noqa: E402
+from recorder import LiveRecorder, RecorderConfig  # noqa: E402
+from render import render_report  # noqa: E402
+from shadow_engine import run_shadow  # noqa: E402
+import cli  # noqa: E402
+
+T0 = 1_700_000_000.0
+
+
+def _dense_capture(path, pairs_data, span_s=600.0, cadence_s=5.0, channels=("book", "trade"),
+                    declared_pairs=None, t0=T0):
+    """A capture built through the PRODUCTION writer (`CaptureWriter`), one session, every pair
+    in `pairs_data` carrying dense book+trade for `span_s`. `pairs_data` maps pair -> price."""
+    declared = declared_pairs if declared_pairs is not None else sorted(pairs_data)
+    w = CaptureWriter(str(path), declared, "cap", channels=list(channels) if channels else None)
+    t = 0.0
+    while t <= span_s:
+        for pair, px in pairs_data.items():
+            w.write_book(pair, t0 + t, px, px + 0.1, 1.0, 1.0)
+            w.write_trade(pair, t0 + t + 0.01, px + 0.05, 1.0, "buy")
+        t += cadence_s
+    w.close(clean=True)
+    return str(path)
+
+
+# =================================================================================================
+# B1 — recorder subscription config -> capture (meta_start), ACROSS SESSIONS
+# =================================================================================================
+
+class _FastNow:
+    """Swap `capture._now` for a fixed value, restoring it on exit — used to control the resume
+    timestamp deterministically (mirrors `test_capture_gaps.py::test_resume_writes_gap...`)."""
+
+    def __init__(self, ts):
+        self.ts = ts
+
+    def __enter__(self):
+        import capture as capture_mod
+        self._mod = capture_mod
+        self._orig = capture_mod._now
+        capture_mod._now = lambda: self.ts
+        return self
+
+    def __exit__(self, *a):
+        self._mod._now = self._orig
+
+
+def test_b1_session_2_declaration_reaches_the_reader_and_is_not_discarded(tmp_path):
+    """THE B1 REPRO (spec lines 749-761), reproduced RED against the ORIGINAL tree (see the
+    implementer's report): session 1 declares only BTC/USD and delivers it; session 2 reopens the
+    same capture declaring [BTC/USD, ETH/USD], and ETH/USD is dead from t=0.
+
+    Before B1: `declared_pairs` stayed pinned to session 1's `['BTC/USD']` forever, so the
+    reconciliation "passed" by having forgotten ETH/USD was ever asked for, and ETH/USD appeared
+    ZERO times in the rendered artifact despite being named in the live recorder's actual
+    subscription. After B1: the declared side is the UNION of every session, so ETH/USD's total
+    absence is CORRECTLY refused (dead subscription), not silently forgotten.
+    """
+    p = tmp_path / "b1.jsonl"
+    w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1")
+    w1.write_book("BTC/USD", T0, 100.0, 100.2, 1.0, 1.0)
+    w1.write_trade("BTC/USD", T0 + 0.5, 100.1, 1.0, "buy")
+    w1._fh.close()  # simulated kill — no clean close
+
+    with _FastNow(T0 + 1000.0):
+        w2 = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap-1")
+        w2.write_book("BTC/USD", T0 + 1000.5, 100.3, 100.4, 1.0, 1.0)
+        w2.write_trade("BTC/USD", T0 + 1001.0, 100.35, 1.0, "buy")
+        w2.close(clean=True)
+
+    meta = read_capture(str(p))
+    # the reader's declared side now sees BOTH sessions' declarations
+    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"], (
+        "session 2's declaration must be UNIONED in, not discarded")
+    assert meta.observed_pairs == ["BTC/USD"]
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="DECLARED/OBSERVED pair reconciliation failed"):
+        meta.assert_complete()
+    # ETH/USD is no longer invisible: it is named, on the record, as a dead declared pair
+    assert "ETH/USD" in meta.pair_reconciliation_gaps()["declared_without_data"]
+    with pytest.raises(CaptureFormatError, match="ETH/USD"):
+        render_report([meta], {}, {})
+
+
+def test_b1_two_healthy_sessions_reconcile_and_the_second_sessions_pair_renders(tmp_path):
+    """Non-vacuity in the other direction: a pair ADDED on restart and received CLEANLY is a pair
+    the subscription DID ask for — the mirror direction must not misdiagnose it. If this test
+    fails the gate is simply refusing every multi-session capture, proving nothing above."""
+    p = tmp_path / "b1_healthy.jsonl"
+    w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1")
+    w1.write_book("BTC/USD", T0, 100.0, 100.2, 1.0, 1.0)
+    w1.write_trade("BTC/USD", T0 + 0.5, 100.1, 1.0, "buy")
+    w1._fh.close()
+
+    # session 2 resumes quickly (10s later, well under the 60s per-jump/edge-hole threshold) and
+    # then ticks BOTH pairs densely for a while, so neither pair's own data-bearing span leaves an
+    # edge hole against the capture's overall span (B2 item 1) — this test is about B1 alone.
+    with _FastNow(T0 + 10.0):
+        w2 = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap-1")
+        t = 10.0
+        while t <= 70.0:
+            w2.write_book("BTC/USD", T0 + t, 100.3, 100.4, 1.0, 1.0)
+            w2.write_trade("BTC/USD", T0 + t + 0.01, 100.35, 1.0, "buy")
+            w2.write_book("ETH/USD", T0 + t, 50.0, 50.1, 1.0, 1.0)
+            w2.write_trade("ETH/USD", T0 + t + 0.01, 50.05, 1.0, "buy")
+            t += 1.0
+        w2.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"]
+    assert meta.observed_pairs == ["BTC/USD", "ETH/USD"]
+    assert not any(meta.pair_reconciliation_gaps().values())
+    assert meta.is_complete()
+    meta.assert_complete()
+    # the sessions are disclosed, not indistinguishable from a single-session capture
+    assert len(meta.sessions) == 2
+    assert meta.sessions[0].kind == "start" and meta.sessions[0].pairs == ["BTC/USD"]
+    assert meta.sessions[1].kind == "resume"
+    assert meta.sessions[1].pairs == ["BTC/USD", "ETH/USD"]
+    report = render_report([meta], {}, {})
+    assert "sessions: 2 (start, resume)" in report
+    assert "HETEROGENEOUS DECLARATIONS" in report
+
+
+def test_b1_single_session_capture_still_reconciles_exactly_as_before(tmp_path):
+    """Old captures carrying only `meta_start` keep working — that shape is real."""
+    p = tmp_path / "b1_single.jsonl"
+    _dense_capture(p, {"BTC/USD": 100.0}, span_s=60.0)
+    meta = read_capture(str(p))
+    assert len(meta.sessions) == 1
+    assert meta.sessions[0].kind == "start"
+    assert meta.declared_pairs == ["BTC/USD"]
+    meta.assert_complete()
+    report = render_report([meta], {}, {})
+    assert "sessions: 1 (start)" in report
+    assert "HETEROGENEOUS" not in report
+
+
+def test_b1_a_resume_with_no_preceding_meta_start_is_refused(tmp_path):
+    p = tmp_path / "b1_orphan.jsonl"
+    with open(p, "w") as fh:
+        fh.write(json.dumps({"type": "meta_resume", "capture_id": "x", "pairs": ["BTC/USD"]})
+                  + "\n")
+        fh.write(json.dumps({"type": "trade", "pair": "BTC/USD", "ts": 1.0, "price": 1.0,
+                              "volume": 1.0, "side": "buy"}) + "\n")
+    with pytest.raises(CaptureFormatError, match="meta_resume record with no preceding meta_start"):
+        read_capture(str(p))
+
+
+# =================================================================================================
+# B2 — capture span -> data span
+# =================================================================================================
+
+def test_b2_the_7200s_130s_capture_refuses_and_names_the_true_uncovered_fraction(tmp_path):
+    """THE B2 FLAGSHIP REPRO (spec lines 712-727). Reproduced RED against the original tree (the
+    implementer's report has the verbatim run): a 7200s capture carrying book+trade for its first
+    130.5s only, with heartbeats every 10s throughout, gave `uncovered_fraction[BTC/USD] = 0.000%`
+    against a true ~98% of the capture un-observed, and `assert_complete()` PASSED.
+
+    After the fix: coverage is denominated in the CAPTURE span (all events, heartbeats included),
+    never the data span that collapses together with the numerator — so this now REFUSES, and the
+    refusal names the true un-observed fraction, not 0.000%.
+    """
+    p = tmp_path / "b2.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap-b2", channels=["book", "trade"])
+    t = 0.0
+    while t <= 130.5:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.2, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t + 0.01, 100.1, 1.0, "buy")
+        t += 5.0
+    t = 0.0
+    while t <= 7200.0:
+        w.write_heartbeat(T0 + t)
+        t += 10.0
+    w.close(clean=True)
+
+    meta = read_capture(str(p))
+    cov = meta.coverage_by_pair["BTC/USD"]
+    assert cov.span_s == pytest.approx(7200.0, abs=1.0), "denominated in the CAPTURE span"
+    assert cov.uncovered_fraction > 0.95, (
+        f"the true un-observed fraction must be reported (~98%), not 0.000% "
+        f"(got {cov.uncovered_fraction * 100:.3f}%)")
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError) as exc:
+        meta.assert_complete()
+    msg = str(exc.value)
+    assert "GATE (iv) REFUSAL" in msg
+    # the refusal names the true measured fraction as a NUMBER — not 0.000%. (The message also
+    # explicitly CONTRASTS itself with "the 0.000% a data-span-denominated statistic would
+    # report", so a bare substring check for "0.000%" would false-positive on that explanatory
+    # prose; check instead that the true percentage is actually printed.)
+    assert any(pct in msg for pct in ("97.", "98.", "99."))
+    assert "BTC/USD: 97." in msg or "BTC/USD: 98." in msg or "BTC/USD: 99." in msg
+    with pytest.raises(CaptureFormatError):
+        render_report([meta], {}, {})
+
+
+def test_b2_edge_hole_is_caught_leading_and_trailing_not_just_interior(tmp_path):
+    """B2 item 1, isolated: `_find_unrecorded_gaps` used to scan strictly BETWEEN consecutive
+    events, so a hole at an EDGE of the timeline (before the first event, or after the last) had
+    no consecutive pair spanning it. Anchoring the per-pair scan to the capture's all-event span
+    (heartbeats included) catches leading, trailing and both-edge holes the same as an interior
+    one."""
+    from capture import _find_unrecorded_gaps  # noqa: E402
+    # interior hole: already caught pre-B2 (regression pin)
+    assert _find_unrecorded_gaps([0.0, 500.0, 1000.0], [], 100.0) != []
+    # trailing hole: nothing between consecutive DATA points, but the span extends far past them
+    assert _find_unrecorded_gaps([0.0, 10.0], [], 100.0, span=(0.0, 5000.0)) != []
+    # leading hole: the data starts long after the span begins
+    assert _find_unrecorded_gaps([4990.0, 5000.0], [], 100.0, span=(0.0, 5000.0)) != []
+    # both-edge: a single data point in the middle of a huge span
+    assert len(_find_unrecorded_gaps([2500.0], [], 100.0, span=(0.0, 5000.0))) == 2
+    # no edge hole added when the data already reaches both ends AND stays dense throughout
+    # (each individual jump <= threshold, so nothing is flagged at all, edges included)
+    assert _find_unrecorded_gaps([0.0, 50.0, 100.0], [], 100.0, span=(0.0, 100.0)) == []
+
+
+def test_b2_uncovered_fraction_docstring_regression_pins(tmp_path):
+    """INVERTED in cycle 2 (run-45) — this test USED to assert `uncovered_fraction == 0.0` for
+    `accounted_s <= 0`, i.e. it re-pinned the one value spec B2 item 3 says must never be
+    returned there, converting a disclosed deviation into permanently-defended behaviour. It now
+    pins the fail-CLOSED direction instead: the NO-CLAIM sentinel (`None`).
+
+    Both halves of the ORIGINAL intent survive and are what this still guards: the fully-gap-
+    honest zero-accounted case must NOT be manufactured into a refusal (nothing is hidden there —
+    that is why the sentinel is `None` and not `1.0`), and it must not divide by zero either."""
+    cov_zero_span = PairCoverage(pair="X", n_data_events=1, window_s=15.0, span_s=0.0,
+                                  recorded_gap_s=0.0, accounted_s=0.0, covered_s=0.0)
+    assert cov_zero_span.uncovered_fraction is None
+    cov_fully_gapped = PairCoverage(pair="X", n_data_events=1, window_s=15.0, span_s=1000.0,
+                                     recorded_gap_s=1000.0, accounted_s=0.0, covered_s=0.0)
+    assert cov_fully_gapped.uncovered_fraction is None
+    # ... and NO-CLAIM is not a bound violation: a fully, honestly disclosed absence still passes.
+    meta = CaptureMetadata(path="hand", coverage_by_pair={"X": cov_fully_gapped})
+    assert meta.degraded_coverage_pairs() == []
+    assert meta.no_claim_coverage_pairs() == ["X"]
+
+
+# =================================================================================================
+# B3 — pre-registered horizons -> estimand results
+# =================================================================================================
+
+def test_b3_the_1500s_capture_still_reports_all_four_pre_registered_horizons(tmp_path):
+    """THE B3 REPRO (spec lines 763-776). A 1500s (25-minute) capture in which the pre-registered
+    1h markout can never form used to silently OMIT the "1h" row entirely — a reader was shown
+    three horizons and never told a fourth was pre-registered and drew nothing. All four now
+    appear, always, with the 1h row explicitly zero-sample."""
+    p = tmp_path / "b3.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap-b3")
+    t = 0.0
+    px = 100.0
+    while t <= 1500.0:
+        px += 0.01
+        w.write_trade("BTC/USD", T0 + t, px, 1.0, "buy")
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+
+    meta, results = run_shadow(str(p))
+    e1 = compute_estimand1(results["BTC/USD"])
+    assert set(e1.by_horizon) == {"1m", "5m", "20m", "1h"}, (
+        "all four pre-registered horizons must be present, always")
+    assert e1.by_horizon["1h"].n_used == 0
+    assert e1.by_horizon["1h"].n_samples == 0
+    assert e1.by_horizon["1h"].is_evaluable is False
+    assert e1.by_horizon["1m"].n_used > 0, "the other horizons really did draw samples"
+
+    report = render_report([meta], {"BTC/USD": e1}, {})
+    assert "| 1h |" in report, "the 1h row must be a STATED row in the rendered table"
+    assert "(MISSING" not in report, (
+        "compute_estimand1 always populates all four horizons now — the MISSING fallback text "
+        "is a render-level backstop for a hand-built result and should not fire here")
+
+
+def test_b3_render_never_silently_drops_a_horizon_missing_from_the_result(tmp_path):
+    """The render-level backstop (spec: `by_horizon.get(h)` returning `None` used to be a silent
+    `continue` at two sites). Even a hand-built `Estimand1Result` missing a pre-registered horizon
+    must render a STATED row, never a silent gap in the table."""
+    from estimands import Estimand1Result  # noqa: E402
+    e1 = Estimand1Result(pair="BTC/USD", by_horizon={})  # no horizons at all — hand-built
+    p = tmp_path / "b3_render.jsonl"
+    _dense_capture(p, {"BTC/USD": 100.0}, span_s=60.0)
+    meta = read_capture(str(p))
+    report = render_report([meta], {"BTC/USD": e1}, {})
+    assert "No touch-fills" in report  # by_horizon=={} still hits the empty-result branch
+
+    from estimands import HorizonAdverseSelection  # noqa: E402
+    partial = Estimand1Result(pair="BTC/USD", by_horizon={
+        "1m": HorizonAdverseSelection(horizon="1m", n_samples=1, n_used=1,
+                                       n_dropped_nonfinite=0, mean_bp=1.0, median_bp=1.0,
+                                       deciles_bp={d: 1.0 for d in
+                                                   (10, 20, 30, 40, 50, 60, 70, 80, 90)},
+                                       model_tiers_meet_or_exceed_median={0.0: False})})
+    report2 = render_report([meta], {"BTC/USD": partial}, {})
+    assert "(MISSING" in report2, "a horizon absent from by_horizon must be a STATED row"
+    assert "5m" in report2 and "20m" in report2 and "1h" in report2
+
+
+# =================================================================================================
+# B4 — the --capture set -> the report
+# =================================================================================================
+
+def test_b4_the_same_pair_in_two_captures_is_a_loud_refusal_not_a_silent_overwrite(tmp_path):
+    """THE B4 REPRO (spec lines 729-742): two single-pair BTC/USD captures, rendered together,
+    used to silently pick whichever `--capture` was LAST on the command line, order-dependently,
+    under a provenance block naming both. Now: a loud, explicit refusal naming both captures."""
+    a = _dense_capture(tmp_path / "a.jsonl", {"BTC/USD": 100.0}, span_s=300.0)
+    b = _dense_capture(tmp_path / "b.jsonl", {"BTC/USD": 200.0}, span_s=300.0)
+
+    rc_ab = cli.main(["--capture", a, "--capture", b, "--out", str(tmp_path / "ab.md")])
+    rc_ba = cli.main(["--capture", b, "--capture", a, "--out", str(tmp_path / "ba.md")])
+    assert rc_ab == 1 and rc_ba == 1, "order must not matter — both orders refuse"
+    assert not (tmp_path / "ab.md").exists()
+    assert not (tmp_path / "ba.md").exists()
+
+
+def test_b4_distinct_pairs_across_captures_render_and_state_their_source_capture(tmp_path):
+    """Non-vacuity: captures that do NOT collide must still render, and each pair's numbers must
+    be traceable to the capture that backed them."""
+    a = _dense_capture(tmp_path / "a.jsonl", {"BTC/USD": 100.0}, span_s=300.0)
+    b = _dense_capture(tmp_path / "b.jsonl", {"ETH/USD": 50.0}, span_s=300.0)
+    out = tmp_path / "out.md"
+    rc = cli.main(["--capture", a, "--capture", b, "--out", str(out)])
+    assert rc == 0
+    text = out.read_text()
+    assert f"source capture: `{a}`" in text
+    assert f"source capture: `{b}`" in text
+    assert "captures declared on the command line: 2" in text
+    assert "captures that actually contributed at least one pair's numbers: 2" in text
+
+
+# =================================================================================================
+# B5 — the --pairs operator filter -> the report
+# =================================================================================================
+
+def test_b5_pairs_naming_an_undeclared_pair_is_a_loud_refusal(tmp_path):
+    """THE B5 REPRO (spec lines 744-747): `--pairs SOL/USD` against a capture without it used to
+    exit 0 with a ~2900-char gate-passing artifact, full disclosure box, full provenance, ZERO
+    estimand sections, and no line saying a filter was applied."""
+    a = _dense_capture(tmp_path / "a.jsonl", {"BTC/USD": 100.0}, span_s=300.0)
+    out = tmp_path / "out.md"
+    rc = cli.main(["--capture", a, "--pairs", "SOL/USD", "--out", str(out)])
+    assert rc == 1
+    assert not out.exists()
+
+
+def test_b5_pairs_naming_a_declared_pair_renders_and_states_the_filter(tmp_path):
+    a = _dense_capture(tmp_path / "a.jsonl", {"BTC/USD": 100.0, "ETH/USD": 50.0}, span_s=300.0)
+    out = tmp_path / "out.md"
+    rc = cli.main(["--capture", a, "--pairs", "BTC/USD", "--out", str(out)])
+    assert rc == 0
+    text = out.read_text()
+    assert "BTC/USD" in text
+    assert "ETH/USD" not in text.split("Command-line reconciliation")[1].split("## ")[0], (
+        "the filtered-out pair must not leak into the pair sections")
+    assert "`--pairs` filter applied: ['BTC/USD']" in text
+
+
+def test_b5_no_filter_states_that_no_filter_was_applied(tmp_path):
+    a = _dense_capture(tmp_path / "a.jsonl", {"BTC/USD": 100.0}, span_s=300.0)
+    out = tmp_path / "out.md"
+    rc = cli.main(["--capture", a, "--out", str(out)])
+    assert rc == 0
+    assert "No `--pairs` filter applied" in out.read_text()
+
+
+# =================================================================================================
+# In-gate defect #1 — the over-refusal MAJOR (asymmetric book/trade cell check)
+# =================================================================================================
+
+def test_overrefusal_major_a_book_only_pair_is_disclosed_not_refused(tmp_path):
+    """THE OVER-REFUSAL REPRO (spec lines 781-795). A healthy 3-pair capture where SOL/USD has a
+    live, densely-covered book and ZERO prints for the whole capture used to refuse the WHOLE
+    render — discarding every number from BTC/USD and ETH/USD too — over a pair the gate could
+    plainly see (a coverage record, a cadence row, book-derived mids). Missing `trade` on a pair
+    whose `book` is alive is a market fact (no prints in the window), not a broken subscription;
+    missing `book` on an observed pair still refuses.
+    """
+    p = tmp_path / "overref.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "ETH/USD", "SOL/USD"], "cap-or",
+                       channels=["book", "trade"])
+    t = 0.0
+    while t <= 600.0:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t + 0.01, 100.05, 1.0, "buy")
+        w.write_book("ETH/USD", T0 + t, 50.0, 50.1, 1.0, 1.0)
+        w.write_trade("ETH/USD", T0 + t + 0.01, 50.05, 1.0, "buy")
+        w.write_book("SOL/USD", T0 + t, 10.0, 10.05, 1.0, 1.0)  # book only, never a print
+        t += 5.0
+    w.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert meta.observed_pair_channels["SOL/USD"] == ["book"]
+    assert "SOL/USD" in meta.coverage_by_pair, "the gate can plainly see this pair"
+    assert meta.disclosed_empty_trade_cells() == ["SOL/USD"]
+    assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == [], (
+        "the missing trade cell must NOT gate — it is disclosed instead")
+    assert meta.is_complete()
+    meta.assert_complete()  # must not raise
+
+    meta2, results = run_shadow(str(p))
+    e1 = {pr: compute_estimand1(r) for pr, r in results.items()}
+    e2 = {pr: compute_estimand2(r) for pr, r in results.items()}
+    report = render_report([meta2], e1, e2)
+    assert "disclosed empty trade cell(s)" in report
+    assert "['SOL/USD']" in report
+    assert "## BTC/USD" in report and "## ETH/USD" in report, (
+        "the good pairs' numbers must survive — nothing is discarded")
+
+
+def test_overrefusal_mirror_a_missing_book_cell_still_refuses(tmp_path):
+    """The asymmetry is deliberate: an actively-printing pair (trade present) missing its `book`
+    cell entirely is still a broken subscription, not a market fact, and still REFUSES."""
+    p = tmp_path / "missing_book.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap-mb", channels=["book", "trade"])
+    t = 0.0
+    while t <= 600.0:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t + 0.01, 100.05, 1.0, "buy")
+        w.write_trade("ETH/USD", T0 + t + 0.01, 50.05, 1.0, "buy")  # trades only, no book ever
+        t += 5.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.disclosed_empty_trade_cells() == [], "this is the BOOK-missing direction"
+    assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == ["ETH/USD:book"]
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="ETH/USD:book"):
+        meta.assert_complete()
+
+
+def test_b3_healthy_3pair_capture_plus_book_only_tail_byte_identical_to_the_good_capture_alone(
+        tmp_path):
+    """(B-iii) The good capture's numbers must be BYTE-IDENTICAL to what BTC/USD+ETH/USD render
+    alone — SOL/USD's presence (disclosed, not refused) must not perturb them."""
+    both = tmp_path / "both.jsonl"
+    w = CaptureWriter(str(both), ["BTC/USD", "ETH/USD", "SOL/USD"], "cap-or",
+                       channels=["book", "trade"])
+    t = 0.0
+    while t <= 600.0:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t + 0.01, 100.05, 1.0, "buy")
+        w.write_book("ETH/USD", T0 + t, 50.0, 50.1, 1.0, 1.0)
+        w.write_trade("ETH/USD", T0 + t + 0.01, 50.05, 1.0, "buy")
+        w.write_book("SOL/USD", T0 + t, 10.0, 10.05, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+
+    alone = tmp_path / "alone.jsonl"
+    w2 = CaptureWriter(str(alone), ["BTC/USD", "ETH/USD"], "cap-alone", channels=["book", "trade"])
+    t = 0.0
+    while t <= 600.0:
+        w2.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)
+        w2.write_trade("BTC/USD", T0 + t + 0.01, 100.05, 1.0, "buy")
+        w2.write_book("ETH/USD", T0 + t, 50.0, 50.1, 1.0, 1.0)
+        w2.write_trade("ETH/USD", T0 + t + 0.01, 50.05, 1.0, "buy")
+        t += 5.0
+    w2.close(clean=True)
+
+    meta_both, results_both = run_shadow(str(both))
+    e1_both = {p: compute_estimand1(r) for p, r in results_both.items()}
+    e2_both = {p: compute_estimand2(r) for p, r in results_both.items()}
+    report_both = render_report([meta_both], e1_both, e2_both)
+
+    meta_alone, results_alone = run_shadow(str(alone))
+    e1_alone = {p: compute_estimand1(r) for p, r in results_alone.items()}
+    e2_alone = {p: compute_estimand2(r) for p, r in results_alone.items()}
+    report_alone = render_report([meta_alone], e1_alone, e2_alone)
+
+    # SOL/USD never gets a "## SOL/USD" section at all: the shadow engine's bars are TRADE-driven
+    # (`shadow_engine._build_bars_and_mids` only builds a bar for a pair that has >=1 trade), so a
+    # book-only pair produces zero bars and zero `ShadowPairResult` — it is disclosed at the
+    # metadata/provenance level (the coverage table, `disclosed empty trade cell(s)` line), not
+    # via a populated-but-empty estimand section. So "## ETH/USD" is the LAST pair section in
+    # both reports, and everything from there to the end must be byte-identical.
+    assert "## SOL/USD" not in report_both, (
+        "a book-only pair must not get its own (empty) estimand section")
+
+    def _pair_section(report, pair, next_pair):
+        start = report.index(f"## {pair}")
+        end = report.index(f"## {next_pair}") if next_pair in report else len(report)
+        return report[start:end]
+
+    assert _pair_section(report_both, "BTC/USD", "ETH/USD") == \
+        _pair_section(report_alone, "BTC/USD", "ETH/USD")
+    eth_both = report_both[report_both.index("## ETH/USD"):]
+    eth_alone = report_alone[report_alone.index("## ETH/USD"):]
+    assert eth_both == eth_alone
+
+
+# =================================================================================================
+# In-gate defect #2 — the reconciliation runs DAYS too late, with no in-run signal
+# =================================================================================================
+
+class _AckWS:
+    def __init__(self, items):
+        self._items = list(items)
+
+    async def send(self, msg):
+        pass
+
+    async def recv(self):
+        if not self._items:
+            await asyncio.sleep(999)
+        return self._items.pop(0)
+
+
+class _AckCM:
+    def __init__(self, ws):
+        self._ws = ws
+
+    async def __aenter__(self):
+        return self._ws
+
+    async def __aexit__(self, *a):
+        return False
+
+
+async def _fast_sleep(_s):
+    return None
+
+
+def _ack_frame(channel, symbol):
+    return json.dumps({"method": "subscribe",
+                        "result": {"channel": channel, "symbol": symbol}, "success": True})
+
+
+def _heartbeat_frame():
+    return json.dumps({"channel": "heartbeat"})
+
+
+def test_defect2_a_subscribe_ack_symbol_mismatch_is_caught_at_connection_start(tmp_path):
+    """Demonstrated with Kraken's legacy `XBT/USD` spelling against a config declaring `BTC/USD`
+    (spec's exact example): the capture used to refuse wholesale at READ time, days later, with
+    `n_schema_mismatch == 0` and `n_unrecognized_frames == 0` throughout — the recorder saw no
+    drift at all. Now: caught after the first heartbeat cycle, at connection start, and written
+    into the capture so the outcome reaches the artifact immediately."""
+    out = str(tmp_path / "ackmismatch.jsonl")
+    ws = _AckWS([_ack_frame("book", "XBT/USD"), _ack_frame("trade", "BTC/USD"),
+                 _heartbeat_frame()])
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="ackmis",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, lambda url: _AckCM(ws), sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=1))
+    rec.close(clean=False)
+
+    lines = [json.loads(l) for l in open(out) if l.strip()]
+    gaps = [o for o in lines if o.get("type") == "gap"]
+    assert gaps, "the mismatch must be written into the capture, not just logged"
+    assert any("XBT/USD" in g.get("detail", "") for g in gaps)
+    assert any("subscribe ACK" in g.get("detail", "") for g in gaps)
+    assert all(g["reason"] in GAP_REASONS for g in gaps)
+
+
+def test_defect2_a_matching_subscribe_ack_writes_no_mismatch_gap(tmp_path):
+    """Non-vacuity: a healthy ack (symbol matches `cfg.pairs` exactly) must not be flagged."""
+    out = str(tmp_path / "ackok.jsonl")
+    ws = _AckWS([_ack_frame("book", "BTC/USD"), _ack_frame("trade", "BTC/USD"),
+                 _heartbeat_frame(), _trade_ok_frame()])
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="ackok",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, lambda url: _AckCM(ws), sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=1))
+    rec.close(clean=False)
+    lines = [json.loads(l) for l in open(out) if l.strip()]
+    gaps = [o for o in lines if o.get("type") == "gap"]
+    assert not any("subscribe ACK" in g.get("detail", "") for g in gaps)
+
+
+def _trade_ok_frame():
+    return json.dumps({"channel": "trade", "data": [
+        {"symbol": "BTC/USD", "price": 100.0, "qty": 1.0, "side": "buy"}]})
+
+
+# =================================================================================================
+# In-gate defect #3 — the twins DO diverge (`had_meta_start is False` identity bug)
+# =================================================================================================
+
+def test_defect3_had_meta_start_as_a_falsy_int_no_longer_diverges_the_twins():
+    """The unsafe direction, pinned directly: `had_meta_start=0` (an int, not the `False`
+    singleton) used to make `is_complete()` falsy (`and`-short-circuit) while
+    `assert_complete()`'s `is False` IDENTITY check missed it entirely and sailed past."""
+    meta = CaptureMetadata(path="hand-built", had_meta_start=0, n_book=1, n_trade=1,
+                            start_ts=0.0, end_ts=10.0, declared_pairs=["X"],
+                            observed_pair_channels={"X": ["trade"]}, coverage_evaluated=True,
+                            coverage_by_pair={"X": PairCoverage(
+                                pair="X", n_data_events=2, window_s=15.0, span_s=10.0,
+                                recorded_gap_s=0.0, accounted_s=10.0, covered_s=10.0)})
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="no meta_start record"):
+        meta.assert_complete()
+
+
+# =================================================================================================
+# In-gate defect #4 — channels=[] vs declared_pairs=[] (identical shape, ruled inconsistently)
+# =================================================================================================
+
+def test_defect4_an_explicitly_empty_channel_set_is_refused_like_an_empty_pair_set(tmp_path):
+    """`channels: []` used to silently disable BOTH per-capture channel checks (treated the same
+    as `channels=None`, the legitimate 'undeclared' fallback) while `declared_pairs: []` refused —
+    the identical shape one field over. Now both refuse."""
+    p = tmp_path / "emptychan.jsonl"
+    with open(p, "w") as fh:
+        fh.write(json.dumps({"type": "meta_start", "capture_id": "x", "pairs": ["BTC/USD"],
+                              "format_version": 2, "channels": []}) + "\n")
+        fh.write(json.dumps({"type": "trade", "pair": "BTC/USD", "ts": 1.0, "price": 1.0,
+                              "volume": 1.0, "side": "buy"}) + "\n")
+    meta = read_capture(str(p))
+    assert meta.channels == []
+    assert meta.declared_channels_explicitly_empty()
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="EXPLICITLY EMPTY"):
+        meta.assert_complete()
+
+
+def test_defect4_channels_undeclared_none_is_still_the_legitimate_fallback(tmp_path):
+    """Non-vacuity / regression pin: `channels=None` (absent) is a DIFFERENT, still-legitimate
+    shape and must not be refused by the new check."""
+    p = tmp_path / "nochan.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap")  # channels=None
+    w.write_trade("BTC/USD", 1.0, 100.0, 1.0, "buy")
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.channels is None
+    assert not meta.declared_channels_explicitly_empty()
+    meta.assert_complete()  # must not raise
+
+
+# =================================================================================================
+# In-gate defect #5 — the channel-side mirror `observed_channel_undeclared`
+# =================================================================================================
+
+def test_defect5_a_channel_never_declared_but_full_of_events_is_refused(tmp_path):
+    """`channels=['trade']` on a capture full of `book` events used to reconcile perfectly (the
+    mirror check did not exist), so every primary estimand number rested on a channel the capture
+    never declared."""
+    p = tmp_path / "undeclared_channel.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap", channels=["trade"])
+    t = 0.0
+    while t <= 60.0:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)  # book, never declared
+        t += 1.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    # missing_channels() is blind: it only checks the DECLARED channel (trade) for zero events,
+    # and trade genuinely has zero events too here — so this capture ALSO trips that check; the
+    # point is the mirror below, checked directly and via reconciliation_gaps.
+    gaps = meta.pair_reconciliation_gaps()
+    assert gaps["observed_channel_undeclared"] == ["BTC/USD:book"]
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="GATE .iv. REFUSAL"):
+        meta.assert_complete()
+
+
+def test_defect5_is_blind_when_channels_is_undeclared_the_disclosed_fallback(tmp_path):
+    """`channels=None` softens this check too, the same disclosed fallback as everywhere else."""
+    p = tmp_path / "nochan2.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap")  # channels=None
+    w.write_book("BTC/USD", 1.0, 100.0, 100.1, 1.0, 1.0)
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.pair_reconciliation_gaps()["observed_channel_undeclared"] == []
+
+
+# =================================================================================================
+# In-gate defect #6 — the remedy text is split per failure kind
+# =================================================================================================
+
+def test_defect6_the_remedy_is_split_between_dead_subscription_and_undeclared_data(tmp_path):
+    """A DEAD-subscription failure (declared_without_data/declared_channel_without_data) must not
+    be told to 're-cut narrower' as if that could manufacture events that were never received; an
+    UNDECLARED-data failure (observed_undeclared/coverage_undeclared) gets its own, different
+    remedy text."""
+    p = tmp_path / "dead.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap")
+    w.write_trade("BTC/USD", 1.0, 100.0, 1.0, "buy")
+    w.write_book("BTC/USD", 1.0, 100.0, 100.1, 1.0, 1.0)
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    with pytest.raises(CaptureFormatError) as exc:
+        meta.assert_complete()
+    msg = str(exc.value)
+    assert "DEAD subscription" in msg
+    assert "cannot manufacture events that were never received" in msg
+    assert "UNDECLARED pair/channel" not in msg, "the undeclared remedy must not fire here"
+
+    p2 = tmp_path / "undeclared.jsonl"
+    w2 = CaptureWriter(str(p2), ["BTC/USD"], "cap2")
+    w2.write_trade("BTC/USD", 1.0, 100.0, 1.0, "buy")
+    w2.write_trade("ETH/USD", 1.0, 50.0, 1.0, "buy")  # never declared
+    w2.close(clean=True)
+    meta2 = read_capture(str(p2))
+    with pytest.raises(CaptureFormatError) as exc2:
+        meta2.assert_complete()
+    msg2 = str(exc2.value)
+    assert "UNDECLARED pair/channel" in msg2
+    assert "DEAD subscription" not in msg2, "the dead-subscription remedy must not fire here"
+
+
+# =================================================================================================
+# The new GAP_REASONS enum entry
+# =================================================================================================
+
+def test_book_checksum_mismatch_is_its_own_gap_reason():
+    assert "book_checksum_mismatch" in GAP_REASONS
+    assert "schema_drift" in GAP_REASONS  # both still exist — distinguishable, not replaced
+
+
+# =================================================================================================
+# CYCLE 2 (run 45, escalated fix pass) — 1 BLOCKER + 3 MAJOR + 2 MINOR
+#
+# Every test below was run RED against the cycle-1 tree before its fix landed; the verbatim
+# assertion each one produced is quoted in its docstring so the demonstration survives the patch.
+# =================================================================================================
+
+# --- BLOCKER: the zero-estimand refusal only fired when `--pairs` was supplied --------------------
+
+def test_cycle2_blocker_a_book_only_capture_with_no_pairs_filter_refuses(tmp_path, capsys):
+    """B5's requirement is UNCONDITIONAL: "An artifact with zero estimand sections must never exit
+    0 carrying a gate-passing disclosure box." Cycle 1 put the check inside
+    `if pairs_filter is not None:`, so an ORDINARY capture — a quiet market: dense healthy book,
+    zero prints — invoked with no `--pairs` at all sailed straight past it.
+
+    `shadow_engine.run_shadow` builds `results` from `bars_by_pair` (TRADE-bar buckets), so a
+    book-only pair never enters `results` and never gets an `estimand1_by_pair` entry: the
+    artifact carries the full gate-(iv) disclosure box, states "captures that actually contributed
+    at least one pair's numbers: 0 []", and contains no estimand section at all.
+
+    RED against cycle 1::
+
+        assert rc == 1, ...
+        AssertionError: RC must be 1: a capture with ZERO estimand sections must never exit 0
+        carrying a gate-passing disclosure box (got rc=0, artifact written=True)
+        assert 0 == 1
+    """
+    p = tmp_path / "bookonly.jsonl"
+    w = CaptureWriter(str(p), ["SOL/USD"], "c3", channels=["book"])
+    t = 0.0
+    px = 100.0
+    while t <= 7200.0:  # 2 hours of dense, healthy, entirely ordinary book data; no trades
+        px += 0.001
+        w.write_book("SOL/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+
+    out = tmp_path / "report3.md"
+    rc = cli.main(["--capture", str(p), "--out", str(out)])
+    assert rc == 1, (
+        f"RC must be 1: a capture with ZERO estimand sections must never exit 0 carrying a "
+        f"gate-passing disclosure box (got rc={rc}, artifact written={out.exists()})")
+    assert not out.exists(), "no artifact may be written for a zero-estimand-section report"
+    err = capsys.readouterr().err
+    assert "REFUSED" in err and "ZERO estimand sections" in err
+
+
+def test_cycle2_blocker_the_zero_estimand_refusal_is_non_vacuous(tmp_path):
+    """Non-vacuity for the unconditional refusal: an ordinary book+trade capture with no `--pairs`
+    still renders. If this fails, the BLOCKER fix is simply refusing everything."""
+    p = tmp_path / "ok.jsonl"
+    _dense_capture(p, {"BTC/USD": 100.0}, span_s=1800.0)
+    out = tmp_path / "ok.md"
+    assert cli.main(["--capture", str(p), "--out", str(out)]) == 0
+    assert out.exists()
+
+
+# --- MAJOR: the keepalive reconciliation (spec lines 816-821) -------------------------------------
+
+def _frozen_book_capture(path, span_s=7200.0, keepalive_s=5.0, pair="BTC/USD"):
+    """An IDENTICAL top-of-book emitted at exactly the declared keepalive floor for `span_s`,
+    through the production writer, with the Addendum-A emission-policy declaration."""
+    w = CaptureWriter(str(path), [pair], "capFrozen", channels=["book"],
+                       book_emission_policy="change_or_keepalive", book_keepalive_s=keepalive_s)
+    t = 0.0
+    while t <= span_s:
+        w.write_book(pair, T0 + t, 100.0, 100.1, 1.0, 1.0)
+        t += keepalive_s
+    w.close(clean=True)
+    return str(path)
+
+
+def test_cycle2_a_frozen_keepalive_book_is_not_proof_the_market_was_observed(tmp_path):
+    """THE KEEPALIVE MAJOR (spec lines 816-821). Addendum A made the recorder emit book events on
+    top-of-book CHANGE **or** a `book_keepalive_s` timer floor, and declared both keys into
+    `meta_start`. Nothing reconciled them: `_cadence_stats`/`ChannelCadence` is purely descriptive
+    and `_pair_coverage` treated a timer-driven keepalive identically to a real top-of-book
+    change, so a two-hour FROZEN book was indistinguishable from a healthy one.
+
+    RED against cycle 1::
+
+        assert cov.uncovered_fraction > 0.9, ...
+        AssertionError: a 7200s FROZEN book is not 7200s of observation — the keepalive timer
+        proves the recorder's clock, not the market (uncovered_fraction=0.000%,
+        accounted_s=7200.0, is_complete()=True)
+        assert 0.0 > 0.9
+    """
+    path = _frozen_book_capture(tmp_path / "frozen.jsonl")
+    meta = read_capture(path)
+    cov = meta.coverage_by_pair["BTC/USD"]
+    assert cov.stale_book_s > 7000.0, (
+        f"the frozen run must be measured, not merely printed (stale_book_s={cov.stale_book_s})")
+    assert cov.uncovered_fraction > 0.9, (
+        f"a 7200s FROZEN book is not 7200s of observation — the keepalive timer proves the "
+        f"recorder's clock, not the market (uncovered_fraction={cov.uncovered_fraction}, "
+        f"accounted_s={cov.accounted_s}, is_complete()={meta.is_complete()})")
+    # CYCLE 3 amended the CONSEQUENCE, never the detection above (which is unchanged to three
+    # decimals). Cycle 2 routed this into `degraded_coverage_pairs()`, i.e. a WHOLE-CAPTURE
+    # refusal — see `test_cycle3_*` below for the measurement that made that untenable. A frozen
+    # book is a per-pair EXCLUSION: this pair backs no number, every other pair still renders,
+    # and a capture in which EVERY pair is excluded is caught by `cli.main`'s unconditional
+    # zero-estimand refusal instead.
+    assert meta.degraded_coverage_pairs() == [], (
+        "a frozen top of book is not time in which NOTHING arrived; the whole-capture aggregate "
+        "gate must be denominated in genuine data absence alone")
+    assert meta.stale_book_excluded_pairs() == ["BTC/USD"]
+    assert meta.is_complete()
+    meta.assert_complete()  # the CAPTURE is not defective — the PAIR is unusable
+
+
+def test_cycle2_a_changing_book_at_the_same_cadence_is_untouched(tmp_path):
+    """NON-VACUITY, and the whole point of the detection: the discriminator is the top-of-book
+    VALUE, not the cadence. A book that changes on every emission at exactly the same 5.0s
+    interval, declaring the identical emission policy, must be completely unaffected."""
+    p = tmp_path / "live.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capLive", channels=["book"],
+                       book_emission_policy="change_or_keepalive", book_keepalive_s=5.0)
+    t = 0.0
+    px = 100.0
+    while t <= 7200.0:
+        px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    cov = meta.coverage_by_pair["BTC/USD"]
+    assert cov.stale_book_s == 0.0
+    assert cov.uncovered_fraction == pytest.approx(0.0, abs=1e-6)
+    meta.assert_complete()
+
+
+def test_cycle2_a_brief_stale_run_is_disclosed_not_refused(tmp_path):
+    """The OVER-REFUSAL lesson (in-gate defect #1) applied to this fix: a partially stale pair
+    must lose only its stale time, never the whole capture. A 2-hour capture with ONE ~5-minute
+    frozen stretch is DISCLOSED (the stale seconds are measured and named) but stays under the
+    declared aggregate bound only if it is small; here it is deliberately made large enough to
+    trip the `STALE_BOOK_MIN_RUN_S` (one bar interval) floor and small enough to keep the OTHER
+    numbers, so the graduated response is pinned rather than assumed."""
+    p = tmp_path / "partial.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capPartial", channels=["book"],
+                       book_emission_policy="change_or_keepalive", book_keepalive_s=5.0)
+    t = 0.0
+    px = 100.0
+    while t <= 7200.0:
+        if 3600.0 <= t < 3720.0:
+            pass  # a 120s frozen stretch: same top-of-book, still emitted on the keepalive floor
+        else:
+            px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    cov = meta.coverage_by_pair["BTC/USD"]
+    assert cov.stale_book_s > 0.0, "the stale stretch must be measured"
+    assert cov.uncovered_fraction < meta.max_uncovered_fraction, (
+        "a single short stale stretch must not refuse a 2-hour capture — that is the "
+        "over-refusal direction this lane already learned once")
+    meta.assert_complete()
+
+
+def test_cycle2_staleness_needs_the_declaration_it_reconciles_against(tmp_path):
+    """D67 is reconciliation of a DECLARED quantity against an OBSERVED one. A capture that
+    declares no emission policy makes no keepalive claim, so there is nothing to reconcile and
+    the detection must not fire — synthetic fixtures throughout this suite repeat one price."""
+    p = tmp_path / "nodecl.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capND", channels=["book"])  # no policy declared
+    t = 0.0
+    while t <= 600.0:
+        w.write_book("BTC/USD", T0 + t, 100.0, 100.1, 1.0, 1.0)
+        t += 5.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.coverage_by_pair["BTC/USD"].stale_book_s == 0.0
+    meta.assert_complete()
+
+
+def test_cycle2_book_keepalive_overruns_are_reconciled_and_disclosed(tmp_path):
+    """The MIRROR direction of the same declaration: the recorder DECLARED it would emit a book
+    event at least every `book_keepalive_s`. Intervals exceeding that floor contradict the
+    declaration, and at 5.0s vs the reader's 60s gap-detect threshold a 30s book silence is
+    invisible to every other check. DISCLOSED (counted + max named), deliberately NOT refused —
+    see the fix report for why an event-loop hiccup must not kill a multi-day live capture."""
+    p = tmp_path / "overrun.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capOver", channels=["book"],
+                       book_emission_policy="change_or_keepalive", book_keepalive_s=5.0)
+    px = 100.0
+    for t in (0.0, 5.0, 10.0, 40.0, 45.0, 50.0):  # one 30s hole: 6x the declared floor
+        px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.book_keepalive_overruns.get("BTC/USD") == 1
+    assert meta.book_keepalive_max_interval_s.get("BTC/USD") == pytest.approx(30.0, abs=0.01)
+
+
+# --- MAJOR: uncovered_fraction's fail-CLOSED branch + the self-contradictory gap ledger -----------
+
+def test_cycle2_uncovered_fraction_makes_no_claim_rather_than_claiming_zero():
+    """Spec B2 item 3 is unconditional: "that branch is fail-CLOSED ... `0.0` is the one value
+    that must never be returned there." Cycle 1 left the branch byte-identical to HEAD, argued in
+    a rewritten comment that it was safe, and ADDED a test re-pinning the forbidden value.
+
+    The sentinel (`None` — "no claim made") is chosen over `1.0` deliberately: the requirement is
+    that the branch cannot BACK a 0.0, not that it must claim total absence, and `1.0` manufactures
+    a refusal for captures with nothing hidden.
+
+    RED against cycle 1::
+
+        assert cov_fully_gapped.uncovered_fraction is None, ...
+        AssertionError: `accounted_s <= 0` makes NO coverage claim; 0.0 is the one value that
+        must never be returned there
+        assert 0.0 is None
+    """
+    cov_zero_span = PairCoverage(pair="X", n_data_events=1, window_s=15.0, span_s=0.0,
+                                  recorded_gap_s=0.0, accounted_s=0.0, covered_s=0.0)
+    assert cov_zero_span.uncovered_fraction is None
+    cov_fully_gapped = PairCoverage(pair="X", n_data_events=1, window_s=15.0, span_s=1000.0,
+                                     recorded_gap_s=1000.0, accounted_s=0.0, covered_s=0.0)
+    assert cov_fully_gapped.uncovered_fraction is None, (
+        "`accounted_s <= 0` makes NO coverage claim; 0.0 is the one value that must never be "
+        "returned there")
+    # ... and a no-claim pair is not silently graded as "within bound" in the artifact either.
+    meta = CaptureMetadata(path="hand", coverage_by_pair={"X": cov_fully_gapped})
+    assert meta.no_claim_coverage_pairs() == ["X"]
+
+
+def test_cycle2_a_recorded_gap_that_swallows_real_events_is_refused(tmp_path):
+    """The THIRD case the cycle-1 enumeration missed, reproduced through the production writer: a
+    recorded gap that SWALLOWS REAL EVENTS. 1442 book+trade events every 10s across the full
+    7200s span, plus one recorded gap spanning [0, 7200]. `n_gaps_outside_event_span` only checks
+    the OPPOSITE direction, so nothing saw it.
+
+    RED against cycle 1::
+
+        assert meta.events_inside_recorded_gaps, ...
+        AssertionError: a gap that swallows 1442 real events is a self-contradictory ledger:
+        accounted_s=0.0, uncovered_fraction=0.0, degraded=[], assert_complete()=PASSED
+        assert [] (attribute did not exist / was empty)
+    """
+    p = tmp_path / "swallow.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capSwallow", channels=["book", "trade"])
+    t = 0.0
+    px = 100.0
+    while t <= 7200.0:
+        px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t + 0.01, px, 1.0, "buy")
+        t += 10.0
+    from capture import GapRecord as _GR  # noqa: E402
+    w.write_gap(_GR(T0 + 0.0, T0 + 7200.0, "disconnect",
+                     detail="a gap the ledger claims covers the whole span"))
+    w.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert meta.events_inside_recorded_gaps, (
+        f"a gap that swallows real events is a self-contradictory ledger: "
+        f"accounted_s={meta.coverage_by_pair['BTC/USD'].accounted_s}, "
+        f"uncovered_fraction={meta.coverage_by_pair['BTC/USD'].uncovered_fraction}, "
+        f"degraded={meta.degraded_coverage_pairs()}")
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError) as exc:
+        meta.assert_complete()
+    msg = str(exc.value)
+    assert "GATE (iv) REFUSAL" in msg
+    assert "recorded gap" in msg and "data-bearing event" in msg
+
+
+def test_cycle2_a_gap_touching_an_event_at_its_boundary_is_still_fine(tmp_path):
+    """NON-VACUITY, and the shape the PRODUCTION recorder actually writes: `_record_gap` ends
+    every gap at `_last_event_ts`/`now` and `_close_dark_window` closes it AT the first event
+    after it, so real gaps touch events at their boundaries. STRICTLY inside is the test."""
+    p = tmp_path / "touch.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "capTouch", channels=["book", "trade"])
+    for t in (0.0, 10.0, 20.0):
+        w.write_book("BTC/USD", T0 + t, 100.0 + t, 100.1 + t, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t, 100.0 + t, 1.0, "buy")
+    from capture import GapRecord as _GR  # noqa: E402
+    w.write_gap(_GR(T0 + 20.0, T0 + 200.0, "disconnect", detail="ends after the last event"))
+    for t in (200.0, 210.0):
+        w.write_book("BTC/USD", T0 + t, 100.0 + t, 100.1 + t, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t, 100.0 + t, 1.0, "buy")
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.events_inside_recorded_gaps == []
+    meta.assert_complete()
+
+
+# --- MAJOR: the "abort loudly" that was an unbounded reconnect storm -------------------------------
+
+def test_cycle2_a_recurring_subscribe_ack_mismatch_reaches_a_terminal_state(tmp_path):
+    """Defect #2's abort used `_GapAlreadyRecorded` — the idiom for a TRANSIENT failure — so
+    `run()`'s loop backed off to `backoff_max_s` (60s) and retried forever. For a STATIC
+    misconfiguration (Kraken's legacy `XBT/USD` vs a config declaring `BTC/USD`) every reconnect
+    re-subscribes identically and reconciles false again: an unbounded ~60s reconnect storm
+    against the venue for the life of a multi-day process, with no terminal signal. The only
+    coverage ran at `max_iterations=1`, which cannot see a storm.
+
+    RED against cycle 1 (`max_iterations=5`)::
+
+        with pytest.raises(SubscriptionConfigMismatch):
+        E   ImportError: cannot import name 'SubscriptionConfigMismatch' from 'recorder'
+        # and, with the import removed:
+        assert rec.attempts <= 3, ...
+        AssertionError: a STATIC config mismatch must terminate, not storm the venue: 5 connection
+        attempts, every one reconciling false identically, with no terminal signal
+        assert 5 <= 3
+    """
+    from recorder import SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS, SubscriptionConfigMismatch
+
+    out = str(tmp_path / "ackstorm.jsonl")
+
+    def _fresh_ws(_url):
+        # every reconnect re-subscribes and the venue echoes the SAME legacy spelling back
+        return _AckCM(_AckWS([_ack_frame("book", "XBT/USD"), _ack_frame("trade", "BTC/USD"),
+                              _heartbeat_frame()]))
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="ackstorm",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, _fresh_ws, sleep_fn=_fast_sleep)
+    with pytest.raises(SubscriptionConfigMismatch):
+        asyncio.run(rec.run(max_iterations=5))
+    rec.close(clean=False)
+
+    assert rec.attempts <= SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS, (
+        f"a STATIC config mismatch must terminate, not storm the venue: {rec.attempts} "
+        f"connection attempts, every one reconciling false identically")
+    lines = [json.loads(l) for l in open(out) if l.strip()]
+    gaps = [o for o in lines if o.get("type") == "gap"]
+    assert any("TERMINAL" in g.get("detail", "") for g in gaps), (
+        "the terminal outcome must be written into the capture so it reaches the artifact")
+    assert all(g["reason"] in GAP_REASONS for g in gaps)
+
+
+def test_cycle2_a_transient_ack_mismatch_still_only_reconnects(tmp_path):
+    """The DISTINCTION is the fix, not the abort: a mismatch that does NOT recur (the venue's
+    first ack raced, the second connection acks correctly) must still be a reconnect, never a
+    terminal kill of a multi-day capture."""
+    from recorder import SubscriptionConfigMismatch
+
+    out = str(tmp_path / "acktransient.jsonl")
+    state = {"n": 0}
+
+    def _ws(_url):
+        state["n"] += 1
+        if state["n"] == 1:
+            frames = [_ack_frame("book", "XBT/USD"), _heartbeat_frame()]
+        else:
+            frames = [_ack_frame("book", "BTC/USD"), _heartbeat_frame(), _trade_ok_frame()]
+        return _AckCM(_AckWS(frames))
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="acktrans",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, _ws, sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=3))  # must NOT raise
+    rec.close(clean=False)
+    lines = [json.loads(l) for l in open(out) if l.strip()]
+    assert not any("TERMINAL" in o.get("detail", "") for o in lines if o.get("type") == "gap")
+
+
+# --- MINOR 1: `--pairs` is reconciled against declared INTERSECT observed, as the spec says -------
+
+def test_cycle2_pairs_filter_reconciles_against_declared_intersect_observed(tmp_path, capsys):
+    """Spec line 628: "the filter is reconciled against the declared∩observed pair set." Cycle 1
+    used the UNION, so a `--pairs` naming a pair that was DECLARED but never delivered a single
+    event fell through the reconciliation and was caught only by the generic zero-estimand
+    refusal — code and spec disagreeing silently.
+
+    RED against cycle 1::
+
+        assert "declared AND observed" in err
+        AssertionError: assert 'declared AND observed' in 'REFUSED (gate iv): B5 REFUSAL:
+        --pairs=[\'ETH/USD\'] produced ZERO estimand sections. ...'
+    """
+    p = tmp_path / "deadeth.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "capDead", channels=["book", "trade"])
+    t = 0.0
+    px = 100.0
+    while t <= 600.0:
+        px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        w.write_trade("BTC/USD", T0 + t, px, 1.0, "buy")
+        t += 5.0
+    w.close(clean=True)
+
+    rc = cli.main(["--capture", str(p), "--pairs", "ETH/USD",
+                    "--out", str(tmp_path / "x.md")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "declared AND observed" in err
+    assert "ETH/USD" in err
+
+
+# --- MINOR 2: the HETEROGENEOUS banner ignored heartbeat_timeout_s --------------------------------
+
+def test_cycle2_heterogeneous_banner_fires_on_heartbeat_timeout_s_alone(tmp_path):
+    """`_render_capture_meta_block` compared session `pairs` and `channels` but NOT
+    `heartbeat_timeout_s`, so two sessions differing only in the recorder's own liveness knob
+    never tripped the banner.
+
+    RED against cycle 1::
+
+        assert "HETEROGENEOUS DECLARATIONS" in report
+        AssertionError: assert 'HETEROGENEOUS DECLARATIONS' in '# TASK_907 — live fill-model
+        probe (phase 1: shadow)\\n\\n> ...'
+    """
+    p = tmp_path / "hetero_hb.jsonl"
+    w1 = CaptureWriter(str(p), ["BTC/USD"], "cap", channels=["book", "trade"],
+                        heartbeat_timeout_s=30.0)
+    t = 0.0
+    px = 100.0
+    while t <= 600.0:
+        px += 0.01
+        w1.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        w1.write_trade("BTC/USD", T0 + t, px, 1.0, "buy")
+        t += 5.0
+    w1.close(clean=True)
+    with _FastNow(T0 + 610.0):
+        w2 = CaptureWriter(str(p), ["BTC/USD"], "cap", channels=["book", "trade"],
+                            heartbeat_timeout_s=45.0)  # ONLY the liveness knob differs
+    t = 620.0
+    while t <= 1200.0:
+        px += 0.01
+        w2.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)
+        w2.write_trade("BTC/USD", T0 + t, px, 1.0, "buy")
+        t += 5.0
+    w2.close(clean=True)
+
+    meta, results = run_shadow(str(p))
+    assert [s.heartbeat_timeout_s for s in meta.sessions] == [30.0, 45.0]
+    report = render_report([meta], {p_: compute_estimand1(r) for p_, r in results.items()},
+                            {p_: compute_estimand2(r) for p_, r in results.items()})
+    assert "HETEROGENEOUS DECLARATIONS" in report
+
+
+# =================================================================================================
+# CYCLE 3 (run 45) — THE BLOCKER: an honest market fact must not be an instrument-defect refusal
+#
+# Cycle 2 correctly stopped counting keepalive-frozen book time as observation, then routed the
+# result into `PairCoverage.uncovered_fraction` -> `degraded_coverage_pairs()` ->
+# `is_complete()`/`assert_complete()` -> `render._assert_all_captures_complete`: a WHOLE-CAPTURE
+# gate that runs before any number is built and is independent of `--pairs`.
+#
+# RED against cycle 2, on the fixture below (production `CaptureWriter`, 3 pairs, BTC/USD and
+# ETH/USD perfectly healthy, SOL/USD's real top of book frozen for ONE stretch)::
+#
+#     SOL/USD uncovered_fraction=0.02720  stale_book_s=1200.0
+#     degraded: ['SOL/USD']
+#     assert_complete(): GATE (iv) REFUSAL
+#     rc (no --pairs)              = 1, artifact exists: False
+#     rc (--pairs BTC/USD,ETH/USD) = 1, artifact exists: False   <-- no escape hatch
+#
+# The whole multi-day report is discarded, both healthy pairs with it, and the refusal's own
+# remedies ("re-cut the capture", "re-run the recorder") are unusable on data already recorded.
+# The fix applies the asymmetry this spec already established for the empty trade cell (in-gate
+# defect #1): an INSTRUMENT DEFECT refuses, a MARKET FACT is disclosed. Genuine data absence —
+# the throttling subscription of `test_coverage_aggregate.py:185` — still refuses whole-capture,
+# unchanged and deliberately so.
+# =================================================================================================
+
+CYCLE3_KEEPALIVE_S = 5.0
+
+
+def _thin_pair_capture(path, span_s=3600.0, stale=(("SOL/USD", 1000.0, 1120.0),),
+                       pairs=("BTC/USD", "ETH/USD", "SOL/USD"), channels=("book", "trade")):
+    """A healthy multi-pair capture through the PRODUCTION writer in which the named pairs' real
+    top of book sits still over the given stretches, with the recorder emitting on its declared
+    `book_keepalive_s` floor throughout — a weekend/overnight lull on a thin pair. No prints
+    arrive over a frozen stretch either, which is what makes it a lull rather than a bug."""
+    w = CaptureWriter(str(path), list(pairs), "capThin", channels=list(channels),
+                       book_emission_policy="change_or_keepalive",
+                       book_keepalive_s=CYCLE3_KEEPALIVE_S)
+    px = {p: 100.0 + 10.0 * i for i, p in enumerate(pairs)}
+    frozen_by_pair = {}
+    for pair, lo, hi in stale:
+        frozen_by_pair.setdefault(pair, []).append((lo, hi))
+    t = 0.0
+    while t <= span_s:
+        for p in pairs:
+            is_frozen = any(lo <= t < hi for lo, hi in frozen_by_pair.get(p, ()))
+            if not is_frozen:
+                px[p] += 0.01
+            w.write_book(p, T0 + t, px[p], px[p] + 0.1, 1.0, 1.0)
+            if not is_frozen and "trade" in channels:
+                w.write_trade(p, T0 + t + 0.01, px[p] + 0.05, 1.0, "buy")
+        if t % 10.0 == 0.0:
+            w.write_heartbeat(T0 + t)
+        t += CYCLE3_KEEPALIVE_S
+    w.close(clean=True)
+    return str(path)
+
+
+def test_cycle3_a_thin_pairs_frozen_book_no_longer_discards_the_healthy_pairs_beside_it(tmp_path):
+    """THE BLOCKER, closed. SOL/USD is excluded BY NAME and every other pair still renders."""
+    path = _thin_pair_capture(tmp_path / "thin.jsonl")
+    meta = read_capture(path)
+
+    cov = meta.coverage_by_pair["SOL/USD"]
+    assert cov.stale_book_s == pytest.approx(120.0, abs=0.01), "detection is unchanged"
+    assert cov.uncovered_fraction > meta.max_uncovered_fraction, (
+        "the honest un-observed fraction is over the bound — that measurement is preserved")
+    assert cov.uncovered_fraction_counting_stale == pytest.approx(0.0, abs=1e-6), (
+        "and NOTHING was missing beside the frozen book: with the keepalives counted back in the "
+        "pair is inside the bound, which is exactly what separates it from a throttling "
+        "subscription")
+    assert meta.degraded_coverage_pairs() == []
+    assert meta.stale_book_excluded_pairs() == ["SOL/USD"]
+    for healthy in ("BTC/USD", "ETH/USD"):
+        assert meta.coverage_by_pair[healthy].uncovered_fraction == pytest.approx(0.0, abs=1e-6)
+    meta.assert_complete()
+
+    out = tmp_path / "art.md"
+    assert cli.main(["--capture", path, "--out", str(out)]) == 0
+    report = out.read_text()
+    assert "## BTC/USD" in report and "## ETH/USD" in report, (
+        "the healthy pairs' numbers must survive a frozen book on a pair beside them")
+    assert "## SOL/USD" not in report, "an excluded pair backs no estimand section"
+    # ... and the exclusion is impossible to miss, and cannot be read as "never subscribed".
+    assert "PAIRS EXCLUDED FROM THIS REPORT" in report
+    assert "were subscribed, were received, and are NOT reported" in report
+    assert "minute-grid claim is COMPROMISED" in report
+    assert report.index("PAIRS EXCLUDED FROM THIS REPORT") < report.index("## BTC/USD")
+
+
+def test_cycle3_a_pairs_filter_naming_only_the_healthy_pairs_renders(tmp_path):
+    """The measured absence of an escape hatch: under cycle 2 `--pairs BTC/USD,ETH/USD` ALSO
+    returned rc=1 with no artifact, because the gate is whole-capture and runs before the filter
+    is consulted. Naming only healthy pairs must now produce their report."""
+    path = _thin_pair_capture(tmp_path / "thin.jsonl")
+    out = tmp_path / "art.md"
+    assert cli.main(["--capture", path, "--pairs", "BTC/USD,ETH/USD", "--out", str(out)]) == 0
+    report = out.read_text()
+    assert "## BTC/USD" in report and "## ETH/USD" in report
+    assert "## SOL/USD" not in report
+
+
+def test_cycle3_a_stale_run_that_stays_under_the_bound_is_not_excluded(tmp_path):
+    """NON-VACUITY in the other direction: the exclusion is a BOUND crossing, not "any staleness".
+    A 60s frozen stretch in a 3600s capture is disclosed and nothing else happens to it."""
+    path = _thin_pair_capture(tmp_path / "brief.jsonl",
+                               stale=(("SOL/USD", 1000.0, 1065.0),))
+    meta = read_capture(path)
+    cov = meta.coverage_by_pair["SOL/USD"]
+    assert cov.stale_book_s > 0.0, "the stretch is still measured"
+    assert cov.uncovered_fraction < meta.max_uncovered_fraction
+    assert meta.stale_book_excluded_pairs() == []
+    assert meta.degraded_coverage_pairs() == []
+    out = tmp_path / "art.md"
+    assert cli.main(["--capture", path, "--out", str(out)]) == 0
+    report = out.read_text()
+    assert "## SOL/USD" in report, "a pair inside the bound keeps its numbers"
+    assert "PAIRS EXCLUDED FROM THIS REPORT" not in report
+
+
+def test_cycle3_every_pair_excluded_is_a_zero_estimand_refusal(tmp_path):
+    """"If EVERY pair is excluded, that is a zero-estimand artifact and must refuse via the
+    unconditional gate cycle 2 already added." The exclusion must never degrade into an artifact
+    carrying a gate-passing disclosure box and an exclusion notice with nothing beside it."""
+    path = _thin_pair_capture(tmp_path / "allstale.jsonl",
+                               stale=(("BTC/USD", 1000.0, 1120.0),
+                                      ("ETH/USD", 1000.0, 1120.0),
+                                      ("SOL/USD", 1000.0, 1120.0)))
+    meta = read_capture(path)
+    assert meta.stale_book_excluded_pairs() == ["BTC/USD", "ETH/USD", "SOL/USD"]
+    out = tmp_path / "art.md"
+    assert cli.main(["--capture", path, "--out", str(out)]) == 1
+    assert not out.exists(), "a zero-estimand invocation writes nothing at all"
+
+
+def test_cycle3_ordinary_coverage_degradation_still_refuses_the_whole_capture(tmp_path):
+    """THE SCOPE FENCE, pinned from the other side. `test_coverage_aggregate.py::
+    test_a_throttling_subscription_beside_a_healthy_one_is_caught_per_pair` pins whole-capture
+    refusal for a THROTTLING SUBSCRIPTION; that is pre-existing and deliberate. Here the same
+    capture ALSO carries a frozen stretch, so the two contributions are present together and the
+    separation is forced to be exact: a pair over the bound on GENUINE ABSENCE is degraded and
+    refuses whole-capture even though some of its un-observed time is stale."""
+    p = tmp_path / "both.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "SOL/USD"], "capBoth", channels=["book"],
+                       book_emission_policy="change_or_keepalive",
+                       book_keepalive_s=CYCLE3_KEEPALIVE_S)
+    px = {"BTC/USD": 100.0, "SOL/USD": 50.0}
+    t = 0.0
+    while t <= 3600.0:
+        px["BTC/USD"] += 0.01
+        w.write_book("BTC/USD", T0 + t, px["BTC/USD"], px["BTC/USD"] + 0.1, 1.0, 1.0)
+        # SOL: a frozen stretch AND, separately, a sustained 55s cadence that clears every
+        # per-jump check at the 60s threshold while never resolving the minute grid.
+        if t % 55.0 < CYCLE3_KEEPALIVE_S:
+            if not (1000.0 <= t < 1120.0):
+                px["SOL/USD"] += 0.01
+            w.write_book("SOL/USD", T0 + t, px["SOL/USD"], px["SOL/USD"] + 0.1, 1.0, 1.0)
+        t += CYCLE3_KEEPALIVE_S
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    cov = meta.coverage_by_pair["SOL/USD"]
+    assert cov.stale_book_s > 0.0, "there IS stale time here"
+    assert cov.uncovered_fraction_counting_stale > meta.max_uncovered_fraction, (
+        "and it is not what breaches the bound — the pair is over it with every keepalive "
+        "granted to it")
+    assert meta.degraded_coverage_pairs() == ["SOL/USD"]
+    assert meta.stale_book_excluded_pairs() == [], (
+        "a pair over the bound BOTH ways must not be laundered into a per-pair exclusion")
+    with pytest.raises(CaptureFormatError, match="AGGREGATE data-bearing coverage"):
+        meta.assert_complete()
+
+
+def test_cycle3_the_degraded_remedy_is_split_and_every_branch_is_achievable(tmp_path):
+    """ITEM 2. "Re-cut the capture around the degraded stretch" is VACUOUS when the whole capture
+    is the stretch. The remedy splits on a measured quantity — the longest contiguous observed
+    run — so a pair with a healthy stretch to cut to is told to cut to it, and a pair without one
+    is told plainly that no reader-side action on this file can produce a number for it."""
+    # Both degraded pairs THROTTLE rather than go dark — a 55s cadence clears the 60s per-jump
+    # threshold, which is the only way to reach the aggregate gate at all (a pair that simply
+    # stops is caught one check earlier, by the per-pair data-gap scan).
+    p = tmp_path / "remedy.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD", "ETH/USD", "SOL/USD"], "capRem", channels=["book"])
+    px = 100.0
+    t = 0.0
+    while t <= 3600.0:
+        px += 0.01
+        w.write_book("BTC/USD", T0 + t, px, px + 0.1, 1.0, 1.0)   # dense throughout: the anchor
+        if t < 1800.0 or (t % 55.0) < 5.0:
+            w.write_book("SOL/USD", T0 + t, px, px + 0.1, 1.0, 1.0)  # dense half, throttled half
+        if (t % 55.0) < 5.0:
+            w.write_book("ETH/USD", T0 + t, px, px + 0.1, 1.0, 1.0)  # throttled for its whole life
+        t += 5.0
+    w.close(clean=True)
+    meta = read_capture(str(p))
+    assert meta.coverage_by_pair["SOL/USD"].longest_observed_run_s >= 60.0
+    assert meta.coverage_by_pair["ETH/USD"].longest_observed_run_s < 60.0
+    assert set(meta.degraded_coverage_pairs()) == {"ETH/USD", "SOL/USD"}
+    with pytest.raises(CaptureFormatError) as exc:
+        meta.assert_complete()
+    msg = str(exc.value)
+    assert "Remedy split by failure kind" in msg
+    assert "DO still have a healthy stretch inside this file" in msg and "SOL/USD" in msg
+    assert "re-cutting is VACUOUS" in msg and "['ETH/USD']" in msg
+    assert "record a FRESH capture" in msg
+    assert "Re-cut the capture around the degraded stretch" not in msg, (
+        "the vacuous single remedy is gone")
+
+
+def test_cycle3_render_refuses_numbers_supplied_for_an_excluded_pair(tmp_path):
+    """The fail-CLOSED mirror at the point the ARTIFACT is built: the exclusion is applied by
+    `cli.main`, and `render_report` must not be able to emit an exclusion notice and that pair's
+    table at the same time if a second caller forgets."""
+    path = _thin_pair_capture(tmp_path / "thin.jsonl")
+    meta, results = run_shadow(path)
+    assert "SOL/USD" in results, "the pair IS in the shadow results — the drop is deliberate"
+    with pytest.raises(CaptureFormatError, match="EXCLUDE for stale book time"):
+        render_report([meta],
+                       {p_: compute_estimand1(r) for p_, r in results.items()},
+                       {p_: compute_estimand2(r) for p_, r in results.items()})
