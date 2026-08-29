@@ -1,3 +1,58 @@
+> **STATUS (2026-08-29, planner; D73 RULED by operator): ADDENDUM B IS SPLIT IN TWO. B1 SHIPS
+> NOW. B2 IS RE-CUT. THE LIVE CAPTURE IS NEVER ANALYSED AT HEAD.**
+>
+> Run 46 took Addendum B through three cycles (265 tests passing at halt) and halted at the
+> pre-committed guard on a denomination error: **the cycle-3 stale-book exclusion is denominated
+> in DATA-BEARING coverage, which a trade event satisfies, while estimand-1 is computed from
+> BOOK MIDS ONLY.** Measured: a pair whose book feed dies at t=1800 while trades keep flowing
+> reads `uncovered_fraction = 0.0000`, is neither degraded nor excluded, and publishes an
+> estimand-1 table (`1m | 119 samples | median −325.89 bp`) built entirely on a mid frozen for
+> 75% of the capture — with the freshness disclosure reading `mid age p50 = 0.000s` because the
+> keepalive makes a two-hour-stale mid look one second old. Same root: the classifier never
+> consults the two instrument-defect signals the same read pass already computes
+> (`book_keepalive_overruns` — 288 at 25s against a declared 5s floor — and trades walking
+> +230bp through an unchanging book). This is D67's second clause violated by the fix built to
+> enforce it. **Honest attribution: the pair-level book-freshness hole is PRE-EXISTING** (a
+> BTC-only capture passes at HEAD too); cycle 3 removed an accidental whole-capture refusal
+> while its replacement guards the wrong quantity.
+>
+> **THE SPLIT (D73, on the 904A precedent):**
+>
+> **ADDENDUM B1 — SHIP NOW** (`907B-1`): boundaries **B1** (per-session declarations), **B3**
+> (zero-sample pre-registered horizons render as zero-sample rows), **B4** (capture-set
+> clobber), **B5** (`--pairs` reconciliation), the **B2 span fixes** (edge-hole anchoring,
+> coverage denominated in the CAPTURE span, `accounted_s=0` fail-closed, the `NO CLAIM`
+> sentinel), the **over-refusal asymmetric fix** (missing book refuses; missing trade on a
+> book-covered pair is disclosed), **terminal reconnect**, and the in-gate defect list (twins'
+> identity test, `channels: []` consistency, the channel-side mirror, per-kind remedy text,
+> the `book_checksum_mismatch` enum entry). All independently verified across run-46's nine
+> passes; B-iv (no number moves on a healthy capture) proven twice against a HEAD worktree.
+> **Carve-out: the cycle-3 per-pair stale-book EXCLUSION does not ship in B1.** Interim
+> behavior for a stale-book pair is the pre-cycle-3 whole-capture refusal — fail-closed, and
+> the artifact/banner must SAY the stale-book exclusion is pending B2 rather than implying
+> coverage. Gates B-i…B-vi apply as written, minus the stale-book piece; B1's own gate is
+> **B1-vii: the live capture renders under B1 code** (a smoke render of the real file, or a
+> documented refusal naming the true reason — either is a pass; silence is not).
+>
+> **ADDENDUM B2 — RE-CUT** (`907B-2`, small): the stale-book exclusion alone, around the right
+> question — **what makes a BOOK-MID estimand trustworthy**: a book-freshness term
+> (`stale_book_s / accounted_s`, from BOOK timestamps only, independent of whether trades
+> carried coverage) plus the two defect signals (keepalive overruns; trades walking through an
+> unchanging book) as exclusion disqualifiers, per-pair, so one quiet pair stops voiding a
+> whole multi-day report. Gates: the t=1800 book-death fixture (book dies, trades flow) EXCLUDES
+> the pair or refuses — never publishes frozen-mid markouts; the freshness disclosure reads the
+> TRUE mid age; the classifier consults both defect signals; no number moves on healthy
+> captures (B-iv proof repeated).
+>
+> **Resume mechanics:** re-apply `lore/handoff_2026-08-28_factory_run_46_907B_halt.patch` FIRST
+> (2108 lines, sha256 `67b6a3d8…`, `git apply --check` verified 2026-08-29), then carve the
+> stale-book exclusion out for B1 and re-cut it as B2. The patch is the base for both halves.
+>
+> **BINDING WARNING: HEAD IS NOT A SAFE RESTING PLACE.** At HEAD the 7200s/130s capture PASSES
+> at `0.000%`, horizons vanish silently, captures clobber order-dependently. The analysis of
+> the live capture (running since 2026-08-28 07:07 CEST) runs ONLY on B1-shipped code or later
+> — never at HEAD, never on a worktree that merely contains the patch unshipped.
+
 > **STATUS (2026-08-27, factory run 45): ADDENDUM A SHIPPED. ADDENDUM B SPECCED AND OPEN.**
 > The row is now two pieces and only the first is done.
 >
