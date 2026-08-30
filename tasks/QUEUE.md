@@ -3,49 +3,43 @@
 The factory's single entry point (planner-maintained). STATUS banners on task files remain the
 truth for what's done; this file only orders what's OPEN. The factory takes from the top, skips
 gated rows (noting why), and treats FILLER rows as parallel/anytime slices. Last groomed:
-**2026-08-29 (planner, post run 46: both rows halted at real walls; D72/D73 RULED by the
-operator; the two rows re-cut; TASK_912 seeded).** Run 46 shipped nothing — honestly: 907B
-halted at the 3-cycle guard on a **spec-denomination error** (the stale-book exclusion measured
-ANY-data coverage while estimand-1 is book-mid-only: a pair whose book dies while trades flow
-publishes markouts on a mid frozen 75% of the capture, disclosed as fresh), and 881E halted at
-a **provable wall** (`runs/875_wf/f1_s0` and `runs/000_smoke/adhoc_debug_run` decompose
-identically under every name-derived ownership rule — one must cover, one must refuse). Ten
-verification passes; every one found something the implementer's report missed. Work preserved
-and re-apply-verified on both rows.
-**D72 RULED 2026-08-29 (operator): explicit ownership declaration — and SIMPLE.** Authority =
-the run dir's OWN manifest names the requesting experiment; NO name-derived fallback (it was
-the unprovable part); no registry, no markers, no auth system — the check lives in the deleter's
-module; undeclared/legacy dirs refuse (= freeze status quo); the `--apply` freeze lift is
-DECOUPLED from 881E. Binding beyond this row: **simplicity is a constraint, not a preference.**
-**D73 RULED 2026-08-29 (operator): SPLIT 907B.** 907B-1 ships the nine-pass-verified clean half
-(B1/B3/B4/B5 + B2 span fixes + over-refusal fix + NO CLAIM sentinel + terminal reconnect; the
-stale-book exclusion carved OUT, interim = fail-closed whole-capture refusal, stated in the
-artifact); 907B-2 re-cuts the stale-book exclusion around book-freshness denomination.
-**BINDING: the live capture is NEVER analysed at HEAD** — only on B1-shipped code or later.
-**THE CAPTURE IS LIVE AND HEALTHY** (launched 2026-08-28 07:07 CEST; planner-checked 2026-08-29
-09:44: 3.46M events, 0 bad lines, all four pairs' book feeds <3s old; venue drops the socket
-every ~2h, recorder reconnects in ≤62s, ~1.4% cumulative loss).
-**Ready (physically ordered): 1 TASK_912 (capture health probe — XS/S, seeded from run-46 ask
-#3; the capture is unattended NOW, and its one silent killer is a per-pair book death) →
-2 TASK_907 Addendum B1 (ship the clean half; gets the analysis path off unsafe HEAD) →
-3 TASK_910 (D68(a) safety pins; XS, same lane) → 4 TASK_907 Addendum B2 (stale-book re-cut) →
-5 TASK_881E (re-cut per D72: manifest-authority, simple) → 6 TASK_904B (two-phase writers) →
-7 TASK_908 (fixture pin-trust) → 8 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
+**2026-08-30 (planner, post run 47: 912 + 910 SHIPPED; D74 RULED (a) no-restart with the
+mechanism planner-proven — external ext4-journal stall every 600s at wall-clock phase :X2:35,
+recorder a victim via per-line fsync; TASK_913 seeded; 907B-2 amended for receipt-lag
+denomination).** Run 47 shipped **912** (`3c8f357` — the capture-health probe; its two BLOCKERs
+were both "probe returns PASS on a sick capture", both fixed) and **910** (`f6c6132` — the four
+D68 safety pins; its two BLOCKERs were both "a file that should be scanned wasn't" — the
+credential fence had hidden the same hole three times). Suite 217 → 271. The run's reusable
+lesson: **a non-vacuity test must plant poison where the mechanism is weakest, not where it is
+obviously strong** — mutation testing that plants only at the strong point certifies nothing.
+**D74 RULED 2026-08-30 (operator): NO RESTART — diagnose alongside.** The stall loss (11.56%)
+is wall-clock-locked, i.e. uncorrelated with market state (benign thinning), recorded as gaps,
+and excluded from markouts. The planner's verification PROVED the mechanism (independent fsync
+prober blocked 61.0s at the phase on a different file; recorder in `jbd2_log_wait_commit`
+continuously via per-line fsync; `jbd2/sda6-8` in D through the windows; reconnect storms are
+the keepalive tripping AFTER stalls). **Box facts:** root = ext4 on SSD; hog candidates =
+bitcoind (snap datadir on root), postgres, journald; nvme = the application volume (397G free,
+operator's call whether captures ever write there — secondary option only; the primary fix is
+dropping per-line fsync, post-capture per D67(b)).
+**Ready (physically ordered): 1 TASK_913 (name the journal hog + spec write hardening; XS
+read-only while the capture runs) → 2 TASK_907 Addendum B1 (ship the clean half) →
+3 TASK_907 Addendum B2 (stale-book + receipt-lag denomination, amended per D74) →
+4 TASK_881E (re-cut per D72: manifest-authority, simple) → 5 TASK_904B (two-phase writers) →
+6 TASK_908 (fixture pin-trust) → 7 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
 Q2-2026 dump). GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 only.**
-_Next takeable: **TASK_912** — fresh task file, no patch to resume, read-only by construction;
-it protects the multi-day capture that is the program's only live measurement._
+_Next takeable: **TASK_913** — mostly-measured already (the planner's prober/wchan evidence is
+in the task file); what remains is naming the hog and writing the hardening spec._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_912_CAPTURE_HEALTH_PROBE.md` | XS/S | The T+1h span check made into tooling (run-46 ask #3). Read-only probe over a COPY of the in-progress file: per-pair book/trade ages (the split-feed death detector — one pair's book dying while trades flow is the exact 907B-2 failure, caught in minutes instead of at analysis), schema-mismatch count, gap histogram, PASS/WARN/FAIL verdicts; `--watch` loop under tmux on srv. No estimand logic — analysis stays 907B's. |
-| 2 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73) | M | Ship the nine-pass-verified clean half: B1/B3/B4/B5 + B2 span fixes + over-refusal fix + NO CLAIM sentinel + terminal reconnect + in-gate defects. Resume = re-apply the run-46 halt patch (sha `67b6a3d8…`, apply-check verified), carve OUT the stale-book exclusion. Gate B1-vii: the LIVE capture renders (or refuses naming the true reason) under B1 code. Days of capture remain — no calendar cost. |
-| 3 | `tasks/TASK_910_PIN_NO_ORDER_PATH.md` | XS | D68(a): pin the no-order-path invariant as mechanism (all-frames assertion, pinned WS_URL, refusal re-raises, credential fence glob + tokens); caps mandatory at arming. |
-| 4 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — per D73) | S | The stale-book exclusion, re-cut around the right question: what makes a BOOK-MID estimand trustworthy — book-freshness term (`stale_book_s / accounted_s`, book timestamps only) + keepalive overruns and trade-through-unchanging-book as exclusion disqualifiers. The t=1800 book-death fixture EXCLUDES or refuses; the freshness disclosure reads the TRUE mid age. |
-| 5 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
-| 6 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
-| 7 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
-| 8 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
+| 1 | `tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md` | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
+| 2 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73) | M | Ship the nine-pass-verified clean half: B1/B3/B4/B5 + B2 span fixes + over-refusal fix + NO CLAIM sentinel + terminal reconnect + in-gate defects. Resume = re-apply the run-46 halt patch (sha `67b6a3d8…`, apply-check verified), carve OUT the stale-book exclusion. Gate B1-vii: the LIVE capture renders (or refuses naming the true reason) under B1 code — with D74 known, the stall-gap regime is disclosed, not a surprise. |
+| 3 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — per D73, AMENDED per D74) | S | Stale-book exclusion re-cut (book-freshness term, defect-signal disqualifiers) PLUS receipt-lag denomination: per-hour receipt-lag distribution, markout-timing distortion per horizon, trade diagnostics re-timed on `venue_ts`; book events get a measured BOUND (trades' lag as proxy), never an assumed zero. |
+| 4 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
+| 5 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
+| 6 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
+| 7 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.

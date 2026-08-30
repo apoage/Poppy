@@ -44,6 +44,17 @@
 > TRUE mid age; the classifier consults both defect signals; no number moves on healthy
 > captures (B-iv proof repeated).
 >
+> **B2 AMENDED 2026-08-30 per D74: receipt-lag denomination joins the scope.** The live
+> capture's receipts run 2.4–8.7s late (median) in the highest-volume hours — load-dependent,
+> via the recorder's per-line fsync — against markout horizons of 60s+. Every trade event
+> carries `venue_ts`, so the distortion is MEASURABLE per event: B2 must report the
+> receipt-lag distribution per hour, quantify the markout-timing distortion it implies at each
+> horizon, and re-time the trade-anchored diagnostics on `venue_ts` where the field exists.
+> Book events have no `venue_ts` in the emitted record — the honest statement is a measured
+> bound (trades' lag distribution as the proxy), never an assumed zero. The ~61.5s journal
+> stalls themselves need NO new exclusion machinery: they are recorded gaps, wall-clock-locked
+> (uncorrelated with market state), and `covers()` already drops markouts across them.
+>
 > **Resume mechanics:** re-apply `lore/handoff_2026-08-28_factory_run_46_907B_halt.patch` FIRST
 > (2108 lines, sha256 `67b6a3d8…`, `git apply --check` verified 2026-08-29), then carve the
 > stale-book exclusion out for B1 and re-cut it as B2. The patch is the base for both halves.
