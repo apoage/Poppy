@@ -28,8 +28,14 @@ read-only while the capture runs) → 2 TASK_907 Addendum B1 (ship the clean hal
 6 TASK_908 (fixture pin-trust) → 7 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
 Q2-2026 dump). GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 only.**
+**STANDING RULE (operator, 2026-08-30, binding on both lanes): gpu-server is SHARED with
+other users and services — disturb NO process on it. No restarts, no tuning, no renice, no
+kill, no write-probes; planner/factory work on srv is pure reads plus the sanctioned
+safe_run-capped jobs (the capture, the suites). Remediation of anything box-level is a
+recommendation to the operator, never an action.**
 _Next takeable: **TASK_913** — mostly-measured already (the planner's prober/wchan evidence is
-in the task file); what remains is naming the hog and writing the hardening spec._
+in the task file); what remains is naming the hog and writing the hardening spec — pure reads
+under the standing rule._
 
 | # | Task | Size | Note |
 |---|------|------|------|

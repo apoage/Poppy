@@ -28,13 +28,23 @@ while the capture runs; the write-path change lands only after the capture close
 
 ## Scope
 
+**BINDING FENCE (operator, 2026-08-30): gpu-server is a SHARED box — multiple users and
+services. NOTHING that disturbs any process is permitted. This row executes as PURE READS
+only: `ps`, `/proc`, `journalctl`, `sar`, existing sysstat history. NO write probes of any
+kind (the planner's fsync prober of 2026-08-30 would NOT be repeated under this rule — the
+D-state/jbd2 evidence needs no writes to gather). No service restarts, no tuning, no renice
+of other users' processes, no kill of anything, ever. Any file-scan heavier than a few
+seconds runs `nice`d/`ionice`d on a COPY, off-peak, or not at all. Everything remediation-
+shaped is a RECOMMENDATION for the operator, who owns the box.**
+
 1. **NAME the journal hog** (read-only, can run while the capture lives): through one or two
    stall windows (`:X2:35`), sample `ps` D-state with wchan + `/proc/<pid>/io` write_byte
    deltas + `jbd2` stats (`/proc/fs/jbd2/sda6-8/info`), and identify the process pushing the
    GB-scale transaction (a 61.5s commit on an SSD is a big write, not device contention).
    Prime suspects: bitcoind's periodic persistence; a postgres checkpoint if its datadir is on
-   root; journald flush. The artifact names the process with measurements, and states whether
-   it can be moved, tuned, or rescheduled WITHOUT touching the capture.
+   root; journald flush. The artifact names the process with measurements, and states — as
+   RECOMMENDATIONS ONLY — whether it could be moved, tuned, or rescheduled. The operator
+   decides; this row touches nothing.
 2. **Spec the recorder write hardening for FUTURE captures** (the code lands post-capture):
    - PRIMARY (device-independent): **drop per-line fsync.** Buffered writes; fsync at the
      moments durability actually matters — gap/meta records and terminal close; a periodic
