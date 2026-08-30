@@ -139,3 +139,69 @@ horizons denominated in seconds-to-minutes.
 
 NOT fixed in this run. TASK_912 explicitly forbids recorder changes and the capture is live;
 D67(b) makes a restart a NEW capture. This is an operator call -> seed a DECISIONS row.
+
+
+---
+
+# TASK_910 — D68's safety pins (shipped, f6c6132, tag task910-safety-pins)
+
+3 cycles, 5 verification passes (security + fail-closed + regression, then a fail-closed
+re-verify). 217 -> 255 -> 263 -> 266 -> 271 passed across the run. selftest 12/12.
+
+## The lesson this row is actually about
+
+All three cycles failed on the SAME defect wearing different clothes: **a file that should be
+scanned was silently not scanned.**
+
+- Cycle 1: `glob("*.py")` is non-recursive -> `venue/order_client.py` reading credentials and
+  calling `add_order` passed all four fence tests CLEAN (proven live by a fail-closed lens).
+- Cycle 2: the fix added `_SKIP_DIRS`, matched via `any(part in _SKIP_DIRS for part in
+  parts[:-1])` -> matches at ANY depth, so `venue/build/order_client.py` was invisible again.
+  Orchestrator reproduced first-hand: fence returned a clean `7 passed`.
+- Cycle 3: split into `ALWAYS_SKIP` (machine-generated caches, any depth) +
+  `TOP_LEVEL_ONLY_SKIP` (ambiguous names like build/dist/env, lane ROOT only), and made a
+  symlinked directory a REFUSAL (`FenceCannotVouchError`) rather than a silent skip.
+
+**Why each blind spot survived the previous cycle's own mutation testing: that testing planted
+its poison exactly where the mechanism already worked.** Cycle 1's non-vacuity test planted at
+the top level; cycle 2's planted one level down but never under a skip-named dir. The
+generalisable rule: a non-vacuity test must plant where the mechanism is WEAKEST, not where it
+is obviously strong.
+
+Second finding, separate: the fence's own docstring claimed the NEXT increment was "covered
+automatically" while `from os import environ as _e`, `getattr(os, ...)`, `__import__`, and
+`addOrder` all walked through — ordinary Python, not obfuscation. D68 exists to kill
+docstring-strength safety claims; a fence overclaiming its own reach is that same failure one
+level down. Tokens widened, matching case-insensitive, guarantee section rewritten honestly.
+
+## What is genuinely pinned now (all mutation-verified RED-before/green-after)
+
+Frame counting is unfiltered; the connect target is the pinned public `WS_URL`; refusal classes
+re-raise ABOVE the broad `except Exception` (re-raised, NOT narrowed — narrowing was measured
+illusory here) and are inert on the live capture path, so the running 62h recording is
+unaffected; both `--budget-cap-usd` and `--max-order-usd` are required to arm; caps reject
+0/negative/nan/inf; `--total-cap-usd` provably cannot LOOSEN the mandatory ceiling (AND
+semantics -> effective ceiling is min(budget, total)); no cap value is hardcoded. The
+`--per-order-cap-usd` -> `--max-order-usd` rename has zero live callers (only frozen
+lore/*.patch archives).
+
+The cycle-3 mutation matrix breaks exactly ONE test per reversion, so no test passes for the
+wrong reason — and M1 (restoring the depth bug) breaking only the nested-build test while both
+top-level tests stayed green proves the two-set behavior is pinned independently in both
+directions.
+
+## Orchestrator first-hand checks (not delegated)
+
+Reproduced the cycle-2 BLOCKER with my own path (`venue2/build/order_client.py`) -> clean
+7-passed; re-ran it post-fix -> FAILS. Verified the opposite direction with my own
+`venue3/__pycache__/junk.py` -> still skipped, no false alarm, sibling `clean.py` scanned.
+Both probe paths were ones no agent had used. Independently grepped the flag rename and ran
+every suite figure rather than taking it on report.
+
+## Where the run stopped
+
+Shipped rows 1 and 3 of the Ready list (TASK_912, TASK_910). NOT taken: TASK_907 Addendum B1
+and B2 (queue rows 2 and 4) — both sit in the lane that D74 just put a wall across, and D73's
+split was ruled on 2026-08-29, BEFORE D74 was known, so their sequencing is now an operator
+question rather than a mechanical next-take. Rows 5-8 (881E re-cut, 904B, 908, 906) are
+genuinely unblocked and were left only for run length, not for any wall.
