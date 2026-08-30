@@ -92,6 +92,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture import (  # noqa: E402
     DEFAULT_GAP_DETECT_THRESHOLD_S, CaptureWriter, GapRecord,
 )
+from phase2_rails import Phase2RefusalError, RailViolation  # noqa: E402
 
 logger = logging.getLogger("907_live_fill_probe.recorder")
 
@@ -644,6 +645,16 @@ class LiveRecorder:
                                 exc, backoff)
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self.cfg.backoff_max_s)
+            except (NotImplementedError, Phase2RefusalError, RailViolation):
+                # D68/TASK_910 scope 2: these classes signal a deliberate safety refusal, not a
+                # transport failure. `NotImplementedError` -> `RuntimeError` -> `Exception`, and
+                # `Phase2RefusalError`/`RailViolation` both subclass `RuntimeError` too, so the
+                # broad `except Exception` below WOULD catch and launder any of them into an
+                # ordinary "disconnect" gap + backoff + retry if this clause were removed or
+                # narrowed — 902 measured that narrowing an `except` clause here is illusory
+                # (the broad catch stays broad; only the classes that must never be silently
+                # retried get pulled out ahead of it). Re-raise, do not narrow.
+                raise
             except Exception as exc:  # noqa: BLE001 — any transport failure triggers a gap
                 self._record_gap("disconnect", f"{type(exc).__name__}: {exc}",
                                   dark_until_next_event=True)

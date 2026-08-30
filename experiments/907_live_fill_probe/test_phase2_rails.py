@@ -15,7 +15,7 @@ from phase2_rails import (  # noqa: E402
 
 def test_arming_refuses_flag_without_cap():
     with pytest.raises(Phase2RefusalError, match="budget-cap-usd"):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=None))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=None, max_order_usd=10.0))
 
 
 def test_arming_refuses_cap_without_flag():
@@ -30,13 +30,27 @@ def test_arming_refuses_neither():
 
 def test_arming_refuses_nonpositive_cap():
     with pytest.raises(Phase2RefusalError):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=0.0))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=0.0, max_order_usd=10.0))
     with pytest.raises(Phase2RefusalError):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=-10.0))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=-10.0, max_order_usd=10.0))
 
 
 def test_arming_passes_with_both():
-    check_arming(Phase2Args(arm_live=True, budget_cap_usd=25.0))  # must not raise
+    check_arming(Phase2Args(arm_live=True, budget_cap_usd=25.0, max_order_usd=10.0))  # must not raise
+
+
+# --- D68(b)/TASK_910 scope 4: BOTH notional caps are mandatory to arm, not just budget_cap_usd
+# --- (run 44's MAJOR finding: a budget cap alone armed the probe while the per-order cap and the
+# --- cumulative-spend check stayed opt-in and defaulted OFF).
+
+def test_arming_refuses_budget_cap_without_max_order_usd():
+    with pytest.raises(Phase2RefusalError, match="max-order-usd"):
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, max_order_usd=None))
+
+
+def test_arming_refuses_max_order_usd_without_budget_cap():
+    with pytest.raises(Phase2RefusalError, match="budget-cap-usd"):
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=None, max_order_usd=10.0))
 
 
 # --- rails ---
@@ -94,7 +108,7 @@ def test_place_order_always_raises_not_implemented():
 
 
 def test_run_phase2_dry_passes_every_rail_then_hits_the_unimplemented_transmit():
-    args = Phase2Args(arm_live=True, budget_cap_usd=100.0, per_order_cap_usd=20.0,
+    args = Phase2Args(arm_live=True, budget_cap_usd=100.0, max_order_usd=20.0,
                        total_cap_usd=100.0, max_open_orders=3, kill_file=None)
     with pytest.raises(NotImplementedError):
         run_phase2_dry(args, notional_per_order_usd=10.0, cumulative_before_usd=0.0,
@@ -111,10 +125,33 @@ def test_run_phase2_dry_still_refuses_arming_before_reaching_any_rail():
 def test_run_phase2_dry_rail_violation_stops_before_transmit(tmp_path):
     kf = tmp_path / "KILL"
     kf.write_text("stop")
-    args = Phase2Args(arm_live=True, budget_cap_usd=100.0, kill_file=str(kf))
+    args = Phase2Args(arm_live=True, budget_cap_usd=100.0, max_order_usd=50.0, kill_file=str(kf))
     with pytest.raises(RailViolation):
         run_phase2_dry(args, notional_per_order_usd=10.0, cumulative_before_usd=0.0,
                         open_count=0)
+
+
+# --- D68(b)/TASK_910 scope 4: `check_total_cap` is now called UNCONDITIONALLY at the order
+# --- boundary, bound to the mandatory --budget-cap-usd, even when no separate --total-cap-usd
+# --- was ever supplied. Before this fix, `check_total_cap` was only reached when the operator
+# --- ALSO passed --total-cap-usd, so a declared budget cap never bounded anything on its own —
+# --- this reproduces run 44's MAJOR demonstration exactly (a $1,000,000 order against $9,999,999
+# --- already spent, against a declared $50 budget cap, cleared every rail).
+
+def test_run_phase2_dry_enforces_the_budget_cap_as_the_total_cap_with_no_total_cap_usd_given():
+    args = Phase2Args(arm_live=True, budget_cap_usd=50.0, max_order_usd=1_000_000.0,
+                       total_cap_usd=None)
+    with pytest.raises(RailViolation, match="total cap"):
+        run_phase2_dry(args, notional_per_order_usd=1_000_000.0,
+                        cumulative_before_usd=9_999_999.0, open_count=0)
+
+
+def test_run_phase2_dry_enforces_the_max_order_cap_unconditionally():
+    args = Phase2Args(arm_live=True, budget_cap_usd=10_000_000.0, max_order_usd=50.0,
+                       total_cap_usd=None)
+    with pytest.raises(RailViolation, match="per-order cap"):
+        run_phase2_dry(args, notional_per_order_usd=1_000_000.0,
+                        cumulative_before_usd=0.0, open_count=0)
 
 
 # --- MAJOR (run-43): a NaN/inf budget cap must NOT satisfy the arming gate ---
@@ -126,29 +163,33 @@ def test_run_phase2_dry_rail_violation_stops_before_transmit(tmp_path):
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_arming_refuses_a_nonfinite_budget_cap(bad):
     with pytest.raises(Phase2RefusalError, match="FINITE|> 0"):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=bad))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=bad, max_order_usd=10.0))
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
 def test_arming_refuses_nonfinite_per_order_and_total_caps(bad):
     with pytest.raises(Phase2RefusalError, match="FINITE"):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, per_order_cap_usd=bad))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, max_order_usd=bad))
     with pytest.raises(Phase2RefusalError, match="FINITE"):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, total_cap_usd=bad))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, max_order_usd=10.0,
+                                 total_cap_usd=bad))
 
 
 def test_argparse_accepts_nan_so_the_check_is_the_only_thing_standing_between(tmp_path):
     """Non-vacuity: proves the parser really does hand through a non-finite float, so the
     refusal above is load-bearing rather than guarding an impossible input."""
-    ns = build_argparser().parse_args(["--arm-live", "--budget-cap-usd", "nan"])
+    ns = build_argparser().parse_args(
+        ["--arm-live", "--budget-cap-usd", "nan", "--max-order-usd", "10"])
     assert ns.budget_cap_usd != ns.budget_cap_usd  # it IS a NaN
     with pytest.raises(Phase2RefusalError):
-        check_arming(Phase2Args(arm_live=ns.arm_live, budget_cap_usd=ns.budget_cap_usd))
+        check_arming(Phase2Args(arm_live=ns.arm_live, budget_cap_usd=ns.budget_cap_usd,
+                                 max_order_usd=ns.max_order_usd))
 
 
 def test_arming_refuses_a_nonsensical_max_open_orders():
     with pytest.raises(Phase2RefusalError, match="max-open-orders"):
-        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, max_open_orders=0))
+        check_arming(Phase2Args(arm_live=True, budget_cap_usd=50.0, max_order_usd=10.0,
+                                 max_open_orders=0))
 
 
 def test_cap_rails_refuse_a_nonfinite_notional():

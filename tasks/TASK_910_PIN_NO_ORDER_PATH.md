@@ -1,3 +1,27 @@
+> **STATUS (2026-08-30): SHIPPED** — D68's four safety pins are mechanism now.
+> 3 cycles, 5 verification passes (security + fail-closed + regression, then a fail-closed
+> re-verify). 271 passed; selftest 12/12. All three gates closed, each site mutation-tested
+> RED-before/green-after.
+>
+> **The story worth reading before touching the fence again:** all three cycles failed on the
+> SAME defect in different clothes — *a file that should be scanned was silently not scanned*.
+> Cycle 1 the glob was non-recursive (`venue/order_client.py` invisible). Cycle 2's `_SKIP_DIRS`
+> fix matched at ANY depth (`venue/build/order_client.py` invisible again). Cycle 3 split it into
+> `ALWAYS_SKIP` (caches, any depth) + `TOP_LEVEL_ONLY_SKIP` (ambiguous names, lane root only) and
+> made symlinked dirs a REFUSAL. Each blind spot survived the previous cycle's own mutation
+> testing because that testing planted poison exactly where the mechanism already worked.
+>
+> **Remainders, deliberately not fixed:** (a) the fence is a literal-substring grep and is NOT
+> proof against deliberate obfuscation — now stated in its docstring instead of overclaimed; an
+> AST-based fence is past D68's ruled shape and is a planner call; (b) `getattr( os` (with a
+> space) or a line-wrapped variant escapes it; (c) the symlink refusal is lane-wide, so one stray
+> symlink blocks the whole lane's CI; (d) case-insensitive matching will false-positive on
+> plausible order-book identifiers (`AddOrderBook`, `add_order_level`) — deliberate, and the
+> documented correct response is to rename or add a reviewed exception, NEVER to narrow the
+> tokens or restore a per-file allowlist, which is how the cycle-1 defect got in; (e) the fence
+> covers `.py` only — a credential or order frame in a `.jsonl`/`.json`/`.toml` fixture (the lane
+> has one) is out of scope.
+
 # TASK_910 — pin the 907 lane's safety invariants as mechanism, not prose (D68)
 
 **Status**: READY 2026-08-27 (planner; seeded by D68's ruling, option (a) — the lane's most

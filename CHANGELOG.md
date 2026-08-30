@@ -3,6 +3,44 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-30 — TASK_910 — D68's safety pins, and a credential fence that hid the same hole three times
+
+- **What shipped (D68's four fixes).** (1) The no-order-path invariant is now mechanism: a test
+  counts **all** frames on the socket unfiltered (the prior coupling test filtered before
+  counting, which is why it could not see a rogue frame) and pins the connect target to the
+  public `WS_URL` literal. (2) `recorder.py` re-raises `NotImplementedError` /
+  `Phase2RefusalError` / `RailViolation` above the broad `except Exception` — RE-RAISED, not
+  narrowed, because narrowing was measured to be illusory here. (3) The credential fence globs
+  the lane instead of a curated filename list, with `os.environ`/`getenv`/`add_order`/`AddOrder`
+  added. (4) Caps are mandatory at arming: both `--budget-cap-usd` and `--max-order-usd` are
+  required, `check_total_cap` is called unconditionally, and enforcement is at the order
+  boundary rather than only at parse. Cap VALUES stay the operator's; none is hardcoded.
+- **Three cycles, and every one was the same defect wearing a new hat: a file that should be
+  scanned was silently not scanned.** Cycle 1: the glob was non-recursive, so
+  `venue/order_client.py` reading credentials and calling `add_order` passed all four fence
+  tests clean. Cycle 2: the fix added `_SKIP_DIRS` — which matched at ANY depth, so
+  `venue/build/order_client.py` was invisible again (reproduced first-hand: a clean 7-passed).
+  Cycle 3 split it into `ALWAYS_SKIP` (machine-generated caches, any depth) and
+  `TOP_LEVEL_ONLY_SKIP` (ambiguous names like `build`/`dist`/`env`, lane root only), and made a
+  symlinked directory a **refusal** rather than a silent skip — a fence that cannot see
+  something must say so, not stay green.
+- **The fence's docstring was also lying, and that was its own finding.** It claimed the NEXT
+  increment was "covered automatically" while `from os import environ as _e` and `addOrder`
+  walked straight through — ordinary Python, not obfuscation. Tokens were widened and matching
+  made case-insensitive, and the guarantee section now states plainly what a literal grep does
+  and does not buy. D68 exists to kill docstring-strength safety claims; a fence overclaiming
+  its own reach is that same failure one level down.
+- **Verified.** Every site mutation-tested RED-before/green-after; the cycle-3 matrix breaks
+  exactly one test per reversion, so no test passes for the wrong reason. Caps reject
+  `0`/negative/`nan`/`inf`; `--total-cap-usd` provably cannot loosen the mandatory ceiling;
+  the refusal re-raise is inert on the live capture path, so the running 62-hour recording is
+  unaffected. The `--per-order-cap-usd` → `--max-order-usd` rename has zero live callers.
+  271 passed; selftest 12/12.
+- **Remainders.** The fence is grep-based and not proof against deliberate obfuscation (stated,
+  not papered over); `getattr( os` with a space escapes it; the symlink refusal is lane-wide
+  rather than per-file; and it covers `.py` only, so a credential in a `.jsonl` fixture is out
+  of scope.
+
 ## 2026-08-30 — TASK_912 — the capture health probe, and the two ways a health probe can lie
 
 - **What shipped.** `experiments/907_live_fill_probe/health_probe.py` + `test_health_probe.py`:

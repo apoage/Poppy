@@ -12,8 +12,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture import CaptureFormatError, read_capture  # noqa: E402
 from recorder import (  # noqa: E402
-    SUBSCRIBED_CHANNELS, LiveRecorder, RecorderConfig, _parse_book_frame, _parse_frame,
+    SUBSCRIBED_CHANNELS, WS_URL, LiveRecorder, RecorderConfig, _parse_book_frame, _parse_frame,
+    _subscribe_messages,
 )
+from phase2_rails import Phase2RefusalError, RailViolation  # noqa: E402
 
 #: CRC32 of the synthetic one-level-per-side book used throughout this file (bids 100.0/1.0,
 #: asks 100.2/2.0), DERIVED BY HAND from A.3's recipe and pinned as a literal: asks
@@ -658,3 +660,99 @@ def test_book_rows_missing_required_fields_are_drift(tmp_path):
     assert meta.n_book == 0, "no book event may be written from a row we could not read"
     assert [g for g in meta.gaps if "checksum mismatch" in g.detail] == [], (
         "these are PARSE rejections — none of them may reach the book and desync it")
+
+
+# --- D68/TASK_910 scope 1: the no-order-path invariant, pinned as mechanism not prose --------
+#
+# Run 44's demonstrated hole: `test_declared_pairs.py`'s coupling test filters
+# `sent` to `frame.get("method") == "subscribe"` BEFORE counting, so
+# `len(subscribed) == 2` places no constraint on the TOTAL frames sent — appending a real
+# order-transmission frame to the send loop, or switching `WS_URL` to Kraken's authenticated
+# endpoint, both left every existing test GREEN. These tests count ALL frames sent (unfiltered)
+# and pin the connect target to the literal public `WS_URL`.
+
+def test_only_the_two_public_subscribe_frames_are_ever_sent(tmp_path):
+    """Counts EVERY frame the socket sees via `send()`, unfiltered — not just the ones whose
+    `method` happens to equal `"subscribe"`. A future edit that appends any additional frame
+    (an unsubscribe, an authenticated call, anything) to the send loop must fail this test."""
+    out = str(tmp_path / "cap.jsonl")
+    created_ws = []
+
+    def connect_fn(url):
+        ws = FakeWS(["__HANG__"])
+        created_ws.append(ws)
+        return _AsyncCM(ws=ws)
+
+    cfg = RecorderConfig(pairs=["BTC/USD", "ETH/USD"], out_path=out, capture_id="noorder1",
+                          heartbeat_timeout_s=0.02, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, connect_fn, sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=1))
+    rec.close(clean=False)
+
+    assert len(created_ws) == 1
+    sent = created_ws[0].sent
+    expected = [json.dumps(m) for m in _subscribe_messages(cfg)]
+    assert len(expected) == 2
+    assert sent == expected, (
+        "the socket must send EXACTLY the two public subscribe frames and nothing else, in "
+        f"order — got {sent!r}")
+
+
+def test_connect_target_is_always_the_pinned_public_ws_url(tmp_path):
+    """Pins the literal `WS_URL` module constant AND asserts the recorder never hands
+    `connect_fn` anything else — across a failed attempt, a successful one, and a
+    heartbeat-timeout-forced reconnect."""
+    assert WS_URL == "wss://ws.kraken.com/v2"
+    out = str(tmp_path / "cap.jsonl")
+    connect_urls = []
+    attempts = {"n": 0}
+
+    def connect_fn(url):
+        connect_urls.append(url)
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return _AsyncCM(exc=ConnectionError("simulated connect failure"))
+        if attempts["n"] == 2:
+            ws = FakeWS(["__HANG__"])  # forces a heartbeat-timeout reconnect
+            return _AsyncCM(ws=ws)
+        ws = FakeWS([_trade_frame(100.0)])
+        return _AsyncCM(ws=ws)
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="urlpin",
+                          heartbeat_timeout_s=0.02, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, connect_fn, sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=3))
+    rec.close(clean=False)
+
+    assert connect_urls, "connect_fn was never called"
+    assert all(u == WS_URL for u in connect_urls), (
+        f"connect_fn must be called with the pinned public WS_URL every time — got {connect_urls!r}")
+
+
+# --- D68/TASK_910 scope 2: refusal classes re-raise ABOVE the broad transport catch -----------
+
+def test_refusal_classes_propagate_through_the_broad_catch_instead_of_retrying(tmp_path):
+    """`NotImplementedError`/`Phase2RefusalError`/`RailViolation` must escape `run()`'s broad
+    `except Exception` untouched — never turned into a "disconnect" gap + backoff + retry like
+    an ordinary transport failure would be. 902 measured that NARROWING the `except Exception`
+    clause itself is illusory here; the fix re-raises the refusal classes ABOVE the broad catch
+    instead, which stays exactly as broad as before.
+
+    If any of these classes were instead swallowed and retried, `run()` would exhaust
+    `max_iterations` and return normally without ever raising — `pytest.raises` below would then
+    fail with "DID NOT RAISE", which is exactly the RED signal this test is built to produce
+    when the fix is absent.
+    """
+    for exc_cls in (NotImplementedError, Phase2RefusalError, RailViolation):
+        out = str(tmp_path / f"cap_{exc_cls.__name__}.jsonl")
+
+        def connect_fn(url, _cls=exc_cls):
+            ws = FakeWS([_cls("simulated refusal propagating from inside _consume")])
+            return _AsyncCM(ws=ws)
+
+        cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="refusal",
+                              heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+        rec = LiveRecorder(cfg, connect_fn, sleep_fn=_fast_sleep)
+        with pytest.raises(exc_cls):
+            asyncio.run(rec.run(max_iterations=5))
+        rec.close(clean=False)

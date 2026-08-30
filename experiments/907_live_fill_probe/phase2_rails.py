@@ -35,7 +35,7 @@ class RailViolation(RuntimeError):
 class Phase2Args:
     arm_live: bool = False
     budget_cap_usd: Optional[float] = None
-    per_order_cap_usd: Optional[float] = None
+    max_order_usd: Optional[float] = None
     total_cap_usd: Optional[float] = None
     max_open_orders: int = 1
     auto_cancel_bars: int = 2
@@ -65,24 +65,40 @@ def _require_finite_positive_cap(value: Optional[float], flag: str) -> None:
 
 
 def check_arming(args: Phase2Args) -> None:
-    """Phase 2 arms ONLY when BOTH an explicit arm flag AND a FINITE POSITIVE budget cap are
-    given. Tested in both refusal directions (flag-without-cap, cap-without-flag) and against
-    non-finite caps.
+    """Phase 2 arms ONLY when an explicit arm flag AND BOTH mandatory notional caps
+    (`--budget-cap-usd`, `--max-order-usd`) are given, each a FINITE POSITIVE number
+    (D68(b)/TASK_910).
+
+    Before this, only `--budget-cap-usd` was mandatory and it was never actually read by any
+    rail — the per-order cap and the cumulative-spend check were both opt-in, default-`None`
+    flags that a caller could simply omit. Demonstrated (run 44): a declared `--budget-cap-usd
+    50` armed the probe, and a $1,000,000 order against $9,999,999 already spent then cleared
+    every rail, because nothing compared either number against the declared $50. Both caps are
+    now required to arm at all, and `run_phase2_dry` enforces both unconditionally at the order
+    boundary (see there) — a budget cap can no longer be declared and then ignored.
     """
-    if not args.arm_live and args.budget_cap_usd is None:
+    if not args.arm_live and args.budget_cap_usd is None and args.max_order_usd is None:
         raise Phase2RefusalError(
-            "phase 2 refuses to start: neither --arm-live nor --budget-cap-usd was given.")
+            "phase 2 refuses to start: none of --arm-live, --budget-cap-usd, --max-order-usd "
+            "was given.")
     if not args.arm_live:
         raise Phase2RefusalError(
-            "phase 2 refuses to start: --budget-cap-usd was given but --arm-live was not — "
-            "a budget cap alone is not consent to trade.")
+            "phase 2 refuses to start: a notional cap was given but --arm-live was not — "
+            "a cap alone is not consent to trade.")
     if args.budget_cap_usd is None:
         raise Phase2RefusalError(
             "phase 2 refuses to start: --arm-live was given but --budget-cap-usd was not — "
-            "arming without a cap is refused unconditionally.")
+            "arming without a budget cap is refused unconditionally.")
+    if args.max_order_usd is None:
+        raise Phase2RefusalError(
+            "phase 2 refuses to start: --arm-live was given but --max-order-usd was not — "
+            "arming without a per-order cap is refused unconditionally (D68(b)/TASK_910: both "
+            "notional caps are mandatory at arming, neither is opt-in).")
     _require_finite_positive_cap(args.budget_cap_usd, "--budget-cap-usd")
-    # The other caps feed comparisons too; a non-finite one there defeats its own rail.
-    _require_finite_positive_cap(args.per_order_cap_usd, "--per-order-cap-usd")
+    _require_finite_positive_cap(args.max_order_usd, "--max-order-usd")
+    # total_cap_usd stays an OPTIONAL, additional, tighter total-cap the operator may layer on
+    # top of --budget-cap-usd (which is itself now the mandatory cumulative bound — see
+    # `run_phase2_dry`); validate it for finiteness if given, same as the mandatory caps.
     _require_finite_positive_cap(args.total_cap_usd, "--total-cap-usd")
     if not isinstance(args.max_open_orders, int) or args.max_open_orders < 1:
         raise Phase2RefusalError(
@@ -167,9 +183,11 @@ def place_order(*args, **kwargs):
 
     Real-money order placement to the venue is a separate, unshipped increment — this row
     (TASK_907, D65) ships phase 1 (shadow, zero risk) plus phase 2's refusal gate and rails
-    ONLY. No caller in this codebase can reach a real `AddOrder` call through this function;
-    it always raises before doing anything else, regardless of how it is invoked or what
-    arguments are passed.
+    ONLY. No caller in this codebase can reach a real order-transmission call through this
+    function; it always raises before doing anything else, regardless of how it is invoked or
+    what arguments are passed. (Deliberately not naming the venue's own method literal here:
+    TASK_910's credential fence globs every `.py` file in this lane for exactly that token, so
+    this docstring must not carry it either.)
     """
     raise NotImplementedError(
         "TASK_907 phase 2 live order transmission is NOT implemented in this build. This is "
@@ -183,13 +201,27 @@ def run_phase2_dry(args: Phase2Args, notional_per_order_usd: float,
     """Runs every rail in order, fixture-mode: proves arming + every rail fires correctly,
     then reaches `place_order`, which always raises. This function NEVER transmits an order —
     it exists so the rail chain is exercised end to end in tests without any live path.
+
+    D68(b)/TASK_910 scope 4: both notional rails are now enforced UNCONDITIONALLY at this order
+    boundary — no `if ... is not None` guard is left that a caller could satisfy by omitting a
+    cap, because `check_arming` above already refused to arm without both `--budget-cap-usd`
+    and `--max-order-usd` present. `check_total_cap` in particular is called against
+    `args.budget_cap_usd` regardless of whether the operator also supplied a separate, tighter
+    `--total-cap-usd` — before this, a declared budget cap was demanded at arming and then never
+    read by any rail (run 44's MAJOR finding: a $1,000,000 order against $9,999,999 already
+    spent cleared every rail with only `--budget-cap-usd 50` set, because `total_cap_usd` was
+    the optional flag actually wired to `check_total_cap` and it had been left at its `None`
+    default).
     """
     check_arming(args)
     check_kill_file(args.kill_file)
-    if args.per_order_cap_usd is not None:
-        check_per_order_cap(notional_per_order_usd, args.per_order_cap_usd)
+    check_per_order_cap(notional_per_order_usd, args.max_order_usd)
+    cumulative_after_usd = cumulative_before_usd + notional_per_order_usd
+    check_total_cap(cumulative_after_usd, args.budget_cap_usd)
     if args.total_cap_usd is not None:
-        check_total_cap(cumulative_before_usd + notional_per_order_usd, args.total_cap_usd)
+        # An OPTIONAL, additional, tighter total cap layered on top of the mandatory check
+        # above — the mandatory one already ran unconditionally regardless of this flag.
+        check_total_cap(cumulative_after_usd, args.total_cap_usd)
     check_max_open_orders(open_count, args.max_open_orders)
     enforce_post_only("limit_post_only")
     place_order()  # always raises NotImplementedError — this line is unreachable in practice
@@ -208,7 +240,7 @@ def build_argparser():
                     "NotImplementedError. The orchestrator does not launch this.")
     p.add_argument("--arm-live", action="store_true")
     p.add_argument("--budget-cap-usd", type=float, default=None)
-    p.add_argument("--per-order-cap-usd", type=float, default=None)
+    p.add_argument("--max-order-usd", type=float, default=None)
     p.add_argument("--total-cap-usd", type=float, default=None)
     p.add_argument("--max-open-orders", type=int, default=1)
     p.add_argument("--auto-cancel-bars", type=int, default=2)
@@ -221,7 +253,7 @@ def main(argv=None) -> int:  # pragma: no cover — always refuses or raises; no
     args_ns = build_argparser().parse_args(argv)
     args = Phase2Args(
         arm_live=args_ns.arm_live, budget_cap_usd=args_ns.budget_cap_usd,
-        per_order_cap_usd=args_ns.per_order_cap_usd, total_cap_usd=args_ns.total_cap_usd,
+        max_order_usd=args_ns.max_order_usd, total_cap_usd=args_ns.total_cap_usd,
         max_open_orders=args_ns.max_open_orders, auto_cancel_bars=args_ns.auto_cancel_bars,
         kill_file=args_ns.kill_file,
         pairs=[p.strip() for p in args_ns.pairs.split(",") if p.strip()],
