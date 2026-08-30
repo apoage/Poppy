@@ -1,3 +1,16 @@
+> **STATUS (2026-08-30): SHIPPED** — `experiments/907_live_fill_probe/health_probe.py` +
+> `test_health_probe.py`. 3 cycles, 8 verification passes; both BLOCKERs were the probe
+> returning PASS on a sick capture (a declared-but-silent pair invisible; a fractional
+> `schema_mismatch` truncated to 0 under a "verified 0" reason string). All three acceptance
+> criteria closed against the LIVE capture on gpu-server, not just fixtures. 255 passed.
+>
+> **Remainders, deliberately not fixed:** (a) two full `readlines()` per analysis → ~1.06 GB RSS
+> on a 750MB capture (scales with the capture; candidate XS row: stream both passes);
+> (b) an UNREADABLE `counters.schema_mismatch` escalates to WARN, not FAIL — the spec said "at
+> least WARN" and a garbage-emitting counter mechanism is arguably FAIL-tier (planner call);
+> (c) `_compute_verdict`'s early recorder-dead return still bypasses the WARN and
+> malformed-records reason blocks, one branch earlier than the cycle-3 reasons-completeness fix.
+
 # TASK_912 — capture health probe (the T+1h span check, made into tooling)
 
 **Status**: PROPOSED 2026-08-29 (planner; seeded from run-46 ask #3 — D67(b)'s span check was

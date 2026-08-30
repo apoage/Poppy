@@ -3,6 +3,40 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-30 — TASK_912 — the capture health probe, and the two ways a health probe can lie
+
+- **What shipped.** `experiments/907_live_fill_probe/health_probe.py` + `test_health_probe.py`:
+  a stdlib-only, read-only-by-copy probe over the in-progress 907 capture. Emits one JSON object
+  + a human summary (per-pair `n_book`/`n_trade`/`last_book_age_s`/`last_trade_age_s`,
+  `gap_histogram`, `schema_mismatch_count`, PASS/WARN/FAIL with reasons), plus a `--watch` loop
+  appending one JSON line per interval to `runs/907_live_fill_probe/health/`. Its reason for
+  existing is the split-feed death detector: one pair's book feed dying while the others keep
+  flowing, which a "the file is growing" check cannot see because the file IS growing.
+- **Three cycles. Both BLOCKERs were the probe reporting PASS on a sick capture.**
+  (1) A pair declared in `meta_start.pairs` with zero observed events was absent from `per_pair`
+  entirely, so it could never FAIL — the exact failure the row exists to catch. Found
+  INDEPENDENTLY by two lenses and reproduced first-hand before it was accepted. Root cause worth
+  keeping: the probe is stdlib-only BY DESIGN, so it reimplements capture parsing from scratch,
+  and in doing so dropped the declared-vs-observed defense that `test_declared_pairs.py` already
+  encodes one directory over. Every fixture happened to declare exactly the pairs it emitted, so
+  the suite was green over the hole.
+  (2) `int(last_counters.get("schema_mismatch", 0))` was the module's ONLY unvalidated field:
+  `int(0.9)` truncated a real mismatch to 0 and the verdict string then asserted
+  "schema_mismatch verified 0", while `int("corrupt")` crashed one-shot mode outright. Two lenses
+  converged on the same line from different directions.
+- **`gap_histogram` was measuring the wrong thing.** It merged every pair and every event type
+  into ONE timeline and took deltas, so any outage short of all-channels-at-once counted as zero
+  gaps — a real 150s single-pair outage scored `{gt_5s: 0}` and PASS. It now reads the capture's
+  own native `gap` records. Cross-validated against an independent hand count of the live file:
+  1092 records/431/362/0 by hand vs 1094/433/364/0 by the probe minutes later — the delta is
+  exactly the gaps accrued in between.
+- **Verified against the LIVE capture, not just fixtures.** ~27s over the real 750MB file on
+  gpu-server: PASS, four declared pairs all sub-second, `malformed_record_count` 0. `--watch`
+  survived two full cycles on srv writing valid appended JSON. 255 passed; selftest 12/12.
+- **Remainders (not fixed, deliberately).** Two full `readlines()` per analysis → ~1.06 GB RSS on
+  a 750MB capture; an unreadable `schema_mismatch` escalates to WARN where FAIL is arguable; and
+  the early recorder-dead return still bypasses the WARN/malformed reason blocks.
+
 ## 2026-08-27 — TASK_911 — identity pins for load-bearing gitignored files, and the second missing file they immediately found
 
 - **What shipped (D69, scope 1-3 + gates (i)+(ii)).** `config/gitignored_pins.json` pins
