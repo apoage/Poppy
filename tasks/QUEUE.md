@@ -24,8 +24,15 @@ dropping per-line fsync, post-capture per D67(b)).
 **Ready (physically ordered): 1 TASK_907 Addendum B1 (ship the clean half) →
 2 TASK_907 Addendum B2 (stale-book + receipt-lag denomination, amended per D74) →
 3 TASK_881E (re-cut per D72: manifest-authority, simple) → 4 TASK_904B (two-phase writers) →
-5 TASK_908 (fixture pin-trust) → 6 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
-Q2-2026 dump). GATED: TASK_880 (D34+D35).**
+5 TASK_908 (fixture pin-trust) → 6 TASK_906 (archival). FILLER: TASK_899 — **IN PROGRESS
+planner-side (2026-08-31): the daily catch-up is STAGED** (`runs/858_backfill/api_2026-08-31/`
+— 56/56 canon pairs, 2026-06-21→08-31, seam-verified: 62 overlap rows vs the DB, ZERO
+mismatches; minute tails staged = the forward habit started). **Measured API constraint: the
+OHLC endpoint serves a rolling ~720-candle window per interval (12h for minutes, 30d hourly,
+~2y daily) — minute bars back to April are NOT API-fetchable;** they wait for the Q2/Q3 OHLCVT
+dump zips (the gdown retry pattern exists; needs new file ids when published). Ingest into the
+DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
+until then. GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 only.**
 **STANDING RULE (operator, 2026-08-30, binding on both lanes): gpu-server is SHARED with
 other users and services — disturb NO process on it. No restarts, no tuning, no renice, no
