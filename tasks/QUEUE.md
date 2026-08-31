@@ -21,11 +21,10 @@ the keepalive tripping AFTER stalls). **Box facts:** root = ext4 on SSD; hog can
 bitcoind (snap datadir on root), postgres, journald; nvme = the application volume (397G free,
 operator's call whether captures ever write there — secondary option only; the primary fix is
 dropping per-line fsync, post-capture per D67(b)).
-**Ready (physically ordered): 1 TASK_913 (name the journal hog + spec write hardening; XS
-read-only while the capture runs) → 2 TASK_907 Addendum B1 (ship the clean half) →
-3 TASK_907 Addendum B2 (stale-book + receipt-lag denomination, amended per D74) →
-4 TASK_881E (re-cut per D72: manifest-authority, simple) → 5 TASK_904B (two-phase writers) →
-6 TASK_908 (fixture pin-trust) → 7 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
+**Ready (physically ordered): 1 TASK_907 Addendum B1 (ship the clean half) →
+2 TASK_907 Addendum B2 (stale-book + receipt-lag denomination, amended per D74) →
+3 TASK_881E (re-cut per D72: manifest-authority, simple) → 4 TASK_904B (two-phase writers) →
+5 TASK_908 (fixture pin-trust) → 6 TASK_906 (archival). FILLER: TASK_899 (WAITING on the
 Q2-2026 dump). GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 only.**
 **STANDING RULE (operator, 2026-08-30, binding on both lanes): gpu-server is SHARED with
@@ -33,13 +32,26 @@ other users and services — disturb NO process on it. No restarts, no tuning, n
 kill, no write-probes; planner/factory work on srv is pure reads plus the sanctioned
 safe_run-capped jobs (the capture, the suites). Remediation of anything box-level is a
 recommendation to the operator, never an action.**
-_Next takeable: **TASK_913** — mostly-measured already (the planner's prober/wchan evidence is
-in the task file); what remains is naming the hog and writing the hardening spec — pure reads
-under the standing rule._
+_Next takeable: **TASK_907 Addendum B1** — re-apply the run-46 halt patch (sha `67b6a3d8…`),
+carve OUT the stale-book exclusion. Gate B1-vii renders the LIVE capture; the stall-gap regime is
+now not just disclosed but ROOT-CAUSED (run 48: `udisksd`'s SMART poll, 5,452/5,452 self-logged
+EIO failures — see `experiments/907_live_fill_probe/JOURNAL_STALL_DIAGNOSIS.md`)._
+
+_**Run 48 shipped TASK_913** (`2d56873`). Its reusable lesson is sharper than the row itself:
+**a diagnosis that refutes a premise needs the same adversarial pass on its REPLACEMENT.** The row
+correctly killed the task's "journal hog" premise, then named a new wrong culprit (a failing SATA
+cable) that would have sent the operator into a shared production chassis; a refutation judge
+killed that, and a second judge then found the corrected tables were built on journald drain-time
+stamps — the same clock the document had already caught lying once. Two traps worth carrying:
+`journalctl` realtime AND `-o short-monotonic` are both receive clocks (use raw `dmesg` or
+`_SOURCE_MONOTONIC_TIMESTAMP`), and `/proc` `starttime` must never be decoded against `btime`,
+which is truncated to whole seconds. **Operator action pending:** the settling counterfactual is
+`systemctl mask --now udisks2` for two `:X2:36` phases — NOT a plain `stop` (D-Bus reactivation
+self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 
 | # | Task | Size | Note |
 |---|------|------|------|
-| 1 | `tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md` | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
+| ~~1~~ | ~~`tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md`~~ **SHIPPED run 48 (`2d56873`)** | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
 | 2 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73) | M | Ship the nine-pass-verified clean half: B1/B3/B4/B5 + B2 span fixes + over-refusal fix + NO CLAIM sentinel + terminal reconnect + in-gate defects. Resume = re-apply the run-46 halt patch (sha `67b6a3d8…`, apply-check verified), carve OUT the stale-book exclusion. Gate B1-vii: the LIVE capture renders (or refuses naming the true reason) under B1 code — with D74 known, the stall-gap regime is disclosed, not a surprise. |
 | 3 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — per D73, AMENDED per D74) | S | Stale-book exclusion re-cut (book-freshness term, defect-signal disqualifiers) PLUS receipt-lag denomination: per-hour receipt-lag distribution, markout-timing distortion per horizon, trade diagnostics re-timed on `venue_ts`; book events get a measured BOUND (trades' lag as proxy), never an assumed zero. |
 | 4 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
