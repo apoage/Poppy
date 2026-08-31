@@ -2,8 +2,10 @@
 
 The pathway's results record (`docs/pathway.md`). Every experiment ends here, PASS or FAIL —
 nulls are results. Corridor = position in [linear floor, oracle ceiling] from TASK_830/E0.
-Historical experiments 000–780 predate this ledger; their verdicts live in task banners and
-the memory index (scalar-architecture scope — see MEMORY.md "Direction").
+Historical experiments 000–780 predate this ledger; their verdicts live in task banners and in
+**`docs/findings/`** (index: `docs/findings/README.md`) — migrated out of local agent memory
+2026-08-31 per `lore/adr/0008`, with the scalar-architecture scope warning carried at the top of
+that README.
 
 **FRAMEWORK EPOCHS — read before citing any verdict as "closed" (operator directive 2026-08-05:
 "if there is experiment on known broken framework we shall rerun experiment on fixed framework ..

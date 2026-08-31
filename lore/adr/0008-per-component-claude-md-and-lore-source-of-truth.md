@@ -56,6 +56,18 @@ Give up:
 ## References
 
 - Top-level `CLAUDE.md` — the cross-cutting rules + component pointer table.
-- `~/.claude/projects/-home-lukas-Trader/memory/feedback_read_current_state.md` (user memory, not in repo) — the load-bearing feedback that triggered this rule.
+- `.claude/rules/30-agent-conduct.md` — **the load-bearing feedback that triggered this rule, now IN the repo.**
+
+  *Amendment 2026-08-31 (does not change the decision — it completes it).* This ADR was written
+  when the rule lived only in local agent memory at
+  `~/.claude/projects/-home-lukas-Trader/memory/feedback_read_current_state.md`, annotated above as
+  "(user memory, not in repo)". **That file was subsequently lost from the memory tree** while
+  remaining indexed, and was discovered missing on 2026-08-31 — its text survived only as the
+  quotations in this ADR and one line of root `CLAUDE.md`. It has been reconstructed from those
+  quotations and migrated into `.claude/rules/30-agent-conduct.md`, along with the other operating
+  rules that were living in memory. Two reasons, both of which this ADR already implies: local
+  memory is invisible to subagents and to the server agent, and it is outside version control, so
+  its contents can disappear without a diff. The "Keep memory as the index" alternative rejected
+  above is now rejected in practice as well as in principle.
 - `lore/ORGANIZATION_RULES.md` — earlier formulation of the same convention.
 - This ADR directory (`lore/adr/`) — extension of the same principle: extract load-bearing decisions out of the time-ordered lore into named, searchable files.

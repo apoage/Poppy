@@ -1,0 +1,67 @@
+---
+description: How agents in this repo reason and report — source of truth, refutation discipline, transient API failures, lore tone. Deliberately not path-scoped.
+---
+
+# Agent conduct
+
+## The repo is the source of truth, not a summary
+
+Read `lore/notes_*.md` (latest) + `tasks/QUEUE.md` + `tasks/DECISIONS.md` before acting. Neither
+the root `CLAUDE.md` nor any memory entry is authoritative for **code state** — component facts
+(encoder version, PopArt range, defaults) drift within days, and an agent reading a stale summary
+will confidently decide on wrong information. Order of authority: `lore/` (why) → `tasks/`
+(what) → subtree `CLAUDE.md` (component facts) → `experiments/LEDGER.md` (verdicts).
+
+Governing decision: `lore/adr/0008-per-component-claude-md-and-lore-source-of-truth.md`.
+
+## A refutation's replacement needs its own adversarial pass
+
+When a diagnosis **refutes** a task's premise, the replacement explanation gets the same
+adversarial verification the refuted claim got. Being right about the negative half buys the
+positive half nothing.
+
+*Factory run 48 (TASK_913, 2026-08-31):* the row correctly killed the "a process is hogging the
+ext4 journal" premise, then confidently named a new culprit — "failing SATA link / bad cable" —
+which a judge demolished on four counts: **causal inversion** (the `SATA link down` recovery
+happened ~90 s *after* the device went silent; the artifact even wrote "the link-up is the instant
+our sampled stall ended" without noticing that refutes its own chain), **a dependent variable read
+as evidence** (1.5 Gbps was libata's escalation *response* to timeouts), **confidence bounded on
+data never requested** ("the dmesg ring doesn't reach further back" while `journalctl` held 4 GB of
+persistent journal containing the disconfirming evidence), and **n=1 dressed as corroboration**.
+
+Practical rules that fall out of it:
+- Before claiming a physical/hardware cause, check the disconfirming log source first —
+  `journalctl`'s persistent journal, not just the `dmesg` ring.
+- Ask of every piece of evidence whether it is a **cause or an effect** of the phenomenon.
+- **A metronomic period is a timer until proven otherwise.**
+- The cost is asymmetric: the replacement half is what produces an operator recommendation.
+
+## A transient subagent failure can masquerade as an auth error
+
+Long-running implementer subagents here hit transient API failures, and one surfaces as
+`API Error: 401 OAuth access token has expired. Re-authenticate to continue.` **even when the
+session is perfectly authenticated.** Run 37 (2026-08-20) saw three failures on one agent; none
+was an auth problem.
+
+On any subagent API failure, 401-shaped included:
+1. Check whether your **own** tool calls still work. If they do, the session is authenticated —
+   do not send the operator to `/login`.
+2. Assess the tree before assuming loss: `git status`, `git diff --numstat`, compile the touched
+   modules, verify fixture/DB invariants. In every run-37 case the tree was intact.
+3. **Resume the agent with SendMessage rather than re-spawning it** — resumption keeps its
+   context and loses no work. Re-spawning restarts a long build from zero.
+4. Tell it in the resume message what you already verified, so it doesn't re-derive it.
+
+Corollary: long implementer runs need resume-tolerance by design. Preserve work in-tree plus a
+patch copy so any interruption is a resume point, not a loss.
+
+## `lore/` is a neutral technical record
+
+Lore preserves state across session boundaries: facts, exact numbers, `file:line`, commands,
+decisions, reversals. Capture reversals and failures with the same care as successes.
+
+Write **neutrally** — no dramatisation, no emotional editorialising, no emoji, no narrative
+flourish. Bullet-point precision beats storytelling; emotional tone is noise to be pruned, and it
+biases future sessions. The earlier dual-role framing (lore as raw material for Bloom publication)
+was **retired 2026-07-07** when `bloom/` was pruned. Write for exactly one audience:
+future-session-me needing the technical record. If a sentence carries no fact, cut it.
