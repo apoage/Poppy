@@ -142,17 +142,21 @@ def _compute_estimand1(result: ShadowPairResult, mid_source: str) -> Estimand1Re
     kept = [m for m in result.markouts if m.mid_source == mid_source]
     by_horizon: Dict[str, HorizonAdverseSelection] = {}
     for horizon in HORIZONS_S:
+        # B3 (run-45): ALL FOUR pre-registered horizons (`HORIZONS_S`) appear here, ALWAYS — a
+        # horizon that drew zero samples is a RESULT about the instrument (this probe's window
+        # was too short for the 1h markout to ever form), not the absence of a row, and it used
+        # to be silently omitted (`if not raw: continue`). Zero-sample and all-non-finite are the
+        # SAME reported shape (n_used=0, nothing evaluable, no verdict) — they differ only in
+        # `n_samples`, so one branch below covers both; no separate early `continue`.
         samples = [m for m in kept if m.horizon == horizon]
         raw = [m.adverse_selection_bp for m in samples]
-        if not raw:
-            continue  # a horizon with no samples at all is omitted entirely (not reported as 0)
         finite = [m for m in samples if math.isfinite(m.adverse_selection_bp)]
         vals = sorted(m.adverse_selection_bp for m in finite)
         ages = sorted(m.mid_age_s for m in finite if math.isfinite(m.mid_age_s))
         n_dropped = len(raw) - len(vals)
         if not vals:
-            # Every sample at this horizon was non-finite. Emit the horizon anyway so the
-            # artifact SAYS so, with nothing evaluable and no verdict.
+            # Either zero samples at all, or every sample at this horizon was non-finite. Emit
+            # the horizon anyway so the artifact SAYS so, with nothing evaluable and no verdict.
             by_horizon[horizon] = HorizonAdverseSelection(
                 horizon=horizon, n_samples=len(raw), n_used=0, n_dropped_nonfinite=n_dropped,
                 mean_bp=None, median_bp=None, deciles_bp={},

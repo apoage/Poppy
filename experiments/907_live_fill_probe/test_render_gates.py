@@ -13,7 +13,8 @@ from estimands import (  # noqa: E402
     Estimand1Result, Estimand2Result, compute_estimand1,
 )
 from render import (  # noqa: E402
-    NOT_EVALUABLE, REQUIRED_DISCLOSURE, render_disclosure_box, render_report,
+    MAX_RENDERED_GAP_LINES, NOT_EVALUABLE, REQUIRED_DISCLOSURE, render_disclosure_box,
+    render_report,
 )
 from shadow_engine import MarkoutSample, ShadowPairResult  # noqa: E402
 import cli  # noqa: E402
@@ -225,3 +226,41 @@ def test_gate_iv_cli_refuses_cleanly_and_writes_no_file(tmp_path):
     rc = cli.main(["--capture", str(p), "--out", str(out_path)])
     assert rc == 1
     assert not out_path.exists()
+
+
+# --- run-49 MINOR: the artifact for a real capture was unreadable ------------------------------
+
+def test_the_gap_provenance_listing_is_capped_with_its_total_stated(tmp_path):
+    """RED before the fix: one line per recorded gap, uncapped.
+
+    The real 3.586-day capture carries 1,688 gap records, and the rendered artifact came to 1,860
+    lines of which ~1,700 were this one loop — the disclosures the artifact exists to make (the
+    coverage table, the stale-book and keepalive-overrun lines, the estimand rows) buried under a
+    raw ledger dump. Capped like every other sample list in this lane's refusals, and the CAP IS
+    NOT A DROP: the total, the total seconds and the per-reason breakdown are stated, and every
+    gap still counts in full toward coverage and toward the per-markout `covers()` check.
+    """
+    p = tmp_path / "many_gaps.jsonl"
+    w = CaptureWriter(str(p), ["BTC/USD"], "cap-gaps")
+    n_gaps = MAX_RENDERED_GAP_LINES * 3
+    t = 0.0
+    for i in range(n_gaps):
+        w.write_book("BTC/USD", t, 100.0 + i, 100.2 + i, 1.0, 1.0)
+        w.write_trade("BTC/USD", t + 0.001, 100.1 + i, 0.5, "buy")
+        w.write_gap(GapRecord(t + 0.001, t + 1.0, "clock_jump", detail=f"synthetic {i}"))
+        t += 2.0
+    w.write_book("BTC/USD", t, 500.0, 500.2, 1.0, 1.0)
+    w.write_trade("BTC/USD", t + 0.001, 500.1, 0.5, "buy")
+    w.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert len(meta.gaps) == n_gaps
+    report = render_report([meta], {}, {})
+
+    gap_lines = [ln for ln in report.splitlines() if ln.strip().startswith("- gap: ")]
+    listed = [ln for ln in gap_lines if "further recorded gap(s) not listed" not in ln]
+    assert len(listed) == MAX_RENDERED_GAP_LINES
+    assert f"and {n_gaps - MAX_RENDERED_GAP_LINES} further recorded gap(s) not listed" in report
+    assert f"recorded gaps: {n_gaps} record(s) totalling" in report, (
+        "the count is the claim; the individual lines are only examples of it")
+    assert f"clock_jump={n_gaps}" in report, "with the per-reason breakdown, so nothing is hidden"

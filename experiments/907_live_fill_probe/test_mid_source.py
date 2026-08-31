@@ -118,7 +118,12 @@ def test_the_mid_staleness_cap_is_one_bar_interval(tmp_path):
     ones = [m for m in r.markouts if m.horizon == "1m"]
     assert len(ones) == 1 and ones[0].mid_source == MID_SOURCE_TRADE
     assert ones[0].mid_age_s == pytest.approx(BAR_SECONDS)
-    assert compute_estimand1(r).by_horizon == {}, "and it stays out of the primary estimand"
+    # B3 (run-45): all four pre-registered horizons are always reported now (never omitted), so
+    # the primary (book-mid) estimand still shows "1m" — but with n_used=0, since the only 1m
+    # sample here is TRADE-sourced and stays out of the primary estimand.
+    e1 = compute_estimand1(r)
+    assert set(e1.by_horizon) == {"1m", "5m", "20m", "1h"}
+    assert e1.by_horizon["1m"].n_used == 0, "and it stays out of the primary estimand"
     # 5m (target 390): the last print is 300s stale, far past the cap -> dropped and counted
     assert [m for m in r.markouts if m.horizon == "5m"] == []
     assert r.n_markouts_dropped_no_mid >= 1
@@ -232,8 +237,13 @@ def test_a_print_only_capture_leaves_the_primary_estimand_empty(tmp_path):
     _, results = run_shadow(path)
     r = results["BTC/USD"]
     assert r.n_markouts_from_trade_fallback == 1
-    assert compute_estimand1(r).by_horizon == {}, (
-        "the primary estimand must be EMPTY — its only sample was a print, not a mid")
+    # B3 (run-45): all four pre-registered horizons are always reported (never omitted) — the
+    # primary estimand's "1m" row is still present, but with n_used=0, since its only sample was
+    # a print, not a mid.
+    e1_primary = compute_estimand1(r)
+    assert set(e1_primary.by_horizon) == {"1m", "5m", "20m", "1h"}
+    assert e1_primary.by_horizon["1m"].n_used == 0, (
+        "the primary estimand must have NOTHING USABLE — its only sample was a print, not a mid")
     assert compute_estimand1_trade_fallback(r).by_horizon["1m"].n_used == 1
 
 

@@ -9,9 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture import (  # noqa: E402
-    DEFAULT_COVERAGE_WINDOW_S, MAX_GAP_DETECT_THRESHOLD_S, CaptureFormatError, CaptureMetadata,
-    CaptureWriter, GapRecord, _find_unrecorded_gaps, _merge_gap_spans, _merge_spans,
-    _pair_coverage, covers, read_capture,
+    DEFAULT_COVERAGE_WINDOW_S, GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S, MAX_GAP_DETECT_THRESHOLD_S,
+    CaptureFormatError, CaptureMetadata, CaptureWriter, GapRecord, _find_unrecorded_gaps,
+    _merge_gap_spans, _merge_spans, _pair_coverage, covers, read_capture,
 )
 
 
@@ -471,3 +471,218 @@ def test_undeclared_channels_fall_back_to_the_sum_check(tmp_path):
     assert meta.channels is None
     assert meta.missing_channels() == []
     meta.assert_complete()
+
+
+# --- B1 (run-45/46) — a RESUMED session's own declared subscription config must be reconciled,
+# --- not silently discarded. Run-44 finding 3, decisive on its own: before this, `declared_pairs`
+# --- was a snapshot of session 1's config forever, so a pair added on restart and dead from t=0
+# --- appeared ZERO times anywhere in the artifact and `assert_complete()` PASSED.
+
+def test_a_pair_declared_only_in_a_RESUMED_session_reconciles_and_refuses_when_dead(tmp_path):
+    """Session 1 declares BTC/USD alone and delivers it; session 2 REOPENS the same file
+    declaring `[BTC/USD, ETH/USD]`, and ETH/USD delivers zero events for the rest of the capture
+    (a dead subscription added on restart). Pre-B1: `declared_pairs == ['BTC/USD']` forever,
+    `is_complete()` True, `assert_complete()` PASSED, and 'ETH/USD' occurs zero times in the
+    rendered artifact — worse than pre-cycle-4, where the declared UNION at least surfaced it.
+    """
+    p = tmp_path / "cap.jsonl"
+    w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1", channels=["book", "trade"])
+    w1.write_trade("BTC/USD", 100.0, 50000.0, 0.1, "buy")
+    w1.write_book("BTC/USD", 100.5, 50000.0, 50001.0, 1.0, 1.0)
+    w1._fh.close()  # simulated kill — no clean close, matching a real restart
+
+    import capture as capture_mod
+    orig_now = capture_mod._now
+    capture_mod._now = lambda: 500.0
+    try:
+        w2 = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap-1", channels=["book", "trade"])
+    finally:
+        capture_mod._now = orig_now
+    w2.write_trade("BTC/USD", 500.5, 50010.0, 0.1, "buy")
+    w2.write_book("BTC/USD", 501.0, 50010.0, 50011.0, 1.0, 1.0)
+    # ETH/USD is declared by session 2 but NEVER delivers a single event.
+    w2.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert len(meta.sessions) == 2, "both the meta_start and meta_resume declarations are kept"
+    assert meta.sessions[0].kind == "start" and meta.sessions[0].pairs == ["BTC/USD"]
+    assert meta.sessions[1].kind == "resume" and meta.sessions[1].pairs == ["BTC/USD", "ETH/USD"]
+    # the UNION of every session's declaration — not session 1's snapshot alone
+    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"]
+    assert meta.observed_pairs == ["BTC/USD"]
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError) as excinfo:
+        meta.assert_complete()
+    msg = str(excinfo.value)
+    assert "ETH/USD" in msg
+    assert "declared_without_data" in msg or "ETH/USD" in msg.split("Unreconciled:")[-1]
+
+    report_text = None
+    try:
+        from render import render_report  # noqa: E402 — local import, module-level would cycle
+        render_report([meta], {}, {})
+    except CaptureFormatError as exc:
+        report_text = str(exc)
+    assert report_text is not None and "ETH/USD" in report_text, (
+        "the refusal itself names the pair — 'ETH/USD' must not occur zero times anywhere the "
+        "reader can see, even though no artifact is written")
+
+
+def test_a_pair_added_on_a_RESUMED_session_and_delivered_cleanly_is_not_misdiagnosed(tmp_path):
+    """The MIRROR of the test above, pinned separately because the spec calls it out explicitly:
+    a pair ADDED on restart and RECEIVED cleanly is a pair the subscription DID ask for — the
+    refusal text "a number backed by a pair no subscription asked for" must not fire on it.
+    """
+    p = tmp_path / "cap.jsonl"
+    w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1", channels=["book", "trade"])
+    w1.write_trade("BTC/USD", 100.0, 50000.0, 0.1, "buy")
+    w1.write_book("BTC/USD", 100.5, 50000.0, 50001.0, 1.0, 1.0)
+    w1._fh.close()
+
+    import capture as capture_mod
+    orig_now = capture_mod._now
+    capture_mod._now = lambda: 500.0
+    try:
+        w2 = CaptureWriter(str(p), ["BTC/USD", "ETH/USD"], "cap-1", channels=["book", "trade"])
+    finally:
+        capture_mod._now = orig_now
+    # Both pairs deliver a dense, healthy stream for a full minute after the resume — long
+    # enough that ETH/USD's OWN coverage cleanly clears the bound and this test is about the
+    # declaration reconciliation, not an artifact of a too-short synthetic window.
+    t = 500.5
+    while t <= 560.5:
+        w2.write_trade("BTC/USD", t, 50010.0, 0.1, "buy")
+        w2.write_book("BTC/USD", t, 50010.0, 50011.0, 1.0, 1.0)
+        w2.write_trade("ETH/USD", t, 3000.0, 1.0, "buy")
+        w2.write_book("ETH/USD", t, 3000.0, 3000.5, 1.0, 1.0)
+        t += 5.0
+    w2.close(clean=True)
+
+    meta = read_capture(str(p))
+    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"]
+    assert meta.observed_pairs == ["BTC/USD", "ETH/USD"]
+    assert meta.pair_reconciliation_gaps()["declared_without_data"] == []
+    assert meta.pair_reconciliation_gaps()["observed_undeclared"] == []
+    assert meta.degraded_coverage_pairs() == []
+    assert meta.is_complete()
+    meta.assert_complete()  # must not raise — ETH/USD WAS declared, by session 2
+
+    from render import render_report  # noqa: E402
+    report = render_report([meta], {}, {})
+    assert "sessions: 2 (start, resume)" in report
+    assert "session 1 (resume): pairs=['BTC/USD', 'ETH/USD']" in report
+    assert "HETEROGENEOUS DECLARATIONS" in report, (
+        "session 0 declared only BTC/USD, session 1 declared both — the artifact must say the "
+        "sessions disagreed rather than silently presenting one as the whole")
+
+
+# --- run-49 BLOCKER: the self-contradictory-gap-ledger check was denominated on MERGED spans ----
+# The check ("a data-bearing event STRICTLY INSIDE a recorded gap") had no test at all before this
+# block, and it is what stood between the 3.586-day live capture and every number in it: 598
+# flagged events, of which 584 were a recorder artifact bounded at 32.902us and 14 were not inside
+# any individual gap at all. Both shapes are reproduced here at their measured geometry.
+
+_GAPS_T0 = 1_700_000_000.0
+
+
+def _write_seam_capture(path, gaps, reconnect_book_ts=260.0, span_s=600.0):
+    """A capture that clears every OTHER gate, so whatever these tests observe is this check.
+
+    Book+trade every 5s over [0, 200] and [300, span_s], one lone `book` event at
+    `reconnect_book_ts` standing for the first event after a reconnect, and `gaps` written
+    verbatim. Timestamps are relative to `_GAPS_T0`.
+    """
+    rows = []
+    def stretch(lo, hi):
+        t = lo
+        while t <= hi:
+            rows.append({"type": "book", "pair": "BTC/USD", "ts": _GAPS_T0 + t,
+                          "bid": 100.0 + t, "ask": 100.2 + t, "bid_sz": 1.0, "ask_sz": 1.0})
+            rows.append({"type": "trade", "pair": "BTC/USD", "ts": _GAPS_T0 + t + 0.001,
+                          "price": 100.1 + t, "volume": 0.1, "side": "buy"})
+            t += 5.0
+    stretch(0.0, 200.0)
+    rows.append({"type": "book", "pair": "BTC/USD", "ts": _GAPS_T0 + reconnect_book_ts,
+                  "bid": 250.0, "ask": 250.2, "bid_sz": 1.0, "ask_sz": 1.0})
+    stretch(300.0, span_s)
+    for lo, hi, reason in gaps:
+        rows.append({"type": "gap", "start_ts": _GAPS_T0 + lo, "end_ts": _GAPS_T0 + hi,
+                      "duration_s": hi - lo, "reason": reason, "detail": "synthetic"})
+    head = {"type": "meta_start", "capture_id": "seam", "pairs": ["BTC/USD"],
+            "format_version": 2, "clock_basis": "local_receipt",
+            "channels": ["book", "trade"], "heartbeat_timeout_s": 30.0}
+    _write_raw(path, [head] + rows + [{"type": "meta_end", "ts": _GAPS_T0 + span_s}])
+    return str(path)
+
+
+def test_an_event_at_the_SEAM_of_two_touching_gaps_is_not_a_contradiction(tmp_path):
+    """RED before the fix. A `_close_dark_window` `disconnect` gap ends AT the first event after
+    reconnecting; the `clock_jump` gap the very next frame writes STARTS at that same event
+    (`_record_gap` starts every gap at `_last_event_ts`). Both endpoint contacts are legal and
+    healthy. `_merge_gap_spans` unions the two, and the containment test — run against the merged
+    span — then read the seam between them as containment, though NEITHER gap contains anything.
+
+    Measured on the live capture: 14 of its 598 flagged events were exactly and only this, sitting
+    2.537s-4.396s deep inside a merged span and 0.0s from an individual gap's edge. No edge
+    tolerance can reach that depth without also excusing real contradictions, so the fix is to
+    test containment against INDIVIDUAL gap records. The merged span stays correct for coverage
+    ARITHMETIC (the measure of the union) — only this test was wrong to run against it.
+    """
+    path = _write_seam_capture(tmp_path / "seam.jsonl",
+                               [(200.001, 260.0, "disconnect"), (260.0, 300.0, "clock_jump")])
+    meta = read_capture(path)
+    merged = meta.merged_gap_spans
+    assert len(merged) == 1 and merged[0] == (_GAPS_T0 + 200.001, _GAPS_T0 + 300.0), (
+        "the two gaps really do merge into one span — if they stop touching this test is vacuous")
+    assert _GAPS_T0 + 200.001 < _GAPS_T0 + 260.0 < _GAPS_T0 + 300.0, (
+        "and the reconnect event really does sit strictly inside that merged span")
+    assert meta.n_events_inside_recorded_gaps == 0
+    assert meta.events_inside_recorded_gaps == []
+    meta.assert_complete()
+
+
+def test_an_event_microseconds_inside_a_gaps_HIGH_edge_is_the_recorders_own_clock_slack(tmp_path):
+    """RED before the fix. The OLD recorder sampled a second, strictly later clock for a gap's
+    `end_ts` than the one it stamped that same frame's events with, so the event that TERMINATED
+    a `clock_jump` landed microseconds inside its own gap — 584 times in the live capture, min
+    5.007us / median 12.159us / max 32.902us, always on the HIGH edge.
+
+    `recorder._record_gap` now takes the caller's already-sampled `now` so new captures carry zero
+    such intrusion (`test_recorder_reconnect.py::
+    test_a_clock_jump_gap_ends_exactly_at_the_event_that_terminated_it`). This tolerance is for
+    captures already on disk, the live one included, which cannot be re-recorded.
+    """
+    path = _write_seam_capture(
+        tmp_path / "micro.jsonl",
+        [(200.001, 260.0 + 12.159e-6, "clock_jump")])
+    meta = read_capture(path)
+    assert meta.n_events_inside_recorded_gaps == 0
+    meta.assert_complete()
+
+
+def test_the_edge_tolerance_is_narrow_enough_that_a_real_containment_still_refuses(tmp_path):
+    """Non-vacuity, in the direction that matters: the tolerance must not have turned the check
+    off. An event a full second inside a gap is not two clock samples' worth of slack, and the
+    refusal must name the INDIVIDUAL gap record (a reader sent looking for the coalesced span
+    would be looking for a gap the ledger does not contain)."""
+    path = _write_seam_capture(tmp_path / "deep.jsonl", [(200.001, 261.0, "clock_jump")])
+    meta = read_capture(path)
+    assert meta.n_events_inside_recorded_gaps == 1
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError) as excinfo:
+        meta.assert_complete()
+    msg = str(excinfo.value)
+    assert "SELF-CONTRADICTORY GAP LEDGER" in msg
+    assert "clock_jump" in msg, "the individual record's own reason, not the merged span"
+    assert f"{_GAPS_T0 + 261.0:.6f}" in msg, "and the individual record's own end_ts"
+
+
+def test_the_gap_edge_tolerance_is_bounded_by_the_mechanism_not_by_a_file():
+    """The tolerance is a constant with a stated derivation, and both bounds are load-bearing:
+    above the measured 32.902us two-clock-sample intrusion, and orders of magnitude below the
+    2.537s shallowest merged-span seam (which is excluded structurally, by testing individual
+    gaps, and must never come to depend on this number instead)."""
+    assert GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S > 32.902e-6
+    assert GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S < 2.537
+    assert GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S <= 1e-3, (
+        "1ms is ~30x the measured bound; anything larger needs a new measurement, not a nudge")

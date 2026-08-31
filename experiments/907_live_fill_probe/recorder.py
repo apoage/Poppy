@@ -128,10 +128,39 @@ BOOK_EMISSION_POLICY = "change_or_keepalive"
 DEFAULT_BOOK_KEEPALIVE_S = 5.0
 
 
+#: Cycle 2 (run-45): how many CONSECUTIVE connections may reconcile the SAME subscribe-ack symbol
+#: mismatch before it is ruled a static misconfiguration and the recorder terminates.
+#:
+#: Defect #2's "abort loudly" was neither: it raised `_GapAlreadyRecorded`, the idiom for a
+#: TRANSIENT failure, so `run()` backed off to `backoff_max_s` (60s) and retried forever. For a
+#: STATIC mismatch (Kraken's legacy `XBT/USD` against a config declaring `BTC/USD`) every
+#: reconnect re-subscribes identically and reconciles false again — an unbounded ~60s reconnect
+#: storm against the venue for the life of a multi-day process, with no terminal signal.
+#:
+#: 3, not 1: a multi-day capture is expensive and unrepeatable, so the DISTINCTION between
+#: transient and non-transient is the fix, not a hair-trigger abort. One connection's ack set can
+#: be incomplete or raced; the same mismatch surviving three independent subscribe cycles is the
+#: configuration, not the wire. At `backoff_base_s=2.0` that is ~6s of retry before terminating.
+SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS = 3
+
+
 class _GapAlreadyRecorded(ConnectionError):
     """Raised internally by `_consume` when it has ALREADY written the gap record for the
     condition forcing reconnect (heartbeat timeout, schema drift, book checksum mismatch) —
     signals `run()`'s except-block not to write a second, redundant gap for the same event.
+    """
+
+
+class SubscriptionConfigMismatch(RuntimeError):
+    """TERMINAL, non-transient: the venue's own subscribe ACK named symbols this recorder's
+    configuration never declared, and did so again on every one of
+    `SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS` consecutive connections.
+
+    Deliberately NOT a subclass of `_GapAlreadyRecorded`/`ConnectionError`: `run()`'s reconnect
+    loop treats every one of those as "retry after backoff", which is the correct response to a
+    transport failure and the wrong one to a configuration that cannot fix itself. This escapes
+    `run()` entirely so the process exits loudly (`main()`'s `finally` still closes the capture
+    cleanly), rather than storming the venue until someone notices.
     """
 
 
@@ -203,6 +232,12 @@ class ParsedFrame:
     #: another that had gone 100% unreadable (e.g. lost its snapshot after a reconnect and never
     #: got another): no gap, no escalation, and nothing anywhere gates on `n_schema_mismatch`.
     book_row_mismatch_pairs: List[str] = field(default_factory=list)
+    #: `(channel, symbol)` echoed back by a `subscribe` ACK frame (in-gate defect #2, run-45).
+    #: Kraken's subscribe-ack echoes the VENUE's own spelling of the symbol it subscribed —
+    #: taken verbatim, no normalisation — and is the one free signal available in the first
+    #: second of a connection, previously discarded entirely (recorder.py's method-response
+    #: branch returned unconditionally without looking at the frame's content).
+    subscribe_acks: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def is_silent(self) -> bool:
@@ -544,7 +579,20 @@ def _parse_frame(msg: Dict[str, Any], now: float,
     if channel in NON_DATA_CHANNELS:
         return out  # recognized, legitimately eventless (status/subscription state)
     if channel is None and ("method" in msg or "result" in msg or "error" in msg):
-        return out  # a method response / subscribe-ack — recognized, legitimately eventless
+        # A method response / subscribe-ack — recognized, legitimately eventless. In-gate defect
+        # #2 (run-45): a `subscribe` ACK echoes the VENUE's own spelling of the symbol it just
+        # subscribed to — the one free, in-band signal available in the first second of a
+        # connection, previously discarded here entirely. Extracted (not normalised: the whole
+        # point is to catch a spelling MISMATCH against `cfg.pairs`) so `LiveRecorder._consume`
+        # can reconcile subscription vs. config at connection START instead of days later at
+        # read time.
+        if msg.get("method") == "subscribe" and isinstance(msg.get("result"), dict):
+            result = msg["result"]
+            sym = result.get("symbol")
+            chan = result.get("channel")
+            if isinstance(sym, str) and sym and isinstance(chan, str) and chan:
+                out.subscribe_acks.append((chan, sym))
+        return out
 
     out.unrecognized_frames += 1
     return out
@@ -615,6 +663,19 @@ class LiveRecorder:
         #: counted it as observed.
         self._dark_since: Optional[float] = None
         self._dark_reason: str = ""
+        #: In-gate defect #2 (run-45): the subscribe ACK symbols seen so far THIS connection
+        #: (channel -> set of venue-echoed symbols), and whether the one-shot reconciliation
+        #: against `cfg.pairs` has already run for it. Both reset per-connection in `_consume`,
+        #: same as the book state — a stale ack from a PRIOR connection must not be reconciled
+        #: against this one's config.
+        self._acked_symbols: Dict[str, set] = {}
+        self._subscription_ack_reconciled = False
+        #: Cycle 2 (run-45): the ack mismatch seen on the PREVIOUS connection and how many
+        #: consecutive connections have now reconciled that same mismatch. Instance state, NOT
+        #: reset per-connection — the whole question is whether the mismatch survives a reconnect
+        #: (static misconfiguration) or does not (a raced/partial ack, i.e. transient).
+        self._ack_mismatch_signature: Optional[Tuple[str, ...]] = None
+        self._ack_mismatch_streak = 0
 
     @property
     def unparsed(self) -> int:
@@ -640,6 +701,12 @@ class LiveRecorder:
                         await ws.send(json.dumps(sub))
                     backoff = self.cfg.backoff_base_s
                     await self._consume(ws)
+            except SubscriptionConfigMismatch:
+                # Cycle 2 (run-45): NON-TRANSIENT. Must be caught BEFORE the two clauses below —
+                # `except Exception` would swallow it into "write a disconnect gap and back off",
+                # which is precisely the unbounded reconnect storm this exists to end. The gap
+                # record is already written; re-raise so the process exits loudly.
+                raise
             except _GapAlreadyRecorded as exc:
                 logger.warning("907 recorder: reconnecting after %s; backing off %.1fs",
                                 exc, backoff)
@@ -673,6 +740,8 @@ class LiveRecorder:
         # makes a reconnect discard stale book state and wait for fresh snapshots.
         self._book_states = {}
         self._book_mismatch_streak = {}
+        self._acked_symbols = {}
+        self._subscription_ack_reconciled = False
         while not self._stop:
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=self.cfg.heartbeat_timeout_s)
@@ -684,8 +753,11 @@ class LiveRecorder:
             now = self._clock()
             prev = self._last_event_ts
             if prev is not None and (now - prev) > self.cfg.heartbeat_timeout_s:
+                # `now=now` (run-49): the SAME sample this frame's events are stamped with at
+                # `_parse_frame` below, so the event terminating this jump lands ON the gap's
+                # `end_ts`, never microseconds inside it.
                 self._record_gap("clock_jump", f"local clock advanced {now - prev:.1f}s "
-                                                f"between consecutive recv() calls")
+                                                f"between consecutive recv() calls", now=now)
             self._frames_since_last_event += 1
             self._frames_since_counters_flush += 1
             try:
@@ -697,12 +769,12 @@ class LiveRecorder:
             except json.JSONDecodeError:
                 self.n_json_decode_errors += 1
                 self._counters_dirty = True
-                self._check_schema_drift()
+                self._check_schema_drift(now)
                 continue
             if not isinstance(msg, dict):
                 self.n_unrecognized_frames += 1
                 self._counters_dirty = True
-                self._check_schema_drift()
+                self._check_schema_drift(now)
                 continue
 
             parsed = _parse_frame(msg, now, self._book_states, self.cfg.book_depth,
@@ -723,14 +795,32 @@ class LiveRecorder:
                 self._book_mismatch_streak[mismatched_pair] = (
                     self._book_mismatch_streak.get(mismatched_pair, 0) + 1)
 
+            # In-gate defect #2 (run-45): accumulate the venue's own echoed subscription
+            # symbols. Taken verbatim — no normalisation — because the whole point is to catch
+            # a SPELLING mismatch (e.g. Kraken's legacy `XBT/USD` vs. a config declaring
+            # `BTC/USD`) against `cfg.pairs`.
+            for chan, sym in parsed.subscribe_acks:
+                self._acked_symbols.setdefault(chan, set()).add(sym)
+
             if parsed.events:
                 self._frames_since_last_event = 0
+                saw_heartbeat = False
                 for ev in parsed.events:
                     if ev["kind"] == "book":
                         self._book_mismatch_streak[ev["pair"]] = 0
+                    elif ev["kind"] == "heartbeat":
+                        saw_heartbeat = True
                     self._emit(ev)
+                if saw_heartbeat and not self._subscription_ack_reconciled:
+                    # Reconcile at capture START, after the first heartbeat cycle — not days
+                    # later at read time (`capture.py`'s reconciliation used to be the SOLE
+                    # comparison site). One shot per connection: by the first heartbeat, every
+                    # subscribe ACK the venue was going to send this connection has had its
+                    # chance to arrive. AFTER emitting this frame's events (not mid-loop), so a
+                    # mismatch abort never drops an event this same frame already delivered.
+                    self._reconcile_subscribe_acks(now)
             elif not parsed.book_desyncs:
-                self._check_schema_drift()
+                self._check_schema_drift(now)
 
             if parsed.book_desyncs:
                 # A.4(2): a checksum mismatch means our book has desynced — drop it, emit
@@ -742,20 +832,93 @@ class LiveRecorder:
                     logger.error("907 recorder: BOOK CHECKSUM MISMATCH for %s — %s; dropping "
                                  "book state and forcing reconnect", pair, detail)
                 combined = "; ".join(f"{pair}: {detail}" for pair, detail in parsed.book_desyncs)
-                self._record_gap("schema_drift", f"book checksum mismatch — {combined}",
-                                  dark_until_next_event=True)
+                # A checksum desync is a DIFFERENT diagnosis than sustained unparseable traffic
+                # (`_check_schema_drift`'s `schema_drift` reason): the wire is readable and our
+                # own maintained book state has desynced from the venue's. `GAP_REASONS` used to
+                # be a closed enum with no entry for this (Addendum A's scope fence forbade
+                # touching it), so both conditions wrote `reason="schema_drift"`, disambiguated
+                # only by free text in `detail` — a reader had to parse prose to tell "we could
+                # not read the wire" apart from "our book desynced". This pass owns `capture.py`.
+                self._record_gap("book_checksum_mismatch",
+                                  f"book checksum mismatch — {combined}",
+                                  dark_until_next_event=True, now=now)
                 raise _GapAlreadyRecorded("book checksum mismatch — forcing reconnect")
 
             # AFTER the desync block on purpose: a desync is the more specific diagnosis and
             # forces the same reconnect, so it must be the one that gets to write the gap when a
             # row is both a desync and the row that tips a pair's streak over the threshold.
-            self._check_per_pair_book_drift()
+            self._check_per_pair_book_drift(now)
 
             if (self._counters_dirty
                     and self._frames_since_counters_flush >= COUNTERS_FLUSH_EVERY_N_FRAMES):
                 self._flush_counters(now)
 
-    def _check_schema_drift(self) -> None:
+    def _reconcile_subscribe_acks(self, now: Optional[float] = None) -> None:
+        """In-gate defect #2 (run-45): reconcile the venue's OWN echoed subscription symbols
+        against `cfg.pairs` at connection START — after the first heartbeat cycle — instead of
+        `capture.py`'s read-time reconciliation being the SOLE comparison site.
+
+        Demonstrated with Kraken's legacy `XBT/USD` spelling against a config declaring
+        `BTC/USD`: the old behaviour let a capture record three to seven days complete,
+        unrenderable and not cheaply repeatable, with `n_schema_mismatch == 0` and
+        `n_unrecognized_frames == 0` throughout — the recorder saw no drift at all, because
+        nothing ever compared the wire's own symbol against the subscription config until a
+        human tried to render the finished capture. Refusing is right; only the TIMING was the
+        defect. One shot per connection (`_subscription_ack_reconciled`): the first heartbeat is
+        used as "the ACKs have had their chance to arrive", not a recurring check.
+        """
+        self._subscription_ack_reconciled = True
+        if not self._acked_symbols:
+            return  # this venue/mock never sent an ack this connection — nothing to reconcile
+        configured = set(self.cfg.pairs)
+        acked: set = set()
+        for symbols in self._acked_symbols.values():
+            acked |= symbols
+        unexpected = sorted(acked - configured)
+        if not unexpected:
+            # The mismatch did NOT survive this reconnect: it was transient (a raced or partial
+            # ack set), so the streak resets and nothing terminal is armed.
+            self._ack_mismatch_signature = None
+            self._ack_mismatch_streak = 0
+            return
+        # Cycle 2 (run-45): distinguish NON-TRANSIENT from transient. The same offending symbol
+        # set recurring across independent subscribe cycles is a static misconfiguration; every
+        # reconnect will re-subscribe identically and reconcile false again, so retrying is a
+        # ~60s reconnect storm against the venue with no terminal signal, for the life of a
+        # multi-day process.
+        signature = tuple(unexpected)
+        if signature == self._ack_mismatch_signature:
+            self._ack_mismatch_streak += 1
+        else:
+            self._ack_mismatch_signature = signature
+            self._ack_mismatch_streak = 1
+        detail = (
+            f"subscribe ACK named symbol(s) {unexpected} this recorder's configuration never "
+            f"declared (configured: {sorted(configured)}; acked by channel: "
+            f"{ {chan: sorted(syms) for chan, syms in self._acked_symbols.items()} }) — a "
+            f"subscription/config spelling mismatch caught at CONNECTION START via the venue's "
+            f"own ack, rather than days later at read time; identical mismatch on "
+            f"{self._ack_mismatch_streak} consecutive connection(s)")
+        if self._ack_mismatch_streak >= SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS:
+            terminal = (
+                f"TERMINAL — {detail}. Ruled a STATIC misconfiguration, not a transient wire "
+                f"fault: {self._ack_mismatch_streak} consecutive connections each re-subscribed "
+                f"with the identical config and got back the identical unexpected symbol(s), so "
+                f"no further reconnect can change the outcome. Retrying past this point is a "
+                f"reconnect storm against the venue with no terminal signal. The recorder is "
+                f"stopping; correct the subscription config (the venue's own spelling is the "
+                f"authority) and start a FRESH capture.")
+            logger.critical("907 recorder: SUBSCRIBE ACK MISMATCH, TERMINAL — %s", terminal)
+            # Written into the capture BEFORE the raise, so the outcome reaches the artifact
+            # (`render._render_capture_meta_block` prints every gap's reason and detail).
+            self._record_gap("schema_drift", terminal, dark_until_next_event=True, now=now)
+            self._stop = True
+            raise SubscriptionConfigMismatch(terminal)
+        logger.error("907 recorder: SUBSCRIBE ACK MISMATCH — %s", detail)
+        self._record_gap("schema_drift", detail, dark_until_next_event=True, now=now)
+        raise _GapAlreadyRecorded("subscribe ack mismatch — forcing reconnect")
+
+    def _check_schema_drift(self, now: Optional[float] = None) -> None:
         """The "connected but recording nothing" detector — see the module docstring.
 
         Trips only when frames ARE arriving (so this is not venue silence, which the heartbeat
@@ -773,11 +936,11 @@ class LiveRecorder:
                   f"json_decode_errors={self.n_json_decode_errors}) — connected but recording "
                   f"nothing; treating as a capture gap, not a quiet market")
         logger.error("907 recorder: SCHEMA DRIFT — %s", detail)
-        self._record_gap("schema_drift", detail, dark_until_next_event=True)
+        self._record_gap("schema_drift", detail, dark_until_next_event=True, now=now)
         self._frames_since_last_event = 0
         raise _GapAlreadyRecorded("schema drift — forcing reconnect")
 
-    def _check_per_pair_book_drift(self) -> None:
+    def _check_per_pair_book_drift(self, now: Optional[float] = None) -> None:
         """The PER-PAIR half of the "connected but recording nothing" detector.
 
         `_check_schema_drift` counts frames since ANY event, so it cannot fire while a single
@@ -799,7 +962,7 @@ class LiveRecorder:
               "see it, because the other pairs' events keep resetting it); treating as a capture "
               "gap, not a quiet market")
         logger.error("907 recorder: PER-PAIR BOOK DRIFT — %s", detail)
-        self._record_gap("schema_drift", detail, dark_until_next_event=True)
+        self._record_gap("schema_drift", detail, dark_until_next_event=True, now=now)
         self._book_mismatch_streak = {}
         raise _GapAlreadyRecorded("per-pair book drift — forcing reconnect")
 
@@ -854,8 +1017,24 @@ class LiveRecorder:
                    f"{self._dark_reason!r} gap and the first event after reconnecting"))
 
     def _record_gap(self, reason: str, detail: str, *,
-                     dark_until_next_event: bool = False) -> None:
-        now = self._clock()
+                     dark_until_next_event: bool = False,
+                     now: Optional[float] = None) -> None:
+        """Write a gap record spanning `[last event, now]`.
+
+        `now` is the caller's ALREADY-SAMPLED receive clock wherever the caller has one (run-49).
+        Re-reading `self._clock()` here took a SECOND, strictly later sample than the one the
+        same code path stamped that frame's events with, so on the `clock_jump` path the event
+        that TERMINATED the outage was stamped microseconds BEFORE the end of the gap written for
+        it and landed strictly INSIDE its own gap — a self-contradictory ledger produced under a
+        perfectly monotonic clock, structurally, on every jump. Measured on the live capture: 584
+        such events, max intrusion 32.902us, enough to make a 3.586-day capture refuse to render.
+        One clock sample per code path is the fix; `capture.GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S` is
+        the read-side allowance for captures already written by the old behaviour. Callers with no
+        sample of their own (the connect-failure and heartbeat-timeout paths, where no frame was
+        received) pass nothing and this samples the clock itself, as before.
+        """
+        if now is None:
+            now = self._clock()
         start = self._last_event_ts if self._last_event_ts is not None else now
         if now <= start:
             now = start  # zero-length gap still gets recorded — never dropped for being brief

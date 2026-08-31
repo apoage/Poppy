@@ -1,3 +1,60 @@
+> **STATUS (2026-09-01, factory run 49): ADDENDUM B1 SHIPPED. B1-vii DISCHARGED BY RENDER —
+> THE LIVE CAPTURE ANALYSES.**
+>
+> Suite **271 → 302** (31 added across 3 cycles, 0 removed or renamed by cycles 2–3; the only 3
+> removals vs HEAD are cycle 1's documented renames). selftest 12/12. Fixture `b0f8de8b…`
+> unchanged. B-iv proven byte-identical on six independently-built captures across two lenses.
+> Boundaries B1/B3/B4/B5, the B2 span fixes, the over-refusal asymmetric fix, terminal reconnect
+> and all six in-gate defects are in. The cycle-3 per-pair stale-book EXCLUSION is carved out
+> per D73 and remains B2's.
+>
+> **The BLOCKER that had been holding the whole probe hostage was a ~12 µs artifact of our own
+> recorder, not a corrupt ledger.** `_record_gap` sampled a SECOND, strictly later clock for a
+> gap's `end_ts` than the one its frame's events were stamped with, so the event that TERMINATED
+> a `clock_jump` landed inside its own gap — 584 times, max **32.902 µs**. A further 14 sat in NO
+> individual gap: `_merge_gap_spans` unions two gaps that merely TOUCH at an event's timestamp and
+> the seam read as containment. The refusal text asserted this shape "is not one it can produce
+> under a monotonic clock" — a true condition with a **false cause**. Fixed at both ends; a judge's
+> ablation on the real capture forced the split **598 → 584 → 0**.
+>
+> **D57, fourth instance, closed at the CLAIM not just the code.** The staleness key was
+> `(bid, ask, bid_sz, ask_sz)`, finer than the mid it protects, so a frozen price with jittering
+> sizes published `1m median 2.48 bp` on a mid that never moved. Re-keyed to `(bid, ask)` — but
+> re-keying does NOT make the gate fire (coverage is denominated over the UNION of book and trade;
+> measured 0.00132 against a 2% bound), so every shipped string was narrowed instead: the
+> whole-capture refusal reaches stale book time ONLY where that pair's trades stopped too, and a
+> frozen or silent book masked by live prints is **not caught anywhere in B1**. "Keepalive-driven"
+> was itself unsupported and is retired for FROZEN-MID BOOK TIME.
+>
+> **Two holes are deliberately un-closed and pinned by tests that say so in their docstrings:** a
+> book that goes silent, and a mid that OSCILLATES over a small value set, each while trades keep
+> flowing. Chasing period-N was refused on purpose — TASK_891's halt pattern. B2's book-mid
+> freshness term is the denomination-correct instrument, and is now load-bearing, not polish.
+>
+> **DECISION-CHANGING, FOR THE OPERATOR — this row's real output:**
+> * **20m and 1h are structurally 0-SAMPLE on all four pairs.** Longest gap-free stretch in
+>   3.586 days: **561.8 s**; `covers()` needs the whole `[t, t+h]` clean. Rendered as explicit
+>   not-evaluable rows (B3 holding). Only 1m and 5m carry numbers.
+> * **Gap-straddling candidate drop: BTC 70.63%, ETH 71.20%, SOL 70.91%, XRP 71.30%.**
+> * **BTC/USD reads 0.126% un-observed and 127,071 s of 273,233 s (46.5%) FROZEN MID on the same
+>   page** — 2,016,348 of 2,279,026 book events repeat the previous `(bid, ask)`, longest frozen
+>   run 779 s — with the 1m decile spine (p40 −0.01 / p50 0.01 / p60 0.05) a frozen mid produces.
+>   ETH/SOL/XRP do not show it. **D65 pre-registered four horizons; this capture supports two, on
+>   a flagship pair whose mid did not move for nearly half its accounted time. Whether that still
+>   answers "just to know" is the operator's call.**
+> * Stall regime confirmed FROM THE CAPTURE, not dmesg: 566 `clock_jump`s, median inter-start
+>   delta **600.0 s exactly**, median duration 61.53 s, 10.9% of span (run 48's udisksd finding).
+>
+> **NOT CLOSED, named:** `read_capture` materialises the whole file (`capture.py`,
+> `lines = list(...)`) — 11.8–12.6 GB RSS for 1.248 GB, ~9.5×, read twice; the capture is still
+> growing and a 7-day file implies ~24 GB against a 32 G cap. Its own row. B2 keeps: the
+> book-mid-only freshness term, the per-pair stale exclusion, the TRUE mid-age disclosure
+> (`mid age` is age by TIMESTAMP, not by VALUE — the artifact now says so), and D74 receipt-lag
+> denomination.
+>
+> Cycles: 3, exactly at `halt_after_failures`, with cycle 3 pre-declared as the last and bounded
+> to text plus one pinning test.
+
 > **STATUS (2026-08-29, planner; D73 RULED by operator): ADDENDUM B IS SPLIT IN TWO. B1 SHIPS
 > NOW. B2 IS RE-CUT. THE LIVE CAPTURE IS NEVER ANALYSED AT HEAD.**
 >

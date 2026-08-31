@@ -12,7 +12,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from capture import CaptureFormatError, read_capture  # noqa: E402
 from recorder import (  # noqa: E402
-    SUBSCRIBED_CHANNELS, WS_URL, LiveRecorder, RecorderConfig, _parse_book_frame, _parse_frame,
+    SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS, SUBSCRIBED_CHANNELS, WS_URL, LiveRecorder,
+    RecorderConfig, SubscriptionConfigMismatch, _parse_book_frame, _parse_frame,
     _subscribe_messages,
 )
 from phase2_rails import Phase2RefusalError, RailViolation  # noqa: E402
@@ -70,6 +71,14 @@ async def _fast_sleep(_seconds):
 def _trade_frame(price, ts_iso="2024-01-01T00:00:00Z"):
     return json.dumps({"channel": "trade", "data": [
         {"symbol": "BTC/USD", "price": price, "qty": 1.0, "side": "buy", "timestamp": ts_iso}]})
+
+
+def _heartbeat_frame():
+    return json.dumps({"channel": "heartbeat"})
+
+
+def _subscribe_ack_frame(channel, symbol):
+    return json.dumps({"method": "subscribe", "result": {"channel": channel, "symbol": symbol}})
 
 
 def test_connect_failure_then_success_records_a_disconnect_gap_and_captures_data(tmp_path):
@@ -756,3 +765,173 @@ def test_refusal_classes_propagate_through_the_broad_catch_instead_of_retrying(t
         with pytest.raises(exc_cls):
             asyncio.run(rec.run(max_iterations=5))
         rec.close(clean=False)
+
+
+# --- in-gate defect #2 (run-45) / "terminal reconnect" — the venue's own subscribe-ack symbol
+# --- is reconciled against `cfg.pairs` at CONNECTION START (after the first heartbeat cycle),
+# --- not days later at `capture.py` read time. A NON-TRANSIENT mismatch (the same offending
+# --- symbol recurring across `SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS` independent connections)
+# --- must STOP the recorder with a TERMINAL signal rather than reconnect-storming the venue
+# --- forever with an identical config producing an identical mismatch every time.
+
+def test_a_transient_single_reconnect_ack_mismatch_forces_reconnect_but_does_not_stop(tmp_path):
+    """One connection whose ack names a symbol `cfg.pairs` never declared reconciles at the
+    first heartbeat, forces a reconnect (a real `schema_drift` gap, in-run, at connection START —
+    not the old read-time-only reconciliation) — but does NOT raise `SubscriptionConfigMismatch`
+    on its own: a single occurrence could be a raced/partial ack set, so the recorder keeps going.
+    """
+    out = str(tmp_path / "cap.jsonl")
+    attempts = []
+
+    def connect_fn(url):
+        attempts.append(url)
+        if len(attempts) == 1:
+            ws = FakeWS([_subscribe_ack_frame("book", "XBT/USD"), _heartbeat_frame()])
+        else:
+            ws = FakeWS([_trade_frame(100.0)])  # exhausts -> RuntimeError -> ordinary gap+stop
+        return _AsyncCM(ws=ws)
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="t-ack",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, connect_fn, sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=2))
+    rec.close(clean=False)
+
+    assert len(attempts) == 2, "the mismatch forced exactly one reconnect, not a process exit"
+    meta = read_capture(out)
+    assert any(g.reason == "schema_drift" and "subscribe ACK named symbol" in g.detail
+               and "TERMINAL" not in g.detail for g in meta.gaps), (
+        "the in-run reconciliation wrote its own gap, distinct from an old read-time-only check")
+
+
+def test_the_same_ack_mismatch_recurring_across_connections_is_TERMINAL_and_stops_the_recorder(
+        tmp_path):
+    """Kraken's legacy `XBT/USD` spelling against a config declaring `BTC/USD`: the SAME
+    misconfiguration reconciles false on every single reconnect, because re-subscribing with an
+    unchanged config gets back the unchanged venue spelling every time. After
+    `SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS` consecutive connections all showing the identical
+    offending symbol, the recorder must STOP (raise `SubscriptionConfigMismatch`) rather than
+    reconnect forever — and the TERMINAL outcome must be written into the capture BEFORE the
+    raise, so a reader who opens the file (even mid-storm) sees why, without waiting days for a
+    read-time-only reconciliation that this defect's whole point is to pre-empt.
+    """
+    out = str(tmp_path / "cap.jsonl")
+    attempts = []
+
+    def connect_fn(url):
+        attempts.append(url)
+        ws = FakeWS([_subscribe_ack_frame("book", "XBT/USD"), _heartbeat_frame(), "__HANG__"])
+        return _AsyncCM(ws=ws)
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="t-terminal",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, connect_fn, sleep_fn=_fast_sleep)
+    with pytest.raises(SubscriptionConfigMismatch, match="TERMINAL"):
+        asyncio.run(rec.run(max_iterations=SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS + 5))
+    rec.close(clean=False)
+
+    assert len(attempts) == SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS, (
+        "stopped exactly at the terminal threshold — not one attempt earlier, not a storm past it")
+    meta = read_capture(out)
+    terminal_gaps = [g for g in meta.gaps if g.reason == "schema_drift" and "TERMINAL" in g.detail]
+    assert len(terminal_gaps) == 1
+    assert "XBT/USD" in terminal_gaps[0].detail
+    assert str(SUBSCRIBE_ACK_MISMATCH_TERMINAL_ATTEMPTS) in terminal_gaps[0].detail
+
+
+# --- run-49: the `clock_jump` path had NO test at all, and that is where the false premise grew --
+# Nothing in this suite drove `recorder.py`'s clock-jump branch, so nothing ever observed that the
+# gap it writes ends LATER than the event of the very frame that terminated the jump. The reader
+# then flagged that event as "strictly inside a recorded gap" and refused the whole capture, and
+# the refusal's own text asserted the shape "is not one this recorder can produce under a monotonic
+# clock" — false, and produced 584 times in the 3.586-day live capture.
+
+class _MicroClock:
+    """`time.monotonic()` at microsecond resolution: every READ advances by `tick`.
+
+    The point of the tick is that it makes a SECOND clock sample inside one code path observably
+    later than the first — which is exactly the defect. A test clock that returns a constant
+    cannot see this, and a wall clock's tick is not reproducible.
+    """
+
+    def __init__(self, start=1_000_000.0, tick=12.159e-6):
+        self.t = start
+        self.tick = tick
+        self.pending_jump = 0.0
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        self.t += self.tick + self.pending_jump
+        self.pending_jump = 0.0
+        return self.t
+
+
+class _JumpingWS(FakeWS):
+    """Arms a forward clock step just before the recorder reads the clock for frame `jump_before`."""
+
+    def __init__(self, recv_items, clock, jump_before, jump_s):
+        super().__init__(recv_items)
+        self._clock, self._jump_before, self._jump_s = clock, jump_before, jump_s
+        self._n = 0
+
+    async def recv(self):
+        self._n += 1
+        if self._n == self._jump_before:
+            self._clock.pending_jump = self._jump_s
+        return await super().recv()
+
+
+def test_a_clock_jump_gap_ends_exactly_at_the_event_that_terminated_it(tmp_path):
+    """RED before the fix, by 12.159us.
+
+    `_consume` samples the receive clock once per frame and stamps that frame's events with it.
+    `_record_gap` used to sample a SECOND, strictly later clock and write THAT as the gap's
+    `end_ts`, so the trade below — delivered by the very frame whose late arrival WAS the jump —
+    was stamped microseconds BEFORE the end of its own gap and landed strictly inside it. Under a
+    perfectly monotonic clock. Structurally, on every jump.
+
+    The assertion is on the raw ledger, deliberately not on the reader's
+    `n_events_inside_recorded_gaps`: the reader carries `GAP_EDGE_CLOCK_SAMPLE_TOLERANCE_S` for
+    captures already written by the old behaviour, and would mask this.
+    """
+    out = str(tmp_path / "cap.jsonl")
+    clock = _MicroClock()
+
+    def connect_fn(url):
+        return _AsyncCM(ws=_JumpingWS([_trade_frame(100.0), _trade_frame(101.0),
+                                        RuntimeError("simulated mid-stream drop")],
+                                       clock, jump_before=2, jump_s=10.0))
+
+    cfg = RecorderConfig(pairs=["BTC/USD"], out_path=out, capture_id="jump",
+                          heartbeat_timeout_s=5.0, backoff_base_s=0.001, backoff_max_s=0.01)
+    rec = LiveRecorder(cfg, connect_fn, clock=clock, sleep_fn=_fast_sleep)
+    asyncio.run(rec.run(max_iterations=1))
+    rec.close(clean=False)
+
+    rows = [json.loads(line) for line in open(out) if line.strip()]
+    trades = [r for r in rows if r["type"] == "trade"]
+    gaps = [r for r in rows if r["type"] == "gap"]
+    jumps = [g for g in gaps if g["reason"] == "clock_jump"]
+    assert len(trades) == 2, "both frames were recorded — the jump must not swallow an event"
+    assert len(jumps) == 1, "the clock jump was detected exactly once"
+    jump = jumps[0]
+
+    assert jump["start_ts"] == trades[0]["ts"], (
+        "a gap starts at the last event before it — that endpoint contact is the healthy shape")
+    assert jump["end_ts"] == trades[1]["ts"], (
+        "and it must END at the event that terminated it, not at a later clock sample: "
+        f"end_ts - event_ts = {jump['end_ts'] - trades[1]['ts']:.9f}s")
+
+    # the ledger and the events it is filed against do not contradict each other, at zero
+    # tolerance — the property the reader's tolerance exists to fake for OLD captures.
+    for ev in rows:
+        if ev["type"] not in ("book", "trade"):
+            continue
+        for g in gaps:
+            assert not (g["start_ts"] < ev["ts"] < g["end_ts"]), (
+                f"{ev['type']} at {ev['ts']!r} lies strictly inside recorded gap "
+                f"[{g['start_ts']!r}, {g['end_ts']!r}] ({g['reason']})")
+
+    meta = read_capture(out)
+    assert meta.n_events_inside_recorded_gaps == 0

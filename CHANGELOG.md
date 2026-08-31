@@ -3,6 +3,65 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-01 — TASK_907 Addendum B1 — declared-vs-observed at all five boundaries, and a 12-microsecond artifact that was holding the whole probe hostage
+
+- **What shipped.** Addendum B1 as D73 cut it, in `experiments/907_live_fill_probe/`: boundaries
+  B1 (per-session declarations), B3 (zero-sample pre-registered horizons render as stated rows),
+  B4 (`--capture` set clobber), B5 (`--pairs` reconciliation), the B2 span fixes (edge-hole
+  anchoring, coverage denominated in the CAPTURE span, `accounted_s=0` fail-closed, the `NO CLAIM`
+  sentinel), the over-refusal asymmetric fix, terminal reconnect, and all six in-gate defects.
+  Suite **271 → 302**; selftest 12/12; fixture `b0f8de8b…` unchanged. The cycle-3 per-pair
+  stale-book EXCLUSION is carved out per D73 and stays B2's.
+- **B4 and B5 were silently wrong in a way that is worth restating.** `--capture A --capture B`
+  rendered B's numbers and `--capture B --capture A` rendered A's — every column, every decile,
+  at `rc=0`, under a provenance block naming both files. And `--pairs SOL/USD` against a BTC/USD
+  capture returned `rc=0` with a coverage row **certifying BTC/USD at 0.000% uncovered against a
+  2.00% bound**, three cadence rows, and then zero estimand sections: the disclosure box vouching
+  for data the filter had deleted from every table below it. Both now refuse, order-independently.
+- **B1-vii: the live capture RENDERS.** 1.248 GB, 10,196,132 lines, 3.586 days, four pairs,
+  `rc=0`, 214-line artifact, `closed_cleanly=False` correctly stated. **What had been blocking it
+  was a ~12 µs artifact of our own recorder.** `_record_gap` sampled a SECOND, strictly later
+  clock for a gap's `end_ts` than the one its frame's events were stamped with, so the event that
+  *terminated* a `clock_jump` landed inside its own gap — 584 times, min 5.007 µs / median
+  12.159 µs / **max 32.902 µs**. A further 14 sat inside *no* individual gap at all:
+  `_merge_gap_spans` unions two gaps that merely TOUCH at one event's timestamp, and the seam read
+  as containment. The refusal text meanwhile asserted this shape "is not one it can produce under
+  a monotonic clock" and sent the reader to look for a hand-built ledger. **A true condition with
+  a false cause.** Fixed at both ends — the recorder now passes its already-sampled `now`, and the
+  reader tests containment against INDIVIDUAL gaps with a 1 ms high-edge-only tolerance justified
+  from the mechanism and the measured bound. A judge's three-way ablation on the real capture
+  forced the split: **598 → 584 → 0**.
+- **D57, a fourth instance, closed at the CLAIM and not just the code.** The staleness run key was
+  `(bid, ask, bid_sz, ask_sz)` — strictly finer than the mid the estimand consumes — so a frozen
+  price with jittering sizes published `1m median 2.48 bp`, deciles −4.00…+9.00, on a mid that had
+  not moved for two hours. Re-keyed to `(bid, ask)`. **But re-keying does not make the gate fire:**
+  `uncovered_fraction` is denominated over the UNION of book and trade, so live prints keep it
+  dense (measured 0.00132 against a 2% bound). Rather than widen the mechanism, every shipped
+  string was narrowed to what the code actually delivers — the whole-capture refusal reaches stale
+  book time ONLY where that pair's trades stopped too, and a frozen or silent book masked by live
+  prints is **not caught anywhere in B1**. The disclosure now prints the measurement that would
+  embarrass it. Also retired: "keepalive-driven" was itself unsupported (the recorder emits on
+  size change too), so the line is now FROZEN-MID BOOK TIME and asserts only that the mid carried
+  no new information — never that the wire was unobserved.
+- **Two deliberately un-closed holes are pinned by tests whose docstrings say they assert a HOLE,
+  not a feature:** a book that goes silent, and a mid that oscillates over a small set of values,
+  each while trades keep flowing. Widening the run key to chase period-N cycles was refused on
+  purpose — that is TASK_891's halt pattern ("each cycle's escaping spelling got more exotic; the
+  row chases total coverage over an unbounded input space"). The denomination-correct instrument
+  is B2's book-mid freshness term.
+- **Remainders → operator (DECISIONS row to be seeded at disarm).** The capture can answer only
+  half its question: the longest gap-free stretch in 3.586 days is **561.8 s**, so the
+  pre-registered **20m and 1h horizons are structurally 0-sample on all four pairs** (rendered as
+  explicit not-evaluable rows), with 70.6–71.3% of markout candidates dropped for straddling a
+  gap. And BTC/USD reads 0.126% un-observed beside **127,071 s of 273,233 s (46.5%) frozen mid** —
+  2,016,348 of its 2,279,026 book events repeat the previous `(bid, ask)` — with the 1m decile
+  spine (p40 −0.01 / p50 0.01 / p60 0.05) that a frozen mid produces; no other pair shows it.
+  The stall regime is confirmed from the capture itself: 566 `clock_jump`s, median inter-start
+  delta **600.0 s exactly**, median duration 61.53 s, 10.9% of span.
+- **Remainder → its own row:** `read_capture` materialises the whole file
+  (`lines = list(_iter_lines_tolerant(path))`) — 11.8–12.6 GB RSS for 1.248 GB, ~9.5×, read twice.
+  The capture is still growing; a 7-day file implies ~24 GB against a 32 G cap.
+
 ## 2026-08-31 — TASK_913 — the stall's actor, found by refuting two wrong culprits including our own
 
 - **What shipped.** Two documents in `experiments/907_live_fill_probe/`:

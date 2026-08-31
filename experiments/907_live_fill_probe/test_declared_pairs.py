@@ -31,6 +31,7 @@ Every fixture here is built with the real production modules — no monkeypatchi
 tests that hand-craft a `CaptureMetadata` say so and say which shape they are closing.
 """
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -187,6 +188,16 @@ def test_a_declared_channel_of_one_pair_with_zero_events_is_refused(tmp_path):
     t=0. `missing_channels()` is a capture-wide sum (BTC's book keeps it non-zero) and per-pair
     coverage POOLS book+trade (ETH's dense trades keep it covered), so the cell is absent from the
     cadence table and from everything else with nothing flagging it.
+
+    This direction — a missing `book` cell — REFUSES, and stays refusing after ADDENDUM B's
+    asymmetric fix below: an actively-printing pair (it has trades) must have a book, so a book's
+    total absence is a broken subscription or schema drift, never a market fact. Contrast the
+    MIRROR case, `test_the_mirror_missing_trade_with_book_alive_is_disclosed_not_refused` below:
+    a missing `trade` cell on a pair whose `book` IS present is treated differently — a live book
+    proves the socket and symbol are alive, so zero prints in the window is a fact about the
+    market (nothing traded), not about a dead subscription, and it is DISCLOSED rather than
+    refused (ADDENDUM B in-gate MAJOR #1, run-45: this was the over-refusal that discarded a
+    whole healthy multi-pair render over exactly this shape one field over).
     """
     path = _write_capture(tmp_path / "dead_cell.jsonl",
                            {"BTC/USD": BOTH, "ETH/USD": ("trade",)})
@@ -205,9 +216,45 @@ def test_a_declared_channel_of_one_pair_with_zero_events_is_refused(tmp_path):
         == ["book", "trade", "book+trade"]
 
     assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == ["ETH/USD:book"]
+    assert meta.disclosed_empty_trade_cells() == [], (
+        "this is the BOOK-missing direction, not the trade-missing one — the disclosure list "
+        "must stay empty here, or the asymmetry below is not really an asymmetry")
     assert not meta.is_complete()
     with pytest.raises(CaptureFormatError, match="ETH/USD:book"):
         meta.assert_complete()
+
+
+def test_the_mirror_missing_trade_with_book_alive_is_disclosed_not_refused(tmp_path):
+    """THE MIRROR of the test above (ADDENDUM B, in-gate MAJOR #1, run-45), added here because
+    that test asserted the direction SYMMETRICALLY before this addendum — editing it to add this
+    explicit mirror expectation is AUTHORISED by the addendum spec, precisely so the asymmetry is
+    not later mistaken for a weakening of the check.
+
+    ETH/USD is declared, observed, densely covered by its `book` channel, and perfectly
+    reconciled at PAIR level — but it never printed a single trade for the whole capture. Unlike
+    the `book`-missing direction, a live, densely-updating `book` is itself proof the pair's
+    symbol and subscription are alive; zero prints in the window is then a MARKET FACT (this pair
+    just didn't trade), not evidence of a broken subscription. So this direction is DISCLOSED, not
+    refused — this is the fix for the run-45 over-refusal MAJOR, where exactly this shape on ONE
+    pair discarded a whole render's numbers for every OTHER, healthy pair in the same capture.
+    """
+    path = _write_capture(tmp_path / "dead_trade_cell.jsonl",
+                           {"BTC/USD": BOTH, "ETH/USD": ("book",)})
+    meta = read_capture(path)
+
+    assert meta.declared_pairs == ["BTC/USD", "ETH/USD"]
+    assert meta.observed_pairs == ["BTC/USD", "ETH/USD"], "reconciles at PAIR level"
+    assert meta.observed_pair_channels["ETH/USD"] == ["book"]
+    assert meta.missing_channels() == []
+    assert meta.degraded_coverage_pairs() == []
+    assert meta.unrecorded_data_gaps == []
+
+    # the cell is absent from `declared_channel_without_data` (it must NOT gate)...
+    assert meta.pair_reconciliation_gaps()["declared_channel_without_data"] == []
+    # ...and it IS the one thing named as disclosed
+    assert meta.disclosed_empty_trade_cells() == ["ETH/USD"]
+    assert meta.is_complete(), "a disclosed, non-gating shape must not read as incomplete"
+    meta.assert_complete()  # must not raise — this is the fix, verified positively, not by proxy
 
 
 def test_an_undeclared_channels_capture_still_reconciles_at_pair_level(tmp_path):
@@ -455,6 +502,17 @@ def test_is_complete_and_assert_complete_never_disagree(tmp_path):
         _hand_built(declared_pairs=[]),
         _hand_built(observed_pair_channels={"BTC/USD": ["trade"]}),
         _hand_built(coverage_evaluated=False),
+        # run-49: `n_book`/`n_trade` were pinned at the helper's happy-path 5/5 in every case
+        # above, so the ONE field the twins still tested with two DIFFERENT expressions
+        # (`> 0` here, `== 0` there — not complements over the integers) was never varied and the
+        # divergence was invisible to this very test. Vary it, in both the reachable and the
+        # unreachable direction.
+        _hand_built(n_book=0, n_trade=0),
+        _hand_built(n_book=0, n_trade=5),
+        _hand_built(n_book=5, n_trade=0),
+        _hand_built(n_book=-1, n_trade=0),
+        _hand_built(n_book=-5, n_trade=1),
+        _hand_built(n_book=0, n_trade=-3),
     ]
     n_complete = 0
     for meta in cases:
@@ -469,6 +527,80 @@ def test_is_complete_and_assert_complete_never_disagree(tmp_path):
             f"(declared={meta.declared_pairs}, observed={meta.observed_pairs})")
         n_complete += int(not raised)
     assert 0 < n_complete < len(cases), "the table must contain both passing and failing cases"
+
+
+# --- in-gate defect #3 (run-45): the twins DO diverge on an int-like falsy `had_meta_start` -------
+
+def test_had_meta_start_int_zero_the_twins_still_agree_and_BOTH_refuse():
+    """`capture.py:624` used to read `if self.had_meta_start is False:` — an IDENTITY check.
+    `had_meta_start` is typed `bool`, but nothing stops a hand-built `CaptureMetadata` (every
+    shape test in this file) from carrying an int-like falsy value such as `0`. `0 is False` is
+    `False` in Python — equal but not identical — so `is_complete()` (built on `and`, i.e.
+    truthiness: `bool(self.had_meta_start)`) correctly read `had_meta_start=0` as incomplete,
+    while the identity-checked `assert_complete()` sailed straight past its own guard. Fixed by
+    reading `not self.had_meta_start` in both places — this test pins that BOTH now refuse, not
+    just the boolean one.
+    """
+    meta = _hand_built(had_meta_start=0)
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="no meta_start record"):
+        meta.assert_complete()
+
+
+# --- in-gate defect #4 (run-45): channels=[] is the identical shape to declared_pairs=[], --------
+# --- one field over, and must be refused the same way -------------------------------------------
+
+def test_channels_explicit_empty_list_refuses_like_declared_pairs_empty():
+    """`channels=[]` (an EXPLICIT empty declaration, distinct from `channels=None`/"undeclared")
+    used to silently disable BOTH per-cell channel checks via `missing_channels()`'s
+    `if not self.channels: return []` — the identical shape to `declared_pairs=[]`, which IS
+    refused, one field over. `declared_channels_explicitly_empty()` closes the inconsistency.
+    """
+    meta = _hand_built(channels=[])
+    assert meta.declared_channels_explicitly_empty()
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="EXPLICITLY EMPTY CHANNEL SET"):
+        meta.assert_complete()
+
+
+def test_channels_undeclared_None_is_NOT_treated_as_explicitly_empty():
+    """The mirror control: `channels=None` ("undeclared", the real shape every synthetic/replay/v1
+    fixture produces) must NOT be caught by the new check — only an EXPLICIT `[]` is."""
+    meta = _hand_built(channels=None)
+    assert not meta.declared_channels_explicitly_empty()
+    assert meta.is_complete()
+    meta.assert_complete()
+
+
+# --- in-gate defect #5 (run-45): the channel-side MIRROR of declared-vs-observed ------------------
+
+def test_observed_channel_undeclared_mirror_fires_when_book_floods_a_trade_only_declaration(
+        tmp_path):
+    """A capture declaring `channels=['trade']` but whose only data is `book` events used to
+    reconcile PERFECTLY — `observed_channel_undeclared` was never implemented, so every primary
+    estimand number would rest on a channel the capture never declared, silently. The pair-level
+    check (`declared_without_data`) does not catch this: `BTC/USD` WAS declared and DOES have
+    data, just on the wrong channel.
+    """
+    path = _write_capture(tmp_path / "trade_only_but_book_floods.jsonl",
+                           {"BTC/USD": ("book",)}, channels=("trade",))
+    meta = read_capture(path)
+    assert meta.channels == ["trade"]
+    assert meta.observed_pair_channels["BTC/USD"] == ["book"]
+    gaps = meta.pair_reconciliation_gaps()
+    assert gaps["observed_channel_undeclared"] == ["BTC/USD:book"]
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="GATE .iv. REFUSAL"):
+        meta.assert_complete()
+
+
+def test_observed_channel_undeclared_mirror_is_silent_on_a_correctly_declared_capture(tmp_path):
+    """Control: a capture that declares exactly the channels it uses must not trip the mirror."""
+    path = _write_capture(tmp_path / "correctly_declared.jsonl",
+                           {"BTC/USD": BOTH}, channels=BOTH)
+    meta = read_capture(path)
+    assert meta.pair_reconciliation_gaps()["observed_channel_undeclared"] == []
+    meta.assert_complete()
 
 
 # --- non-vacuity: a healthy multi-pair capture must still pass and render ------------------------
@@ -497,3 +629,43 @@ def test_the_reconciliation_is_not_reachable_from_the_command_line():
     for forbidden in ("declared_pairs", "skip_pair_reconciliation", "allow_dead_pairs",
                        "require_all_pairs", "allow_undeclared_pairs"):
         assert forbidden not in flags
+
+
+# --- run-49: the LAST field the twins did not share a helper for -------------------------------
+
+def test_a_negative_data_event_count_refuses_in_BOTH_twins():
+    """`is_complete()` asked `(n_book + n_trade) > 0`; `assert_complete()` asked
+    `(n_book + n_trade) == 0`. Those are not complements: for a NEGATIVE sum both are False, so
+    `is_complete()` read incomplete while `assert_complete()` PASSED — the unsafe direction, and
+    the same shape as in-gate defect #3's `had_meta_start is False` identity test one field over.
+
+    Unreachable through `read_capture` (its counters only increment), so this is latent rather
+    than exploitable. It is fixed anyway because `capture.py` CLAIMS in `is_complete`'s own
+    docstring that every condition appears in both twins "via the same helper methods", and that
+    claim was false for this field — defect #3's instruction was "either route it or drop the
+    claim". Both now call `no_data_events()`, and `<= 0` puts nonsense on the refusing side.
+    """
+    meta = _hand_built(n_book=-1, n_trade=0)
+    assert meta.no_data_events()
+    assert not meta.is_complete()
+    with pytest.raises(CaptureFormatError, match="zero data events"):
+        meta.assert_complete()
+
+
+def test_every_condition_in_the_twins_really_is_routed_through_a_shared_helper():
+    """The claim `is_complete`'s docstring makes, checked against the source rather than trusted.
+
+    Both twins must reach each condition through a NAMED method on `CaptureMetadata`, never
+    through an inline expression one of them spells differently from the other — that difference
+    in spelling is precisely how this field and `had_meta_start` diverged.
+    """
+    src = inspect.getsource(CaptureMetadata)
+    for helper in ("no_data_events", "missing_channels", "declared_channels_explicitly_empty",
+                   "declared_pair_set_missing", "pair_reconciliation_gaps",
+                   "degraded_coverage_pairs"):
+        assert src.count(f"self.{helper}()") >= 2, (
+            f"{helper}() must be called by BOTH is_complete() and assert_complete()")
+    body = inspect.getsource(CaptureMetadata.is_complete)
+    assert "n_book" not in body and "n_trade" not in body, (
+        "the data-event condition must not be spelled inline in one twin and as a different "
+        "expression in the other")

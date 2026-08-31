@@ -41,13 +41,24 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from capture import CaptureFormatError, CaptureMetadata  # noqa: E402
+from capture import (  # noqa: E402
+    BOOK_KEEPALIVE_OVERRUN_FACTOR as CAPTURE_BOOK_KEEPALIVE_OVERRUN_FACTOR,
+    CaptureFormatError, CaptureMetadata, _fmt_uncovered_fraction,
+)
 from estimands import Estimand1Result, Estimand2Result  # noqa: E402
 from reference_fill_model import MODEL_ADVERSE_SELECTION_BP_TIERS  # noqa: E402
 
 #: What a cell renders when no comparison could be executed. Deliberately NOT a number, NOT
 #: "0", and NOT a verdict — see the module docstring.
 NOT_EVALUABLE = "not-evaluable"
+
+#: How many individual gap records the provenance block prints before summarizing (run-49).
+#: The real 3.586-day capture carries 1,688 of them, and printing every one produced an 1,860-line
+#: artifact of which ~1,700 lines were this loop — the disclosures a reader is meant to check
+#: buried under a raw ledger dump. Capped like every other sample list in this module's refusals,
+#: with the TOTAL and the per-reason breakdown stated so nothing is silently dropped: the count is
+#: the claim, the individual lines are only examples of it.
+MAX_RENDERED_GAP_LINES = 40
 
 # Gate (iii): this exact text (module-level, not inlined per call site) is what the test pins.
 REQUIRED_DISCLOSURE = (
@@ -86,6 +97,33 @@ def _render_capture_meta_block(captures: List[CaptureMetadata]) -> str:
                       f"(book={meta.n_book}, trade={meta.n_trade}), "
                       f"span=[{meta.start_ts:.0f}, {meta.end_ts:.0f}], "
                       f"recorded_gaps={len(meta.gaps)}, closed_cleanly={meta.closed_cleanly}")
+        # B1 (run-45): sessions — so an old single-session capture is never presented as
+        # indistinguishable from a reconciled multi-session one. `declared_pairs`/`channels` above
+        # are already the UNION across every session; this line is what lets a reader see WHICH
+        # sessions contributed to that union, and notice when they disagree.
+        lines.append(f"  - sessions: {len(meta.sessions)} "
+                      f"({', '.join(s.kind for s in meta.sessions) or 'none'})")
+        if len(meta.sessions) > 1:
+            for i, s in enumerate(meta.sessions):
+                lines.append(f"    - session {i} ({s.kind}): pairs={s.pairs}, "
+                              f"channels={s.channels if s.channels is not None else 'undeclared'}, "
+                              f"heartbeat_timeout_s={s.heartbeat_timeout_s}")
+            distinct_pair_decls = {tuple(s.pairs) for s in meta.sessions if s.pairs}
+            distinct_channel_decls = {tuple(s.channels) for s in meta.sessions
+                                       if s.channels is not None}
+            # cycle 2 (run-45), MINOR 2: `heartbeat_timeout_s` is the THIRD field a session
+            # declares, and it was excluded from this comparison — so two sessions differing only
+            # in the recorder's own liveness knob never tripped the banner, even though that knob
+            # is exactly what "no gap was recorded" is evidence of. The raw values were printed
+            # above, so no information was lost; the FLAG was.
+            distinct_hb_decls = {s.heartbeat_timeout_s for s in meta.sessions
+                                  if s.heartbeat_timeout_s is not None}
+            if (len(distinct_pair_decls) > 1 or len(distinct_channel_decls) > 1
+                    or len(distinct_hb_decls) > 1):
+                lines.append("    - **HETEROGENEOUS DECLARATIONS**: this capture's sessions did "
+                              "not all declare the same config — the reconciliation above uses "
+                              "the UNION of all of them, never the first session presented as "
+                              "the whole.")
         # Recorder health. "Connected but recording nothing" is invisible unless these are said
         # out loud, and Kraken v2's live schema is UNVERIFIED by this row.
         if meta.counters_present:
@@ -117,9 +155,29 @@ def _render_capture_meta_block(captures: List[CaptureMetadata]) -> str:
         if meta.truncated_tail:
             lines.append("  - truncated trailing line (a kill mid-write) — tolerated, "
                           "the partial record is not counted")
-        for g in meta.gaps:
+        if meta.gaps:
+            # Run-49: capped, with the totals stated. Every gap still counts in full toward the
+            # coverage arithmetic above and toward `covers()` per markout — this cap is about
+            # what is PRINTED, and the summary line carries the whole population.
+            by_reason: Dict[str, int] = {}
+            total_gap_s = 0.0
+            for g in meta.gaps:
+                by_reason[g.reason] = by_reason.get(g.reason, 0) + 1
+                total_gap_s += g.duration_s
+            reasons = ", ".join(f"{r}={n}" for r, n in sorted(by_reason.items()))
+            lines.append(
+                f"  - recorded gaps: {len(meta.gaps)} record(s) totalling {total_gap_s:.0f}s "
+                f"(by reason: {reasons}); coalesced into {len(meta.merged_gap_spans)} disjoint "
+                f"span(s). Every one of them is counted in the coverage table below and in the "
+                f"per-markout `covers()` check; the listing that follows is capped at "
+                f"{MAX_RENDERED_GAP_LINES} example(s).")
+        for g in meta.gaps[:MAX_RENDERED_GAP_LINES]:
             lines.append(f"  - gap: {g.reason} [{g.start_ts:.0f}, {g.end_ts:.0f}] "
                           f"({g.duration_s:.1f}s) — {g.detail}")
+        if len(meta.gaps) > MAX_RENDERED_GAP_LINES:
+            lines.append(f"  - gap: ... and {len(meta.gaps) - MAX_RENDERED_GAP_LINES} further "
+                          f"recorded gap(s) not listed individually (see the totals above; the "
+                          f"capture file itself is the full ledger).")
         lines.append(_render_coverage_block(meta))
     lines.append("")
     return "\n".join(lines)
@@ -153,6 +211,35 @@ def _render_coverage_block(meta: CaptureMetadata) -> str:
         f"{len(meta.unrecorded_data_gaps)} over data-bearing events alone (both must be 0 for "
         f"this report to exist).",
     ]
+    # B2 item 2 (run-45): coverage above is denominated in the CAPTURE span (all events,
+    # heartbeats included) — state the DATA-BEARING span next to it so the reconciliation is
+    # visible rather than implied: the gap between the two IS the quantity that used to collapse
+    # the denominator together with the numerator (the run-45 BLOCKER).
+    if meta.start_ts is not None and meta.end_ts is not None:
+        capture_span_s = meta.end_ts - meta.start_ts
+        if meta.data_start_ts is not None and meta.data_end_ts is not None:
+            data_span_s = meta.data_end_ts - meta.data_start_ts
+            lines.append(
+                f"    - capture span (all events, heartbeats included): {capture_span_s:.1f}s "
+                f"[{meta.start_ts:.0f}, {meta.end_ts:.0f}]; data-bearing span (book/trade only): "
+                f"{data_span_s:.1f}s [{meta.data_start_ts:.0f}, {meta.data_end_ts:.0f}] — the "
+                f"per-pair coverage table above is denominated in the CAPTURE span, reconciled "
+                f"against this data span; the difference between the two "
+                f"({capture_span_s - data_span_s:.1f}s) is what a data-span-denominated "
+                f"statistic would have silently excluded from its own denominator.")
+        else:
+            lines.append(
+                f"    - capture span (all events, heartbeats included): {capture_span_s:.1f}s "
+                f"[{meta.start_ts:.0f}, {meta.end_ts:.0f}]; data-bearing span: NONE (zero "
+                f"book/trade events).")
+    disclosed_trade = meta.disclosed_empty_trade_cells()
+    if disclosed_trade:
+        lines.append(
+            f"    - **disclosed empty trade cell(s)** (in-gate MAJOR #1, run-45): {disclosed_trade} "
+            f"— a live `book` proves the pair's subscription and symbol are alive; zero prints in "
+            f"the window is a market fact, not a broken subscription, so it is DISCLOSED here "
+            f"rather than refusing the whole render (a missing `book` cell on an observed pair "
+            f"still refuses — see the provenance section above if this capture did that).")
     if not meta.coverage_by_pair:
         lines.append("    - per-pair coverage: NOT APPLICABLE (no data-bearing span).")
     else:
@@ -164,9 +251,86 @@ def _render_coverage_block(meta: CaptureMetadata) -> str:
             lines.append(
                 f"| {pair} | {cov.n_data_events} | {cov.span_s:.0f} | "
                 f"{cov.recorded_gap_s:.0f} | {cov.accounted_s:.0f} | {cov.covered_s:.0f} | "
-                f"{cov.uncovered_fraction * 100:.3f}% | "
+                f"{_fmt_uncovered_fraction(cov.uncovered_fraction)} | "
                 f"{meta.max_uncovered_fraction * 100:.2f}% |")
         lines.append("")
+        # cycle 2 (run-45): the NO-CLAIM sentinel, said out loud. `accounted_s <= 0` means this
+        # pair's coverage arithmetic had no denominator, so it made no claim — which is a
+        # different statement from "0% un-observed" (the value this branch used to return) and
+        # must never be read as the strongest coverage claim the instrument can make.
+        no_claim = meta.no_claim_coverage_pairs()
+        if no_claim:
+            lines.append(
+                f"    - **NO COVERAGE CLAIM** for pair(s) {no_claim}: their accounted time is "
+                f"zero (a zero-length capture span, or a span whose absence the gap ledger "
+                f"discloses in full), so no un-observed fraction exists to report. Read as "
+                f"\"this instrument measured nothing here\", NOT as \"nothing was missed\".")
+    # cycle 2 (run-45), the keepalive reconciliation: the declared emission policy checked against
+    # the observed cadence, in BOTH directions. Emitted only when there is something to say, so a
+    # capture with a healthy book renders byte-identically to before.
+    stale_pairs = meta.stale_book_pairs()
+    if stale_pairs:
+        detail = ", ".join(
+            f"{p}: {meta.coverage_by_pair[p].stale_book_s:.0f}s"
+            for p in stale_pairs)
+        lines.append(
+            f"    - **FROZEN-MID BOOK TIME** — {detail}. Over these stretches the recorder kept "
+            f"emitting `book` events (its declared policy is change-or-keepalive at a "
+            f"`book_keepalive_s`={meta.declared_book_keepalive_s}s floor) while the top-of-book "
+            f"PRICE PAIR `(bid, ask)` never moved. (Sizes are deliberately NOT part of that key: "
+            f"the estimands below consume only the mid `(bid+ask)/2`, and keying on sizes too "
+            f"made a frozen mid with jittering sizes read as a fully-observed book.) Those "
+            f"repeats are EXCLUDED from the observed seconds above — only the first event of each "
+            f"frozen run counts — and are already folded into the un-observed fraction printed in "
+            f"the table. **What this asserts, exactly:** the mid these estimands are built from "
+            f"carried no new information across these stretches. It does NOT assert the wire was "
+            f"unobserved: the recorder emits a `book` event on a top-of-book change INCLUDING a "
+            f"size-only change, as well as on its keepalive timer, and the shipped record carries "
+            f"no per-event flag telling the two apart — so a repeat here may be a timer firing "
+            f"with no frame behind it OR a real frame in which only the sizes moved, and this "
+            f"reader counts both. "
+            f"**READ THE REACH OF THIS NARROWLY.** The un-observed fraction is denominated over "
+            f"the UNION of each pair's `book` AND `trade` observations, so stale book time can "
+            f"push a pair past the declared bound (and refuse the whole capture) ONLY where that "
+            f"pair's trades have stopped as well. **A book frozen or silent while its prints keep "
+            f"flowing is NOT caught by any gate in ADDENDUM B1** — measured: 7195s of a 7200s "
+            f"capture stale with trades every 30s reads 0.13% un-observed against a 2.00% bound "
+            f"and publishes markouts on a mid that never moved. Catching that needs a "
+            f"book-mid-only freshness term, which is ADDENDUM B2 scope, as is any per-pair "
+            f"exclusion. Read this line as a MEASUREMENT of stale book time, never as evidence "
+            f"that staleness has been checked and cleared — for these pairs or for the pairs "
+            f"absent from this line. "
+            f"**THE EXACT REACH OF THE WORD \"STALE\" HERE, because this line names a mechanism "
+            f"and a mechanism invites the stronger reading.** It counts one shape and one only: a "
+            f"RUN OF CONSECUTIVE IDENTICAL `(bid, ask)` events. Any change to the price pair — "
+            f"including a change back — ENDS the run. So a mid that OSCILLATES over a small set "
+            f"of values, or otherwise moves without ever discovering a new price, is NOT COUNTED "
+            f"BY THIS MEASURE and is NOT DETECTED ANYWHERE IN ADDENDUM B1. Measured: a top of "
+            f"book alternating between two `(bid, ask)` values for the whole of a 7200s capture "
+            f"reads `stale_book_s = 0.0`, prints NO line here at all, reports 0.00% un-observed, "
+            f"and publishes its markouts. A `0.0s` reading, or absence from this line, is "
+            f"therefore NOT evidence that the mid was informative — it is only evidence that no "
+            f"literal repeat ran long enough to count. The denomination-correct instrument for "
+            f"\"this mid discovered no new prices\" is ADDENDUM B2's book-mid FRESHNESS term; "
+            f"this run counter is not it, and widening this counter to chase period-N cycles or "
+            f"bounded-value sets would be that B2 term built in the wrong denomination.")
+    if meta.book_keepalive_overruns:
+        detail = ", ".join(
+            f"{p}: {n} interval(s), worst {meta.book_keepalive_max_interval_s[p]:.1f}s"
+            for p, n in sorted(meta.book_keepalive_overruns.items()))
+        lines.append(
+            f"    - **BOOK KEEPALIVE OVERRUN** (the mirror direction of the same declaration) — "
+            f"{detail}. The recorder DECLARED it would emit a book event at least every "
+            f"{meta.declared_book_keepalive_s}s; these intervals exceed that floor by more than "
+            f"{CAPTURE_BOOK_KEEPALIVE_OVERRUN_FACTOR:g}x with no recorded gap explaining them. "
+            f"DISCLOSED, not refused: the reader's own gap-detect threshold is "
+            f"{meta.gap_detect_threshold_s:g}s, so a hole this size is invisible to every other "
+            f"check here and a reader must be told rather than have a multi-day capture "
+            f"retro-refused over scheduler noise. The scan is anchored to the CAPTURE span, so "
+            f"book silence BEFORE the first book event or AFTER the last one counts as an "
+            f"interval like any other — that edge case is the worst one this check exists for "
+            f"(a book that emits on time and then simply stops), and it used to be invisible "
+            f"because no consecutive pair of book events spans it.")
     # A.4(4): the cadence table alone cannot say whether a book median of 5.0s is the MARKET's
     # rate or the RECORDER's rate limit — so the declared floor is stated immediately above it,
     # unconditionally (an undeclared floor is itself the thing a reader must be told). This is
@@ -241,6 +405,12 @@ def _render_estimand1_section(pair: str, e1: Estimand1Result) -> str:
     for horizon in ("1m", "5m", "20m", "1h"):
         h = e1.by_horizon.get(horizon)
         if h is None:
+            # B3 (run-45): `compute_estimand1` now always emits all four pre-registered horizons,
+            # so this should be unreachable in practice — but the render must not be ABLE to drop
+            # a pre-registered horizon silently if it ever is missing (e.g. a hand-built
+            # `Estimand1Result` in a test). A stated row, not a silent skip.
+            lines.append(f"| {horizon} | (MISSING — pre-registered horizon absent from this "
+                          f"result; not omitted, not zero) | | | | | | | | | | | | | | |")
             continue
         if h.deciles_bp:
             deciles = " | ".join(f"{h.deciles_bp[d]:.2f}"
@@ -254,7 +424,13 @@ def _render_estimand1_section(pair: str, e1: Estimand1Result) -> str:
     lines.append("`mid age` is how stale the backing observation was at the markout horizon "
                   "(cap: one bar interval). A 1-minute markout read off a mid observed tens of "
                   "seconds earlier is not a 1-minute measurement, so the staleness is printed "
-                  "rather than assumed away.")
+                  "rather than assumed away. **It is age by TIMESTAMP, not by VALUE** (run-49): "
+                  "it measures the time since the last `book` EVENT for this pair, and the "
+                  "recorder emits one at least every `book_keepalive_s` whether or not the top "
+                  "of book moved — so a mid frozen in VALUE for hours still reads as seconds "
+                  "old here. Read this column against the STALE BOOK TIME line in the coverage "
+                  "block above, which measures the other thing. A freshness disclosure that "
+                  "reads the TRUE mid age is ADDENDUM B2 scope and does not exist yet.")
     lines.append("")
 
     total_dropped = e1.total_dropped_nonfinite
@@ -271,6 +447,8 @@ def _render_estimand1_section(pair: str, e1: Estimand1Result) -> str:
     for horizon in ("1m", "5m", "20m", "1h"):
         h = e1.by_horizon.get(horizon)
         if h is None:
+            lines.append(f"- {horizon}: (MISSING — pre-registered horizon absent from this "
+                          f"result; not omitted, not zero; no comparison was or could be run)")
             continue
         if not h.is_evaluable:
             # No finite median exists. A comparison did not run, so no verdict is emitted —
@@ -338,12 +516,23 @@ def render_report(captures: List[CaptureMetadata],
                    estimand2_by_pair: Dict[str, Estimand2Result],
                    generated_ts: Optional[float] = None,
                    estimand1_trade_fallback_by_pair: Optional[
-                       Dict[str, Estimand1Result]] = None) -> str:
+                       Dict[str, Estimand1Result]] = None,
+                   pair_capture_path: Optional[Dict[str, str]] = None,
+                   pairs_filter: Optional[List[str]] = None,
+                   captures_declared: Optional[List[str]] = None) -> str:
     """Build the full markdown artifact. Raises `CaptureFormatError` (refuses to render
     anything) if any supplied capture is absent, incomplete, or internally inconsistent —
     gate (iv). The disclosure box (gate iii) is unconditionally the first content emitted.
+
+    `pair_capture_path` (B4, run-45): which supplied capture backed each pair's numbers — stated
+    so a reader never has to guess which of several provenance-listed captures a given number
+    came from. `pairs_filter`/`captures_declared` (B4/B5): the applied `--pairs` filter and the
+    raw `--capture` list, stated next to the declared/observed sets and reconciled against how
+    many captures actually contributed a pair's numbers.
     """
     _assert_all_captures_complete(captures)  # gate (iv) — raises before any number is built
+    fallback = estimand1_trade_fallback_by_pair or {}
+    pairs = sorted(set(estimand1_by_pair) | set(estimand2_by_pair) | set(fallback))
 
     generated_ts = generated_ts if generated_ts is not None else time.time()
     parts = [
@@ -358,18 +547,37 @@ def render_report(captures: List[CaptureMetadata],
         f"Model tiers compared: {MODEL_ADVERSE_SELECTION_BP_TIERS} bp  \n"
         f"Gap-accounting clock basis: local receipt time (single basis; venue timestamps are "
         f"recorded as `venue_ts` and used by nothing)\n", "",
-        _render_capture_meta_block(captures),
     ]
-    fallback = estimand1_trade_fallback_by_pair or {}
-    pairs = sorted(set(estimand1_by_pair) | set(estimand2_by_pair) | set(fallback))
+    parts.append(_render_capture_meta_block(captures))
+    if captures_declared is not None or pairs_filter is not None:
+        contributing = sorted(set((pair_capture_path or {}).values()))
+        line = (f"**Command-line reconciliation (B4/B5, run-45):** captures declared on the "
+                f"command line: {len(captures_declared or [])} {captures_declared or []}; "
+                f"captures that actually contributed at least one pair's numbers: "
+                f"{len(contributing)} {contributing}.")
+        if pairs_filter is not None:
+            line += (f" `--pairs` filter applied: {pairs_filter} (reconciled against the "
+                     f"declared/observed union of every supplied capture — a pair named here "
+                     f"that no capture declared or observed is a refusal, not a silent empty "
+                     f"report).")
+        else:
+            line += " No `--pairs` filter applied (every pair found is reported)."
+        parts.append(line + "\n")
     for pair in pairs:
         e1 = estimand1_by_pair.get(pair)
         e2 = estimand2_by_pair.get(pair)
-        parts.append(f"## {pair}\n")
+        source = (pair_capture_path or {}).get(pair)
+        heading = f"## {pair}" + (f" (source capture: `{source}`)" if source else "") + "\n"
+        parts.append(heading)
         if e1 is not None:
             parts.append(_render_estimand1_section(pair, e1))
         e1f = fallback.get(pair)
-        if e1f is not None and e1f.by_horizon:
+        # B3 (run-45): `by_horizon` is no longer a usable proxy for "the fallback source was
+        # actually used" — `compute_estimand1_trade_fallback` now ALWAYS populates all four
+        # pre-registered horizons (n_used=0 when unused), so `by_horizon` truthiness alone would
+        # render an empty secondary table on every pure-book-mid capture. `total_used` is the
+        # real signal: at least one trade-print-backed sample actually exists.
+        if e1f is not None and e1f.total_used > 0:
             parts.append(_render_estimand1_section(pair, e1f))
         if e2 is not None:
             parts.append(_render_estimand2_section(pair, e2))

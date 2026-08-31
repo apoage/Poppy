@@ -42,10 +42,19 @@ def test_estimand1_model_tier_comparison():
     assert h.model_tiers_meet_or_exceed_median[10.0] is True
 
 
-def test_estimand1_empty_horizon_omitted():
+def test_estimand1_zero_sample_horizons_are_reported_never_omitted():
+    """B3 (run-45), superseding the old `test_estimand1_empty_horizon_omitted`: a pre-registered
+    horizon that drew zero samples is a RESULT about the instrument, not the absence of a row.
+    All four pre-registered horizons (`HORIZONS_S`) must appear, each explicitly zero-sample and
+    not-evaluable, even when the pair had NO markouts at all."""
     r = ShadowPairResult(pair="BTC/USD")  # no markouts at all
     e1 = compute_estimand1(r)
-    assert e1.by_horizon == {}
+    assert set(e1.by_horizon) == {"1m", "5m", "20m", "1h"}
+    for h in e1.by_horizon.values():
+        assert h.n_samples == 0
+        assert h.n_used == 0
+        assert h.is_evaluable is False
+        assert h.median_bp is None
 
 
 def test_estimand2_rates():
@@ -126,11 +135,16 @@ def test_percentile_refuses_a_nonfinite_sample_as_a_backstop():
         _percentile([], 50)
 
 
-def test_estimand1_still_omits_a_horizon_with_no_samples_at_all():
-    """Distinct from the all-NaN case: zero samples is an ABSENT horizon (omitted); samples that
-    all turned out invalid is a REPORTED horizon with nothing evaluable."""
+def test_estimand1_zero_samples_and_all_nan_render_the_same_reported_shape():
+    """Superseding the old `test_estimand1_still_omits_a_horizon_with_no_samples_at_all` (B3,
+    run-45): zero samples and all-non-finite samples are now the SAME reported shape (n_used=0,
+    nothing evaluable, no verdict) — they differ only in `n_samples`, which is exactly what a
+    reader needs to tell "we measured nothing" apart from "we measured only non-finite junk"."""
     r = ShadowPairResult(pair="BTC/USD")
-    assert compute_estimand1(r).by_horizon == {}
+    h = compute_estimand1(r).by_horizon["1m"]
+    assert h.n_samples == 0
+    assert h.n_used == 0
+    assert h.is_evaluable is False
 
 
 def test_estimand2_carries_the_drop_counters_for_disclosure():
