@@ -3,6 +3,71 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-08-31 — TASK_913 — the stall's actor, found by refuting two wrong culprits including our own
+
+- **What shipped.** Two documents in `experiments/907_live_fill_probe/`:
+  `JOURNAL_STALL_DIAGNOSIS.md` (scope 1) and `WRITE_HARDENING_SPEC.md` (scope 2/3 +
+  acceptance iii). **Zero code changes** — `recorder.py`, `capture.py` and `health_probe.py`
+  are sha256-identical to HEAD. The live 62-hour capture was never touched (D67(b)/D74(a)).
+- **TASK_913 asked us to name the process pushing a GB-scale ext4 journal transaction. There
+  isn't one.** During each stall ZERO sectors reach `sda` and every writer blocks at once —
+  `jbd2/sda6-8`, the recorder in `jbd2_log_wait_commit`, postgres `walwriter`, kworkers. The
+  device is not busy; it is absent. bitcoind, postgres and journald are all exonerated
+  (bitcoind's `write_bytes` delta across a stall window was **0**; its 569 MB was socket
+  traffic). 3/3 on-phase sample windows stalled; 0/3 off-phase controls did.
+- **The actor, named from its own log: `udisksd`'s SMART housekeeping poll.** It issues an
+  `SG_IO` ATA passthrough the drive never answers. `journalctl -u udisks2` carries
+  **5,452 of 5,452** `Error updating SMART data: … Input/output error` failures on this exact
+  drive, one per ~600 s since boot+32 s — **zero missed, zero successful** — in a unit log
+  whose only other two lines are systemd's. Verified first-hand twice, 12 h apart (5,380 →
+  5,453, delta 73 = exactly 73 × 600 s). Precedence established on a single clock: pool thread
+  created 06:42:35.83, block queue permanently non-empty 06:42:36.22 (**0.39 s lead, thread
+  first**), and the outage ends the instant the passthrough is failed — `EIO` at
+  06:43:37.402441, kernel link-up .438582, writes resume .46.
+- **This run's own reversal is the useful part.** The first diagnosis replaced the task's wrong
+  culprit with a *new* wrong culprit — "failing SATA link, reseat the cable" — and an
+  adversarial judge demolished it: **0 occurrences** of `SATA link down` or any
+  SError/CRC/hard-resetting message across all three boots; the link-up is libata's *recovery*
+  at the end of a command timeout, and the device goes silent ~90 s *before* the link is
+  touched. The 1.5 Gbps/UDMA-33 speed is libata's logged escalation response, and the identical
+  600 s cycle already ran at **6.0 Gbps with NCQ on** from boot. The "10.0% ≈ 11.56%" duty-cycle
+  agreement was n=1. Worst, the row had bounded its own confidence on data it never asked for
+  ("the dmesg ring doesn't reach further back") while `journalctl` held 4 GB going back months,
+  containing exactly the disconfirming evidence.
+- **Then it happened again, one layer down.** A second refutation pass found the corrected
+  timing tables were built on `journalctl` *realtime* stamps — which are drain-time artifacts,
+  because journald is itself blocked by the stall. Two error-handler passes **30.7 s apart in
+  printk time are stamped 7 ms apart**; 47 of 72 events collapse to <1 s. The document had
+  already caught this clock lying once (about `dmesg -T`, +29 s) and did not re-check. The
+  `/proc` `starttime` precedence margin was likewise entirely consumed by `btime` whole-second
+  truncation (0.83 s bias), and the "predicted `pool-5403`, then observed it" evidence turned
+  out to be *entailed* by the cadence (GLib names pool workers from a monotonic counter).
+- **The design gap the bad arithmetic was hiding.** All seven writer call sites are synchronous
+  inside the async `_consume` coroutine — no `run_in_executor`/`to_thread`/`threading` anywhere
+  — so every `fsync()` blocks the event loop, which is exactly how `ping_timeout=15` trips. The
+  draft spec kept *synchronous* fsync for gap records, and gap records are written **as a
+  consequence of** stalls: it concentrated the surviving blocking fsyncs on the moments the
+  device is gone. Spec now carries R1–R6 and a costed design (single writer thread behind a
+  bounded non-blocking queue), an honest new loss class (SIGKILL loses queued-but-unwritten
+  records), and a found-along-the-way ordering bug: `close()` flushes counters at
+  `recorder.py:874` *before* `_writer.close()` at `:875`, so a raise there strands the worker.
+- **The hardening's claim was also overstated and is now honest:** dropping per-line fsync
+  cannot stop these stalls — they are device-level. It converts a data-loss event into a
+  latency event. The N=30 s justification was withdrawn outright rather than patched, because
+  under the worker design at most **one** fsync is blocked per outage regardless of N; N is now
+  a pinned 10–60 s range, mechanism rather than constant.
+- **Operator, and only the operator.** The settling test is `systemctl mask --now udisks2` for
+  two `:X2:36` phases — **not** a plain `stop`, which would silently defeat itself (no
+  `udisks2.socket`; a live desktop session's `gvfs-udisks2-volume-monitor` plus 8 other gvfs
+  processes re-activate it over D-Bus within seconds, and the operator would read the
+  continuing stalls as "refuted"). **Do not lead with `smartctl`** — reading SMART is the
+  *trigger*, so it is a perturbation, not a diagnostic. Root fs is genuinely at risk (21 k+
+  command timeouts on the disk holding `/`, `/home`, the postgres datadir and the capture).
+  This row took **no action**: pure reads, tmpfs-only scratch, cleaned up, no process disturbed.
+- **4 cycles, exceeding `halt_after_failures=3` by one closing pass — disclosed in the verdict,
+  the operator's to rule on.** The task never met a wall of the kind that rule guards; cycle 4
+  transcribed evidence a judge had already collected and confirmed.
+
 ## 2026-08-30 — TASK_910 — D68's safety pins, and a credential fence that hid the same hole three times
 
 - **What shipped (D68's four fixes).** (1) The no-order-path invariant is now mechanism: a test

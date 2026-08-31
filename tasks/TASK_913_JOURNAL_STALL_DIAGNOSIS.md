@@ -1,3 +1,26 @@
+> **STATUS (2026-08-31): SHIPPED** — `experiments/907_live_fill_probe/JOURNAL_STALL_DIAGNOSIS.md`
+> + `WRITE_HARDENING_SPEC.md`. **Zero code changes** (recorder.py/capture.py/health_probe.py
+> sha256-identical to HEAD; the live capture untouched). 4 cycles, 6 verification passes.
+> **Scope 1 answered by refuting its own premise: there is no journal hog** — during each stall
+> zero sectors reach `sda` and every writer blocks at once; bitcoind/postgres/journald
+> exonerated. **The actor is `udisksd`'s SMART housekeeping poll**, named from its own log:
+> 5,452/5,452 `SG_IO` SMART reads failing `EIO` on this drive, one per ~600 s since boot+32 s,
+> zero missed, zero successful; 0.39 s thread-before-wedge lead on a single clock; the outage
+> ends the instant the passthrough is failed.
+> **Two wrong culprits were refuted en route, the second one ours** — the first diagnosis blamed
+> a failing SATA link/cable; there are **zero** `link down`/SError/CRC messages across all three
+> boots, the link-up is libata's *recovery*, and the same cycle already ran at 6.0 Gbps. A second
+> pass then found the corrected tables were built on journald *drain-time* stamps (two EH passes
+> 30.7 s apart stamped 7 ms apart) — the same clock the document had already caught lying once.
+> **Remainders → operator/planner:** (a) the settling counterfactual is `systemctl mask --now
+> udisks2` for two `:X2:36` phases — NOT a plain `stop` (it self-defeats via D-Bus reactivation),
+> and NOT `smartctl` first (reading SMART is the trigger); forbidden to both lanes by the
+> shared-box standing rule. (b) the write hardening itself is POST-CAPTURE by design (D67(b)) —
+> spec is R1–R6 + a costed single-writer-thread design, ready to implement. (c) `capture.py:42-44`
+> and `health_probe.py:33/107-108` still assert the per-line-fsync guarantee (live files, flagged).
+> (d) duty cycle vs D74's 11.56% is NOT reconciled — recorded, not resolved. **271 passed.**
+> **4 cycles exceeds `halt_after_failures=3` by one closing pass — disclosed in the verdict.**
+
 # TASK_913 — name the journal hog and spec the recorder's write hardening
 
 **Status**: PROPOSED 2026-08-30 (planner; D74 RULED (a) — no restart, diagnose alongside; most
