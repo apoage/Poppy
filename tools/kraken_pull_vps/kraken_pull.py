@@ -33,7 +33,6 @@ SYMBOLS = [
 
 DUMP_WATCH_URLS = [
     "https://support.kraken.com/hc/en-us/articles/360000477842-Downloadable-historical-OHLCVT-data",
-    "https://support.kraken.com/hc/en-us/articles/360047124872-Downloadable-historical-OHLCVT-data",
 ]
 DUMP_PATTERNS = ("Q2_2026", "Q3_2026")
 
