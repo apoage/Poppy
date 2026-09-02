@@ -1,3 +1,72 @@
+> **STATUS (2026-09-02, factory run 50): ADDENDUM B2 HALTED at cycle 2 of 3. NOT SHIPPED,
+> NOTHING COMMITTED. Blocked on operator decisions, not on implementation.
+> ⚠️ BOTH DECISIONS RULED 2026-09-02 (operator; D65-amend-2 + D77 in DECISIONS) — THE ROW
+> RESUMES: (1) ALL FOUR pre-registered horizons report (the final capture's premise change is
+> accepted); (2) the book-silence exclusion is DEFECT-SIGNAL-GATED with a 1.0% numeric
+> backstop — silence excludes only with an instrument-defect signal (keepalive overrun beyond
+> tolerance, trades through an unchanged book, schema drift); plain silence with clean
+> checksums is MARKET STILLNESS, disclosed never excluded (BTC's frozen mid passed
+> falsification). The two open BLOCKERs (fail-closed leak; the 4000bp-publishing repro)
+> still must close before ship — the rulings unblock, they do not ship. Cycle 3 is available.**
+>
+> Work preserved in the live tree AND at
+> `lore/handoff_2026-09-02_factory_run_50_907B2_halt.patch` (2858 lines, sha256
+> `b11c1bbe…`, `git apply --check` OK vs HEAD `96b59eb`). Suite 302 → 342, selftest 12/12,
+> fixture `b0f8de8b…` unchanged. Full record: `lore/handoff_2026-09-02_factory_run_50.md`.
+>
+> **Why it halted.** Five BLOCKERs across two cycles. Every one of B2's three disqualifiers was
+> denominated in a quantity that is not the one it needs to gate — the same error that halted
+> run 46 and forced the D73 split. Cycle 3 was available and deliberately NOT spent: the row
+> implements a question whose qualitative shape D73 ruled and whose **three quantitative bounds
+> have never been ruled**, and its governing decision is now refuted (below).
+>
+> **DECISION-CHANGING 1 — D65-amend's premise is REFUTED by the final capture.** Run 49 recorded
+> "20m and 1h are STRUCTURALLY 0-SAMPLE", reasoning the longest gap-free stretch was 561.8s while
+> `covers()` needs the whole `[t, t+h]` clean; D65-amend ruled "two horizons suffice" on that.
+> Measured on both files with the same code: the SNAPSHOT's longest gap-free stretch is **561.8s**
+> (run 49's figure reproduced exactly — its measurement was right for the file it had), the
+> **FINAL capture's is 9,670.9s** (top five 9671/7198/6668/5658/4131s). The final capture added
+> only 39 gaps across its last 46,179s — the stall regime nearly stopped, consistent with run 48's
+> pending `systemctl mask --now udisks2`. **At HEAD, on the FINAL capture, all four pre-registered
+> horizons produce samples on all four pairs** (BTC 1m 8557 / 5m 4536 / 20m 962 / 1h 467).
+> D65 pre-registered four horizons; this capture supports four.
+>
+> **DECISION-CHANGING 2 — the probe's verdict turns entirely on three never-ruled bounds.** The
+> real capture REFUSES under the shipped constants, every pair excluded for one reason:
+> unexplained book silence against a bound of **0.0000%** ("any violation disqualifies").
+> Measured: BTC 303.8s = 0.0952%, ETH 561.1s = 0.1758%, SOL 97.8s = 0.0307%, XRP 488.8s = 0.1532%
+> of accounted time; worst single interval 15.2–19.6s. **At any bound ≥ 0.2% all four pairs
+> publish** — a labelled counterfactual render at 0.2% (scratch lane copy; live constant verified
+> still `0.0`) produced a full 350 KB artifact, four pairs, four horizons. The factory did not
+> pick that number: it decides D65's answer.
+>
+> **What cycle 2 got RIGHT, verified on the real capture.** `book_uncovered_fraction` reads
+> **0.0019–0.0082%** across all four pairs where cycle 1 read ~46% for BTC. The wire-evidence
+> denominator — a pure keepalive echo is an event whose FULL payload `(bid, ask, bid_sz, ask_sz)`
+> repeats — correctly separates "the market was still" from "we could not see the market". BTC's
+> 138,449s of frozen mid stays disclosed via `stale_book_s` without counting as un-observed.
+> **BTC's frozen mid is real market stillness**: no un-freeze catch-up (in-run trade drift
+> 0.006bp vs a 0.257bp jump), frozen runs quieter than average and printing outside the touch LESS
+> than baseline (10.0% vs 23.3%), ETH freezing precisely when locked at a 1-tick spread.
+> Correctly denominated, item 2b became a REAL signal (flags 10/1222, 12/773, 24/600, 10/441
+> frozen runs, worst 66.7–94.0% outside vs baselines 16.9–30.9%, `venue_ts`-restricted).
+>
+> **TWO BLOCKERS REMAIN OPEN IN THE PRESERVED TREE — do not ship it as is.**
+> (1) `shadow_engine.py:355-397`: flagged-run membership tests only the fill/anchor trade's
+> timestamp, never whether the posted limit (`bar.close`, `:371`) came from a bar composed of
+> flagged-run trades. The cycle-1 repro **still publishes `median 4000.52 bp` at rc=0**, now
+> dressed with an honest-looking "8 of 16 candidates excluded" line that gives FALSE confidence.
+> The shipped test asserts the same criterion the implementation uses — one shared blind spot.
+> (2) `cli.py:118-134`: a pair disqualified in EVERY contributing capture triggers a B4 collision
+> refusal, discarding every healthy pair in both captures — the D73 over-refusal shape one layer
+> up. Also open: FIX 6's decline rationale is mechanistically false and ships in the artifact
+> (`render.py:685` — `_build_bars_and_mids` buckets on local receipt `ts`, never `venue_ts`), and
+> echo detection is gated on `declares_keepalive` so an undeclared emission policy disables the
+> wire-evidence detector (bounded: the production recorder always declares both keys).
+>
+> **Resume:** operator rules the bounds and re-rules D65-amend → re-apply the patch → close the
+> two BLOCKERs → re-render the real capture (14.8 GB peak RSS, 3:29; TASK_914 would cut this).
+
 > **STATUS (2026-09-01, factory run 49): ADDENDUM B1 SHIPPED. B1-vii DISCHARGED BY RENDER —
 > THE LIVE CAPTURE ANALYSES.**
 >
