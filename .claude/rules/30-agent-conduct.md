@@ -65,3 +65,14 @@ flourish. Bullet-point precision beats storytelling; emotional tone is noise to 
 biases future sessions. The earlier dual-role framing (lore as raw material for Bloom publication)
 was **retired 2026-07-07** when `bloom/` was pruned. Write for exactly one audience:
 future-session-me needing the technical record. If a sentence carries no fact, cut it.
+
+## The closing-pass exception to the cycle limit (D76, ruled 2026-09-02)
+
+`halt_after_failures` binds every new-solution attempt. It has exactly ONE named exception:
+a **closing pass** may exceed the limit when it (a) replaces an artifact the SAME RUN has
+proven defective, (b) only transcribes or reassembles evidence a judge has already collected
+and confirmed — no new solution attempt, no new evidence-gathering of its own — and (c)
+discloses the deviation in the verdict itself, never in a footnote. Anything else past the
+limit halts to a DECISIONS row. The exception exists to UN-ship a wrong artifact (run 48:
+cycle 4 replaced the run's own wrong SATA-cable culprit); it is never a fourth try. Run 49
+(exactly 3 cycles, the last pre-declared) is the compliant precedent.
