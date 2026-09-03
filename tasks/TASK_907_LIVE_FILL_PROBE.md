@@ -1,3 +1,61 @@
+> **STATUS (2026-09-02, factory run 51): ADDENDUM B2 HALTED at cycle 3 of 3 — CYCLE BUDGET
+> FULLY SPENT. NOT SHIPPED, NOTHING COMMITTED. Blocked on D78, not on a ruled decision.
+> ⚠️ D78 + D77-AMEND RULED 2026-09-02 (operator) — THE ROW RESUMES AS PATCH ROUND 4: fix the
+> four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; the
+> undeclared-emission-policy detector bypass; D77 granularity per the amendment below).
+> **PRE-COMMITTED STOP (the D66 shape): round 4 is the LAST patch round — any NEW instance of
+> the three recurring shapes (wrong quantity/granularity denomination; unbacked rendered
+> sentence incl. comments; pair-keyed state mutated in a --capture loop) halts the row
+> PERMANENTLY to the provenance re-cut. No fifth round.** D77-AMEND semantics to implement:
+> exclusion scoped to the SILENCE INTERVAL (markouts overlapping a defect-flagged interval
+> drop, like gap coverage; the pair publishes the rest); the pair-level outside-book flag is
+> DISCLOSURE, not a void, unless the backstop is met; backstop TWO-SIDED — aggregate ≤ 1.0%
+> AND worst single unexplained silence interval ≤ 60s (the instrument's own
+> gap_detect_threshold_s; 3–4× the measured worst). Frozen quotes with arriving frames stay
+> disclosed data. Reuse the verified work (B-iv/B-v/B-vi/security-clean); base = the run-51
+> halt patch. TASK_914 ships FIRST if the factory takes it — it cuts every real-capture
+> verification read this row needs.**
+>
+> D65-amend-2 and D77 were both ruled and both implementable; cycle 3 implemented them and
+> returned **four BLOCKERs** from three independent sources. Work preserved in the live tree AND
+> at `lore/handoff_2026-09-02_factory_run_51_907B2_halt.patch` (3749 lines, sha256
+> `785577cb…`, `git apply --check` OK vs HEAD `72cb91e`; supersedes and contains run 50's patch).
+> Suite 342 → 362, selftest 12/12, fixture `b0f8de8b…` unchanged, 10 stashes intact.
+> Full record: `lore/handoff_2026-09-02_factory_run_51.md`.
+>
+> **The four open BLOCKERs.** (1) **The flagged span ends one keepalive frame early** —
+> `_close_book_run` (`capture.py:1879-1881`) closes a frozen run at the last frame that REPEATED
+> the top, not the first that CHANGED it, so prints in the trailing ~5s window walk through the
+> frozen book from outside the span. Found convergently by two lenses; moving ONE print 5s later
+> takes a published 1m mean from −0.00 bp to **+106.63 bp** at rc=0, under a disclosure reading
+> "30 of 324 candidates excluded = 9.259%". This is the ROOT CAUSE of run 50's symptom, which the
+> run-51 brief mis-attributed to the predicate — so the shipped fix passes one geometry and leaks
+> others. (2) **The as-of mid's provenance is ungated** (`shadow_engine.py:435`): `MidQuote`
+> carries no observation timestamp, and `mid_at` reaches back `MAX_MID_STALENESS_S`=60s, so a
+> clean `target_ts` still resolves to a flagged run's frozen quote (482/463 bp published;
+> −510 bp in another geometry). (3) **An undeclared emission policy disables the ENTIRE 2b
+> detector** — `outside_book_runs` rides on `stale_runs`, so the original 8000 bp leak returns
+> with `n_flagged_frozen_runs=0` and nothing rendered; this refutes cycle 3's stated ground for
+> substituting measurement for the briefed fail-closed refusal. (4) **D77's gate is denominated at
+> the wrong GRANULARITY** — measured on the real capture with the shipped code, **all four pairs
+> EXCLUDED, the probe publishes nothing**, which is the outcome D77 was ruled to end; it excludes
+> the ruling's own named counterexample (BTC's frozen mid).
+>
+> **WHY IT HALTED, AND THE FINDING THAT OUTRANKS THE BLOCKERS.** Three defect SHAPES have each
+> recurred *inside the very cycle that fixed the previous instance*: a check denominated in the
+> wrong quantity **or granularity** (6 instances); a rendered sentence the code does not back
+> (7 instances, now including inside code COMMENTS); pair-keyed state mutated in a loop over
+> `--capture` (2 — B4's original clobber, and `flagged_run_exclusions` created while rebuilding
+> B4's own check). Three cycles at ~5 BLOCKERs each, rate not falling. **D78 asks whether to close
+> four more instances or re-cut the row around ONE provenance mechanism.** Resume only after D78.
+>
+> **WHAT PASSED, independently verified — reuse it, do not rebuild it.** B-iv: **0 moved numbers**,
+> cell-level, 44 estimand-1 rows across 10 fixtures, rendered through a detached HEAD worktree with
+> every fixture rebuilt twice to defeat caching. B-v holds item by item. B-vi: removed 0 / added 20
+> vs cycle 2, no renames. B1's `book_keepalive_overruns` semantics intact across 16 fixtures.
+> Security CLEAN by MUTATION on all seven touched files. BLOCKER_4's limit-provenance half and
+> BLOCKER_5's three ruled cases both genuinely work. D65-amend-2 confirmed: four horizons always.
+
 > **STATUS (2026-09-02, factory run 50): ADDENDUM B2 HALTED at cycle 2 of 3. NOT SHIPPED,
 > NOTHING COMMITTED. Blocked on operator decisions, not on implementation.
 > ⚠️ BOTH DECISIONS RULED 2026-09-02 (operator; D65-amend-2 + D77 in DECISIONS) — THE ROW
