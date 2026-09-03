@@ -21,9 +21,9 @@ the keepalive tripping AFTER stalls). **Box facts:** root = ext4 on SSD; hog can
 bitcoind (snap datadir on root), postgres, journald; nvme = the application volume (397G free,
 operator's call whether captures ever write there — secondary option only; the primary fix is
 dropping per-line fsync, post-capture per D67(b)).
-**Ready (physically ordered): 1 TASK_907 Addendum B2 (stale-book + receipt-lag — LOAD-BEARING
-per D65-amend; BTC's 46.5% frozen mid is its measured target) → 2 TASK_914 (streaming reader,
-new) → 3 write-hardening (post-capture) → 4 TASK_881E (re-cut per D72: manifest-authority,
+**Ready (physically ordered): 1 TASK_914 (streaming reader — promoted per run 51: every B2
+verification read needs the RSS capped) → 2 TASK_907 Addendum B2 PATCH ROUND 4 (per D78 + 
+D77-amend; the LAST patch round — pre-committed stop to the re-cut) → 3 write-hardening (post-capture) → 4 TASK_881E (re-cut per D72: manifest-authority,
 simple) → 5 TASK_904B (two-phase writers) → 6 TASK_908 (fixture pin-trust) → 7 TASK_906
 (archival). FILLER: TASK_899 — **IN PROGRESS
 planner-side (2026-08-31): the daily catch-up is STAGED** (`runs/858_backfill/api_2026-08-31/`
@@ -34,16 +34,27 @@ OHLC endpoint serves a rolling ~720-candle window per interval (12h for minutes,
 dump zips (the gdown retry pattern exists; needs new file ids when published). Ingest into the
 DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
 until then. GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 only.**
+**OPEN decisions: D43 + D78 (new, run 51 — 907 B2's halt: patch four more instances, or re-cut
+the row around one provenance mechanism?).**
 **STANDING RULE (operator, 2026-08-30, binding on both lanes): gpu-server is SHARED with
 other users and services — disturb NO process on it. No restarts, no tuning, no renice, no
 kill, no write-probes; planner/factory work on srv is pure reads plus the sanctioned
 safe_run-capped jobs (the capture, the suites). Remediation of anything box-level is a
 recommendation to the operator, never an action.**
-_Next takeable: **TASK_907 Addendum B2** — the stale-book exclusion re-cut, now load-bearing:
-run 49 measured BTC/USD at **46.5% frozen mid** (2.02M of 2.28M book events repeat the previous
-top-of-book) — B2's book-freshness term is what must exclude it. D65-amend ruled the two-horizon
-answer sufficient; after B2 ships, the shadow analysis runs on the closed capture._
+_**Row 1 (907 B2) is GATED on D78 as of run 51 — do NOT take it.** Its cycle budget is fully
+spent (3 of 3) and cycle 3 returned four BLOCKERs; the banner on the task file carries them and
+the halt reasoning. D65-amend-2 and D77 are ruled and implemented — the block is D78's question,
+not a missing ruling. Measured on the real capture with the shipped code: **all four pairs are
+EXCLUDED and the probe publishes nothing**, because D77's gate keys on any flagged run anywhere in
+a multi-day pair. Work preserved (`lore/handoff_2026-09-02_factory_run_51_907B2_halt.patch`,
+sha256 `785577cb…`); B-iv, B-v, B-vi and the security pass all VERIFIED GREEN and are reusable on
+resume rather than rebuildable._
+
+_Next takeable: **TASK_914** (`tasks/TASK_914_STREAMING_READER.md`, row 2) — and run 51 sharpened
+its case: `read_capture` peak RSS on the real capture measured **14.83 GB** first-hand, and cycle
+3 added **+10.3%** on top (`trade_price_series` + `trade_lag_events` + `by_hour` + `all_lags`
+holding three copies of the lag list). Every B2 resume needs at least one capped real-capture read
+to confirm its verdict, so 914 directly reduces the cost of the work D78 unblocks._
 
 _**Run 48 shipped TASK_913** (`2d56873`). Its reusable lesson is sharper than the row itself:
 **a diagnosis that refutes a premise needs the same adversarial pass on its REPLACEMENT.** The row
@@ -61,13 +72,13 @@ self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 |---|------|------|------|
 | ~~1~~ | ~~`tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md`~~ **SHIPPED run 48 (`2d56873`)** | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
 | 2 | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73)~~ **SHIPPED run 49 (`1360250`)** | M | 302 tests, B-iv byte-identical on 6 independent captures, fixture unchanged. B1-vii discharged: the live capture renders (after fixing the recorder's own ~12µs gap-end ts artifact + merge seam — 584 intrusions → 0). **The render's findings: 20m/1h horizons structurally 0-sample (longest gap-free stretch 561.8s; D65-amend RULED: two horizons suffice); BTC/USD 46.5% frozen mid — B2's failure mode in the real data.** |
-| 3 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — per D73, AMENDED per D74) | S | **NOW ROW 1 AND LOAD-BEARING (D65-amend):** the stale-book exclusion re-cut (book-freshness term from BOOK timestamps only, defect-signal disqualifiers) — BTC/USD's measured 46.5% frozen mid is exactly what it must exclude — PLUS receipt-lag denomination (per-hour lag distribution, markout-timing distortion per horizon, trade diagnostics on `venue_ts`; book events get a measured BOUND, never an assumed zero). After B2: the shadow analysis runs on the closed capture (1m/5m) → the probe artifact → D65 closure. |
-| 4 | `tasks/TASK_914_STREAMING_READER.md` (NEW — run 49's RSS flag) | S | Reader streams line-by-line, O(1) memory: 11.8 GB RSS per 1.24 GB file today; future captures breach the 32 G cap. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. NOT blocking the final analysis of THIS capture (~14 GB, under cap). |
+| 3 | `tasks/TASK_914_STREAMING_READER.md` **→ ROW 1 TAKEABLE (promoted per run 51)** | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture (run 51, +10.3% from cycle 3); every B2 verification read needs it capped. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships BEFORE the B2 patch round — it directly cuts the cost of every resume. |
+| 4 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4 per D78; D77-amend in force) | S | **Blocked on 914 shipping first.** Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`); reuse B-iv/B-v/B-vi/security-clean. Full rulings: DECISIONS D78 + D77-amend. |
 | 5 | `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (913's residue — the spec IS the task file) | S | **GATE OPEN (capture closed 2026-09-01 10:00):** implement the single-writer-thread + batched-fsync design (R1–R6) the shipped spec already carries — pure code, no hardware involvement. Includes the `close()` ordering fix (`recorder.py:874/875`) and the honest loss class. Any FUTURE capture requires this + 914 first. |
-| 5 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
-| 6 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
-| 7 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
-| 8 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
+| 6 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
+| 7 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
+| 8 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
+| 9 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
