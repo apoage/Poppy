@@ -28,9 +28,16 @@ this row re-prices the bar TASK_915 is graded against. CPU only.
 1. **Borrow charge, flag-gated**: `--borrow-model {none, kraken-margin}` charging shorted
    notional per the fetched schedule, parameterised BTC vs alts. **OFF = bit-identical**
    (pin an existing read). Applied to the SCORER, so both benchmark and candidates pay it.
-2. **Fee tier honesty**: cost columns restated at (a) the operator's recorded tier once D80
-   rules, (b) worst-case base tier, (c) the legacy 16+5 for continuity. Until D80 rules, run
-   (b)+(c) so the row is not blocked.
+2. **Fee tier honesty**: cost columns restated at (a) the operator's recorded situation —
+   **D80(i) ANSWERED 2026-09-05: the operator holds a Kraken subscription ("free things on
+   first 10k traded")**; planner web verification reads this as **Kraken+**: $4.99/mo, 0%
+   fees on up to $10k/month volume — but the published terms **exclude Kraken Pro / API
+   trades from the waiver** (app-only; spreads still apply). VERIFY THIS EXCLUSION against
+   the primary sources at leg-2 time; if it holds, the program's API-traded book is
+   unaffected and the honest tier is the Pro ladder; if the operator would trade via the
+   app, the app's spread is the cost surface instead. Also model: $10k/mo free volume vs the
+   book's ~56×/yr turnover (fully covered only at ≲$2k account, ~21% at $10k). Then
+   (b) worst-case base tier, (c) the legacy 16+5 for continuity.
 3. **Benchmark restate**: recompute the 819 trend book net@{8,21} WITH borrow at each tier,
    survivor AND PIT; re-grade the BEAR-sensitive reads (BEAR22 +1.10, H=3d +1.35, 830
    hold-shares BEAR22 +1.218, 898 by-year). New reference numbers published in one table.

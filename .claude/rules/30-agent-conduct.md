@@ -76,3 +76,15 @@ discloses the deviation in the verdict itself, never in a footnote. Anything els
 limit halts to a DECISIONS row. The exception exists to UN-ship a wrong artifact (run 48:
 cycle 4 replaced the run's own wrong SATA-cable culprit); it is never a fourth try. Run 49
 (exactly 3 cycles, the last pre-declared) is the compliant precedent.
+
+## Briefs state denominations in the gate's own quantity (D81(c), ruled 2026-09-05)
+
+Every orchestrator brief must state, **for each check it specifies, the DENOMINATOR and the
+direction argument in the SAME quantity the gate consumes** — population vs rate, events vs
+time, per-pair vs pooled — and every verification panel must include a lens pointed at the
+**brief's own direction claims**, not only at the implementation. Rationale: three consecutive
+runs (50, 51, 52) had the orchestrator's brief mis-state or under-specify a denomination, and
+in each case the implementer faithfully built what the brief asserted (run 52: a fail-closed
+argument stated in population size for a gate that divides by a rate — fail-open in fact).
+The recurrence is the brief-writer's, not the implementer's, and no cycle limit binds it.
+

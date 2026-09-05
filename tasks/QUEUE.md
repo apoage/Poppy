@@ -41,15 +41,17 @@ OHLC endpoint serves a rolling ~720-candle window per interval (12h for minutes,
 dump zips (the gdown retry pattern exists; needs new file ids when published). Ingest into the
 DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
 until then. GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 + **D81** (new, run 52 — 907 B2 round 4 HALTED PERMANENTLY when D78's
-pre-committed stop fired; the re-cut's scope, a narrower-instrument intermediate, and a
-factory-process rule about denomination in briefs) + D80 (SEEDED 2026-09-05, planner — three parts:
-(i) the operator's ACTUAL Kraken 30d fee tier, the record's "fee16" is not on the current
-ladder; (ii) whether the `docs/pathway.md` goalpost NUMBER is restated net of margin-rollover
+**OPEN decisions: D43 + **D81** (run 52 — **(c) the factory-process rule RULED 2026-09-05,
+operator; codified in `.claude/rules/30-agent-conduct.md`**; (a) the re-cut scope and (b) the
+narrower-instrument intermediate remain OPEN) + D80 (**(i) ANSWERED 2026-09-05, operator: holds
+a Kraken subscription — reads as Kraken+ ($4.99/mo, 0% on first $10k/mo volume) but the
+published terms EXCLUDE Pro/API trades from the waiver; verify at 916 leg 2 — see the D80
+row**; (ii) whether the `docs/pathway.md` goalpoint NUMBER is restated net of margin-rollover
 borrow — the benchmark book is ~50% short in BEAR22 and borrow ≈ 22%/yr on alts is never
 charged anywhere in the record; (iii) the 907 phase-2 rails conflict — a maker spec needs
 market-cross after timeout + rest windows, both forbidden by D65/D78 code. TASK_916 publishes
-the restated numbers either way; only the goalpost number itself is the operator's.)**
+the restated numbers either way; only the goalpoint number itself is the operator's.
+RO02-blocking spec: `lore/notes_2026-09-05.md` §2.)**
 
 **Groomed 2026-09-05 (planner — fable + dead-session harvest integrated as rows 916–920).**
 The three consultation lore files (`fable_direction_memo_2026-09-03`, `fable_tactics_panel_
