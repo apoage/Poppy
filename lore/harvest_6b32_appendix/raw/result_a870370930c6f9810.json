@@ -1,0 +1,147 @@
+{
+ "family": "Stochastic portfolio theory / rebalancing (volatility) premium: Fernholz excess growth rate, Shannon's demon (constant-mix vs buy-and-hold), functionally generated portfolios (diversity-weighted p in (0,1), entropy-weighted, equal-weight as p->0), relative arbitrage vs the cap-weighted market, and the dollar-neutral long-FGP / short-market book.",
+ "thesis": "The tactic is to hold a fixed (or generating-function-determined) weight vector and mechanically sell relative winners / buy relative losers at each rebalance, so that the portfolio's log-growth exceeds the weighted average log-growth of its constituents by the excess growth rate gamma* = 1/2 (sum_i w_i sigma_i^2 - sigma_p^2) \u2014 a pure second-moment quantity that needs no forecast. With crypto inputs (sigma 60-100%/yr, rho 0.5-0.8, N 20-60) gamma* is 3-25%/yr (central ~11%/yr) and the constant-mix turnover is only ~7x/yr daily (0.6-1.5%/yr at 21 bp), so cost is NOT what kills it. What kills it for these goalposts is what gamma* is: (a) it is a growth-rate (variance-drag) term, not an arithmetic expected return \u2014 the per-decision Sharpe the repo grades on sees it only as lower variance; (b) versus buy-and-hold of the same initial weights it is zero to first order under iid returns (B&H captures the same Jensen convexity by drifting), positive only with cross-sectional mean reversion at the rebalance horizon (a forecast) and negative under momentum; (c) the absolute return of every long-only version is market beta + gamma*, and the record already holds the daily-rebalanced 1/N PIT book at gross Sharpe -0.40 FULL / -2.54 BEAR22; (d) the long-diversity/short-market 'relative arbitrage' reduces to a bet that market concentration will not rise \u2014 in 2022 ex-stablecoin BTC dominance rose ~41%->46.5% and small alts fell ~80% vs BTC -64%, so the relative book lost ~30% of the long leg (about -15% dollar-neutral) before costs; 2018 had the same sign. Under the no-free-lunch taxonomy the family draws on source (3) the rebalancing premium in log-growth terms, but everything it can put on the goalposts' scoreboard is source (2) beta / small-coin tilt plus an implicit source (1) anti-concentration or mean-reversion forecast. Its legitimate residual is source (4): a bounded-turnover, auditable execution layer for a book whose edge comes from elsewhere.",
+ "math": "EXCESS GROWTH. gamma* = 1/2 (sum_i w_i sigma_i^2 - sigma_p^2). Equal weights, homogeneous sigma, common rho: sigma_p^2 = sigma^2 [1/N + (1-1/N) rho] => gamma* = 1/2 sigma^2 (1-rho)(1-1/N). Inputs -> result: (sigma,rho,N)=(0.60,0.80,20): 0.5*0.36*0.20*0.95 = 3.4%/yr; (0.80,0.65,40): 0.5*0.64*0.35*0.975 = 10.9%/yr; (1.00,0.50,60): 0.5*1.0*0.5*0.983 = 24.6%/yr; 2022 crash regime (0.85,0.80,40): 7.0%/yr. Vol heterogeneity (half at 60%, half at 120%): sum w sigma^2 = 0.90 vs mean-sigma^2 0.81, adds ~1-2 pp. Shannon 50/50 risky/cash: gamma* = 1/2 w(1-w) sigma^2 = 0.125*0.64 = 8%/yr at sigma=0.8.\nTURNOVER (repo convention sum|delta pos| per unit capital, trader/backtest.py:224). Constant mix at interval dt trades sum_i w_i |r_i - r_p| ~= 0.8 * sigma_idio * sqrt(dt), sigma_idio = sigma sqrt(1-rho). (0.80,0.65): sigma_idio = 0.473/yr = 2.48%/day -> daily 1.98%/day = 7.2x/yr -> 21 bp costs 1.5%/yr; weekly 5.25%/rebalance = 2.7x/yr -> 0.57%/yr; +-20% relative no-trade bands: trade rate ~ sigma_idio^2/(2 delta) = 0.224/0.4 = 0.56x/yr -> 0.12%/yr. Trend book for comparison: 56.6x/yr -> 11.9%/yr (PORTFOLIO_RESULT.md). Net of 21 bp roughly 85% (daily) / 94% (weekly) / 97% (bands) of gamma* survives. Sharpe-equivalent of a 10%/yr gamma* on a book with sigma_p = 0.8*sqrt(0.025+0.634) = 65%/yr: (0.10/365)/(0.65/19.1)*19.1 = 0.15 \u2014 and it does not even enter the arithmetic mean.\nWHY IT IS NOT A PREMIUM OVER B&H. CM log growth = sum w_i g_i + gamma*. B&H log growth = log sum_i w_i e^{g_i T} >= sum w_i g_i T. With idiosyncratic log-variance s^2 = sigma^2 (1-rho) T, E[log mean_i e^{eps_i}] ~= s^2/2 (1-1/N) to first order = gamma* T. So E[log W_CM - log W_BH] ~= 0 under iid; > 0 only via saturation over long horizons (bounded by log N) or cross-sectional mean reversion at the rebalance horizon; < 0 under cross-sectional momentum. Arithmetic (the repo's per-decision unit): E[r_CM] = sum wbar_i alpha_i; E[r_BH] = sum E[w_t,i] alpha_i >= E[r_CM] when drifts differ => long-CM/short-BH has E <= 0 under iid; its positive backtests are mean-reversion bets.\n2022 CONCENTRATION ARITHMETIC. CoinGecko BTC.D incl. stables 37.9% (2022-01-01) -> 38.6% (12-31); stables $167.9B of ~$2.25T (7.4%) -> ~$140B of ~$0.80T (~17%) => ex-stable BTC share 0.379/0.926 = 40.9% -> 0.386/0.83 = 46.5% (+5.6 pp). Implied: ex-stable market x0.32 (-68%), BTC x0.36 (-64%), ETH x0.33 (-67%), cap-weighted alts ex-ETH x0.29 (-71%); equal-weight Kraken alt basket ~x0.20 (-80%: SOL -94, AVAX -90, DOT -84, ADA -81, FIL -91, SAND -93, MANA -92, LUNA -100 vs LTC -52, XRP -59, DOGE -59). SPT: log(Z_pi/Z_mu)(T) = log(D_p(mu_T)/D_p(mu_0)) + (1-p) int gamma*_pi dt. Stylised market BTC 0.41, ETH 0.19, 38 alts x 0.0105 -> BTC 0.465, ETH 0.17, alts 0.0066 (log -0.47). EW (p->0): drift = mean log share change = (0.126 - 0.111 + 38*(-0.467))/40 = -0.44; gamma*_EW(2022, sigma~1.0, rho~0.7) ~ +0.15 => relative -0.30, EW absolute ~ x0.32*e^{-0.30} = x0.24 (-76%). Diversity p=0.5: weights prop to sqrt(mu) => BTC 12.9%, ETH 8.8%, alts 78% (already alt-heavy for N=40); D_{1/2} = (sum sqrt mu)^2: 24.75 -> 17.47 (log -0.35); +(1-p)gamma* ~ +0.05 => -0.30. Direct check: 0.129*0.36 + 0.088*0.33 + 0.78*0.20 = 0.232 vs market 0.319 => log -0.32 (consistent). Dollar-neutral unit-gross long-FGP/short-market: ~ -15% in 2022 before costs. 2018: BTC.D ~35% -> ~52%, same sign. Shannon 50/50 BTC/USD in 2022: BTC log -1.02, sigma~0.65 => alpha ~ -0.81; CM growth 0.5*(-0.81) - 0.5*0.25*0.42 = -0.458 (-37%) vs 50/50 B&H 0.5*0.36 + 0.5 = 0.68 (-32%): the demon loses to B&H in a trending bear.\nSCORER CAVEAT. trader/backtest.py:221-223 computes gross = sum pos*(log c_{t+H} - log c_t) = weighted-average constituent LOG return, which omits gamma* exactly (PORTFOLIO_RESULT.md flagged assumption 3 says so). For a 40-coin 1/N long at 3.5%/day the omitted term ~ 1/2 sum w sigma_d^2 ~ 6 bp/day ~ 2.2%/yr ~ +0.3 Sharpe-equivalent: the record's 1/N 'B&H' -0.40 FULL PIT reads ~ -0.1 in simple-return terms, BEAR22 -2.54 ~ -2.2. No sign changes.",
+ "profit_source": "mixed",
+ "bear_positive_without_forecast": {
+  "answer": "no",
+  "argument": "Long-only versions: absolute return = market beta + gamma*; gamma* (~7%/yr in 2022 conditions) cannot offset a -68% ex-stable market, and the record already measures the daily-rebalanced 1/N PIT book at gross per-decision Sharpe -2.54 in BEAR22 and -2.28 in BEAR18 (runs/819_single_asset/POWERED_RESULT.md, B&H column, which is a daily 1/n_present reset \u2014 trader/backtest.py:225-227). Shannon 50/50 BTC/cash loses ~37% in 2022 and underperforms the 50/50 B&H (-32%) because it buys all the way down. Long-short 'relative arbitrage' (long diversity- or equal-weighted, short cap-weighted market): its log relative return = diversity-drift term + (1-p) gamma*; the drift term is a bet that concentration will not rise, i.e. a forecast on BTC dominance, and in both bears on record ex-stablecoin BTC dominance rose (2018 ~35%->52%; 2022 ~41%->46.5%) while small alts fell ~80% vs BTC -64%, giving ~ -0.30 log relative in 2022 (-15% dollar-neutral) before costs. The only mechanism that makes any version positive in expectation versus its benchmark is cross-sectional mean reversion at the rebalance horizon, which is a forecast (Chambers-Zdanowicz 2014; Hallerbach 2014), and the crypto evidence places daily reversal in illiquid small coins (<10% of cap) and daily momentum in the largest ones (Zaremba et al. 2021). There is no version of this family that is BEAR-positive in absolute terms without a forecast."
+ },
+ "literature": [
+  {
+   "ref": "Fernholz 2002, Stochastic Portfolio Theory (Springer); Fernholz & Karatzas 2009 survey \u2014 excess growth rate and the diversity-weighted decomposition",
+   "claim": "gamma*_pi = 1/2 (sum pi_i sigma_i^2 - sigma_pi^2); for the diversity-weighted portfolio pi^(p), log(Z_pi/Z_mu)(T) = log(D_p(mu_T)/D_p(mu_0)) + (1-p) int_0^T gamma*_pi dt; relative arbitrage vs the market needs diversity (no asset dominating) and non-degenerate volatility over the horizon. The drift term is a concentration bet.",
+   "numbers": "Used for the 2022 arithmetic above: D_{1/2} 24.75 -> 17.47 (log -0.35), (1-p)gamma* ~ +0.05 => -0.30 relative.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Bouchey, Nemtchinov, Paulsen & Stein 2012, 'Volatility Harvesting: Why Does Diversifying and Rebalancing Create Portfolio Growth?', J. Wealth Management 15(2):26-35",
+   "claim": "Excess compounded growth from rebalancing = 1/2 (weighted average variance - portfolio variance); explicitly 'not an expected arithmetic excess return derived from forecasting skill'.",
+   "numbers": "Formula only; no crypto data.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Chambers & Zdanowicz 2014, 'The Limitations of Diversification Return', J. Portfolio Management 40(4):65-76; Hallerbach 2014, 'Disentangling Rebalancing Return', J. Asset Management 15:301-316; Willenbrock 2011 FAJ",
+   "claim": "Diversification return is not a source of increased expected value; rebalancing adds expected value versus buy-and-hold only if prices are mean-reverting; it is a contrarian strategy. Willenbrock's 'free dessert' is the constant-risk-profile benefit, not extra arithmetic return.",
+   "numbers": "Qualitative; underpins the 'zero to first order under iid' statement in math.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Hanicova & Vojtko 2021, 'Rebalancing Premium in Cryptocurrencies', SSRN 3982120 (via Quantpedia strategy page; SSRN returned 403)",
+   "claim": "Long daily-rebalanced equal-weight basket of 27 cryptos, short 70% of the buy-and-hold basket, 2018-2021, captures a 'rebalancing premium'.",
+   "numbers": "Annualised return 7.65%, volatility 2.62%, Sharpe 2.93, max drawdown listed as -99.99% (unreconciled: implies a blow-up or a reporting artifact); no transaction costs stated; in-sample 2018-2021 only, not point-in-time; the sample spans the 2018 alt crash and the 2020-21 rotation regime that favours contrarian rebalancing.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Karimi & Salavati 2025, 'Functionally Generated Portfolios Under Stochastic Transaction Costs: Theory and Empirical Evidence', arXiv 2507.09196",
+   "claim": "Diversity- and entropy-weighted FGPs beat the value-weighted benchmark after proportional stochastic costs on CRSP small caps 1994-2024; larger declines than the benchmark in the 2008 and 2020 liquidity crises.",
+   "numbers": "+3.6 pp/yr (diversity) and +2.9 pp/yr (entropy) net of costs. Equities with roughly stationary diversity \u2014 the opposite of crypto 2022-2025 where ex-stable BTC dominance trended from ~41% to ~60%.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Sun, Fan, Chen, Schouwenaars & Albota 2006, 'Optimal Rebalancing for Institutional Portfolios', J. Portfolio Management 32(2):33-43",
+   "claim": "Dynamic-programming rebalancing beats calendar (monthly/quarterly/annual) and fixed 5% tolerance rules on cost-adjusted certainty equivalent; banding is more effective than lowering frequency at equal trading-cost reduction.",
+   "numbers": "Monte Carlo ranking only; no crypto.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "CoinGecko Research, 'Bitcoin Dominance History' (2021-2025 table) and 'Stablecoins Statistics 2023'",
+   "claim": "BTC dominance incl. stablecoins: 2021 69.5%->38.2%; 2022 start 37.9%, end 38.6%, high 45.6%, low 35.9%, avg 39.3%; 2023 avg 45.6%; 2024 avg 51.9%; 2025 avg 59.3% (end 58.5%). Stablecoin cap $167.9B on 2022-01-01 -> $138.4B on 2023-01-31 while total cap fell ~63%.",
+   "numbers": "Ex-stablecoin BTC share 2022: 40.9% -> 46.5% (+5.6 pp, my derivation); 2023-2025 trend to ~60% means the diversity-drift term has been negative for four consecutive years.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "CoinMarketCap / CNBC 2022 year-end figures",
+   "claim": "2022 calendar: BTC -64.0%, ETH -67.2%, total crypto market cap -63.3%.",
+   "numbers": "Used as inputs for the alt-vs-BTC share arithmetic.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Zaremba, Bilgin, Long, Mercik & Szczygielski 2021, 'Up or down? Short-term reversal, momentum, and liquidity effects in cryptocurrency markets', Int. Review of Financial Analysis 78",
+   "claim": ">3,600 coins 2015-2021: last-day return predicts reversal, concentrated in small illiquid coins (<10% of total cap) and attributed to illiquidity; the largest, most tradeable coins show daily momentum.",
+   "numbers": "Qualitative from abstract; implies daily constant-mix rebalancing among large Kraken coins fights momentum, and any positive premium in the small-coin tail is an illiquidity/reversal forecast sitting exactly where 897's adverse-selection term lives.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Liu, Tsyvinski & Wu 2022, 'Common Risk Factors in Cryptocurrency', J. Finance",
+   "claim": "Cross-section explained by market, size and momentum; 1-4 week formation momentum long-short pays ~3%/week; the crypto momentum factor is what would be a reversal horizon in equities.",
+   "numbers": "~3% weekly L/S momentum payoff (2014-2020). Weekly rebalancing is contrarian at exactly this horizon.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Brauneis & Mestel 2019, 'Cryptocurrency-portfolios in a mean-variance framework', Finance Research Letters 28; Platanakis, Sutcliffe & Urquhart 2018, 'Optimal vs naive diversification in cryptocurrencies', Economics Letters 171:93-96",
+   "claim": "1/N beats >75% of mean-variance-optimised crypto portfolios on Sharpe and certainty equivalent after transaction costs; on four coins there is little to choose between 1/N and Markowitz.",
+   "numbers": "Neither claims 1/N is bear-positive or isolates a rebalancing premium vs buy-and-hold.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Hashdex CIO Notes 2026, 'A hidden return engine: harnessing crypto's volatility through rebalancing'",
+   "claim": "Industry pitch for the crypto rebalancing premium.",
+   "numbers": "Contains only the deterministic coin-flip illustration (+50%/-33.3%, 50/50 with cash), explicitly 'not based on real market data'; no crypto return differential, no costs. Evidence that the industry claim has no published crypto number attached.",
+   "depth": "abstract-level"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "trader/backtest.py:225-227 (wbh = pr / pr.sum(); bh = sum(wbh * fwd), recomputed every decision) and runs/819_single_asset/portfolio.py:388-389",
+   "relation": "The record's 'equal-weight B&H' comparator is NOT a buy-and-hold: it resets to 1/n_present at every decision, i.e. it is the daily-rebalanced equal-weight constant mix, charged zero turnover. Consequence: the long-only constant mix IS already measured; a true drifting buy-and-hold has never been computed, so the rebalancing premium (CM minus B&H) has never been isolated anywhere in the tree."
+  },
+  {
+   "receipt": "runs/819_single_asset/POWERED_RESULT.md ('Market context' table, RESULT table B&H column, 'Deployable metrics' bullets)",
+   "relation": "Daily 1/N constant mix, PIT 273 assets, 2018-2025, gross per-decision Sharpe: FULL -0.40, BEAR18 -2.28, REC1920 +0.48, BULL21 +1.42, BEAR22 -2.54, REC23 +0.98, BULL24 -0.29, CHOP25 -1.63; equity x0.07 (cum log -2.63) on the scorer's log-sum metric. This alone fails BEAR-positivity and the +0.97 bar for every long-only version before any cost."
+  },
+  {
+   "receipt": "runs/819_single_asset/PORTFOLIO_RESULT.md ('Market context' table; 'Deployable metrics' bullets)",
+   "relation": "Same book on the survivor-tilted broad-39 universe 2021-2025: FULL -0.15, BEAR22 -2.29, CHOP25 -0.71, equity x0.57 \u2014 survivorship moves it by ~+0.25 Sharpe and still leaves it negative."
+  },
+  {
+   "receipt": "trader/backtest.py:221-223 (fwd = logc[t+H]-logc[t]; gross = sum(pos*fwd)) and PORTFOLIO_RESULT.md 'Flagged assumptions' item 3",
+   "relation": "The scorer sums constituent LOG returns, so the portfolio's compounded wealth omits gamma* exactly; the trader/ instrument cannot see a rebalancing premium by construction. Any test of this family must compute simple portfolio returns r_p = sum w_i (P_{t+1}/P_t - 1) and compound them; the log-sum bias is ~+0.3 Sharpe-equivalent for a 40-coin high-vol long book (does not change signs)."
+  },
+  {
+   "receipt": "trader/config.py:89-100 (StrategyConfig: sign(logC_t - logC_{t-30d}), equal weight, gross<=1, H_rebal=1) and trader/strategy.py:137-151 (pos = w*s)",
+   "relation": "Confirms the prompt: the 819 'equal-weight book' is trend-signed 1/n, not a constant mix; its 56.6x/yr turnover is signal-driven, so nothing about the constant mix's cost profile (~7x/yr) can be read from it."
+  },
+  {
+   "receipt": "experiments/830_corridor/SPEC.md:95-101 and experiments/LEDGER.md:46 (830/E0-REAL: BEAR22 net@21 floor -0.143 vs ref +1.049; fixture gross floor +0.225 vs ref +1.218)",
+   "relation": "The only in-repo 'rebalance vs hold' measurement: replaying the trend book with fixed SHARES vs the 819 constant-DOLLAR daily rebalance differs by ~1.0-1.2 Sharpe in BEAR22. It is a leverage-path effect on a short-heavy trend book (winning shorts de-lever under hold-shares), not a rebalancing-premium measurement, and which book defines the official floor was never ruled (SPEC.md:100-101)."
+  },
+  {
+   "receipt": "trader/data.py:234-245 (ohlcv_daily DDL: open/high/low/close/volume/trade_count) and trader/data.py:360, :435 (SELECT id, symbol FROM assets); grep market_cap|circulating|supply over trader/, mcts_trader/env/, tools/*.py = zero hits",
+   "relation": "No market weights mu exist in the data: SPT's market portfolio, cap-weighted benchmark and diversity measure D_p(mu) cannot be built from the DB. Proxy = trailing dollar-volume weights (volume column exists), or an external cap series (new data dependency, PIT-hard for dead coins)."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:378-381",
+   "relation": "Universal portfolios / OLPS were set aside because regret is measured against the best constant-rebalanced portfolio, 'which is not BEAR-positive'; the CRP is exactly this family's constant mix, so the same objection was already recorded."
+  },
+  {
+   "receipt": "tasks/TASK_813_VOLHARVEST_AGENT.md:1-33 and docs/findings/modeling_surface_exhausted.md:60-65 (132 cells; 0/48 GO on hold-out)",
+   "relation": "'Volatility harvesting' in the record means breakout/ATR/lead-lag trigger maps, not the rebalancing premium \u2014 a name collision, not prior coverage of this family."
+  },
+  {
+   "receipt": "docs/pathway.md:9-21; trader/config.py:72-79 (REGIMES incl. BEAR22 = 2021-11-10..2022-12-31)",
+   "relation": "Goalposts and regime windows the kill experiment must grade against; note BEAR22 starts before the January 2022 ex-stable dominance trough (~41%), so the drift term over the repo window is smaller than over calendar 2022 in magnitude but the same sign."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:63 (835/S4-p1c, --vector-weight-rebalance) and TASK_840",
+   "relation": "The vector env already has a target-weight rebalance executor (E-a epoch): a constant-mix or FGP weight vector could be replayed through eval_vector as a second instrument, but no constant target has ever been graded through it."
+  }
+ ],
+ "controllability": "Strongest 'hold on policy' of any family on offer: the action is a closed-form function of observable state with 1-3 parameters (generating-function exponent p, band half-width delta, rebalance interval dt); every trade is attributable to a rule; gross exposure is pinned at 1 so HOLD collapse is impossible by construction (the record's 0/1670 and 99% pct_hold failures cannot occur); turnover is bounded analytically (~0.8 sigma_idio sqrt(dt) per rebalance -> ~7x/yr daily, ~2.7x/yr weekly; ~sigma_idio^2/(2 delta) per year with bands -> ~0.6x/yr at +-20%), i.e. 5-100x lower than the trend book's 56.6x/yr; costs at 21 bp are 0.1-1.5%/yr and auditable to the cent. What is lost: every conditional-mean channel \u2014 the book is pure beta (long-only) or a small-coin/anti-concentration tilt (long-short); no drawdown control (equal-weight ~ -76% in 2022); no lever that can move it toward +0.97; and the operator's 'still get the edge' half is not satisfied, because the family has no edge to hold on to \u2014 its residual legitimate use is as the turnover-bounded execution layer (banded target-weight controller) under a book whose expected return comes from elsewhere, i.e. source (4) cost reduction, not a profit source.",
+ "compute": "Zero GPU. The whole family is closed-form on a daily close panel: the 819 PIT run over 273 assets x 2800 days took 82 s CPU/numpy (POWERED_RESULT.md footer); the kill experiment below is minutes of CPU on the workstation-allowed path (or safe_run on gpu-server if the workstation rule bites). The 64 GB GPUs the operator is preparing are irrelevant to this family; no training, no seeds, no search.",
+ "kill_experiment": {
+  "design": "experiments/9xx_rebalance_premium/ (SPEC <=1 page, pre-registered, sha256 recorded). Panel: trader/data.load_db_backtest_panel(include_dead=True) + build_pit_universe + apply_liquidity_filter (the 819 PIT frame, 273 assets, dead coins retained), true UTC daily closes 2018-10 -> latest ingested day (2026-03 minute-derived now; 2026-06 after the 899 ingest). Books, gross = 1: B1 equal-weight constant mix, daily; B2 EW weekly; B3 EW with +-20% relative no-trade bands; B4 TRUE buy-and-hold \u2014 shares fixed, reformed to 1/n at each calendar-year start (PIT entrants join at the next reform; delistings go to zero and stay), also a never-reformed variant from 2021-01-01; B5 market proxy = trailing-30d dollar-volume weights (cap proxy, disclosed as such), daily; B6 diversity-weighted p in {0.5, 0.25} on B5's mu; B7 dollar-neutral unit-gross long-B6 / short-B5 (0.5/0.5), daily; B8 Shannon 50/50 BTC/USD, daily. Returns: SIMPLE per-decision portfolio return r_p = sum w_i (P_{t+1}/P_t - 1), wealth compounded; the scorer's sum w*dlog p reported alongside to size the omitted gamma*. Costs 0/8/21 bp on sum|dw| actually traded (drift-induced trades included; B4 trades only at reform). Metrics: per-decision Sharpe sqrt(365), by calendar year 2019..2026H1 and by REGIMES (trader/config.py:72-79); realised turnover; measured gamma-hat* = (B1 log growth - mean constituent log growth)/yr; block-bootstrap 95% CI (n_boot 2000, seed 819, trader.backtest._block_bootstrap_sharpe_ci). Deterministic \u2014 no seeds exist; the CI is the uncertainty statement and the SPEC says so.",
+  "instrument": "trader/ engine data path and bootstrap (unmodified), plus a ~300-line numpy runner for the eight books using simple returns (the existing cell_metrics is NOT usable as the primary scorer because it sums log returns, trader/backtest.py:221-223). Optional second instrument: replay the B1/B6 weight vectors through eval_vector.py --vector-weight-rebalance with the 64-slot pinned frame to confirm agreement within 0.1 on the overlapping universe.",
+  "pass_fail": "PF1 (construction): gamma-hat*(B1) in [3%, 25%]/yr in every full year, else a bug or wrong inputs \u2014 stop and fix before reading anything. PF2 (does the premium exist at all): (B1 - B4) log growth per year > 0 in >= 6 of 8 years AND mean >= +3%/yr net@21; FAIL => the family has no premium even on its own growth-rate criterion on this venue. PF3 (goalposts): any of B1-B8 with net@21 per-decision Sharpe >= +0.97 on 2024-01 -> end AND BEAR22 net@21 > 0 AND 2026H1 net@21 > 0 AND median gross >= 0.5 => PASS (hand to the memo's G-C-style two-instrument grading and the gate ladder); otherwise the family is KILLED for the goalposts and may survive only as an execution layer. PF4 (pre-committed prediction, tests the dominance arithmetic): B7 BEAR22 net@0 < 0 and B1 BEAR22 net@0 < 0; if B7 BEAR22 > +0.5 the diversity-drift reasoning in this memo is wrong on the Kraken universe and must be re-examined before any other conclusion is drawn. No metric shopping: eight books, four gates, fixed in the SPEC.",
+  "cost": "~1 engineer-day (runner + self-tests reusing trader/), CPU runtime O(minutes), zero GPU, no server contact required (workstation-allowed read-only DB path or safe_run CPU on gpu-server). Kill date 5 days from SPEC commit."
+ },
+ "honest_odds": "P(clearing the goalposts as written \u2014 net@21 >= +0.97 on unseen 2024-2026, hold positions, BEAR-positive) ~ 1-2%. Reasoning: (i) every long-only version has absolute Sharpe = beta Sharpe + a variance-only benefit; the record measures the daily 1/N PIT book at gross -0.40 FULL / -2.54 BEAR22 / -1.63 CHOP25 / -0.29 BULL24 and the ~+0.3 Sharpe-equivalent scorer omission cannot lift it; BEAR-positivity is impossible for a long-only book in a -68% year. (ii) long-short relative books have zero expected arithmetic return under iid, negative under momentum, and lose whenever concentration rises \u2014 ex-stable BTC dominance rose in 2018, 2022 and every year 2023-2025 (avg 45.6% -> 51.9% -> 59.3%), so the drift term has been negative in 5 of the last 8 years including both bears. (iii) the only route to positive expectation vs benchmark is cross-sectional mean reversion at the rebalance horizon \u2014 a forecast, and the crypto evidence places daily reversal in illiquid small coins where 897's adverse selection sits, with daily momentum among the large coins. Why not 0%: a 273-asset long-short book can post +0.97 over a 2.5-year window by luck, and the small-cap tail may carry an illiquidity-reversal premium the dollar-volume proxy would pick up. Side odds: P(PF2 premium vs true B&H positive on the growth criterion) ~ 30% (2020-21 rotation for; 2018-19 dead-coin buying and 2022-25 rising dominance against); P(any long-only version BEAR22 > 0) ~ 0% (already measured); P(B7 BEAR22 > 0) <= 10%.",
+ "open_doubts": [
+  "Path dependence of the drift term: ex-stable BTC dominance inside the repo's BEAR22 window went ~45% (2021-11-10) -> ~41% (Jan 2022) -> ~55% (Jun 2022) -> ~46.5% (Dec 2022); my -0.30 uses calendar-2022 endpoints. Sign is robust, magnitude is +-0.1, and a weekly/banded rebalance samples the path differently.",
+  "Kraken PIT universe is not the global market: 273 assets with a thick micro-cap tail; a p=0.5 diversity book on 273 assets would be ~90% micro-caps, and dollar-volume weights are not market caps. Liquidity/adverse selection at 21 bp is not modelled \u2014 second-order at ~7x/yr turnover (897's 5 bp term ~0.35%/yr) but not zero for the tail.",
+  "The scorer bias (log-sum vs simple return) understates long high-vol books by ~0.3 Sharpe and overstates short-heavy ones; every sign conclusion here survives, but the kill experiment must report both to keep the record's B&H column comparable.",
+  "Whether the Kraken small-coin tail carries daily cross-sectional reversal strong enough to make B1 - B4 positive: if it does, that is the memo section 4 IC instrument's question (a forecast), and the discipline requires labelling it as such rather than crediting the rebalancing rule.",
+  "The family's legitimate residual \u2014 a banded target-weight controller as the execution layer under an externally-sourced forecast (Garleanu-Pedersen or Davis-Norman no-trade bands) \u2014 is a cost_reduction contribution worth ~1-2%/yr at the trend book's turnover; I have not sized it against the GP quadratic-cost controller the memo proposes.",
+  "Literature depth: no crypto-specific SPT paper was found; the only crypto rebalancing-premium study (Hanicova-Vojtko 2021) is 2018-2021, cost-free, Quantpedia-summarised with a listed -99.99% max drawdown I could not reconcile (SSRN 403). Fernholz formulas are cited from standard texts, not re-read this session."
+ ]
+}

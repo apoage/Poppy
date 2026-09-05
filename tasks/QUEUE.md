@@ -23,10 +23,16 @@ operator's call whether captures ever write there — secondary option only; the
 dropping per-line fsync, post-capture per D67(b)).
 **Ready (physically ordered): 1 TASK_907 Addendum B2 PATCH ROUND 4 (per D78 + D77-amend;
 the LAST patch round) → 2 TASK_914 (streaming reader) → 3 write-hardening →
-4 TASK_915 (**D79 — the DIRECTION row**: the predictability ceiling + GP book; precondition =
-the 899 daily ingest) → 3 write-hardening (post-capture) → 4 TASK_881E (re-cut per D72: manifest-authority,
-simple) → 5 TASK_904B (two-phase writers) → 6 TASK_908 (fixture pin-trust) → 7 TASK_906
-(archival). FILLER: TASK_899 — **IN PROGRESS
+4 TASK_916 (**cost truth pack** — borrow + fee tier + restated benchmark; re-prices the bar
+915 is graded against) → 5 TASK_915 (**D79 — the DIRECTION row**: the predictability ceiling +
+GP book; precondition = the 899 daily ingest AND 916's restated cost stack) →
+6 TASK_920 (scorer honesty flags; XS; OFF = bit-identical) → 7 TASK_918 (tactic-library hull
+ceiling — minutes of CPU, 85% prior it closes the selector class incl. MuZero-as-selector;
+gate = 899) → 8 TASK_917 (second-moment & event instruments: VR persistence, post-shock κ,
+post-listing event study, hourly IC surface) → 9 TASK_919 (execution/turnover module — the
+60–70%-odds +0.10–0.15 add; phase B double-gated on 907B2 + D80 rails) →
+10 TASK_881E (re-cut per D72: manifest-authority, simple) → 11 TASK_904B (two-phase writers) →
+12 TASK_908 (fixture pin-trust) → 13 TASK_906 (archival). FILLER: TASK_899 — **IN PROGRESS
 planner-side (2026-08-31): the daily catch-up is STAGED** (`runs/858_backfill/api_2026-08-31/`
 — 56/56 canon pairs, 2026-06-21→08-31, seam-verified: 62 overlap rows vs the DB, ZERO
 mismatches; minute tails staged = the forward habit started). **Measured API constraint: the
@@ -36,7 +42,36 @@ dump zips (the gdown retry pattern exists; needs new file ids when published). I
 DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
 until then. GATED: TASK_880 (D34+D35).**
 **OPEN decisions: D43 + D78 (new, run 51 — 907 B2's halt: patch four more instances, or re-cut
-the row around one provenance mechanism?).**
+the row around one provenance mechanism?) + D80 (SEEDED 2026-09-05, planner — three parts:
+(i) the operator's ACTUAL Kraken 30d fee tier, the record's "fee16" is not on the current
+ladder; (ii) whether the `docs/pathway.md` goalpost NUMBER is restated net of margin-rollover
+borrow — the benchmark book is ~50% short in BEAR22 and borrow ≈ 22%/yr on alts is never
+charged anywhere in the record; (iii) the 907 phase-2 rails conflict — a maker spec needs
+market-cross after timeout + rest windows, both forbidden by D65/D78 code. TASK_916 publishes
+the restated numbers either way; only the goalpost number itself is the operator's.)**
+
+**Groomed 2026-09-05 (planner — fable + dead-session harvest integrated as rows 916–920).**
+The three consultation lore files (`fable_direction_memo_2026-09-03`, `fable_tactics_panel_
+2026-09-04`, `fable_self_learning_loops_panel_2026-09-05`) and the harvest of the dead opus
+session 6b32cd7f (`lore/harvest_dead_session_6b32cd7f_2026-09-05.md` — 34 surviving panel
+result JSONs + digests preserved under `lore/harvest_6b32_appendix/`) are now fully mapped
+into the queue. Concept coverage: every actionable item is rowed (916 cost truth / 915 amended
+with the loops-panel statistical hygiene / 917 second-moment + event instruments incl. the
+never-tested 1h–6h band / 918 hull ceiling / 919 execution module / 920 scorer honesty), and
+the deliberately NOT-rowed are parked below with reasons. Headline facts the factory should
+carry: (a) **margin-rollover borrow re-prices the benchmark itself** — 916 lands before 915
+runs; (b) the mechanism-design panel's seven designs ALL died on cost/borrow arithmetic — its
+survivors are 917's instruments, nothing licenses a book build before 915's ceiling; (c) the
+tactic hull test is minutes of CPU and closes the selector class (MuZero's only sanctioned
+re-entry) 85% of the time; (d) every "best cell" from now on carries SR0(N) beside it.
+Parked-with-reason (do not row without an operator ask): dedicated vol-target row (analytic
+ceiling √(1+CV²), net Δ ∈ [−0.10,+0.08]; covered as a 918 library arm); CPD switch (Mason 2024:
+CPD ≤ non-CPD); 806 frozen-encoder minute-IC 0.1226 (minute surface is 897 cost-closed — revives
+only if costs fall); L2-capture signal mining (pre-registration framing commitment, operator's);
+836/E4 value-net re-measure (pre-E-c, superseded by 915's direct IC measurement);
+search-vs-argmax leg (`trace.py:635`, 828 lane dead by D79); options / rough-vol /
+market-making-as-strategy (never proposed — an operator framing call, not a factory row).
+
 **STANDING RULE (operator, 2026-08-30, binding on both lanes): gpu-server is SHARED with
 other users and services — disturb NO process on it. No restarts, no tuning, no renice, no
 kill, no write-probes; planner/factory work on srv is pure reads plus the sanctioned
@@ -74,14 +109,19 @@ self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 |---|------|------|------|
 | ~~1~~ | ~~`tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md`~~ **SHIPPED run 48 (`2d56873`)** | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
 | 2 | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73)~~ **SHIPPED run 49 (`1360250`)** | M | 302 tests, B-iv byte-identical on 6 independent captures, fixture unchanged. B1-vii discharged: the live capture renders (after fixing the recorder's own ~12µs gap-end ts artifact + merge seam — 584 intrusions → 0). **The render's findings: 20m/1h horizons structurally 0-sample (longest gap-free stretch 561.8s; D65-amend RULED: two horizons suffice); BTC/USD 46.5% frozen mid — B2's failure mode in the real data.** |
-| 4 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4 per D78; D77-amend in force) (**ROW 1 TAKEABLE — restored; base = the run-51 halt patch against current HEAD, no merge**) | S | Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`, applies vs current HEAD by definition — the dirty tree IS it); reuse B-iv/B-v/B-vi/security-clean. |
-| 3 | `tasks/TASK_914_STREAMING_READER.md` (**row 2 — AFTER B2 round 4**; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
-| 5 | `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (913's residue — the spec IS the task file) | S | **GATE OPEN (capture closed 2026-09-01 10:00):** implement the single-writer-thread + batched-fsync design (R1–R6) the shipped spec already carries — pure code, no hardware involvement. Includes the `close()` ordering fix (`recorder.py:874/875`) and the honest loss class. Any FUTURE capture requires this + 914 first. |
-| 6 | `tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md` (**D79 — the direction row; adopted 2026-09-03**) | M | The predictability ceiling + GP book per `lore/fable_direction_memo_2026-09-03.md` §4 (the memo IS the spec; the task file carries the gates). Ends the daily-OHLC question two-sidedly: PASS → closed-form trader on the winning cell; FAIL → pre-committed OHLC-repeal recommendation + data-row pivot. **PRECONDITION: the 899 staged-daily INGEST lands first (planner-owned — the 2026H1 cells need the seam).** CPU-only, ≤2 CPU-days, 14-day kill date. Sequenced after the 907 lane (which runs to completion for D65 closure but does not gate this). |
-| 7 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
-| 8 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
-| 9 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
-| 10 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
+| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4 per D78; D77-amend in force) (**ROW 1 TAKEABLE — restored; base = the run-51 halt patch against current HEAD, no merge**) | S | Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`, applies vs current HEAD by definition — the dirty tree IS it); reuse B-iv/B-v/B-vi/security-clean. |
+| 2 | `tasks/TASK_914_STREAMING_READER.md` (**AFTER B2 round 4**; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
+| 3 | `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (913's residue — the spec IS the task file) | S | **GATE OPEN (capture closed 2026-09-01 10:00):** implement the single-writer-thread + batched-fsync design (R1–R6) the shipped spec already carries — pure code, no hardware involvement. Includes the `close()` ordering fix (`recorder.py:874/875`) and the honest loss class. Any FUTURE capture requires this + 914 first. |
+| 4 | `tasks/TASK_916_COST_TRUTH_PACK.md` (NEW 2026-09-05 — harvest row; lands BEFORE 915) | XS/S | Borrow charge (flag-gated, OFF = bit-identical) + fee-tier honesty ("fee16" is not on the current ladder) + restated benchmark: the +0.97/+0.56 bar is ~50% short in BEAR22 and margin rollover (22–88%/yr on shorted notional) is NEVER charged in the record. Seeds D80. Restatement can only make bars harder, never easier. |
+| 5 | `tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md` (**D79 — the direction row; adopted 2026-09-03**; amended 2026-09-05: loops-panel hygiene folded + 916 precondition) | M | The predictability ceiling + GP book per `lore/fable_direction_memo_2026-09-03.md` §4 (the memo IS the spec; the task file carries the gates). Ends the daily-OHLC question two-sidedly: PASS → closed-form trader on the winning cell; FAIL → pre-committed OHLC-repeal recommendation + data-row pivot. **PRECONDITIONS: the 899 staged-daily INGEST lands first (planner-owned — the 2026H1 cells need the seam) AND 916's restated cost stack.** CPU-only, ≤2 CPU-days, 14-day kill date. |
+| 6 | `tasks/TASK_920_SCORER_HONESTY_PACK.md` (NEW 2026-09-05 — harvest row) | XS/S | Four verified scorer corrections, all flag-gated OFF = bit-identical: true B&H book (never computed — "B&H" is a zero-fee daily-rebalanced EW book), simple-return accounting (log-sum is ≈ +0.3 Sharpe-equivalent optimistic and blind to rebalancing premia), drift-re-trim charging (+9–12×/yr uncharged; pre-registered >−0.10 disclosure tripwire), RiskConfig rows recorded (closes TASK_820's missing gate-2 number). Plus record-fix riders (819 TEST B2 receipt, 898 cash-drag footnote, 892 re-trim concentration, 893 backfill assert). |
+| 7 | `tasks/TASK_918_TACTIC_LIBRARY_HULL_CEILING.md` (NEW 2026-09-05 — tactics row 1 upgraded; **gate = 899 ingest**) | XS/S | 8 tactic matrices incl. the never-measured 21d cross-sectional reversal (7d leg is time-series — label corrected). Comparators: hull, oracle, walk-forward, Hedge, **equal-weight blend (binding null)**, B0 strategy-momentum control; block-CI + SR0(N). **STEP-0 kill: hull < +0.97 closes the selector class — MuZero-as-selector included — in minutes (85% prior).** |
+| 8 | `tasks/TASK_917_SECOND_MOMENT_AND_EVENT_INSTRUMENTS.md` (NEW 2026-09-05 — mechanism-panel salvage; no hard gate) | S/M | Four independent CPU instruments, each self-nulling: VR-persistence ρ̄ (gates every regime idea; only market-level pooling can resolve it), post-shock κ table with FIRST-TRADED-PRINT entry (close-entry is bid-ask bounce), post-listing event study (never measured), hourly residual IC surface h∈{1..24}h (the never-tested 1h–6h band; break-even overlay built in; re-tests 816's +1.53 residual-TSMOM lead). ≤3 CPU-days total. |
+| 9 | `tasks/TASK_919_EXECUTION_TURNOVER_MODULE.md` (NEW 2026-09-05 — tactics row 2 upgraded; phase B double-gated) | S | Phase A: H×θ×accounting×tier grid on the frozen book (+hour-of-day 13–17 UTC arm, zero signal cost). **60–70% odds of +0.10–0.15 Sharpe on any surviving book — the only majority-odds additive item in the harvest.** Phase B (maker spec): gated on 907-B2 shipped (AS(1h) ≤ 2bp) AND D80(iii) rails ruling. |
+| 10 | `tasks/TASK_881E_MANIFEST_AUTHORITY_BINDING.md` (re-cut per D72) | S | SIMPLE manifest-authority: a `covers:` entry grants coverage only where the run dir's own 881i-ingested manifest names the requesting experiment. No name-derived fallback, no registry, no markers; check in the deleter's module only; undeclared = refuse. Freeze lift DECOUPLED. Resume the run-46 patch first (cycle 2 is a strict improvement), then strip the name rules. D70's measurements (breakage split, coverage diff) survive. |
+| 11 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
+| 12 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
+| 13 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.

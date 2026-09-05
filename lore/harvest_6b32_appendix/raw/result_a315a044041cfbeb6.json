@@ -1,0 +1,162 @@
+{
+ "family": "Online portfolio selection (Cover 1991 universal portfolios, EG, ONS, follow-the-leader), mean-reversion OLPS (PAMR/OLMAR/CWMR/RMR), transaction-cost-aware OLPS (Blum\u2013Kalai, TCO), and regret-minimisation (Hedge/EWA, Fixed-Share, EXP3/EXP4) over a finite set of expert TACTICS (trend book, reversal book, constant-mix, flat).",
+ "thesis": "The tactic is to stop learning a forecast and instead run K closed-form books (trend30 = the frozen 819 rule, its long-flat variant, a short-horizon reversal book, the uniform constant-rebalanced long basket, flat, optionally an alt-vs-BTC constant-mix) and let a regret-minimising meta-rule (Hedge/EWA, Fixed-Share, follow-the-leader, or Cover's UP over the experts' price relatives) move a fully visible weight vector on the K-simplex by cumulative realised net@21 losses; \"hold on policy\" is then literal \u2014 the action space is K numbers, every move is explained by a loss ledger, and turnover of the meta layer is bounded by the learning rate. Where the profit comes from must be stated per member: (a) Hedge/UP/FTL over experts has NO profit source of its own \u2014 the guarantee is a bound on shortfall versus the best expert (or best constant mixture) in hindsight, so the meta inherits the experts' sources (trend and reversal books are FORECASTS, source 1; flat is zero); (b) PAMR/OLMAR/CWMR are forecasts dressed as tactics (they predict x\u0302_{t+1} = 1/x_t or MA_t/x_t and trade aggressively on it; Li\u2013Hoi 2014 \u00a7PAMR/CWMR: \"no meaningful theoretical regret bound\") with unbounded turnover \u2014 the opposite of holding; (c) the only intrinsic non-forecast source in the family is the constant-rebalanced portfolio's excess growth rate, \u00bd(\u03a3w\u03c3_i\u00b2 \u2212 \u03c3_p\u00b2) (source 3, rebalancing premium), which on this panel is worth \u22480.16/yr \u2248 +0.27 Sharpe-equivalent on top of a long-only basket whose measured Sharpe is \u22120.37 FULL and \u22122.49 in 2022 (the scorer's `bh` column is exactly that UCRP). (d) Mixing opposite books nets trades inside the combined position matrix \u2014 a real source-4 cost reduction, automatically captured if the mixture is scored as one book. Net: the family is a control/audit layer, not an edge; its expected profit is bounded above by the best fixed convex mixture of the experts minus regret, and the experts already in the record cap that hull near +0.1 net@21 over 2024\u20132026H1.",
+ "math": "(1) Cover UP (Dirichlet(\u00bd) prior, Cover\u2013Ordentlich 1996 Thm 2): ln(W_BCRP/W_UP) \u2264 ((m\u22121)/2)\u00b7ln(T+1) + ln 2. m=6 experts, T=365: 15.4 nats (wealth factor e^15.4 \u2248 5\u00b710^6); m=64 assets, T=365: 186.6 nats; over the FULL 1704-decision span: 19.3 / 235.1 nats. Vacuous at every horizon the goalposts use; it only guarantees growth-rate convergence at rate (m ln T)/T, i.e. 15.4/365 = 4.2% per DAY of allowed shortfall in year one. ONS is O(m^1.5 log(mT)) (Agarwal et al. 2006 via Li\u2013Hoi survey) and needs bounded price-relative ratios \u2014 crypto single-day moves of \u00b150% blow the constant. (2) Hedge/EWA over K=6 experts, losses in a range of width L: R_T \u2264 L\u00b7sqrt(T\u00b7ln K/2) = 18.08\u00b7L (T=365). Trend-book daily \u03c3_d \u2248 3.2% (from PARITY: \u00d721.69 @8bp over 4.67 y \u21d2 log-growth 0.66/yr, Sharpe 1.09 \u21d2 \u03c3 \u2248 0.61/yr; trader/backtest.py:464-471). L = \u00b13\u03c3_d = 0.06 \u21d2 regret \u2264 108% of NAV/yr = 1.89 annualised-Sharpe points; L=0.10 \u21d2 3.16; L=0.30 (crypto tail) \u21d2 9.5. Second-order bound (Cesa-Bianchi\u2013Mansour\u2013Stoltz 2007): R_T \u2272 sqrt(2\u00b7ln K\u00b7\u03a3_t \u2113_t\u00b2) \u21d2 in annualised-Sharpe units sqrt(2 ln K)\u00b7sqrt(365/T) = 1.89 (1 y), 1.34 (2 y), 0.88 (FULL 1704 d), 0.60 (10 y). The spread it must resolve: trend net@21 by year +1.69/+0.97/+0.89/\u22120.13/+0.55/\u22121.89 (2021\u20262026H1), UCRP +1.02/\u22122.49/+1.12/\u22120.24/\u22121.99/\u22122.45, flat 0 \u21d2 best-minus-worst expert 1.5\u20133.5 Sharpe/yr, i.e. the same order as the guarantee. (3) The binding limit is statistical, not adversarial: SE of an annualised Sharpe over Y years \u2248 sqrt((1+S\u00b2/2)/Y) (Lo 2002); SE of the DIFFERENCE between two tactics with correlation \u03c1: sqrt(2(1\u2212\u03c1)(1+S\u00b2/2)/Y). S\u22480.5: \u03c1=0 \u21d2 1.50 (Y=1), 0.67 (Y=5), 0.47 (Y=10); \u03c1=\u22120.3 (trend vs reversal) \u21d2 1.71 / 0.76 / 0.54. A 1.0-Sharpe gap between tactics is < 1 SE inside a year and reaches t=2 only after \u22489\u201312 stationary years \u21d2 regret weights move on noise \u21d2 forecast-combination puzzle (Stock\u2013Watson 2004; Smith\u2013Wallis 2009; DeMiguel\u2013Garlappi\u2013Uppal 2009: 3000 months for 25 assets). (4) Excess growth rate (Fernholz): \u03b3* = \u00bd(\u03a3_i w_i \u03c3_i\u00b2 \u2212 \u03c3_p\u00b2). Inputs (assumed, to be measured): \u03c3_i = 0.90/yr, mean pairwise \u03c1 = 0.55, n = 64 EW \u21d2 \u03c3_p\u00b2 = 0.81\u00b7(1/64 + (63/64)\u00b70.55) = 0.451, \u03c3_p = 0.672, \u03b3* = 0.179/yr. Daily-rebalance turnover \u2248 sqrt(2/\u03c0)\u00b7\u03c3_idio,d = 0.798\u00b7sqrt(0.359/365) = 0.025/day \u21d2 21 bp cost = 0.025\u00b70.0021\u00b7365 = 1.9%/yr \u21d2 net \u03b3* \u2248 0.16/yr \u2248 +0.27 Sharpe on \u03c3_p \u2014 relative to buy-and-hold of the SAME basket, not to cash. (5) Convex-hull bound: a simplex mixture returns \u03a3_k w_{t,k} r_{t,k}; E[Sharpe] \u2264 Sharpe of the best fixed mixture in hindsight; two uncorrelated experts each S give (S1+S2)/\u221a2, so clearing +0.97 by diversification alone needs \u22652 low-correlation experts each \u2265 0.97/\u221a2 = 0.69 on the unseen years \u2014 the record has none (trend 2024\u201326H1 \u2248 +0.1 avg, UCRP negative, flat 0). (6) Meta-layer cost: |\u0394w_k| \u2264 \u03b7 per step; theory \u03b7 = sqrt(8 ln K/T) = 0.198 (T=365) \u21d2 worst-case extra turnover 0.2 NAV/day \u21d2 0.2\u00b721 bp\u00b7365 = 15%/yr on top of the experts' 0.155/day (11.9%/yr); FTL hard switches are lumpy (up to 2\u00b7gross per switch).",
+ "profit_source": "mixed",
+ "bear_positive_without_forecast": {
+  "answer": "no",
+  "argument": "Every guarantee in the family is RELATIVE: UP/EG/ONS vs the best constant-rebalanced portfolio in hindsight; Hedge/Fixed-Share vs the best expert or best k-switch sequence. If cash/flat is in the class the hindsight target in a bear is \u2265 0, but the bound over BEAR22 (n=416 decisions, trader/config.py:70-78) is ((m\u22121)/2)\u00b7ln 417 \u2248 15 nats for m=6 \u2014 vacuous \u2014 and Hedge's slack of \u22481.9 annualised-Sharpe points exceeds the whole bear-year spread between experts. Adaptation is by cumulative past loss, so the weight entering 2022 sits on the 2021 winners (trend +1.69, UCRP +1.02 net@21) and UCRP alone then prints \u22122.49 (898 by-year, decay_trading_fixture.json). The meta is BEAR-positive only if it already holds a BEAR-positive expert, and the only measured BEAR-positive expert is the long-short trend book (+0.99 net@21 BEAR22) whose bear profit came entirely from the short side \u2014 a forecast property (the long-flat variant read \u22122.59 in BEAR22; 898 row, LEDGER.md:103). The rebalancing premium (\u2248+0.16\u20130.27 Sharpe-equivalent) is an add-on to a long-only basket that lost \u22122.49; it cannot flip the sign. A market-neutral constant-mix (long EW alts / short BTC) is beta-free by construction but its 2022 sign is an alt-vs-BTC risk-premium bet (alts underperformed), not a guarantee. Cuchiero\u2013Schachermayer\u2013Wong 2019 is explicit that the UP result is about ASYMPTOTIC growth-rate equality \u2014 nothing about finite windows or drawdowns."
+ },
+ "literature": [
+  {
+   "ref": "Cover 1991, Universal Portfolios, Math. Finance 1(1):1\u201329; Cover & Ordentlich 1996 (Dirichlet(\u00bd) UP)",
+   "claim": "UP wealth \u2265 BCRP wealth / poly(T): regret (m\u22121)\u00b7ln(T+1) first-order, ((m\u22121)/2)\u00b7ln(T+1)+ln 2 with Dirichlet(\u00bd) prior; minimax optimal; exact algorithm O(T^m).",
+   "numbers": "m=6,T=365 \u2192 15.4 nats; m=64,T=365 \u2192 186.6 nats (computed this session from the bound).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Li & Hoi 2014, Online Portfolio Selection: A Survey, ACM Computing Surveys 46(3) (arXiv 1212.2129)",
+   "claim": "Regret orders: UP O(m log n); ONS O(m^1.5 log(mn)) worse than UP; EG O(sqrt(n log m)); PAMR/CWMR/OLMAR have 'no meaningful theoretical regret bound'; the standard model assumes NO transaction costs (\u00a71: 'we assume no transaction costs/taxes'); Blum\u2013Kalai 1999 is the cost-aware UP.",
+   "numbers": "text lines 268, 533-541, 747, 966, 1019 of the pdftotext dump.",
+   "depth": "full"
+  },
+  {
+   "ref": "Moon, Kim & Moon 2019, Empirical investigation of state-of-the-art mean reversion strategies for equity markets, arXiv 1909.04327",
+   "claim": "The famous OLPS numbers are dataset artefacts and die at 0.25% proportional cost: benchmark sets (NYSE(O)/(N), DJIA, SP500, TSE, MSCI) are biased toward mean reversion; on ten fresh 39-stock S&P 500 portfolios 2000\u20132017 every non-cost-aware MR strategy is wiped out.",
+   "numbers": "Table 3 (no cost) NYSE(O): OLMAR 3.68e16, PAMR 5.14e15, BAHU 14.50. Table 4 (0.25%): NYSE(N) PAMR 0.00, OLMAR 0.05 vs BAHU 18.01; SP500 PAMR 0.03, OLMAR 0.07 vs 1.34; MSCI OLMAR 0.34 vs 0.90. Table 6 (0.25%, SP500(0..9)): SMR/SMAR/PAMR/OLMAR = 0.00 on 10/10 while BAHU 6.5\u201324.2; cost-aware TCO-1 0.01\u20131.07 (beats BAHU 0/10), TCO-2 beats BAHU 2/10. 'Kin Ark' bought only after a down day: \u00d72.15e9 on NYSE(O) vs \u00d72.05 buy-and-hold.",
+   "depth": "full"
+  },
+  {
+   "ref": "Blum & Kalai 1999, Universal Portfolios With and Without Transaction Costs, Machine Learning 35:193\u2013205",
+   "claim": "UP retains sublinear (O(m ln T)-order) regret vs the best CRP under proportional commissions; the first cost-aware regret analysis.",
+   "numbers": "exact constant with commission c not verified this session (Springer paywalled); order preserved per Li\u2013Hoi text.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Uziel & El-Yaniv 2016, Online Learning of Commission Avoidant Portfolio Ensembles, arXiv 1605.00788",
+   "claim": "Ensemble over commission-oblivious OLPS experts with a commission-avoidance mechanism achieves logarithmic regret; motivated by the fact that the base algorithms lose under commissions.",
+   "numbers": "none extracted.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Cuchiero, Schachermayer & Wong 2019, Cover's universal portfolio, stochastic portfolio theory and the num\u00e9raire portfolio, Math. Finance 29(3):773\u2013803",
+   "claim": "UP, functionally-generated SPT portfolios and the log-optimal num\u00e9raire portfolio share the same ASYMPTOTIC growth rate; the result is model-free but says nothing about finite T, drawdowns or sign in a bear.",
+   "numbers": "n/a (theory).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Fernholz & Shay 1982; Fernholz 2002, Stochastic Portfolio Theory",
+   "claim": "Excess growth rate of a rebalanced portfolio = \u00bd(\u03a3 w_i \u03c3_i\u00b2 \u2212 \u03c3_p\u00b2), non-negative for long-only; the rebalancing/volatility-harvesting premium.",
+   "numbers": "computed here: 0.179/yr gross, 0.160 net of 1.9%/yr rebalancing cost at 21 bp (\u03c3_i=0.9, \u03c1=0.55, n=64).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Hanicova & Vojtko 2021, Rebalancing Premium in Cryptocurrencies, SSRN 3982120 / Quantpedia",
+   "claim": "27 coins, 2018-12-31\u21922021-10-29: daily and monthly rebalanced EW beat drifting buy-and-hold on return, vol and Sharpe.",
+   "numbers": "no premium figure extractable; NO transaction costs; sample ends before the 2022 bear.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "arXiv 2512.08124 (2025), Long-only cryptocurrency portfolio management by ranking the assets",
+   "claim": "Only crypto OLPS table found with a full 2020\u20132023 cycle: classical OLPS do not beat the uniform CRP even at zero fee; the mean-reversion members are catastrophic.",
+   "numbers": "10 top coins, daily 2020-05-01\u21922023-11-01, zero fee for Table III: BAH 0.83 / UCRP 0.86 / UP 0.86 / EG 0.86 / BCRP(hindsight) 1.11 / Anticor 0.35 / CWMR \u22120.20 / OLMAR 0.00 / PAMR \u22120.20 / RMR 0.07 Sharpe; maxDD 95\u201396% for CWMR/OLMAR/PAMR/RMR, 79% for UCRP.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Tavgen (Medium), Cryptoassets and Investments: Online Portfolio Selection; Jiang, Xu & Liang 2017 arXiv 1706.10059",
+   "claim": "Popular crypto OLPS/DRL claims (OLMAR & Anticor 4\u20135\u00d7 market on 30-min ETH/BTC, LTC/BTC, USDT/BTC; DRL 4-fold in 50 days at 0.25% on Poloniex) are zero-cost or single-backtest results; no independent net-of-cost replication found this session.",
+   "numbers": "transaction costs set to zero in the OLPS notebook; 4\u00d7 in 50 days for the DRL paper (self-reported).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Freund & Schapire 1997 (Hedge); Cesa-Bianchi & Lugosi 2006, Prediction, Learning, and Games, Thm 2.2",
+   "claim": "EWA regret \u2264 sqrt((T/2)\u00b7ln K) for losses in [0,1]; scales linearly with the loss range.",
+   "numbers": "K=6, T=365: 18.08\u00b7L.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Cesa-Bianchi, Mansour & Stoltz 2007, Improved second-order bounds for prediction with expert advice, Machine Learning 66:321\u2013352",
+   "claim": "Regret \u2264 (ln K)/\u03b7 + \u03b7\u00b7min_k \u03a3_t \u2113_{k,t}\u00b2, i.e. O(sqrt(ln K \u00b7 \u03a3 \u2113\u00b2)) \u2014 variance- not range-scaled.",
+   "numbers": "in annualised-Sharpe units sqrt(2 ln K)\u00b7sqrt(365/T): 1.89 (1 y), 0.88 (1704 d).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Herbster & Warmuth 1998, Tracking the best expert, Machine Learning 32:151\u2013178",
+   "claim": "Fixed-Share competes with the best k-switch expert sequence at an additional \u2248 k\u00b7ln K + k\u00b7ln(T/k) price; tracking a regime change is not free.",
+   "numbers": "n/a.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "DeMiguel, Garlappi & Uppal 2009, Optimal Versus Naive Diversification, RFS 22(5):1915\u20131953",
+   "claim": "Estimation error swamps optimisation: 14 models on 7 datasets, none consistently beats 1/N on Sharpe, CEQ or turnover.",
+   "numbers": "\u22483000 months of data needed for 25 assets, \u22486000 for 50.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Stock & Watson 2004; Smith & Wallis 2009 (forecast combination puzzle)",
+   "claim": "Data-adaptive combination weights lose to equal weights because weight-estimation error exceeds the gain when true optimal weights are near-equal.",
+   "numbers": "n/a.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Lo 2002, The Statistics of Sharpe Ratios, FAJ 58(4)",
+   "claim": "SE(annualised SR) \u2248 sqrt((1+SR\u00b2/2)/Y) for i.i.d. returns over Y years.",
+   "numbers": "used for the 1.50 / 0.67 / 0.47 SE figures above (from memory, not re-read).",
+   "depth": "abstract-level"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "grep -rniE 'universal portfolio|regret|bandit|hedge|olps|olmar|pamr|cwmr|follow.the.leader|constant.rebalanc|exp3|exp4|online newton' over *.md/*.py/*.json/*.txt (trader_env excluded)",
+   "relation": "ZERO hits for OLPS/universal-portfolio/Hedge-as-algorithm/FTL/CRP/EXP3. 'regret' hits are all the PAIRED oracle-regret curriculum lineage (tasks/TASK_110_ADVERSARIAL_MARKET_GENERATOR.md:13,53; tasks/TASK_119_OPTIMAL_PATH_SOLVER.md:206-210; tools/orchestration/dojo_v2.py:146 --amax-regret-weight) \u2014 a homonym (regret vs hindsight oracle as a training signal), not online-learning regret. 'bandit' \u2192 tasks/TASK_126m_numerical_stability_audit.md:22 (unroll_steps aside). 'hedge' \u2192 tasks/TASK_819_SINGLE_ASSET_BOTTOM_UP.md:62 'crash hedge' (a property of the trend book), tasks/TASK_055_borrowing_cost_shorts.md:13."
+  },
+  {
+   "receipt": "trader/backtest.py:205-228 (regime_series: `pr = pres[t]`, `wbh = pr / pr.sum`, `bh = \u03a3 wbh\u00b7fwd`, recomputed at every decision t)",
+   "relation": "The scorer's 'B&H' column is NOT buy-and-hold: it is the daily-rebalanced equal-weight over present assets = the uniform constant-rebalanced portfolio (log-return approximation). So the family's constant-mix expert and the centre of Cover's target class are ALREADY measured: FULL 2021-01\u21922025-09 \u22120.365, BEAR22 \u22122.52, REC23 +1.04, BULL24 \u22120.27, CHOP25 \u22121.55 (experiments/898_trend_decay/results/decay_trading_fixture.json regime_table/*/baseline/bh); by-year 2021 +1.02, 2022 \u22122.49, 2023 +1.12, 2024 \u22120.24, 2025 \u22121.99, 2026H1 \u22122.45 (decay_windows). Labelling note for the planner: docs and LEDGER call it B&H."
+  },
+  {
+   "receipt": "runs/819_single_asset/PORTFOLIO_RESULT.md:40-43, :49-51; trader/config.py:91-95 (StrategyConfig docstring)",
+   "relation": "Equal-weight hedging over five lookback 'experts' L\u2208{7,14,30,60,90} was measured: 20/equal/ensemble \u22120.16 vs single-30d (line 50); broad/equal/ensemble net@21 +0.61 CI[\u22120.31,+1.44] vs +0.97 for the single expert (line 40). Inverse-vol sizing \u22120.06 (line 49). The record's one 'hedge over tactics' read is negative \u2014 the forecast-combination puzzle in miniature."
+  },
+  {
+   "receipt": "trader/risk.py:1-24; trader/config.py:109-125 (RiskConfig, dd_mode shadow_scale 1.0/0.5/0.25); tasks/TASK_820_SHIP_TREND_CTA.md:112-116",
+   "relation": "A regime-conditional tactic switch already exists (drawdown throttle on a shadow equity curve = a deterministic 2-expert switch between the trend book and 25\u201350% of it). Measured on gate 2 (2025-12-13\u21922026-07-04) only as maxDD \u221232.2% and turnover halved; NO Sharpe recorded for overlay ON; overlay OFF net@8 \u22121.31 CI[\u22124.45,+1.29]. Cheap to complete inside the kill experiment as expert E7 if the planner wants it."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:103 (898/trend-decay); experiments/898_trend_decay/decay_harness.py:99 build_long_flat_positions, :262 score_window, :497 calendar_year_windows, :507 half_year_windows, :656 --include-dead",
+   "relation": "By-year scoring harness on the real ohlcv_daily (epoch to 2026-07-06) with the exact windows the kill needs; the trend expert (E1) and long-flat expert (E2) are already built. Trend net@21 by year: 2021 +1.69, 2022 +0.97, 2023 +0.89, 2024 \u22120.13, 2025 +0.55, 2026H1 \u22121.89; FULL 2021\u21922026H1 +0.68 CI[\u22120.08,+1.47]; turnover 0.146\u20130.185/day."
+  },
+  {
+   "receipt": "trader/backtest.py:188-190 (net = gross \u2212 turn\u00b7c/1e4), :231-283 (cell_metrics takes any pos array), :464-471 (PARITY: turnover 0.1551/day, \u00d721.69 @8bp); trader/strategy.py:137-167 (build_positions / positions_from_config)",
+   "relation": "The mixture book pos_meta[t] = \u03a3_k w_{t\u22121,k}\u00b7pos_k[t] can be scored by the unmodified scorer; the combined turnover automatically charges the meta's switching and credits netting between opposite experts. No new cost model needed."
+  },
+  {
+   "receipt": "lore/notes_2026-06-26.md:151-156 (813: '0/48 GO \u2026 every net Sharpe \u2264 0 \u2026 813 dissolves'); experiments/LEDGER.md:105 (897: 0/864 at any nonzero fee)",
+   "relation": "The only reversal-flavoured signals ever measured on this venue (minute-scale cross-section, lead-lag, vol-harvest triggers) are cost-bound. A DAILY equal-weight reversal book on the PIT panel at net@21 has never been built \u2014 it is the one unmeasured expert, and it is a forecast, not a tactic."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:378-381",
+   "relation": "The memo already set OLPS aside ('regret is against the best CRP, not BEAR-positive; OLMAR/PAMR cost-fragile') and suggested it only as an arm inside the controller comparison. This consultation confirms with numbers and adds the UCRP-already-measured fact."
+  }
+ ],
+ "controllability": "Strongest 'hold on policy' of any family on the table: the deployable state is a K-vector on the simplex (K=6), every expert is a closed-form rule with a one-line definition, the meta's move each day is a deterministic function of a public loss ledger (Hedge: w_k \u221d exp(\u2212\u03b7\u00b7L_k); FTL: argmax trailing Sharpe), so 'why did the book change' is answerable in one row. Turnover of the meta layer is bounded a priori (|\u0394w_k| \u2264 \u03b7 per step; with \u03b7=0.198 that is \u22640.2 NAV/day worst case, typically far less; FTL is lumpy but countable), the expert layer's turnover is the known 0.155/day, and the combined book stays gross \u2264 1 with no leverage, no HOLD-collapse mode (collapse to the flat expert is visible as w_flat \u2192 1 and can be capped), and no hidden state. What is lost: (i) the layer cannot create edge \u2014 E[Sharpe] \u2264 best fixed mixture of experts minus regret, so with the experts in the record (trend \u2248 +0.1 avg 2024\u201326H1, UCRP < 0, flat 0) the ceiling is below the +0.56 PIT bar before any learning; (ii) adaptation speed \u221d 1/sqrt(T): a regime the length of BEAR22 (416 decisions) is not tracked within itself \u2014 Fixed-Share pays k\u00b7ln(T/k) per switch; (iii) the guarantees assume long-only multiplicative wealth \u2014 with shorts in the expert set UP/EG/ONS lose their framework (Hedge over expert RETURNS survives, UP over expert price relatives survives only while 1+r_k > 0 daily, true here for gross \u2264 1 books); (iv) the mean-reversion OLPS members are the opposite of controllable (turnover 1\u20132\u00d7/day, PAMR maxDD 96% even at zero fee) and must be excluded, not tamed; (v) with K experts and ~365 rounds the weights are statistically indistinguishable from noise around 1/K (Sharpe-difference SE \u22481.5/yr), so the 'audit' is of a random walk on the simplex.",
+ "compute": "Negligible: pure numpy on a ~2000-day \u00d7 ~360-asset log-close matrix. Each expert's position matrix builds in < 1 s (trader/strategy.py kernels); Hedge/FTL/Fixed-Share weights are an O(T\u00b7K) loop; Cover UP over K=6 experts on a simplex grid (step 0.05: 53,130 points \u00d7 2000 days) is seconds; 2000-draw block-bootstrap CIs per cell are seconds (the whole 819 portfolio sweep ran in 24 s CPU per docs/findings/diversified_trend_shipcandidate.md:47). Full kill grid (7 experts \u00d7 5 meta-rules \u00d7 3 \u03b7 \u00d7 7 windows \u00d7 tiers 8/21) < 30 CPU-minutes. Zero GPU. Run on gpu-server CPU under safe_run per .claude/rules/10-compute-allocation.md; the 24 GB and incoming 64 GB GPUs are irrelevant to this family. Implementer time \u2248 1 day (\u2248300 lines reusing trader/ and the 898 harness).",
+ "kill_experiment": {
+  "design": "Pre-registered SPEC (sha256 recorded before the first run) in experiments/9xx_tactic_hedge/. Panel: trader/data.py true UTC daily bars from ohlcv_daily (epoch to 2026-07-06; extend if TASK_899 backfill landed), dead-coin inclusive (--include-dead), source filter as 898, warm-up from 2021-01-01, scored 2022-01-01\u21922026-06-30. Experts (all gross \u2264 1, all closed-form, all leak-free by construction): E1 trend30 = frozen 819 rule (positions_from_config); E2 trend30 long-flat (898 build_long_flat_positions); E3 reversal7 = \u2212sign(logC_t \u2212 logC_{t\u22127}) equal-weight over present assets (ONE lookback, fixed a priori, no sweep); E4 UCRP = equal-weight long over present assets (the scorer's `bh` construction as a position matrix); E5 flat = zeros; E6 alt-vs-BTC constant-mix = 0.5 long EW non-BTC present assets / 0.5 short BTC; E7 (optional) = E1 under the 820 shadow_scale DD throttle. Meta-rules, each producing w_t from expert net@21 daily returns realised through decision t\u22121 (weights lagged one decision so no forward label leaks): M1 PRIMARY Hedge/EWA with theory \u03b7 = sqrt(8 ln K/365) = 0.198 on losses \u2113 = \u2212r_net clipped to [\u22120.10,+0.10]; M2 Hedge \u03b7/4; M3 Hedge 4\u03b7; M4 Follow-the-Leader on trailing-365-day cumulative net@21 (hard switch); M5 Fixed-Share \u03b1=1/365 at \u03b7; M6 Cover UP (Dirichlet(\u00bd), simplex grid step 0.05) over expert price relatives 1+r_k. Controls: C1 best single expert in hindsight per window (oracle ceiling, never a candidate); C1-mix best FIXED convex mixture in hindsight per window (the family's hard ceiling); C2 best single expert selected on the PRIOR calendar year (honest annual FTL); C3 equal-weight 1/K fixed; C4 the frozen trend book alone (the program's bar); C5 flat. Combined book pos_meta[t] = \u03a3_k w_{t\u22121,k}\u00b7pos_k[t]; report gross-exposure median, w_flat share, meta turnover separately from expert turnover. Windows: calendar 2022, 2023, 2024, 2025, 2026H1 (decay_harness calendar_year_windows / half_year_windows), BEAR22 regime, FULL 2022\u21922026H1, and the binding UNSEEN window 2024-01-01\u21922026-06-30. STEP 0 (runs first, may end the row): compute C1-mix on 2024-01\u21922026-06 net@21; if C1-mix < +0.97 the convex hull cannot reach the bar and every meta-rule is bounded below it by construction \u2014 record FAIL-BY-CEILING and stop.",
+  "instrument": "Unmodified trader.backtest.cell_metrics (seed 819, n_boot 2000, tiers 8/21, per-decision Sharpe annualised \u221a365) on the combined position matrix, plus decay_harness.score_window for the by-year table; expert correlation matrix and N_eff of expert returns printed per window; epoch stamp per LEDGER.md:28-41; \u22653 'seeds' realised as the three pre-registered \u03b7 values for Hedge (deterministic rules have no other randomness) with the verdict on their MEDIAN; bootstrap CI as the second uncertainty read.",
+  "pass_fail": "PASS only if M1's median-over-\u03b7 net@21 on 2024-01\u21922026-06 \u2265 +0.97 with bootstrap CI lo > 0, AND exceeds C3 (equal-weight) by \u2265 0.20 AND C2 (prior-year best) by \u2265 0.20, AND net@21 > 0 on 2022 (BEAR22) and on 2026H1 separately, AND gross-exposure median \u2265 0.5 with w_flat < 0.8 on \u2265 80% of days. MARGINAL if the same holds at \u2265 +0.56. FAIL otherwise. Decisive diagnostics recorded regardless: (a) C1-mix ceiling on 2024\u201326 (if < +0.97 the family is closed by construction); (b) fraction of the five windows in which any meta-rule beats C3 \u2014 if \u2264 2/5 the forecast-combination puzzle holds on this panel and adaptive weighting is retired; (c) E3 reversal7 alone by year \u2014 the only unmeasured expert; if its 2024\u201326 net@21 CI includes 0 the record's 'reversal is cost-bound' extends to the daily surface. No metric shopping: M1/\u03b7/experts/windows fixed in the SPEC; any addition is a new row. Kill date 7 days from SPEC commit.",
+  "cost": "< 30 CPU-minutes on gpu-server (safe_run-wrapped), zero GPU, \u22481 implementer-day; STEP 0 alone is < 5 minutes and is expected to end the row."
+ },
+ "honest_odds": "P(clear +0.97 net@21 on unseen 2024-01\u21922026-06, BEAR-positive, holds positions, \u22653 seeds) \u2248 2\u20134%. P(MARGINAL \u2265 +0.56) \u2248 8%. P(STEP 0 closes the family by ceiling in < 5 CPU-minutes) \u2248 85%. Reasoning: (i) the convex-hull bound \u2014 the meta cannot beat the best fixed mixture of its experts in expectation, and the measured experts cap that hull: trend net@21 \u22120.13/+0.55/\u22121.89 on 2024/2025/2026H1, UCRP \u22120.24/\u22121.99/\u22122.45, flat 0; reaching +0.97 needs \u22652 low-correlation experts \u2265 +0.69 each on those years and none exists, so the odds ride entirely on the never-measured daily reversal7 expert, which is a forecast and whose minute-scale cousins are cost-bound (813, 897); (ii) realised regret of Hedge on near-stationary experts typically costs 0.2\u20130.5 Sharpe vs the best expert and the worst-case bound is 0.9\u20131.9, both of the same order as the inter-expert spread; (iii) the external record is uniform: every non-cost-aware OLPS \u2192 0.00 wealth at 0.25% on 10/10 fresh S&P portfolios (Moon et al. 2019), classical OLPS \u2264 UCRP 0.86 Sharpe on crypto 2020\u201323 at zero fee with 79\u201396% drawdowns (arXiv 2512.08124), and the UCRP itself is \u22122.49 in 2022 on this panel; (iv) the repo's own two 'tactic hedging' reads are negative (lookback ensemble \u22120.16; inverse-vol \u22120.06) and its only regime switch (820 DD throttle) reduced drawdown without a recorded Sharpe gain. The one thing this row buys with high probability is a cheap, pre-registered closure of the 'hunt tactics not alpha' idea on the daily surface \u2014 plus a first honest number for a daily reversal book.",
+ "open_doubts": [
+  "A daily equal-weight reversal book (E3) on the PIT panel at net@21 has never been measured; 813/897 tested minute-scale and 4-day triggers with n=6\u201325 hold-outs. If it reads \u2265 +0.7 uncorrelated with trend on 2024\u201326 the hull argument weakens \u2014 but that would be a forecast finding belonging to the alpha family, not a tactic finding.",
+  "The regret numbers are worst-case bounds; realised regret of Hedge on i.i.d.-like experts is far smaller (often \u2248 best expert \u2212 0.1\u20130.3 Sharpe). The kill measures realised regret; the bounds only show the GUARANTEE is uninformative at T \u2264 2000.",
+  "Blum\u2013Kalai 1999's exact commission-scaled constant was not verified (Springer paywalled); only the order (sublinear, O(m ln T)) is cited via the Li\u2013Hoi survey text. Lo 2002's SE formula is from memory.",
+  "The EGR arithmetic uses assumed \u03c3_i = 0.9 and mean pairwise \u03c1 = 0.55 for 64 Kraken assets; the kill should print measured N_eff and \u03c1 per year. If \u03c1 is lower in 2024\u201326 the rebalancing premium is larger (still an add-on to a negative long-only base).",
+  "The scorer's `bh` is UCRP in log-return approximation (\u03a3 w\u00b7\u0394log p, not log \u03a3 w\u00b7p_t+1/p_t); the second-order difference is \u2248 \u00bd\u00b7\u03c3_idio,d\u00b2 \u2248 5 bp/day \u2014 small but it is exactly the excess-growth term, so an EGR read from `bh` must recompute with simple returns.",
+  "Mixing opposite books nets trades inside the combined position matrix (a real source-4 saving); the scorer credits it automatically, but this also means a PASS could partly be cost-netting between trend and reversal \u2014 the SPEC should print expert-level vs combined turnover to attribute it.",
+  "Data epoch: ohlcv_daily ended 2026-07-06 at the 898 read (staleness 47 d); whether TASK_899's staged backfill has extended it was not checked this session. The fixture-panel JSON (n_assets 363, include_dead False) reproduces the LEDGER's real-DB by-year numbers, but the kill must run on the real DB with --include-dead.",
+  "K=6 with Hedge's theory \u03b7 assumes T=365 rounds; a continuous multi-year run with a fixed \u03b7 is not the anytime-optimal setting (\u03b7_t \u221d 1/sqrt(t) or Fixed-Share is); pre-registering three \u03b7 values covers this but a 'doubling trick' variant was not included.",
+  "Short-side experts break UP/EG/ONS's long-only framework; UP over expert price relatives is valid only while every expert's daily 1+r_k > 0, which gross \u2264 1 books satisfy except in a > \u2212100% day \u2014 fine here but should be asserted in code."
+ ]
+}

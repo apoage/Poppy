@@ -1,0 +1,195 @@
+{
+ "family": "Hierarchical / macro-action selection over a small library of K pre-registered, bounded TACTICS (flat, trend L/S, spot-legal long-flat trend, constant-mix 1/N long, beta-hedged constant-mix L/S, vol-targeted trend, 1-month reversal L/S), selected per period by a contextual selector (Hedge / EXP4 / ridge-on-regime-features; MuZero-over-K only if switching costs make it sequential); plus the constrained / risk-sensitive RL reformulations (CVaR- or drawdown-constrained Lagrangian, KL-to-behavioural-prior, differential Sharpe reward) as the \"hold on policy\" wrapper.",
+ "thesis": "Replace the 64-per-asset action grammar by a K-armed choice among books whose internal behaviour (weights, rebalance rule, turnover) is fixed and auditable; the learned object is only \"which book this period\". The expected profit of such a selector decomposes exactly as E[R_sel] = SUM_k pi_k*mu_k + SUM_k Cov(1{k chosen}, R_k) - c*E[switch turnover]: (i) the time-average EV of the tactics it dwells on, each of which is itself a risk premium (long constant-mix, beta), a rebalancing premium (constant-mix excess growth rate), a second-moment timing effect (vol-targeting), or a forecast (trend, reversal); (ii) the selector's timing covariance, which is a FORECAST of relative tactic returns in K dimensions \u2014 this is alpha, and \"hunting tactics\" does not exempt it from the no-free-lunch ledger; (iii) cost reduction from bounded, pre-declared turnover. The honest structural gain is geometric: a tactic's EV is estimated on the SUM over 64 assets BEFORE any argmax, so the per-asset \"marginal rounds to HOLD\" defect (832/E5-exit2, memo A-4) is removed by construction, and \"flat\" becomes an explicit, logged, reversible arm rather than a degenerate attractor. The honest structural loss: no term in the decomposition is positive unless at least one tactic has positive OOS EV net@21 in 2024-2026 or the selector's timing does \u2014 and the record measures the trend tactic at ~0 or negative for 2024-2026H1 and the learned nets unable to track window difficulty at all (875). Profit source is therefore MIXED, dominated by (ii) if it clears the bar, which makes it a low-dimensional forecast dressed as a tactic unless the pre-registration forces the comparison against the equal-weight blend of tactics (the forecast-combination null) and against the walk-forward best single tactic.",
+ "math": "(1) Decomposition. R_sel,t = SUM_k a_{k,t} R_{k,t} - c*SUM_i|w_{i,t}-w_{i,t-1}| with a one-hot (switching) or simplex (blending); c = 21 bp one-sided on turnover exactly as trader/backtest.py:188-190 charges it (net = gross - turn*c/1e4, turn = SUM_i|pos_t - pos_{t-H}|, :205-229). Because turnover is computed on the concatenated position matrix, switching cost between books is charged automatically by the existing scorer. (2) Switching cost bound. A flip between two disjoint unit-gross books has turn <= 2 -> <= 42 bp per switch; monthly cadence: <= 12 switches/yr -> <= 5.0%/yr worst case, ~1-2.5%/yr typical; versus the trend book's own internal 0.155/day = 56.6x/yr * 21 bp = 11.9%/yr (trader/config.py:100-102; docs/findings/diversified_trend_shipcandidate.md, turnover 56.6x/yr). So at monthly cadence the switching cost is second-order and the problem is NOT sequential -> the correct null algorithm is a full-information experts algorithm (all K tactic returns are observed every period, so it is Hedge/exponential weights, not even a bandit; EXP4 only if tactic returns were censored). At daily cadence the flip cost is up to 42 bp/day = 153%/yr and planning matters, but then the selector is a high-turnover forecaster again (the 897 regime). (3) Oracle ceiling (ex-post monthly best-of-K). With tactic monthly returns of std sigma_m, pairwise corr rho, all mu=0: E[max_k] ~= e_K*sqrt(1-rho)*sigma_m where e_K = E[max of K std normals] = 0.85 (K=3), 1.03 (K=4), 1.27 (K=6), 1.54 (K=10); oracle annualised Sharpe ~= e_K*sqrt(1-rho)*sqrt(12): K=6, rho=0.5 -> 1.27*0.707*3.46 = +3.1. This is the K-tactic analogue of 831x/B's +6..+10 perfect-model numbers (LEDGER:51) \u2014 the value of lookahead, not of a selector. (4) Best-single-in-hindsight luck. SE of an annualised Sharpe over T years ~= sqrt((1+S^2/2)/T) ~= 1/sqrt(T); for the 2024-01->2026-06 window T=2.5 -> SE 0.63; E[max realised Sharpe of K=6 zero-mean tactics] ~= 1.27*0.63 = +0.80 iid, ~+0.57 at rho=0.5 plus the shared component. So \"beat the ex-post best single tactic\" is a bar ~+0.6-0.8 above zero from luck alone; the pass must be against the WALK-FORWARD best single (chosen on trailing data), with the ex-post best reported as a ceiling. (5) Learnability with T=30 months. SE of a tactic's monthly mean = sigma_m/sqrt(30) = 0.18*sigma_m; two tactics whose Sharpe differ by 1.0 differ in monthly mean by 1.0/sqrt(12) = 0.29*sigma_m -> t = 0.29/(0.18*sqrt2) = 1.1: an online selector learning from 2024-26 alone cannot resolve a one-Sharpe-point difference between arms; Hedge's regret O(sqrt(T ln K)) = sqrt(30*1.79) = 7.3 sigma_m confirms the same order (the guarantee is \"within ~7 monthly sigmas of the best expert\", i.e. worse than a Sharpe point). Only a prior from pre-2024 data helps, and 898 measured that the pre-2024 ranking (trend best: 2021 +1.78, 2023 +1.07 net@8) did not persist (2024 +0.04, 2026H1 -1.66; LEDGER:103). (6) Random selector. Uniform a_t: E = mean_k mu_k; Var ~= mean_k Var_k; Sharpe_random ~= Sharpe_blend*sqrt((1+(K-1)rho)/K) < Sharpe_blend \u2014 the equal-weight blend dominates random switching at zero timing skill, which is why the blend, not the random selector, is the binding null (forecast-combination puzzle). (7) Rebalancing premium (Fernholz-Shay excess growth rate) gamma* = 0.5*(SUM_i w_i sigma_i^2 - sigma_p^2). Inputs: alt sigma_i = 0.90/yr, mean pairwise rho = 0.60, N large -> sigma_p^2 ~= rho*sigma^2 = 0.486 -> gamma* = 0.5*(0.81-0.486) = 0.16/yr geometric advantage of daily-rebalanced 1/N over drifting B&H of the same coins. Turnover of daily constant-mix ~= 0.8*sigma_idio,daily = 0.8*0.90*sqrt(0.4)/sqrt(365) = 0.024/day -> *365*21 bp = 1.8%/yr: the premium survives the 21 bp tier. But in a bear rho -> 0.85: gamma* = 0.5*(0.81-0.69) = 0.06/yr \u2014 the premium shrinks 2.7x exactly when the beta=1 book is losing (BEAR22 equal-weight B&H Sharpe -2.54, runs/819_single_asset/POWERED_RESULT.md:44-46), and per Cuthbertson et al. it is a median/geometric effect, not extra arithmetic mean. (8) Vol-targeting. Scaling a book by k/sigma_hat_t^2 raises Sharpe iff mu_t/sigma_t^2 is not constant (Moreira-Muir condition); for a book with mu ~= 0 (trend 2024-26) any scaling leaves mu ~= 0: the tactic reshapes variance, it cannot create a mean. Repo prior: cross-sectional inverse-vol on the trend book -0.06 (trader/config.py:91-94). (9) Compute. K=8 tactics x ~2,800 daily rows x 273 PIT assets: the PIT panel builds in 82 s and a full cell scores in ~24 s on CPU numpy (POWERED_RESULT.md:100; diversified_trend_shipcandidate.md infra note) -> the entire kill experiment incl. 2000-draw block bootstraps and walk-forward selectors is < 1 CPU-hour per configuration, < 1 CPU-day for the full grid.",
+ "profit_source": "mixed",
+ "bear_positive_without_forecast": {
+  "answer": "conditional",
+  "argument": "Without a first-moment forecast, the only bear-positive constructions in this family are (a) a beta-hedged constant-mix (long 1/N basket, short BTC to trailing beta=0), whose expected return is the rebalancing premium gamma* (~0.06-0.16/yr gross by the arithmetic above, ~2%/yr cost) PLUS the relative drift of alts vs BTC \u2014 the second term is a risk exposure (short BTC-dominance), and it was strongly negative in 2025 (broad tokens ~-60% vs BTC ~-6%, The Block year-in-data; search-snippet), so bear-positivity holds only when alts do not underperform BTC; (b) flat, which is zero, not positive. Long-only constant-mix and vol-targeted long books are NOT bear-positive \u2014 they lose less (rebalancing does not raise expected terminal wealth vs B&H: Cuthbertson-Hayley-Motson-Nitzsche 2016, abstract-level; the excess growth rate is a variance/geometric effect). The trend tactic's bear positivity (BEAR22 net@21 +1.06 PIT, POWERED_RESULT.md:52) IS a forecast \u2014 sign of the 30-day return \u2014 and its spot-legal long-flat variant is bear-NEGATIVE (BEAR22 -2.47, 2026H1 -5.22 CI[-7.89,-2.09], LEDGER:103). A selector that goes flat in bears is bear-neutral, and detecting the bear in time is itself a forecast of the market factor (single series, breadth ~1; the jump-model literature sizes this at +0.1-0.2 Sharpe on a positive-drift asset with 10 bp costs and 1-day delay). So: BEAR-positive without a forecast is achievable only via the beta-hedged rebalancing book, and only conditionally on the alt-vs-BTC drift; every other route to bear-positivity in this family is a forecast in disguise."
+ },
+ "literature": [
+  {
+   "ref": "Cederburg, O'Doherty, Wang, Yan 2020, 'On the performance of volatility-managed portfolios', JFE 138(1):95-117",
+   "claim": "Real-time (out-of-sample) volatility-managed versions of 103 equity strategies generally earn LOWER Sharpe ratios and certainty-equivalents than the unmanaged portfolios; the in-sample spanning-regression gains are not implementable; significant gains only for ~8/103, concentrated in momentum.",
+   "numbers": "103 strategies; only 8 with statistically significant Sharpe gains; vol-scaling improves Sharpe for 5 of Moreira-Muir's 9 factors.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Moreira & Muir 2017, 'Volatility-Managed Portfolios', JF",
+   "claim": "Scaling exposure by 1/realized variance raises Sharpe for market, value, momentum, carry because expected returns do not move proportionally with variance \u2014 the positive case for the vol-targeting tactic (second-moment timing, not a mean forecast).",
+   "numbers": "Large alphas and Sharpe increases across factors (numbers not read).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Man Group 2025, 'Crypto: Too Hot to Handle?' (vendor note)",
+   "claim": "Volatility scaling of Bitcoin buy-and-hold adds ~0.4 Sharpe irrespective of vol half-life; improves vol-of-vol and expected shortfall; no turnover/cost accounting.",
+   "numbers": "BTC 2012-09 -> 2024-12; +~40 Sharpe points; no costs modelled.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Asness, Chandra, Ilmanen, Israel 2017, 'Contrarian Factor Timing is Deceptively Difficult', JPM special issue",
+   "claim": "Timing among factors (a K-armed strategy-selection problem) fails to produce economically meaningful improvement in gross return or gross Sharpe over the static diversified blend, before turnover costs; the more diversified the blend, the harder timing is.",
+   "numbers": "No meaningful gross Sharpe improvement (exact deltas not read).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Sullivan, Timmermann, White 1999, 'Data-Snooping, Technical Trading Rule Performance, and the Bootstrap', JF 54(5)",
+   "claim": "The best rule in hindsight from a large universe of rules has no significant out-of-sample profit once the selection (data-snooping) is accounted for \u2014 the best-single-tactic-in-hindsight benchmark is luck-inflated.",
+   "numbers": "~7,846 rules, DJIA 1897-1996; post-1986 OOS best rule not significant under the Reality Check.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Smith & Wallis 2009 'A simple explanation of the forecast combination puzzle' (OBES); Timmermann 2006 'Forecast Combinations' (Handbook)",
+   "claim": "Estimated 'optimal' combination weights lose to equal weights out of sample because weight-estimation error exceeds the gain when true weights are near-equal \u2014 the equal-weight blend of tactics is the binding null for any learned selector.",
+   "numbers": "Puzzle robust across simulations and empirical studies (no single number).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Shu & Mulvey 2024, 'Downside risk reduction using regime-switching signals: a statistical jump model approach', J. Asset Management 25(5) (arXiv 2402.05272)",
+   "claim": "Regime-gated long/cash on equity indices with realistic frictions improves Sharpe modestly and mostly via drawdown reduction; the HMM variant underperforms the index with a 5-day delay on DAX/Nikkei. Sizes what regime-switching buys on a positive-drift asset.",
+   "numbers": "1990-2023, 10 bp cost, 1-day delay. S&P 500: B&H Sharpe 0.48 / MDD -55.2% -> HMM 0.54 / -28.9% -> JM 0.68 / -26.6%. DAX 0.30 -> 0.35 (HMM) -> 0.44 (JM). Nikkei 0.12 -> 0.19 -> 0.31. Return gain ~1-4%/yr.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "arXiv 2603.04441 (2026), 'Explainable Regime Aware Investing' (unrefereed)",
+   "claim": "Wasserstein-HMM + MVO regime allocation over 5 macro assets reports higher OOS Sharpe than equal-weight; the KNN variant destroys itself through turnover \u2014 a warning that non-parametric regime selectors churn.",
+   "numbers": "2005-2026 daily; Sharpe WHMM 2.18 vs KNN 1.81 vs EW 1.59 vs SPX 1.18; MDD -5.4% vs -12.5% vs -9.9% vs -14.6%; daily turnover 0.79% (WHMM) vs 56.65% (KNN). Cost treatment and true OOS split not verified.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "arXiv 2501.12841 (2025), 'Optimal vs. Naive Diversification in the Cryptocurrencies Market: time-varying moments and transaction costs'",
+   "claim": "In crypto, every strategy that uses a MEAN forecast underperforms 1/N after costs; only volatility-timing (GMV with conditional covariance) beats 1/N, and only slightly \u2014 direct evidence that second-moment tactics survive costs and first-moment ones do not.",
+   "numbers": "4 coins (BTC, ETH, XRP, LTC), 2015-08 -> 2023-07, 50 bp cost, daily & weekly. Mean-variance strategies: performance fee vs 1/N -2.08% to -0.24% (daily), -0.67% to -0.05% (weekly). GMV/DCC with turnover penalty: +0.14% (daily), +0.08% (weekly).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Cuthbertson, Hayley, Motson, Nitzsche 2016, 'What Does Rebalancing Really Achieve?', Int. J. Finance & Economics",
+   "claim": "Rebalanced portfolios do not have higher expected terminal wealth than buy-and-hold; the 'rebalancing premium' conflates diversification return (geometric) with a return specific to rebalancing; empirical support for extra terminal wealth is weak.",
+   "numbers": "Theoretical + simulation; no single headline number.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "QuantPedia 2021, 'Estimating Rebalancing Premium in Cryptocurrencies'",
+   "claim": "Daily-rebalanced 1/N over 27 coins beat buy-and-hold in return and volatility during a bull period; monthly rebalancing second; no transaction costs modelled; result assumes no single dominant outlier coin.",
+   "numbers": "27 coins, 2018-12-31 -> 2021-10-29; Sharpe > 2.0 only in a 95% bond / 5% crypto mix; crypto-only numbers not costed.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Rattray, Granger, Harvey, Van Hemert 2020, 'Strategic Rebalancing', JPM Multi-Asset Special Issue",
+   "claim": "Mechanical constant-mix rebalancing is short momentum and worsens drawdowns in trending crises; a trend overlay or trend-timed ('strategic') rebalancing reduces drawdowns \u2014 i.e. the constant-mix tactic and the trend tactic are natural complements, and combining them is a fixed rule, not a learned selector.",
+   "numbers": "60/40 1960-2017; drawdown deltas not read.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Moody & Saffell 1998 (NIPS) / 2001 (IEEE TNN), 'Learning to trade via direct reinforcement'",
+   "claim": "Differential Sharpe ratio as an online risk-adjusted objective; RRL maximising DSR is more consistent than maximising profit and beats Q-learning and forecast-MSE traders on monthly S&P 500 1970-1994 and USD/GBP with 0.5% costs. Scope: single asset, monthly, pre-2000 \u2014 a reward design, not evidence of edge on this venue.",
+   "numbers": "S&P 500 monthly 1970-1994; costs 0.5%; exact Sharpe not read.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Niu, Li, Li 2022, 'MetaTrader: An RL approach integrating diverse policies for portfolio optimization', CIKM",
+   "claim": "Two-stage: imitation-learned diverse policies, then a meta-policy selects which policy to follow given market state, with differential-Sharpe rewards \u2014 the exact 'selector over tactics' architecture; reports 'outperforms in most cases' on equity datasets.",
+   "numbers": "No OOS Sharpe read; equity benchmarks; unreplicated.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "arXiv 2410.14927 (2024), 'Hierarchical Reinforced Trader (HRT)'",
+   "claim": "Bi-level RL (sparse {increase, reduce, hold} directions -> risk-aware execution) on 89 Nasdaq stocks with news text; OOS 2020-2023 Sharpe improves modestly and turnover falls \u2014 hierarchical decomposition buys controllability (lower turnover) more than return.",
+   "numbers": "Sharpe 1.06 (base) -> 1.24; daily turnover 0.112 -> 0.090; unrefereed.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "arXiv 2602.11708 (2026), 'Systematic Trend-Following with Adaptive Portfolio Construction' (crypto)",
+   "claim": "Claims OOS Sharpe 2.41 on 150+ pairs 2022-2024 with trailing stops, rolling-Sharpe asset selection and 70/30 L/S \u2014 three tuned components on a 36-month window; treat as in-sample until replicated. Cited only as the kind of number this family produces before honest costs and PIT universes.",
+   "numbers": "Sharpe 2.41, MDD -12.7%, Calmar 3.18; costs not quantified in the abstract.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Zarattini, Pagani, Barbon 2025, 'Catching Crypto Trends' (SSRN 5209907)",
+   "claim": "Donchian-ensemble trend with vol-based sizing on the 20 most liquid coins reports Sharpe > 1.5 and 10.8%/yr alpha vs BTC; no OOS or 2024-25 split visible; costs acknowledged not quantified.",
+   "numbers": "Sharpe > 1.5; alpha 10.8% vs BTC.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Freund & Schapire 1997 (Hedge); Auer, Cesa-Bianchi, Freund, Schapire 2002 (EXP4); Beygelzimer et al. 2011 (EXP4.P)",
+   "claim": "Full-information experts: regret O(sqrt(T ln K)); bandit-with-experts: O(sqrt(KT ln N)). With T=30 monthly rounds these bounds are ~7 monthly-sigma \u2014 the theory itself says a selector cannot track the best tactic to within a Sharpe point on the 2024-26 window.",
+   "numbers": "sqrt(30*ln 6) = 7.3; sqrt(6*30*ln 6) = 18 (bandit).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Fernholz & Shay 1982; Fernholz 2002 (Stochastic Portfolio Theory) \u2014 excess growth rate",
+   "claim": "gamma* = 0.5*(SUM w_i sigma_i^2 - sigma_p^2): the rebalancing premium is half the spread between weighted-average variance and portfolio variance \u2014 the closed-form input for the constant-mix tactic's expected gross.",
+   "numbers": "Applied above: 0.16/yr at rho=0.6, sigma=0.9; 0.06/yr at rho=0.85.",
+   "depth": "search-snippet"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "experiments/LEDGER.md:51 (831x/B) + docs/pathway.md:130-133",
+   "relation": "The '4/4 regime windows: perfect-model search +6..+10 while the rule floor is <=0 in 2 of 4 (BEAR22 -0.061, recent -0.534)' is the value of a 3-day true-env LOOKAHEAD, i.e. the daily-cadence analogue of the ex-post oracle selector in the math above (K-tactic monthly oracle ~+3). It is a ceiling, not evidence that a causal regime-conditioned selector exists; the memo's \u00a72 reading (lore/fable_direction_memo_2026-09-03.md:201-205) already makes this point."
+  },
+  {
+   "receipt": "docs/pathway.md:38 (H2)",
+   "relation": "H2 'regime conditioning: learned sizing beats fixed sizing on regime-split evals' has never been directly tested \u2014 every H2 read was a policy read. A K-tactic selector on trader/ is the cheapest possible H2 instrument, and its FAIL band ('learned sizing never beats fixed sizing') is exactly this row's kill criterion. Not falsified yet; also not supported."
+  },
+  {
+   "receipt": "runs/813_volharvest/MAP_PREREGISTERED.md:60-63; PHASE1_MAP_PROBE.md:21-24; docs/findings/modeling_surface_exhausted.md:58-66",
+   "relation": "813 D1 = one regime-gated tactic (top-quartile market RV filter on Donchian-240 trend, minute scale): fire-level +1.03 CI[+0.20,+1.93] collapsed to +1.67 CI[-1.29,+4.75] at n_events=28 \u2014 a clustering artifact. Falsifies nothing about daily tactic selection, but is the repo's own demonstration that regime-conditioned co-fires must be counted as independent EVENTS; the kill experiment must use monthly/weekly decision counts, not daily rows, for its effective n."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:103 (898/trend-decay); runs/819_single_asset/POWERED_RESULT.md:48-58",
+   "relation": "The trend tactic (T1) by year net@8: 2021 +1.78, 2022 +1.07, 2023 +1.07, 2024 +0.04, 2025 +0.66, 2026H1 -1.66, no post-2023 CI excluding 0; PIT by regime net@21: BULL24 -0.15, CHOP25 +0.02 (B&H -0.29 / -1.63). The spot-legal long-flat tactic (T2): 2026H1 -5.22 CI[-7.89,-2.09], BEAR22 -2.47. These are two of the K arms and their 2024-26 EV is ~0 or negative \u2014 the first term of the decomposition starts non-positive."
+  },
+  {
+   "receipt": "trader/config.py:91-94; docs/findings/diversified_trend_shipcandidate.md (lever attribution)",
+   "relation": "Two 'tactic blends' already measured on the trend book in-sample: inverse-vol (risk-parity) sizing -0.06 and the lookback ensemble -0.16 Sharpe; breadth +0.22 was the only positive lever. The invvol code path (trader/strategy.py:123-135 weights()) exists; constant-mix, beta-hedge, reversal, vol-target do not \u2014 ~300-500 lines of new position-builder code."
+  },
+  {
+   "receipt": "trader/backtest.py:188-190, :205-229, :231-283, :157-185, :285-296",
+   "relation": "The unmodified scorer already charges tactic-switch turnover (turn = SUM|pos_t - pos_{t-H}| on the concatenated matrix), reports gross/net@{0,3,8,21}, BEAR22 positivity and the FULL block-bootstrap CI (seed 819, n_boot 2000). Caveat: block_len = max(5, ceil(2*max_R/R)) = 5 for H=1 (:166) \u2014 for a monthly-switched series with regime persistence this may under-cover (the D55/D49 doctrine: certify the interval against the series' own dependence before reading the CI)."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:97 (887/collapse-confirm); :88 (832/E5-exit2); :102 (892/action-ev)",
+   "relation": "887: collapse was ADAPTIVE \u2014 every increase in activity lost more at fee 0 (A -2.86% / E -9.11% / D -13.84%). E5-exit2: per-asset marginal CE makes argmax round to HOLD unless marginals are sharply state-dependent. 892: the OOS anti-edge lives in the standing book's maintenance re-trims, entries/exits null. A tactic selector removes BOTH mechanisms by construction (EV aggregated across 64 assets before choice; re-trims are the tactic's pre-registered rule, not learned) \u2014 but inherits 887's conclusion: if all arms have EV<=0, the correct and auditable answer is the flat arm."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:99 (875/wf-generalization)",
+   "relation": "The imprint's OOS medians are flat (+0.31/+0.40/+0.41) while the floor swings 15x (+0.26..+3.90): the learned nets did not track window difficulty at all. Tracking window difficulty IS the selector's entire job; 875 is direct evidence the learned-policy route to it failed, and the reason to test a 6-feature ridge/Hedge before any net."
+  },
+  {
+   "receipt": "mcts_trader/training/config.py:202-204 (differential_reward), :227 (prior_weight); mcts_trader/env/jax_trading_env.py:1872; docs/findings/bull_blindness.md:24",
+   "relation": "The 'constrained / risk-sensitive' half of the family already has two knobs in the MuZero stack: a market-baseline differential reward (measured to add a bull-hostile term) and a scalar prior weight on the learned policy in Gumbel scoring (TASK_854). Reward is symlog(log_return); no Sharpe/CVaR/drawdown term exists. None of these changes the sign of the arms' EV; per D79 the 828 training lane is killed, so these knobs are moot unless the CPU selector passes."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:136, :148-154 (A-4), :379-381; tasks/DECISIONS.md:11 (D79); tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md:27-33",
+   "relation": "Memo A-4 names the breadth-before-threshold estimator gap that a tactic selector closes; :136 records zero Kelly/vol-targeting hits in-tree; :379-381 sets aside online-learning/universal portfolios (regret vs best CRP, not BEAR-positive) \u2014 the tactic selector is the same family with a flat arm and a beta-hedged arm added. D79/915 owns the upstream question (is there any daily forecast tactic at all); this row is a CPU filler that can run BEFORE or beside 915 but cannot supersede its G-A gate."
+  },
+  {
+   "receipt": "runs/816_operating_point/CROSSREGIME_RESULT.md:8-25; runs/819_single_asset/powered.py:143-230",
+   "relation": "816's TSMOM L14d/H3d cell is regime-robust across the four trending windows and 'chop-fragile' \u2014 the textbook case where a trend/flat switch would help IF chop were detectable ex ante. powered.py provides the PIT 273-asset daily panel builder (82 s) the tactic series should be built on, so the +0.97 bar's survivorship tilt is not re-imported."
+  },
+  {
+   "receipt": "experiments/831_ext/SPEC.md:18; trader/config.py:70-77",
+   "relation": "Regime windows already pinned twice (bear22w 2021-12-15..2023-01-15, bull23w, y2024, recent; REGIMES BULL21/BEAR22/REC23/BULL24/CHOP25) \u2014 the by-window selector report should reuse trader/config.py REGIMES so it is comparable with 819/898 rows without a cross-config caveat (D27)."
+  }
+ ],
+ "controllability": "Gains: (1) action space K~6-8 per period instead of 3^64 (or the +-w_unit ladder over 64 slots, jax_trading_env.py:1623-1648) \u2014 the whole decision history is one integer per month/week, printable beside the K running EVs, so every choice is explainable ex post and reversible in one period. (2) Each tactic is individually pre-registerable, individually gradable by the unmodified trader.backtest.cell_metrics (BEAR22 positivity, FULL CI, turnover, maxDD), and individually eligible for the gate ladder (docs/findings/deployment_gate_ladder.md) \u2014 the deployable artifact is a bill of materials, not a checkpoint. (3) Turnover is bounded by construction: trend 0.155/day, constant-mix ~0.024/day, flat 0, plus <=2.0 per switch at the chosen cadence; the cost line is a closed-form function of the cadence, so the 21 bp tier cannot be silently blown (contrast 897: turnover 1.74/decision). (4) Risk constraints become hard constraints on the arm set (gross<=1, no leverage, sum|w|<=1, spot-legal shorts only in T1/T4/T6) instead of Lagrangian penalties that a learner can trade off \u2014 the CVaR/drawdown-constrained RL machinery is unnecessary because the tactics' risk is known ex ante; a drawdown throttle already exists as trader/risk.py (RiskConfig, off by default). (5) 'Flat' is an explicit, logged arm: the HOLD attractor becomes an auditable state with a stated reason (all arms' trailing EV <= 0). Losses: (a) expressiveness \u2014 no per-asset sizing or timing beyond what each tactic encodes; 861/search-teacher-imprint (LEDGER:90) located the search's in-window edge in 'per-step lookahead timing that hard targets cannot carry', and that edge (if it existed OOS, which 892 says it does not) is unreachable here; (b) no intra-period adaptation at monthly cadence, and moving to daily cadence re-imports the turnover problem; (c) the selector inherits every tactic's blind spots (trend's chop-fragility, constant-mix's beta=1, beta-hedge's alt-vs-BTC exposure) and can only choose among them; (d) K is a multiplicity: 7 tactics x 5 selectors x 2 cadences = 70 cells unless one primary cell is pre-registered; (e) the honest 'hold on policy' is bought by admitting the selector is a K-dim forecaster \u2014 if it passes, what passed is a low-dimensional alpha, and it must be reported as such.",
+ "compute": "Tiny. Building K=7-8 tactic position matrices on the PIT 273-asset daily panel (2018-10 -> 2026-06, ~2,800 rows) is numpy on CPU: panel build 82 s (POWERED_RESULT.md:100), one full cell with 2000-draw bootstrap ~24 s (diversified_trend_shipcandidate.md infra note). Oracle / best-single / random (200 seeds) / equal-weight blend / Hedge / ridge-on-6-features walk-forward at monthly and weekly cadence, all by-year and by-regime with CIs: < 1 CPU-hour per configuration, < 1 CPU-day for the full 70-cell grid including a bootstrap-coverage calibration of the block CI. Zero GPU. The 24 GB workstation GPU, the three server GPUs and the incoming 64 GB GPUs are irrelevant to this family; a MuZero-over-K variant (state = 6 regime features + current arm, |A| = K, known switching-cost dynamics) is a toy MDP that would fit on one 24 GB GPU in hours \u2014 and should not be built unless the CPU selector beats the equal-weight blend first, because closed-form control over a known cost function dominates a tree on the same forecast (memo \u00a72). Implementation: ~400-600 lines in experiments/9xx_tactic_selector/ reusing trader/strategy.py, runs/819_single_asset/powered.py (PIT builder) and trader.backtest.cell_metrics unmodified; 2-3 factory days.",
+ "kill_experiment": {
+  "design": "Pre-registered SPEC (sha256 recorded) BEFORE any tactic series is scored. Panel: PIT 273-asset true-UTC daily closes via runs/819_single_asset/powered.py (dead coins retained, 819 liquidity filter), 2018-10 -> 2026-06 (after the 899 daily ingest). Tactics (K=7, each a leak-free position matrix, gross<=1, no leverage): T0 flat; T1 819 trend (sign 30d, equal weight, L/S, daily rebalance) \u2014 the existing StrategyConfig; T2 spot-legal long-flat trend (898 variant); T3 constant-mix 1/N long, daily rebalance; T4 beta-hedged constant-mix (long 1/N, short BTC to trailing-90d beta=0, gross<=1); T5 vol-targeted T1 (scale to 40%/yr by trailing-30d close-to-close vol, cap gross 1); T6 1-month cross-sectional reversal L/S (top/bottom tercile of 21d return, equal weight). Selectors, decision cadence monthly (primary) and weekly (secondary), decision at UTC close, position effective next bar: S0 equal-weight blend of T1..T6 (forecast-combination null); S1 uniform random arm, 200 seeds (matched-activity null, report median and 5-95%); S2 walk-forward best single tactic by trailing-12-month net@21 (the honest 'best single'); S3 Hedge/exponential weights over the 7 arms with eta fixed by theory eta = sqrt(8 ln K / T_train) (blend, not one-hot; flat arm = shrinkage to zero); S4 ridge from 6 causal regime features (EW-market 30d return, EW-market 30d RV, cross-sectional dispersion, breadth = fraction of assets above their 30d MA, BTC-dominance 30d change, T1 trailing-30d PnL) to next-period tactic returns, softmax over predictions, hyperparameters fitted on 2019-2023 only, frozen thereafter; ORACLE ex-post monthly best arm \u2014 ceiling only, never a gate. Grading window for the verdict: 2024-01 -> 2026-06 (unseen by every fit); in-window 2019-2023 reported for form. Every series also by trader/config.py REGIMES and by calendar year.",
+  "instrument": "Unmodified trader.backtest.cell_metrics / window_metrics (seed 819, n_boot 2000, tiers 8/21) on each selector's concatenated position matrix, so tactic-switch turnover is charged by the same turn = SUM|pos_t - pos_{t-1}| line as the tactics' own rebalancing (trader/backtest.py:205-229, :188-190). Pre-step: certify the block-bootstrap Sharpe CI (block_len 5 at :166) against the selector series' dependence with the 892 calibration METHOD (D55 doctrine) \u2014 if coverage < 0.90 at the realised n, raise the block length and record it before any cell is read. Report per cell: gross, net@8, net@21, turnover/day and /yr, BEAR22 net@21 and B&H, maxDD@21, fraction of periods flat, arm histogram, and the gap to ORACLE. Effective n for any significance claim = number of selector decisions (30 monthly / 130 weekly), never daily rows (813 D1 lesson).",
+  "pass_fail": "PASS (all conjuncts, pre-registered): on 2024-01 -> 2026-06 at least one of S3/S4 at the primary (monthly) cadence has net@21 >= +0.97 with calibrated block-bootstrap CI lo > 0; AND beats S0 (equal-weight blend) by >= 0.20 net@21; AND beats S2 (walk-forward best single) by >= 0.20; AND net@21 > 0 on 2026H1 alone; AND BEAR22 form-check net@21 > 0 and > B&H; AND holds positions (median gross >= 0.5, flat arm chosen in <= 50% of periods); AND the secondary cadence agrees in sign. MARGINAL: same conjuncts at +0.56. FAIL: anything else \u2014 including 'beats the blend but not the bar', which is recorded as a measured selector-timing IC, not as a candidate. Pre-committed consequences: FAIL -> the tactic-selector / hierarchical-RL family is recorded dead on the daily OHLC surface (no MuZero-over-K, no CVaR-RL, no DSR variant follows, since none changes the arms' EV sign); the by-arm table is kept as the measured 2024-26 EV of each tactic and feeds 915's G-B breadth/turnover triple. PASS -> the passing selector enters the gate ladder as a bill of materials (K tactic specs + selector weights), with the explicit label 'low-dimensional forecast'. The ORACLE number is never cited as a result.",
+  "cost": "~400-600 lines new code (experiments/9xx_tactic_selector/: tactic builders, selectors, runner, SPEC), reusing trader/strategy.py, powered.py and cell_metrics unmodified; < 1 CPU-hour per run, < 1 CPU-day for the 70-cell grid plus CI calibration; zero GPU; 2-3 factory days; precondition = the 899 daily ingest (same as 915). Multiplicity: one primary cell (S4, monthly, net@21) pre-registered; everything else descriptive."
+ },
+ "honest_odds": "P(clears the full goalposts \u2014 net@21 >= +0.97, CI lo > 0, 2024-2026H1 unseen, BEAR-positive form, holds positions, beats the blend and the walk-forward best single) ~= 3-5%. Reasons: (1) the first term of the decomposition is non-positive on the record \u2014 the trend arm reads 2024 +0.04 / 2025 +0.66 / 2026H1 -1.66 net@8 with no CI excluding 0 (LEDGER:103), the long-flat arm is dead, constant-mix is beta=1 (EW B&H BULL24 -0.29, CHOP25 -1.63), and the beta-hedged arm carries the alt-vs-BTC drift that was ~-50% in 2025; (2) the second term must therefore supply ~+1 Sharpe from selector timing over 30 monthly decisions, where the SE of a monthly mean is 0.18 sigma_m and a one-Sharpe-point difference between arms has t ~= 1.1 \u2014 not learnable online, and the pre-2024 ranking did not persist; (3) the literature sizes honest regime-gating at +0.1-0.2 Sharpe on assets WITH positive drift (Shu-Mulvey S&P 0.48 -> 0.68 at 10 bp + 1-day delay), factor/strategy timing at ~0 gross improvement (Asness et al.), and real-time vol management at <= unmanaged (Cederburg et al.); the only crypto-specific positive after costs is second-moment timing worth +0.1%/yr-class performance fees (arXiv 2501.12841); (4) the best-single-in-hindsight luck bound on this window is ~+0.6-0.8 Sharpe, so most 'passes' one would see in a naive backtest are selection artifacts. Intermediate odds, so the row can be scored: P(S3 or S4 beats the equal-weight blend by >= 0.2 OOS) ~= 15-20%; P(at least one single tactic \u2014 most likely T4 or T5 \u2014 clears +0.56 MARGINAL on 2024-26 with CI lo > 0) ~= 10%; P(the by-arm table shows every arm's 2024-26 net@21 CI including 0, i.e. the clean FAIL) ~= 60%. The row is still worth ~2-3 factory days because it is the cheapest direct H2 test in the repo's history, it closes the family two-sidedly on CPU, and its by-arm table is reusable by 915 regardless of verdict.",
+ "open_doubts": [
+  "Whether the beta-hedged constant-mix arm (T4) is even implementable at fee16/slip5 on Kraken spot margin: BTC short borrow/rollover cost is not in the cost model (trader/backtest.py:188-190 charges turnover only), and a persistent short leg pays it daily \u2014 could erase a ~2-3%/yr net rebalancing premium outright.",
+  "The excess-growth-rate arithmetic assumes mean pairwise rho 0.6 and alt vol 0.9; both must be MEASURED on the PIT panel by year (rho spikes to 0.8+ in 2022 and 2025-26 drawdowns, cutting gamma* ~2.7x). The 915 N_eff measurement is the same spectrum \u2014 share it.",
+  "Block-bootstrap CI at block_len 5 (trader/backtest.py:166) is uncalibrated for monthly-switched, regime-persistent series; if the D55-style calibration fails at n=30 decisions, the pass criterion's 'CI lo > 0' may be unreadable at monthly cadence and the row degrades to weekly (130 decisions) with more switching cost.",
+  "K=7 arms x 5 selectors x 2 cadences is 70 cells; a single pre-registered primary (S4/monthly/net@21) is proposed, but the choice of the 6 regime features and the 40% vol target are themselves degrees of freedom fitted on 2019-2023 \u2014 the in-window/OOS boundary must be enforced in code, not by convention (875-class leakage risk).",
+  "Whether 'flat as an arm' should be one-hot or a shrinkage target: one-hot flat with Hedge converges to flat whenever all arms' trailing EV <= 0 (the 887 fixed point made explicit); a blend with a flat arm is equivalent to de-leveraging. The SPEC must fix one and state that a >50%-flat selector FAILS 'holds positions' even if its Sharpe is high.",
+  "The 831x/B per-window floors (BEAR22 -0.061, recent -0.534) are in-env 64-slot numbers (D27 cross-config caveat); the tactic rows must be graded on trader/ PIT only and never compared to those floors without the CROSS-CFG flag.",
+  "Dependence on the 899 daily backfill ingest for 2026H1 cells (same precondition as 915; RO02 drive fix gates DB writes) \u2014 without it the unseen window is 2024-01 -> 2025-12 (24 monthly decisions) and the SE arithmetic worsens by sqrt(30/24).",
+  "Literature depth: no source in this family was read in full; the positive regime-switching numbers (Shu-Mulvey; arXiv 2603.04441) are equity/macro, unrefereed in one case, and untested on a venue where the underlying drift itself is in doubt \u2014 they are size priors, not evidence for crypto 2024-26."
+ ]
+}

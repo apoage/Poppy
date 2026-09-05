@@ -1,0 +1,197 @@
+{
+ "family": "Risk and sizing tactics without forecasts: portfolio-level volatility targeting, fractional Kelly / growth-optimal leverage, drawdown control (CPPI / DD throttle), per-asset and strategy-level stop-loss rules, with range-based (Yang-Zhang / Garman-Klass / Rogers-Satchell) volatility as the OHLC-native input",
+ "thesis": "The tactic is to leave the trend book's signal untouched and control only its exposure path: scale the whole book by s_t = min(1, sigma*/sigma_hat_t) (vol targeting under the spot no-leverage cap), or by a Kelly fraction of the estimated edge, or by a drawdown/stop rule, with sigma_hat_t estimated from true daily OHLC ranges instead of closes. Under the no-free-lunch accounting this family CREATES no expected profit of its own: a positive causal scale s_t multiplies the base stream, so E[sum s_t r_t] carries the sign of the base's conditional mean unless Cov(s_t, r_t) > 0 \u2014 which is a forecast. What sizing can do is (i) re-time a GIVEN premium so that variance is spent where the conditional Sharpe is highest (vol targeting raises Sharpe by at most a factor sqrt(1+CV_sigma^2) when vol predicts vol but not Sharpe; Moreira-Muir 2017, Harvey et al. 2018), (ii) trade growth for variance (Kelly \u2014 a leverage answer, Sharpe-neutral), (iii) truncate the left tail (stops/DD throttle \u2014 Sharpe-positive only under positive autocorrelation of the stream at the stop's frequency, Kaminski-Lo 2014), and (iv) lower realized cost via a less noisy vol estimator (Baltas-Kosowski: Yang-Zhang cut TSMOM turnover ~17% at unchanged Sharpe). For THIS repo the base is the 819 trend book, whose source is a forecast (30-day sign) measured near zero in 2024-2026H1 (LEDGER 898: net@8 +0.041 / +0.663 / -1.659); multiplying an approximately zero-mean stream by any positive scale keeps it approximately zero-mean. So the honest classification is 'mixed': vol targeting draws on the base's forecast/premium and, per Hood-Raughtigan (2024), smuggles in a trend loading via the leverage effect; the only genuinely new source available to the family is cost_reduction from a more efficient sigma_hat, worth low single-digit percent of turnover. It is the cleanest 'hold on policy' available (one parameter, fully auditable) and it cannot move the book from +0.56 PIT to +0.97 or make 2024-2026 positive.",
+ "math": "(1) Vol-targeting Sharpe identity. Let sigma_t be the (perfectly forecast) conditional vol of the base book's daily return and S_t = E[r_t|t]/sigma_t its conditional Sharpe. Unscaled SR_u = E[sigma_t S_t]/sqrt(E[sigma_t^2] + Var(sigma_t S_t)); scaled by c/sigma_t: SR_v = E[S_t]/sqrt(1+Var(S_t)). If S_t = S constant (vol predicts vol, not Sharpe): SR_v/SR_u = sqrt(E[sigma^2] + S^2 Var(sigma))/E[sigma] ~= sqrt(1 + CV_sigma^2). Crypto 30-day realized vol has CV ~ 0.35-0.5 (vol ranges ~40-120%) -> multiplier 1.06-1.12 -> on the PIT +0.56 book: +0.03..+0.07 Sharpe; on the survivor +0.97: +0.06..+0.12. If Cov(S_t, sigma_t) > 0 the gain shrinks or flips: the book's own record has its HIGHEST Sharpe in its HIGHEST-vol regime (BEAR22 net@21 +1.06 vs FULL +0.56, POWERED_RESULT.md:53,57), i.e. crisis alpha, the Hood-Raughtigan trend loading \u2014 so the prior on the sign is <= 0. No-leverage cap (sum|w|<=1, config.py:101): s_t = min(1, sigma*/sigma_hat_t) only de-levers, so roughly half the theoretical gain is reachable, and mean exposure drops to E[min(1, sigma*/sigma_hat)]: with sigma* = 40% (MOP convention) and book vol ~61-67% (cum log 2.74/4.6yr = 0.596/yr at Sharpe 0.97 -> sigma ~0.61, PORTFOLIO_RESULT.md:76; cum 2.87/7.7yr = 0.373/yr at 0.56 -> sigma ~0.67, POWERED_RESULT.md:85) mean exposure ~0.6-0.65 -> gross return -35..-40%, Sharpe unchanged by the constant part. Overlay turnover: |Delta s_t| ~ |Delta ln sigma_hat_t| for a 30-day window ~ 2-3%/day -> +0.02-0.03 turnover/day on top of 0.155 -> +7-11x/yr x 21 bp = +1.5-2.3%/yr -> -0.025..-0.04 Sharpe on a ~0.6-vol book. Net expected Delta net@21 in [-0.10, +0.08]. Sign-preservation: 2024-2026H1 base net@8 = +0.041 / +0.663 / -1.659 (LEDGER 898); any s_t in (0,1] leaves E[s_t r_t] ~0/negative unless s_t is correlated with sign(r_t) (a forecast). (2) Kelly. f* = mu/sigma^2 = S/sigma. PIT book S = 0.56, sigma ~0.67 -> f* = 0.84 (the $1 book is already ~full-Kelly); half-Kelly 0.42; Baker-McHale-style shrinkage S^2/(S^2 + SE_S^2) with SE_S ~ 1/sqrt(7.7 yr) = 0.36 -> 0.31/(0.31+0.13) = 0.70 -> f ~ 0.59. Growth g(f) = f mu - f^2 sigma^2/2, mu = S sigma = 0.375: g(1) = 0.375 - 0.224 = 0.151/yr; g(0.84) = S^2/2 = 0.157/yr; gain +0.6%/yr, Sharpe identical (a constant scale scales turnover and cost proportionally). At 2024-26 S ~ 0, f* ~ 0: Kelly says 'do not trade' \u2014 a leverage verdict on a dead signal, not an edge. (3) Stop-loss (Kaminski-Lo 2014). Random walk: Delta_mu = p_o (r_f - mu) = -p_o pi < 0 always (their eq. 13a). AR(1) with rho: sufficient condition for positive stopping premium rho >= pi/sigma = the PER-PERIOD Sharpe (eq. 18). For a 0.56-annual-Sharpe daily stream the per-day SR is 0.56/sqrt(365) = 0.029, so daily rho >= 0.03 suffices in the frictionless model \u2014 but the model has no costs: a per-asset stop firing p_o = 5%/day on a 64-asset equal-weight book adds turnover 2 x 0.05 x 1 = 0.10/day (exit + re-entry) vs the book's 0.155 -> +36x/yr x 21 bp = +7.7%/yr -> -0.12 Sharpe at 65% vol; the stopping premium must exceed that first. A strategy-level DD throttle (config.py:125-127: -20% -> 0.5, -35% -> 0.25) fires a few times per year (negligible cost) and pays iff the book's own low-frequency autocorrelation is positive; 898's decay (good 2021-23, bad 2024-26) is such persistence, so it would have cut 2024-26 losses in MAGNITUDE while leaving them negative (0.25-0.5 x negative = negative). (4) BEAR22 arithmetic (config.py:75 window 2021-11-10 -> 2022-12-31, 1.14 yr). BTC ~ $64.9k -> ~$16.5k: log -1.37; equal-weight B&H Sharpe -2.54 (POWERED_RESULT.md:53). Long-only R = sum s_t r_t with causal s_t in [0,1] -> E[R] = sum s_t E[r_t] <= 0 when E[r_t] <= 0 throughout, unless Cov(s_t, r_t) > 0. Constant-mix rebalancing premium among components ~ 1/2 (sum w_i sigma_i^2 - sigma_p^2) ~ 1/2 (1.0 - 0.45) ~ 0.27/yr at crypto vols (sigma_i ~100%, sigma_p ~67%) \u2014 4-5x smaller than the ~-1.2/yr drift and itself paid for by ~3%/day rebalancing turnover (~2.5%/yr at 21 bp). Long-short: BEAR22 baseline +1.095 vs long-flat -2.471 (LEDGER 898 row) \u2014 the entire positive sign is the short leg's.",
+ "profit_source": "mixed",
+ "bear_positive_without_forecast": {
+  "answer": "no",
+  "argument": "A pure sizing tactic is a causal scale s_t >= 0 on a base book. Long or long-flat base: the BEAR22 window (config.py:75, 2021-11-10 -> 2022-12-31) has BTC log return ~ -1.37 and equal-weight B&H Sharpe -2.54 (runs/819_single_asset/POWERED_RESULT.md:53); E[sum s_t r_t] = sum s_t E[r_t] <= 0 whenever the conditional mean is <= 0 throughout, and it can only be positive if s_t co-moves with the sign of r_t, which is by definition a forecast. The only non-forecast term that could be positive is the constant-mix rebalancing premium among components, ~ 1/2 (avg sigma_i^2 - sigma_p^2) ~ 0.27/yr at crypto vols, which is 4-5x smaller than the 2022 drift and is itself paid for by ~2.5%/yr of turnover cost at 21 bp; the best a stop-to-cash can do is ~0 minus costs. The repo has already measured the long-only version of exactly this: 898's variant_long_flat scores BEAR22 -2.471 vs baseline +1.095, and the leverage-matched long-only arm is negative in every regime (LEDGER 898 row; tasks/TASK_898:7-12). Long-short base: sizing INHERITS BEAR-positivity from the short signal (BEAR22 +1.06 net@21 PIT, POWERED_RESULT.md:53) and can reduce or preserve it, never create it; note that a vol-targeting cap would have DE-levered in 2022, the book's highest-vol and best regime, so it would have shrunk the BEAR22 margin. Conclusion: without a short signal, no; with one, the BEAR gate is the signal's property, and the pathway's bear_positive test (trader/backtest.py:285-288: BEAR22 net > 0 AND net > B&H) is unaffected by sizing except in magnitude."
+ },
+ "literature": [
+  {
+   "ref": "Moreira, Muir 2017, 'Volatility-Managed Portfolios', J. Finance 72:1611-1644",
+   "claim": "Scaling a factor by c/sigma_hat^2_{t-1} (previous-month realized variance) raises Sharpe and produces large alphas for market, value, momentum, profitability, ROE, investment, BAB and FX carry; mechanism: vol changes are not offset by proportional changes in expected return; the strategy takes LESS risk in recessions.",
+   "numbers": "Mean-variance investor restricted to the market gains 65% lifetime utility; alphas imply 'pronounced' Sharpe increases (per-factor Sharpe table not re-read today; Cederburg's replication below gives MKT 0.42 -> 0.51, MOM 0.48 -> 0.99).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Harvey, Hoyle, Korgaonkar, Rattray, Sargaison, van Hemert 2018, 'The Impact of Volatility Targeting', J. Portfolio Mgmt 45(1):14-33",
+   "claim": "60+ assets, daily data from 1926, 10% vol target, estimator half-life ~20 days: vol targeting raises Sharpe for 'risk assets' (equities, credit) and for 60/40 and risk-parity portfolios; NEGLIGIBLE Sharpe effect for bonds, currencies, commodities; reduces tail severity and max drawdown for all classes because left tails occur at high vol. Mechanism for equities/credit: the leverage effect (negative return-vol relation) makes vol scaling a momentum overlay.",
+   "numbers": "Vol-of-vol (sd of rolling 1-yr realized vol) 4.6% unscaled -> 1.8% scaled. The brief's ~+0.1-0.2 Sharpe for risk assets is consistent with the paper's message but I could NOT re-verify the exhibit values today (SSRN/JPM/AlphaArchitect blocked); treat the magnitude as order +0.1.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Cederburg, O'Doherty, Wang, Yan 2020, 'On the performance of volatility-managed portfolios', J. Financial Economics 138:95-117",
+   "claim": "Across 103 equity strategies, vol-managed versions do NOT systematically outperform in direct Sharpe comparisons; spanning-regression alphas are real in-sample but the implied strategies are not implementable in real time; real-time OOS versions generally earn lower certainty-equivalent returns and Sharpe than the unmanaged portfolios, due to structural instability of the spanning regressions. Gains concentrate in momentum-related strategies.",
+   "numbers": "Table 1 (1926/1927-2016, monthly, c/sigma^2 scaling, equal unconditional sd): Sharpe original -> managed: MKT 0.42 -> 0.51 (+0.09, p=0.30), SMB 0.23 -> 0.08 (-0.15), HML 0.40 -> 0.38 (-0.02), MOM 0.48 -> 0.99 (+0.50, p=0.00), RMW 0.38 -> 0.51 (+0.13), CMA 0.53 -> 0.40 (-0.13), ROE 0.74 -> 1.06 (+0.32, p=0.01), IA 0.77 -> 0.72 (-0.05), BAB 0.77 -> 1.01 (+0.24, p=0.01). Broad sample: managed wins 53/103, original wins 50/103; only 8/103 significant in favour of management. Real-time market case: combination strategy Sharpe 0.42 vs 0.46 for unmanaged-only.",
+   "depth": "full"
+  },
+  {
+   "ref": "Kim, Tse, Wald 2016, 'Time series momentum and volatility scaling', J. Financial Markets 30",
+   "claim": "In the MOP futures universe, TSMOM's large alphas are largely driven by the per-asset volatility scaling; without vol scaling TSMOM performs no better than buy-and-hold.",
+   "numbers": "Directional claim only (no magnitudes captured from the snippet). Relevance: futures assets have vol dispersion ~5% (bonds) to ~30% (commodities), so 1/sigma_i equalizes risk contributions; Kraken crypto vols cluster at 60-120%, so the repo's measured invvol effect (-0.06, turnover 0.155 -> 0.181) is what the same mechanism predicts when dispersion is low and cost is 21 bp.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Baltas, Kosowski 2013/2020, 'Demystifying Time-Series Momentum Strategies: Volatility Estimators, Trading Rules and Pairwise Correlations' (SSRN 2140091; Wiley Market Momentum ch.3)",
+   "claim": "Replacing close-to-close sd by the Yang-Zhang range estimator in TSMOM position sizing reduces turnover without statistically significant performance change; combined with a TREND rule and correlation adjustment turnover falls by more than a third.",
+   "numbers": "YZ vs SD: turnover -17%, Sharpe ~1.15 for both estimators (no significant difference).",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "du Plessis, Hallerbach 2017, 'Volatility Weighting Applied to Momentum Strategies', J. Alternative Investments 19(3):40-58",
+   "claim": "Distinguishes weighting by the strategy's OWN volatility (portfolio-level, what the repo never tested) from weighting by the UNDERLYING assets' volatility (per-asset, what 819 tested as invvol); both a timing effect and a stabilizing effect matter; adds dispersion weighting.",
+   "numbers": "US industry portfolios; magnitudes not captured.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Hood, Raughtigan 2024, 'Volatility Targeting Is Trendy: How Trend Following Explains Alpha in Volatility-Managed Strategies' (SSRN 4773781)",
+   "claim": "The outperformance of vol targeting in equities is mainly a loading on trend following arising from the leverage effect (negative correlation of return direction and vol); the effect is absent for commodity, fixed-income and currency futures.",
+   "numbers": "Directional; implies vol-targeting a book that is ALREADY a trend book adds little that is not already in the signal.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Kaminski, Lo 2014, 'When do stop-loss rules stop losses?', J. Financial Markets 18:234-254 (MIT open-access PDF read)",
+   "claim": "Stopping premium Delta_mu = expected-return change from a stop-loss policy. Random walk: Delta_mu = p_o (r_f - mu) = -p_o pi, ALWAYS negative for any strategy with mu > r_f (Prop. 1, eq. 13a). AR(1): Delta_mu = -(risk premium) + linear term in rho + remainder; mean reversion (rho<0) hurts; momentum (rho>0) can help; sufficient condition rho >= pi/sigma = the strategy's per-period Sharpe (eq. 18). Regime-switching: value only from regime detection accuracy. No transaction costs in the framework.",
+   "numbers": "Empirical (US equities vs long bonds, daily data): short-term/high-frequency stops have negative premia over wide parameter ranges; stops evaluated at monthly-or-longer intervals can be positive: 'in one calibration ... increase the return by 1.5% and decrease the volatility by 5% causing an increase in the Sharpe Ratio by as much as 20%'.",
+   "depth": "full"
+  },
+  {
+   "ref": "Barroso, Santa-Clara 2015, 'Momentum has its moments', JFE 116:111-120; Daniel, Moskowitz 2016, 'Momentum crashes', JFE 122:221-247",
+   "claim": "Scaling equity momentum to constant vol (BSC) or by forecast mean/variance (DM) nearly eliminates momentum crashes and roughly doubles Sharpe. Mechanism is momentum-specific: crashes occur at high vol after bear markets (a strong Cov(S_t, sigma_t) < 0), i.e. the condition vol targeting needs.",
+   "numbers": "BSC: Sharpe 0.53 -> 0.97. DM: dynamic strategy roughly doubles Sharpe over static.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Yang 2025, 'Cryptocurrency market risk-managed momentum strategies', Finance Research Letters (S1544612325011377)",
+   "claim": "Risk-managed (vol-scaled) cross-sectional crypto momentum enhances returns rather than mitigating losses; crypto lacks extended momentum crashes; claimed robust to transaction costs, short-sale constraints, horizons; momentum is a large-cap phenomenon.",
+   "numbers": "Weekly return 3.18% -> 3.47%; annualized Sharpe 1.12 -> 1.42. Sample period, post-2022 hold-out and cost level NOT verified (abstract blocked); weekly cross-sectional momentum in crypto at these turnovers is exactly what 808/811/897 measured cost-bound on Kraken.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "'Cryptocurrency momentum has (not) its moments', Financial Markets and Portfolio Management 2025 (10.1007/s11408-025-00474-9)",
+   "claim": "Crypto momentum IS subject to severe crashes (contra Yang 2025); volatility management mitigates them and raises performance.",
+   "numbers": "None captured (abstract blocked; Semantic Scholar rate-limited). The two 2025 crypto papers disagree on whether crashes exist \u2014 a sign the post-2022 record is thin.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "'Stop-loss rules and momentum payoffs in cryptocurrencies', J. Behavioral and Experimental Finance 2023 (S2214635023000473)",
+   "claim": "147 coins, Jan 2015 - Jun 2022: stop-loss momentum has higher returns, Sharpe and alphas than benchmark momentum in all market states; framed via prospect theory/disposition effect.",
+   "numbers": "No numeric tables captured; transaction-cost treatment and 2022-only performance not verified. Sample ends mid-2022, before the FTX leg.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Kristoufek 2025, 'Beyond GARCH in cryptocurrency volatility modelling: superiority of range-based estimators', Applied Economics Letters 32(21):3113-3120",
+   "claim": "BTC, ETH, BNB, XRP, DOGE, 2019-07-01 to 2022-09-30, Binance 5-min realized volatility as benchmark: the Garman-Klass daily-range estimator outperforms 6 GARCH-type specifications x 4 distributions in all settings; range-based estimators should be preferred as vol proxies when HF data are unavailable.",
+   "numbers": "Ranking only (loss values not captured). Supports using GK/RS-type range vol for crypto; note the sample includes the 2022 bear.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Yang, Zhang 2000, 'Drift-Independent Volatility Estimation Based on High, Low, Open, and Close Prices', J. Business 73(3):477-491",
+   "claim": "sigma^2_YZ = sigma^2_overnight + k sigma^2_open-close + (1-k) sigma^2_Rogers-Satchell; drift-independent; efficiency gain over close-to-close depends on the overnight share. For a 24/7 venue open_t ~= close_{t-1}, the overnight term vanishes and YZ degenerates to a GK/RS-type estimator.",
+   "numbers": "Efficiency ~8x close-to-close at the same window in common summaries (theoretical maximum ~14x as the overnight share -> 0); i.e. a 30-day range estimate has roughly the sampling error of a ~200-day close-to-close estimate.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Baker, McHale 2013, 'Optimal Betting Under Parameter Uncertainty: Improving the Kelly Criterion', Decision Analysis 10(3):189-199; MacLean, Thorp, Ziemba (2010/2011) fractional Kelly",
+   "claim": "Replacing true parameters by estimates makes full Kelly overbet out of sample; the optimal fraction shrinks with parameter uncertainty (their shrinkage factor); fractional Kelly trades growth for drawdown. Kelly determines LEVERAGE and growth, not Sharpe.",
+   "numbers": "For the PIT book: f* = S/sigma = 0.56/0.67 = 0.84; half-Kelly 0.42; uncertainty-shrunk ~0.59 (SE_S ~ 0.36 over 7.7 yr). Growth gain of moving from f=1 to f* is +0.6%/yr; Sharpe unchanged.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Dachraoui 2018, 'On the Optimality of Target Volatility Strategies', J. Portfolio Mgmt 44(5):58-67",
+   "claim": "Gives necessary and sufficient conditions for an asset to be a viable target-vol candidate; a negative vol-return relation is NOT necessary (viability holds even under independence, i.e. via the sqrt(1+CV^2) variance-reduction channel); a dynamic TVS can beat the static max-Sharpe portfolio.",
+   "numbers": "Conditions only; no magnitudes captured.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Moskowitz, Ooi, Pedersen 2012, 'Time Series Momentum', JFE 104:228-250",
+   "claim": "58 futures/forwards, 12-month sign signal, each position sized to 40% ex-ante annualized vol (per-asset, EWMA); diversified TSMOM performs best in extreme markets. The 40% is a per-asset risk-parity scaler in a universe with 5-30% vols (leverage up to ~8x), not a portfolio-level cap; the repo's spot book cannot lever, so only the de-lever side of 'target 40%' is legal.",
+   "numbers": "40% per-asset ex-ante vol target (taken as given from the brief).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Grayscale Research 2024, 'The Trend is Your Friend: Managing Bitcoin's Volatility with Momentum Signals'",
+   "claim": "A BTC-or-cash momentum switch is presented as a vol-management tool; it is a trend SIGNAL on one survivor asset, not a sizing rule.",
+   "numbers": "2012-2023: 126% annualized return, Sharpe 1.9 (vs B&H). 2022 breakdown and cost assumptions not verified (page blocked).",
+   "depth": "search-snippet"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "trader/config.py:91-96",
+   "relation": "StrategyConfig.sizing is equal|invvol only; docstring records 819's lever attribution: inverse-vol -0.06, lookback ensemble -0.16. No vol-target, Kelly or scale field exists anywhere in trader/ (grep: zero hits in trader/, runs/819_single_asset/portfolio.py, powered.py)."
+  },
+  {
+   "receipt": "runs/819_single_asset/PORTFOLIO_RESULT.md:36-43, 45-51",
+   "relation": "Per-ASSET inverse-vol (the only sizing tactic ever measured): turnover 0.155 -> 0.181 (broad) and 0.162 -> 0.187 (20 majors); BEAR22 net@8 +1.36 -> +1.13 and +1.20 -> +0.78; FULL net@8 -0.06. Consistent with Kim-Tse-Wald's mechanism failing when vol dispersion is low and cost is 21 bp. Portfolio-level (own-vol) targeting was never in the grid \u2014 the gap named in the brief is real."
+  },
+  {
+   "receipt": "trader/strategy.py:33-57, 123-134",
+   "relation": "rolling_vol is close-to-close only; weights() consumes it for invvol. A range-based sigma would slot in here for per-asset use, or in a new book-level scaler."
+  },
+  {
+   "receipt": "trader/config.py:108-130; trader/risk.py:34-59, 79-116",
+   "relation": "The DD throttle (shadow-scale: dd <= -20% -> 0.5, <= -35% -> 0.25; legacy realized_flat is a proven dead state), 5% per-asset cap and 0.2% rebalance band are the ONLY exposure-path controls implemented; default OFF for 819 parity. This is the CPPI/stop member of my family, already coded but never scored for Sharpe."
+  },
+  {
+   "receipt": "tasks/TASK_820_SHIP_TREND_CTA.md:111-115",
+   "relation": "Gate 2 (unseen 2025-12-13 -> 2026-07-04): overlay OFF net@8 -1.31 CI[-4.45,+1.29], maxDD -37.8%; overlay ON maxDD -32.2%, turnover halved (mostly the band + cap); the overlay-ON Sharpe was NOT recorded \u2014 a cheap missing number."
+  },
+  {
+   "receipt": "trader/backtest.py:374-450",
+   "relation": "run_overlay_backtest is a sequential per-decision loop with a scalar scale applied at risk.py:109-111 \u2014 the natural slot for s_t = min(1, sigma*/sigma_hat_t); no new engine is needed."
+  },
+  {
+   "receipt": "trader/data.py:145-187, 190-226, 237-239, 266-316",
+   "relation": "aggregate_asset_daily yields true UTC daily O/H/L/C/V and ohlcv_daily stores open/high/low, but build_daily_panel_from_db and read_ohlcv_daily both SELECT/keep close only. Range-based sigma needs a ~40-line OHLC panel reader; nothing else in the pipeline sees a high or low (memo A-2 confirmed)."
+  },
+  {
+   "receipt": "trader/backtest.py:285-288",
+   "relation": "bear_positive requires BEAR22 net > 0 AND net > B&H; sizing can only change the magnitude of a long-short book's BEAR22 read, and a vol cap would shrink it (2022 = highest-vol regime)."
+  },
+  {
+   "receipt": "experiments/LEDGER.md row 898/trend-decay",
+   "relation": "Base stream by year (net@8): 2021 +1.782, 2022 +1.074, 2023 +1.068, 2024 +0.041, 2025 +0.663, 2026H1 -1.659; BEAR22 baseline +1.095 vs long-flat -2.471; lev-matched long-only negative in every regime. Sizing multiplies these; it cannot change their sign."
+  },
+  {
+   "receipt": "runs/819_single_asset/POWERED_RESULT.md:50-57, 62-64, 81-87",
+   "relation": "PIT book: FULL net@21 +0.56 CI[-0.13,+1.23], BEAR18 +0.46, BEAR22 +1.06, maxDD -57.3% @21 bp, cum log 2.87 over 7.7 yr -> book vol ~0.67; turnover ~55.5x/yr -> 11.65%/yr @21 bp. These fix the Kelly and vol-target arithmetic above."
+  },
+  {
+   "receipt": "runs/819_single_asset/PORTFOLIO_RESULT.md:72-78, 99",
+   "relation": "Survivor book: net@21 +0.97, x15.48, maxDD -40.1%, cum 2.74/4.6 yr -> vol ~0.61; the whole portfolio sweep ran in 23.7 s CPU \u2014 the kill experiment is minutes, not GPU-days."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:129-136",
+   "relation": "Memo's A-2 (range vol never used; Kelly/vol-targeting zero hits) verified by grep: the only 'stop-loss' code in tree is tasks/_old/TASK_048 (MCTS-era per-trade stops) and lore design docs; docs/findings/modeling_surface_exhausted.md:3,57 records 813's ATR/breakout minute-scale rules as dissolved."
+  },
+  {
+   "receipt": "tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md:10-20",
+   "relation": "915 already plans Yang-Zhang sigma_hat as the target standardiser; the OHLC panel reader and YZ/GK estimator are shared infrastructure \u2014 the kill experiment here should reuse them, not duplicate them."
+  },
+  {
+   "receipt": "trader/config.py:72-79",
+   "relation": "REGIMES: BEAR22 = 2021-11-10 -> 2022-12-31; BULL24 / CHOP25 windows used in the by-year math."
+  }
+ ],
+ "controllability": "Maximal among all families: each tactic is one or two scalars with a closed-form action. Vol targeting: sigma* (plus estimator window/type) -> s_t = min(1, sigma*/sigma_hat_t), a single daily number in [0,1] that is logged and reconstructible from public OHLC; action space = the base book's positions times one scalar; turnover increment bounded by |Delta s_t| ~ 2-3%/day; behaviour is monotone and explainable ('we are at 62% because 30-day book vol is 65% against a 40% target'). Kelly: one fraction; no path dependence. DD throttle: two thresholds and two scales (already in RiskConfig), state = one high-water mark. Stops: one threshold per asset, but they multiply the action space (an exit event per asset per day) and the turnover, so they are the least controllable member. Auditability is also the operator's 'hold on policy' in the literal sense: a vol cap enforces gross <= 1 and a soft vol ceiling, so the book cannot silently become a leveraged bet, and a DD throttle bounds the realized drawdown path (820 gate 2: -37.8% -> -32.2%). What is lost: (1) expected return proportional to average exposure \u2014 at sigma* = 40% on a ~65%-vol book mean exposure ~0.6, so gross return falls ~35-40% while Sharpe is at best +0.03..+0.12 higher; (2) crisis alpha \u2014 the trend book earned its best Sharpe in its highest-vol regime (BEAR22), and a cap de-levers exactly there, so the BEAR22 margin shrinks; (3) 2021-type upside; (4) with stops, ~+7%/yr of extra cost at 21 bp for a premium that requires daily rho >= 0.03 on 64 assets. The ceiling is structural: a positive scale cannot change the sign of the base's expected return, and the Sharpe multiplier is bounded by sqrt(1+CV_sigma^2) ~ 1.06-1.12 under the most favourable assumption (constant conditional Sharpe, perfect vol forecast, no overlay cost, leverage allowed); under the spot cap and 21 bp roughly half of that survives. On the current base that ceiling is +0.56 -> at most ~+0.6-0.63 PIT, and 2024-2026H1 stays ~0/negative.",
+ "compute": "CPU only, zero GPU. The 819 portfolio grid (8 cells x 5 regimes x 2000-draw bootstrap, 39 assets x 4.6 yr) ran in 23.7 s (PORTFOLIO_RESULT.md:99); the PIT panel (273 assets x 2800 days) is ~10x larger. Kill experiment: 4 arms x by-year + FULL scoring + paired block bootstrap (2000 draws) ~ 5-15 CPU-minutes per arm on the workstation or gpu-server CPU; the OHLC panel read from ohlcv_daily is a one-off SELECT of ~273 x 2800 rows (seconds). Implementation ~1 implementer-day: OHLC panel reader (~40 lines next to trader/data.py:266), YZ/GK/RS estimator (~30 lines), book-level scaler in run_overlay_backtest or a sibling (~30 lines), paired-bootstrap helper (~20 lines), tests. No 64 GB GPU is relevant to this family at any point; if the operator wants the GPUs used, this is not the row for them.",
+ "kill_experiment": {
+  "design": "Pre-registered SPEC (sha256 recorded before the first run) in experiments/9xx_sizing_overlay/, CPU, on the PIT dead-coin-inclusive universe from trader/data.py::load_db_backtest_panel(include_dead=True) over the ohlcv_daily table (true UTC daily bars, ends 2026-07-06 pre-899; epoch caveat stamped), 2018-10 -> 2026-06, frozen 819 StrategyConfig (30d sign, equal, H=1, gross<=1). Arms, all with IDENTICAL positions before scaling: A0 baseline (parity target: FULL net@8 +0.67 / net@21 +0.56, BEAR22 +1.16/+1.06, POWERED_RESULT.md:57,62-64). A1 VT-CC: s_t = min(1, sigma*/sigma_hat_t), sigma_hat_t = 30-day close-to-close sd of the book's OWN causal daily gross log return sum_i pos[t-1,i] r[t,i] (own-vol, du Plessis-Hallerbach), sigma* = 40% (MOP convention; ~0.6x the book's ~65% realized vol so the cap binds often), applied to pos[t] before scoring; scale changes count in turnover. A2 VT-YZ: same sigma*, sigma_hat_t = sqrt(w' D R D w) with D = diag of per-asset 30-day Yang-Zhang sigma from true daily O/H/L/C (overnight term retained but expected ~0 on a 24/7 venue; Rogers-Satchell/GK reported as the control estimator) and R = 60-day close-to-close correlation of present assets. A3 DD throttle: the existing RiskConfig shadow_scale (-20% -> 0.5, -35% -> 0.25) with per_asset_cap=1.0 and rebalance_band=0 to isolate the throttle. Optional A4 (reported, not gated): A1 with sigma* = the book's trailing 1-yr median vol, to test sensitivity to the one parameter. Scoring: unmodified trader.backtest.cell_metrics (regimes, seed 819, n_boot 2000, tiers 0/3/8/21) and window_metrics per calendar year 2019..2025 and 2026H1 (the 898 window family) for net@21, gross, turnover, mean exposure, maxDD; plus a PAIRED circular block bootstrap (block 5, 2000 draws, same block indices for both arms) of Delta net@21 Sharpe for each arm minus A0 and for A2 minus A1. Exposure is printed beside every Sharpe (898's rule).",
+  "instrument": "trader/ engine: strategy.positions_from_config -> new scaler (book-level, causal, one scalar per day) -> backtest.regime_series / cell_metrics / window_metrics unmodified; new ~40-line OHLC panel reader beside trader/data.py:266 (read_ohlcv_daily currently SELECTs close only) shared with TASK_915's YZ standardiser; new range-vol module (YZ, GK, RS, Parkinson, close-to-close); paired-bootstrap helper. python -m trader selftest must still pass 12/12 and the A0 arm must reproduce gate-1b parity (net@8 within +-0.05 of +0.72 per TASK_820:107). Determinism: two runs byte-identical.",
+  "pass_fail": "Primary (tactic adds): PASS iff Delta net@21 (A1 or A2 minus A0) on FULL PIT >= +0.15 with paired-bootstrap 95% CI lower bound > 0, AND Delta >= 0 in at least 5 of the 8 calendar windows 2019..2026H1, AND bear_positive(BEAR22) still holds, AND turnover increase <= +0.03/day. FAIL otherwise (pre-registered expectation: FAIL, sign of Delta <= 0 because BEAR22 is both the highest-vol and highest-Sharpe regime). Estimator question: PASS iff Delta (A2 minus A1) >= +0.05 with paired CI lo > 0 OR turnover(A2) <= 0.9 x turnover(A1) at |Delta Sharpe| < 0.05 (the Baltas-Kosowski pattern); otherwise 'range vol is not a sizing lever here'. Goalpost read (the one that matters): any arm's 2024-01 -> 2026-06 net@21 >= +0.97 with CI lo > 0 and 2026H1 > 0 -> escalate to the gate ladder; pre-registered expectation: no arm exceeds +0.3 on that window. Kill consequence, pre-committed: if the primary FAILs and no arm's 2024-2026H1 read is positive, the family is closed for the daily trend base \u2014 no sigma* sweep, no second estimator, no stop-loss grid (each would be the knob-turn pathway.md:30-31 forbids); the only re-entry is as an overlay on a base that TASK_915 has shown to carry IC. Kill date: 10 days from SPEC commit.",
+  "cost": "~1 implementer-day of code + tests; runtime minutes of CPU per arm (the 819 grid ran in 23.7 s on a 10x smaller panel); zero GPU; no server contention beyond one safe_run-wrapped CPU job. Cheapest possible closure of a real gap, and it shares 100% of its OHLC/YZ infrastructure with TASK_915."
+ },
+ "honest_odds": "P(any tactic in this family clears the pathway goalposts \u2014 unseen 2024-2026H1 net@21 >= +0.97, CI lo > 0, positions held, BEAR-positive) ~ 1-2%. Reasoning: (a) the goalpost is a Sharpe on a window where the base stream's mean is ~0 or negative (898: +0.041 / +0.663 / -1.659 net@8), and a positive causal scale preserves that sign; (b) the maximal Sharpe multiplier from vol targeting is sqrt(1+CV^2) ~ 1.06-1.12 under constant conditional Sharpe, perfect vol forecast and leverage \u2014 worth +0.03..+0.12 on the historical book, roughly halved by the spot no-leverage cap and offset by -0.025..-0.04 of overlay turnover cost; (c) the book's own record puts its highest Sharpe in its highest-vol regime, so the covariance term points the other way (Hood-Raughtigan: vol targeting IS a trend loading, already in the signal); (d) Cederburg et al. find real-time vol management wins 53/103 vs 50/103 with only 8 significant, and equity momentum is the one place it reliably works \u2014 via crashes the crypto trend book has not shown; (e) Kelly is Sharpe-neutral by construction; stops must beat +7%/yr of extra cost at 21 bp before the Kaminski-Lo premium can show. P(primary kill-experiment PASS, Delta FULL PIT >= +0.15 with CI lo > 0) ~ 10%. P(Yang-Zhang beats close-to-close on Sharpe at the pre-registered band) ~ 10-15%; P(it cuts overlay turnover >= 10% at equal Sharpe) ~ 40% (the estimator is 5-8x more efficient, so the scale path is smoother). P(the DD throttle raises the 2024-26 read above zero) ~ 0: 0.25-0.5 x negative is negative. The experiment is nonetheless worth its ~1 day because it (i) closes the one sizing gap the record leaves open with a paired, pre-registered read, (ii) builds the OHLC reader and range-vol module TASK_915 needs anyway, and (iii) gives the operator the 'hold on policy' overlay (vol cap + DD throttle) that any future book will wear regardless of where its edge comes from.",
+ "open_doubts": [
+  "The sqrt(1+CV^2) bound assumes a perfect vol forecast; with a 30-day realized estimate the realized gain is smaller and the sign can flip through estimation noise \u2014 Cederburg et al.'s structural-instability finding is exactly this. I did not measure CV_sigma of the book (needs the run).",
+  "I could not re-verify Harvey et al.'s per-asset-class Sharpe exhibit (SSRN/JPM/AlphaArchitect blocked); the +0.1-0.2 magnitude in the brief is taken as consistent with the abstract, not confirmed.",
+  "Both 2025 crypto vol-managed-momentum papers were read at snippet level; their sample ends, cost tiers and post-2022 hold-outs are unverified, and they disagree on whether crypto momentum crashes exist \u2014 the post-2022 record for this family in crypto is thin and I found no paper that tests portfolio-level vol targeting of a crypto TSMOM book after 2022 at 21 bp.",
+  "The DD throttle's Sharpe effect on the trend book has never been recorded (TASK_820 gate 2 reports only maxDD and turnover with overlay ON); my 'cannot make 2024-26 positive' claim is arithmetic on the sign, not a measurement of the magnitude.",
+  "Yang-Zhang's overnight term is ill-defined on a 24/7 venue; whether Kraken daily 'open' from kraken_rest equals the previous UTC close to within noise should be checked in the reader before trusting YZ over GK/RS.",
+  "Stop-loss premia at monthly frequency (Kaminski-Lo's positive cases) were not costed against the 21 bp tier for a 64-asset book beyond a back-of-envelope; a strategy-level monthly stop with p_o ~ 10%/month is cheap and could be added as a fifth arm if the operator wants the stop question closed in the same run.",
+  "The rebalancing-premium term (constant-mix excess growth ~0.27/yr at crypto vols) belongs to another family; I only used it to show it cannot rescue BEAR22. If that family is pursued, its cost arithmetic (~3%/day turnover) should be measured on the same PIT panel.",
+  "Everything here is scoped to the daily trend base; if TASK_915 finds IC, the vol-target and DD overlays should be re-run on the GP book, where the conditional-Sharpe/vol covariance may differ in sign from the trend book's."
+ ]
+}

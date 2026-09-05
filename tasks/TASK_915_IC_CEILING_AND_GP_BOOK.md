@@ -13,7 +13,9 @@ A pre-registered ceiling sweep: does the PIT Kraken daily OHLC panel carry a mar
 vol-standardised (Yang–Zhang) forward-return signal with per-date cross-sectional IC ≥ ~0.02–0.03
 on 2024-01→2026-06, at h ∈ {1,3,7,21}d, from any causal feature family (F1 trend/reversal,
 F2 range/vol — the OHLC-native content never used, F3 cross-sectional, F4 log-signatures)?
-Ridge + GBM only (nonlinear ≤ linear is measured on these surfaces). IC → net-Sharpe bound via
+Ridge + GBM only (811 measured nonlinear ≤ linear on the MINUTE surface; the daily 819 CAPACITY
+point estimates are inconclusive with nonlinear numerically ABOVE linear — corrected 2026-09-05
+per the loops panel; GBM stays in, neural nets excluded as scope, not evidence). IC → net-Sharpe bound via
 the fundamental law with MEASURED breadth (N_eff from the residual correlation spectrum) and
 Gârleanu–Pedersen turnover under the 21 bp tier. On PASS: the GP closed-form book, graded on
 BOTH `trader/` and `eval_vector` (the 882 two-instrument agreement discipline), then the
@@ -23,6 +25,10 @@ existing gate ladder.
 
 - **TASK_899's staged daily backfill INGESTED first** (the seam matters for 2026H1 cells) —
   planner-owned; the staged CSVs are ready.
+- **TASK_916's restated cost stack landed first** (2026-09-05 amendment): G-B/G-C convert IC
+  to net Sharpe through the 21 bp tier — the honest stack is tier + BORROW (margin rollover
+  is real and never charged; the benchmark itself is short in BEAR22). Grade at the 916-restated
+  bar; do not hand-tune.
 - True UTC daily bars from `trader/data.py` aggregation (NOT the minute stride); PIT universe
   via the 819 POWERED builder; epoch named + pinned per `LEDGER.md:28-41`.
 
@@ -53,3 +59,22 @@ existing gate ladder.
 
 The minute surface (897/907 own it; 907 completes for D65 closure and does NOT gate this row).
 Re-opening the 828 lane. Neural nets in the ceiling sweep. Any book build before G-A.
+
+## Amendments folded 2026-09-05 (before SPEC commit — legal pre-registration edits; from the
+loops panel `lore/fable_self_learning_loops_panel_2026-09-05.md` and the dead-session harvest)
+
+- **Null family**: replace the E-2 four-draw floor with a **block-Rademacher / circular-shift
+  placebo family** (dependence-preserving, zero fitting variance). Reflection/time-reversal
+  surrogates are WRONG for sign-flip targets (PnL-invariant) — circular shift + per-date
+  permutation.
+- **Two SDs, both stated**: per-date cross-sectional IC null SD ≈ 1/√(N−1) ≈ 0.06–0.07 over
+  live assets; N_eff governs the fundamental-law breadth term only. Do not divide by √N_eff
+  when testing IC ≠ 0.
+- **Monthly-IC autocorrelation τ** with an overlap-aware null, one added statistic (the
+  continual-learning survivor; G-A cells also report the τ_IC ≥ 5d gate read).
+- **SR0(N) multiplicity line** beside every best cell (oracle-null selection inflation
+  ≈ +0.5–0.75 at this N on this window).
+- **MC-attenuation note**: any generator-vs-ridge IC comparison needs K ≥ ~1/(0.1·IC²) ≈ 25k
+  paths or the closed-form mean (a K=512 rollout halves an IC of 0.02).
+- **DRO position gate** (Wasserstein μ̂ᵀφ − √δ‖φ‖ − cost > 0) pre-named as the GP book's
+  position gate IF G-A passes (the adversarial-loop survivor).

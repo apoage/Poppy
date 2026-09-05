@@ -1,0 +1,125 @@
+{
+ "design": "Two-player zero-sum loop. Player A = the trading policy pi (per-asset daily weight vector; the \"controller\"). Player B = a market generator G that emits paths inside a plausibility set U and is rewarded by pi's loss: (i) RARL/Spooner-style, where G controls bounded drift/vol/correlation knobs on real or Bella paths step by step; (ii) Wasserstein-DRO, where U = {P : W_2(P, P_n) <= delta} around the empirical panel; (iii) PAIRED-style regret (TASK_110 as written: G = Bella flow-matching conditioned on regime, reward = hindsight-oracle regret); (iv) domain randomisation over Bella regimes (the degenerate one-player case). pi is trained on the min over U (or its CVaR); the learned G is then offered to Monte Carlo search as the leaf/rollout distribution (\"patterns that serve Monte Carlo\"). Objective in all variants: max_pi min_{P in U} E_P[U(net PnL at fee16/slip5)].",
+ "what_the_loop_learns": "Two objects. (1) G_adv = argmin_{P in U} E_P[utility(pi)] \u2014 a distribution over paths concentrated on pi's WORST cases. Its information is about the POLICY (where pi is fragile), not about the market: a generator fitted to the same OHLC panel cannot hold more conditional-mean information than a forecaster fitted to that panel; its drift channel is a lower-sample-efficiency forecaster. (2) The robust pi* = the minimax fixed point. Closed form for the Wasserstein ball (Blanchet-Chen-Zhou, Prop. 1, read in full): min_{P in U_delta} E_P[phi^T R] = mu_hat^T phi - sqrt(delta)*||phi||_p \u2014 the adversary shaves sqrt(delta)*||phi|| off the drift IN THE DIRECTION OF THE POSITION, and Theorem 1 turns the whole problem into variance minimisation plus a norm penalty. By Holder, mu_hat^T phi <= ||mu_hat||_q ||phi||_p, so the robust worst-case mean of ANY book is <= 0 whenever sqrt(delta) >= ||mu_hat||_q; the robust book is nonzero only in directions where the estimated drift exceeds the radius PLUS costs \u2014 i.e. exactly a t-statistic gate on a forecast. Paper's own words (\u00a73.1): \"If delta is too large ... the resulting optimal portfolios will tend to be just equal allocations.\" RARL analogue, Spooner-Savani 2020 Thm 1 (full read): the drift adversary plays b* = b_low when inventory H > 0 and b_high when H < 0, so the equilibrium market maker holds ~zero inventory (terminal inventory -0.05 +/- 1.94 under the STRATEGIC adversary vs 0.56 +/- 7.55 without) and lives off spread capture. A daily directional trader has no spread income; its \"zero inventory\" is FLAT. So the loop learns, beyond a direct estimator: nothing about expected return; a stress distribution over the policy's failure paths; and a shrinkage rule that is algebraically a confidence-bound filter on whatever forecast the ambiguity set failed to erase. In the repo's own terms it FORMALISES 887's attractor rather than escaping it.",
+ "worth_if_ic_is_zero": "If daily conditional-mean IC ~ 0, mu_hat is sampling noise, any data-driven radius (delta = O(1/n), RWPI) covers it, and pi* is flat for a cost-charged long-short book or 1/N for a long-only constraint \u2014 both already measured: HOLD/flat is 887 (A 99.0% hold, return -2.86%; forcing action loses monotonically, -9.1% / -13.8%, at fee 0 \u2014 LEDGER row 887 line 97) and 812 (100% HOLD OOS, `lore/notes_2026-06-26.md:104-117`); the 1/N constant mix is measured PIT gross -0.40 FULL / -2.54 BEAR22 (`lore/fable_tactics_panel_2026-09-04.md:80`, `trader/backtest.py:225-227`). Alpha value of the loop = 0. Residual value = (a) a machine-checkable certificate \"no pi in class Pi has positive worst-case EV over U\" \u2014 the record already has this empirically six ways; (b) a regime-stress generator for R4 (`docs/pathway.md:84-85`); (c) a risk-sizing/shrinkage rule. If U is made SMALL enough to leave a non-flat pi*, the loop degenerates to training on generator samples = the 758 data-augmentation arm, measured paired -16.54pp then re-characterised NULL +0.13pp (`docs/findings/encoder_bella_class_closed.md:9-12, :22`).",
+ "measured_failure_mode_and_escape": "Must escape 887/collapse-confirm: the policy abstains because its own actions have negative EV, adaptively, at zero cost (LEDGER line 97; pre-figured by 812 on the scalar stack, `docs/pathfinder_audit_2026-08-19.md:50`). Mechanically, minimax makes that abstention a THEOREM instead of an empirical fixed point: any plausibility set containing a zero-drift or drift-reflected measure gives every position worst-case EV <= -cost(turnover), minimised at flat. The only mechanical escape is to constrain U so that for some phi, min_{P in U} E_P[phi^T R] > cost(phi) \u2014 i.e. to assert a directional prior with a confidence radius. That constraint IS a forecast with a t-stat, which is the memo's \u00a74 IC instrument (G-A: IC >= 0.02, NW t >= 3, `lore/fable_direction_memo_2026-09-03.md:306-308`). There is no escape inside the loop; the escape is the instrument outside it. Second measured mode the PAIRED variant must escape and cannot: regret against a hindsight oracle saturates. `diff_teacher/adversarial_training.py:355` computes regret = (optimal - actual)/|optimal| with `optimal_solver.py:2-4` a perfect-foresight oracle; the real-panel oracle ceiling is +29.7 net@21 / per-asset gross alpha +75.5 (LEDGER 830/E0-REAL line 46), so against a ~HOLD policy regret \u2261 1 on every path \u2014 the generator's objective is flat in path structure and only the realism/diversity terms carry signal (and the trainer never implemented a gradient step anyway: `adversarial_training.py:410-411` \"track metrics only ... TODO: Implement proper gradient-based update\"). PAIRED's own finding (Dennis 2020): a minimax adversary produces unsolvable environments; regret needs a competent antagonist, not an oracle. Third: 892's anti-edge lives in maintenance re-trims (LEDGER line 102) \u2014 a robust loop WOULD suppress re-trims, but that is cost reduction (tactics panel row 2), not expectation.",
+ "profit_source": "none",
+ "bear_positive_without_forecast": {
+  "answer": "no",
+  "argument": "BEAR-positive requires E[PnL | bear] > 0. Under a plausibility set symmetric in drift (or merely containing a zero-drift member), the robust book is flat, whose bear PnL is 0 minus nothing \u2014 not positive. Under a long-only constraint the robust limit is equal allocation (Blanchet \u00a73.1), which carries beta and is measured negative in every bear (EW 1/N PIT gross -2.54 BEAR22; the only bear-positive behaviour in the record is the trend book's SHORT leg, BEAR22 +1.095 vs long-flat -2.471, LEDGER 898 line 103 \u2014 a forecast). Robustness against a drift adversary strictly REMOVES directional exposure; it cannot manufacture the short-in-bear tilt. The Spooner-Savani result is the clean demonstration: Sharpe 5.57 -> 9.78 came from terminal-wealth std 12.0 -> 6.7 while the MEAN FELL 67.0 -> 65.1 \u2014 robustness bought variance, not expectation, and their agent had spread income to keep the mean positive. A daily spot book has no such exogenous income. Conditional only in the trivial sense: if U excludes bear-adverse drift, U encodes a bear forecast."
+ },
+ "literature": [
+  {
+   "ref": "Spooner & Savani 2020, 'Robust Market Making via Adversarial Reinforcement Learning', IJCAI-20 pp. 4590-4596 (arXiv 2003.01820)",
+   "claim": "Zero-sum game: MM vs adversary controlling drift b in [-5,5], arrival A in [105,175], decay k in [1.125,1.875] of an Avellaneda-Stoikov mid-price Z_{n+1}=Z_n+b dt+sigma W. Single-stage NE (Thm 1): adversary sets drift AGAINST inventory (b_low if H>0, b_high if H<0); MM spread delta = 1/k +/- b. Robust MM converges to ~zero inventory and earns from spread; robustness = variance reduction. Authors note inventory penalties yield 'strategies that try to avoid trading at all, a frequent problem in this domain'.",
+   "numbers": "RN MM trained vs FIXED: terminal wealth 67.0+/-12.0, Sharpe 5.57, terminal inventory 0.56+/-7.55. Trained vs STRATEGIC (b,A,k): 65.1+/-6.7, Sharpe 9.78, inventory -0.05+/-1.94; drift-only adversary 9.51 (+0.27 from full). FIXED-trained MMs tested under RANDOM adversary: +98.1% variance; RANDOM-trained +86.0%. Evaluated over 1e5 episodes, no transaction costs beyond spread model.",
+   "depth": "full"
+  },
+  {
+   "ref": "Blanchet, Chen & Zhou 2022 (arXiv 1802.04885 v1, 2018), 'Distributionally Robust Mean-Variance Portfolio Selection with Wasserstein Distances', Management Science 68(9)",
+   "claim": "Prop. 1: min_{P: W(P,P_n)<=delta} E_P[phi^T R] = E_{P_n}[phi^T R] - sqrt(delta)||phi||_p. Thm 1: DRO mean-variance == min_phi (sqrt(phi^T Var_{P_n} phi) + sqrt(delta)||phi||_p)^2 \u2014 robustness is exactly a norm penalty shrinking positions; \u00a73.1: too-large delta -> equal allocations; delta should be O(1/n), chosen by RWPI at a confidence level (95%).",
+   "numbers": "Worst-case drift shave = sqrt(delta)*||phi||_p per unit; robust book nonzero only where mu_hat^T phi > sqrt(delta)||phi||_p (a t-stat gate). v1 read contains no empirical Sharpe table (theory + proofs, 20 pp).",
+   "depth": "full"
+  },
+  {
+   "ref": "Pinto, Davidson, Sukthankar & Gupta 2017, 'Robust Adversarial Reinforcement Learning', ICML 70:2817-2826",
+   "claim": "Minimax zero-sum training against a destabilising adversary applying disturbance forces; improves stability and train/test robustness; outperforms baseline even without adversary on MuJoCo tasks. Key disanalogy: the adversary perturbs dynamics the agent CONTROLS; in a market the price is exogenous and only inventory is controlled.",
+   "numbers": "No numbers extracted (abstract-level); domains InvertedPendulum/HalfCheetah/Swimmer/Hopper/Walker2d/Ant.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Dennis et al. 2020, 'Emergent Complexity and Zero-shot Transfer via Unsupervised Environment Design' (PAIRED), NeurIPS 2020",
+   "claim": "Domain randomisation cannot adapt difficulty; MINIMAX adversarial environment design yields worst-case environments that are often UNSOLVABLE; regret (protagonist vs a trainable antagonist) is the fix. TASK_110 uses a hindsight oracle as the antagonist, which makes regret ~1 everywhere and uninformative.",
+   "numbers": "None extracted; qualitative result on maze zero-shot transfer.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Cont, Cucuringu, Xu & Zhang, 'Tail-GAN: Learning to Simulate Tail Risk Scenarios' (arXiv 2203.01664; Management Science 72(4) 2926-2936)",
+   "claim": "GAN trained via joint elicitability of VaR/ES to reproduce tail-loss distributions of static and dynamic strategies in multi-asset settings; explicitly a RISK-ESTIMATION tool; makes no claim of improving trading returns.",
+   "numbers": "None in abstract; PCA used for scalability to high dimension.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Ni, Szpruch, Wiese, Liao & Xiao 2020, 'Conditional Sig-Wasserstein GANs for Time Series Generation' (arXiv 2006.05421; Math. Finance 2024)",
+   "claim": "Expected signature characterises the path law; Sig-W1 turns the GAN min-max into supervised regression; conditional generation of realistic paths. A FIDELITY tool: it matches the law of the data, hence carries no drift information beyond the data.",
+   "numbers": "None extracted.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "'Bayesian Robust Financial Trading with Adversarial Synthetic Market Data' (arXiv 2601.17008, 2026)",
+   "claim": "Macro-conditioned GAN generator + two-player zero-sum Bayesian Markov game; adversary perturbs macro indicators; claims to beat 9 baselines and do better in COVID-type events.",
+   "numbers": "No transaction costs, no Sharpe, no live/sim-to-real statement in the abstract; net-of-cost comparison to a supervised baseline not reported there.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Iyengar 2005 / Nilim & El Ghaoui 2005 (robust MDPs) and follow-ups (e.g. Curi et al. 2021 'Combining Pessimism with Optimism')",
+   "claim": "Rectangular uncertainty sets make worst-case planning overly conservative; adversary budget too large -> conservative policy, too small -> no robustness; choosing the set is the whole problem.",
+   "numbers": "None extracted.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Coletta et al. 2023, 'Conditional Generators for Limit Order Book Environments: Explainability, Challenges, and Robustness' (arXiv 2306.12806)",
+   "claim": "CGAN LOB simulator's dependence on input features exposed via adversarial attacks; roadmap for realism/robustness; no numbers on agent transfer to real data.",
+   "numbers": "None.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "L\u00fctkebohmert, Schmidt & Sester 2022, 'Robust deep hedging', Quantitative Finance 22(8):1465-1480",
+   "claim": "Hedging under parameter uncertainty (generalised affine processes) via nonlinear expectation; robust hedge outperforms in highly volatile periods \u2014 a variance/hedging-error result, not an alpha result.",
+   "numbers": "None extracted.",
+   "depth": "search-snippet"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "tasks/TASK_110_ADVERSARIAL_MARKET_GENERATOR.md:3 'Status: IN_PROGRESS (Phase 1-4 Complete)'; diff_teacher/adversarial_training.py:355 (regret formula), :410-411 ('track metrics only ... TODO: Implement proper gradient-based update'); diff_teacher/optimal_solver.py:2-4 (hindsight oracle); lore/notes_2026-01-24.md:1307-1333 (2-epoch smoke: regret 0.689 -> 0.719, hold 58.9%); checkpoints/diff_teacher_adversarial = 4 KB (empty)",
+   "relation": "The PAIRED-style loop is scaffolded but has never updated a generator: no gradient step exists, the only run is a 2-epoch metrics smoke, and the regret target is a perfect-foresight oracle (saturates at ~1). Banner status overstates it. Note the TASK_110 id collision with TASK_110_ADAPTIVE_BURN_CONTROLLER (COMPLETED) \u2014 a cash-burn escalator to force trading, the ancestor of 887's 'act more, lose more'."
+  },
+  {
+   "receipt": "tasks/TASK_104_system3_adversarial_market_generator.md:3 'Status: RESEARCH / FUTURE'",
+   "relation": "Two-GPU generator/agent co-evolution design; never built. Its 'zone of proximal development 0-5% alpha' controller presumes the agent CAN earn alpha on generated paths, which is the untested premise."
+  },
+  {
+   "receipt": "tasks/DECISIONS.md:152 (D5: keep Bella, 'resident, not load-bearing'); docs/pathway.md:84-85 ('regime STRESS GENERATOR at this rung \u2014 never a teacher, never load-bearing'); diff_teacher/CLAUDE.md:8,19 (400x64x5 OHLCV windows; conv 302M, 1440 steps in 6 GB); checkpoints/diff_teacher 12 GB",
+   "relation": "Bella exists and is trained; its sanctioned role is already the honest use (R4 stress). Its daily-bar fidelity is unmeasured (trained on minute windows)."
+  },
+  {
+   "receipt": "docs/findings/encoder_bella_class_closed.md:9-12, :22, :29; tasks/TASK_778_BELLA_AS_ROLLOUTS.md:3 (DRAFT); runs/778_bella_rollouts/AUTHORIZATION_2026-05-26.md:3 (BLOCKED on code budget)",
+   "relation": "Bella as supervision/data: NULL 0/3 under the canonical operator (758 augment = the domain-randomisation arm, paired -16.54pp then +0.13pp). Bella as MCTS rollouts (the 'untested ansatz', line 29) is TASK_778, never built; the memo \u00a75 (lore/fable_direction_memo_2026-09-03.md:374-377) sets it aside because a generator has no drift beyond a forecaster and 831x/C shows the search value lives in true 3-day lookahead, which a generator does not have."
+  },
+  {
+   "receipt": "experiments/LEDGER.md line 97 (887/collapse-confirm: A hold 99.0% return -2.86%; D 91.2% -13.84%; E -9.11%; fee 0); line 98 (885: sims-invariant, distillation loop); lore/notes_2026-06-26.md:104-117 (812: 100% HOLD OOS)",
+   "relation": "The policy has already reached the minimax fixed point empirically; the loop would re-derive it as a theorem. 'Robust' HOLD is measured twice on two stacks."
+  },
+  {
+   "receipt": "experiments/LEDGER.md line 46 (830/E0-REAL: oracle ceiling +29.698 net@21, per-asset gross alpha +75.5); line 47 & 831x/B (perfect-model search +6..+10 across 4 regime windows)",
+   "relation": "Oracle regret denominator saturates; the 'robust across regimes' number in the record belongs to a TRUE-env 3-day lookahead, not to any generator or robustness mechanism."
+  },
+  {
+   "receipt": "experiments/LEDGER.md line 102 (892: anti-edge in maintenance re-trims, entries/exits null); lore/fable_tactics_panel_2026-09-04.md:34,36,80,103-110",
+   "relation": "What a robust loop would actually fix (re-trim churn, sizing under model uncertainty) is already the tactics panel's rows 2 and 4 \u2014 cost-reduction and re-timing, odds 0-2% / 1-2% alone; the honest DRO sizing rule folds into row 4."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:156-172, :306-308 (IC doubt; G-A gate); trader/backtest.py:157, :231; trader/data.py:192",
+   "relation": "The only way U can be constrained to leave a non-flat robust book is a forecast confidence bound = the memo's G-A. The kill experiment below reuses the unmodified scorer, block bootstrap and PIT builder already in trader/."
+  }
+ ],
+ "honest_use": "Bounded roles, all downstream of a forecast that must be found first: (1) R4 regime-stress gate (D5 as written): grade any candidate book (e.g. the GP book if G-C passes) on Bella regime-conditioned paths plus bootstrap/time-reversal/reflection surrogates; report worst-decile net@21 and max drawdown; pre-registered floor; a GATE, contributes +0 Sharpe. (2) Sizing under model uncertainty in closed form: given a forecast with measured IC and its SE, apply the Wasserstein-DRO shrinkage \u2014 position scaled so that mu_hat^T phi - sqrt(delta)||phi||_p - cost > 0 with delta from RWPI at 95% \u2014 i.e. trade only where the forecast's t-stat clears; drops into the G\u00e2rleanu-Pedersen book as an extra quadratic penalty; CPU, no loop, no GPU. (3) Cheap adversary as the null family for the IC instrument itself: block-bootstrap, per-block time-reversal and residual-reflection surrogates of the PIT panel give the 'no-edge' distribution any G-A cell must beat \u2014 replaces the 819 CAPACITY 'max of four shuffles' floor (memo E-2). (4) Tail-GAN-style scenario generation for paper/live risk limits on the gate ladder. Not a use: alpha discovery, curriculum for policy training, replacing the IC measurement.",
+ "compute": "Kill experiment: CPU only, minutes to ~1 hour (8 tactics x ~600 surrogate panels x trader.backtest.cell_metrics), safe_run-wrapped, no GPU. Optional Bella arm: ~1 GPU-hour to sample regime-conditioned daily paths from checkpoints/diff_teacher (conv 302M, 6 GB for 1440 steps, diff_teacher/CLAUDE.md:19). Full neural RARL loop, if the operator insisted: 2 GPUs (generator + agent); the binding cost is the agent side \u2014 sequential MCTS evaluation per generated path (agent_evaluator is a per-step loop); the 875 walk-forward battery ran 15 full-panel evals in 8h57m on 3 GPUs (LEDGER line 99) \u2248 1.8 GPU-h per full-panel eval, so an adversary needing ~8 policy evals per update x 50 updates \u2248 400 evals \u2248 720 GPU-h \u2248 10 GPU-days on 3 cards per battery, times >=3 seeds. Gradient through MCTS does not exist, so G needs score-function updates (high variance) or a low-dimensional knob adversary (drift/vol/corr scalars a la Spooner) \u2014 the latter is CPU arithmetic on real paths and needs no GPU at all. 64 GB cards buy vmapped batch-of-paths evaluation (roughly 2-3x throughput) and longer generated windows; they do not change the information argument, and before the IC ceiling (memo \u00a74, <=2 CPU-days) is measured the loop's output is determined by whether U contains zero drift \u2014 GPU spend here is spend on a foregone conclusion.",
+ "kill_experiment": {
+  "design": "Ambiguity-radius sweep on the tactic library (formalises the minimax argument on the real PIT panel without training anything). Panel: PIT 273-asset true UTC daily panel 2024-01 -> 2026-06 via trader/data.py:192. Policy class Pi: the tactics panel's K~8 position matrices (flat; 819 trend; long-flat trend; EW constant mix; beta-hedged mix; vol-targeted trend; 7d and 21d cross-sectional reversal L/S) x a sizing scalar s in {0, .25, .5, 1} (the 'inventory' the robust solver can shrink). Nested plausibility sets: U0 = {real panel}; U1 = U0 + circular block bootstrap of dates (block 21, M=200); U2 = U1 + blockwise time-reversal; U3 = U2 + global reflection of the market-residual return component (r_resid -> -r_resid for all assets together, covariance preserved; includes the zero-drift measure by symmetry); U4 (optional GPU arm) = Bella regime-conditioned daily paths. Robust selector per U_r: pi* = argmax over Pi of the 10th-percentile net@21 Sharpe over U_r (also record the pure min). Then realise every selected pi* on the unseen 2026H1 slice. Pre-register: SPEC <= 1 page, sha256 recorded, cell grid fixed.",
+  "instrument": "Unmodified trader.backtest.cell_metrics (trader/backtest.py:231) with _block_bootstrap_sharpe_ci (trader/backtest.py:157), seed 819, n_boot 2000, tiers 8/21, PIT universe via trader/cli.py build_pit_universe; simple AND log portfolio returns both reported (tactics panel correction 2); exposure and turnover printed beside every Sharpe (898 confound rule).",
+  "pass_fail": "P1 (loop formalises no-edge): for U3 the robust selector picks flat or s=0 in each of 2024, 2025, 2026H1. P1 holding => any minimax loop whose plausibility set admits drift reflection outputs flat by construction; GPU version killed. P2 (robustness creates Sharpe): some intermediate radius (U1 or U2) selects a non-flat tactic whose realised UNSEEN 2026H1 net@21 beats BOTH the nominal U0 choice and flat by more than the bootstrap CI half-width, AND that tactic is positive in 2024 and 2025. P2 PASS does not license the loop \u2014 it says the plausibility set encodes a usable prior, which is handed to the IC instrument (G-A) to name the forecast. P1 holds and P2 fails => family closed for alpha; only the honest uses remain. Expected outcome: P1 holds, P2 fails.",
+  "cost": "CPU minutes to ~1 hour; <=1 day implementer time; zero GPU (optional U4 arm ~1 GPU-hour if checkpoints/diff_teacher loads on daily bars). Kill date 7 days from SPEC commit."
+ },
+ "honest_odds": "P(an adversarial/minimax self-play loop is the SOURCE of a book clearing the goalposts) \u2248 0-1%: the fixed point is flat unless the plausibility set carries a forecast, and the record already sits at that fixed point (887, 812). P(kill experiment P2 PASS, i.e. some finite radius selects a tactic that beats nominal and flat on unseen 2026H1) \u2248 5-10%, and a PASS is a forecast finding routed to the IC instrument, not a loop finding. P(the honest uses \u2014 R4 stress gate, DRO shrinkage sizing, surrogate null family \u2014 add measurable value to a book that has already passed G-A/G-B) \u2248 60-70%, at +0 expected Sharpe and some variance/drawdown reduction. Recommendation: do not build the loop; run the CPU kill experiment only if the operator wants the closure on record; put the 64 GB cards on nothing in this family until the IC ceiling is measured.",
+ "open_doubts": [
+  "Blanchet-Chen-Zhou is a one-period static result; they leave the dynamic DRO Markowitz open. A path-dependent adversary interacting with proportional-cost no-trade bands could in principle produce a non-flat robust policy (wider bands, not new expectation) \u2014 argued by analogy, not proven here.",
+  "Second-moment predictability (vol clustering, correlation regimes) is real and a generator can carry it; a robust controller exploiting it is a sizing/cost lever (tactics panel row 4, 1-2%), not expected return \u2014 but the sizing gain on a passing forecast has never been measured in this repo.",
+  "Bella's fidelity on daily bars is unmeasured (trained on 400-step minute windows); the optional U4 arm may fail for that reason alone, which would be a Bella finding, not a loop finding.",
+  "Spooner-Savani's extended arXiv version (three-parameter adversary proofs) and the 2026 Bayesian-robust paper body were not read; statements about their cost handling and baselines are abstract-level.",
+  "The reflection surrogate (U3) must flip the residual component globally to preserve covariance; per-asset independent flips would alter correlation signs and make the null too strong \u2014 a pre-registration detail, flagged.",
+  "If the operator's 'whisper' meant Bella as MCTS leaf rollouts (TASK_778) rather than adversarial training, the same information argument applies (no drift beyond a forecaster; 831x/C locates search value in true lookahead), but 778 has genuinely never been run.",
+  "I could not verify TASK_110's Phase 1-4 'COMPLETE' claims beyond the code: the trainer's update step is a TODO, so the banner status is stale/overstated; a planner may want to correct it at disarm."
+ ]
+}

@@ -1,0 +1,155 @@
+{
+ "family": "Execution and cost tactics at daily-rebalance scale (rebalance bands / signal hysteresis, slower rebalance H, netting, passive limit ladders vs taker, hour-of-day choice, constant-$ vs hold-shares accounting) applied to the trader/ trend book",
+ "thesis": "The tactic is to turn the record's assumed 21 bp/side (taker16 + slip5, trader/config.py:135) into a realized number and to cut the number of times it is paid: (i) stop paying for sign flips that carry no information (a Schmitt-trigger/hysteresis band on the 30-day return, or a 3-day stride), (ii) pay maker instead of taker fees by posting at the touch with a 24 h deadline and crossing the remainder, (iii) execute in the liquid UTC window instead of at 00:00 UTC, (iv) choose deliberately between constant-$ (1/n) rebalancing and hold-shares, whose drift turnover the record never charged. Every one of these draws on exactly one of the four no-free-lunch sources: REDUCED REALIZED COST. None creates drift: net_t = gross_t \u2212 turn_t\u00b7c (trader/backtest.py:188-190), and the family only shrinks turn_t\u00b7c. The record's own structural fact makes the ceiling small and computable: the book's 0.155/day turnover is essentially all sign flips (analytic zero-crossing rate of a 30-day moving sum, 0.165/day, matches the measured 0.152\u20130.162), and the whole cost stack is worth 0.18\u20130.20 Sharpe on the 2018\u20132025 PIT book (gross +0.74 vs net@21 +0.56, POWERED_RESULT.md:57) and nothing on 2024\u20132026, where the gross itself reads \u22480 to \u22121.5. The one component that is not pure cost \u2014 constant-$ vs hold-shares \u2014 is a rebalancing effect the record has measured at \u00b11 Sharpe in BEAR22 (830 SPEC.md:95-98), but it is a bet on within-position trend persistence and is flagged as forecast-shaped, not claimed as a tactic. Honest summary: this family is the cost module of a controller (TASK_915's \u039b calibration), not a line that can reach the goalposts by itself.",
+ "math": "CONSTRUCTION (trader/strategy.py:60-77, 123-154; backtest.py:224): pos[t,i] = s_i(t)/n_present(t), s = sign(logC_t \u2212 logC_{t\u221230}); turn_t = \u03a3_i |pos_t \u2212 pos_{t\u2212H}|. A sign flip costs 2/n; a universe change (\u0394n=\u00b11) costs \u2248 2/(n+1) once; a |\u0394pos|<0.2% band (config.py:128) is inert because the smallest flip is 2/273 = 0.73% (PIT) or 2/39 = 5.1% (survivor universe).\n\nTURNOVER DECOMPOSITION (analytic, to be measured by the kill experiment): for a moving sum of L iid Gaussian daily increments, P(sign change over a stride of h days) = arccos(\u03c1)/\u03c0 with \u03c1 = (L\u2212h)/L. L=30, h=1: \u03c1 = 29/30 \u2192 arccos(0.9667)/\u03c0 = 0.0824 flips/asset/day \u2192 expected flip turnover/day = n \u00b7 0.0824 \u00b7 2/n = 0.165, independent of n. Measured: 0.155 (PORTFOLIO_RESULT.md:36), 0.162 (20-asset cell), 0.152 PIT FULL (POWERED_RESULT.md:57). Residual for renormalisation from universe changes: \u2264 0.01/day (<5%); the small shortfall below 0.165 is trend persistence (positive autocorrelation lowers crossing rates). h=2: \u03c1=0.9333 \u2192 0.1169 per 2 d \u2192 0.117/day (\u221225%). h=3: \u03c1=0.9 \u2192 0.1436 per 3 d \u2192 0.0957/day (\u221238%; \u224835\u00d7/yr vs 56.6\u00d7). h=5: \u03c1=0.8333 \u2192 0.1864 per 5 d \u2192 0.0746/day (\u221252%). Hysteresis at \u00b1\u03b8 on the 30-day return (\u03b8 in units of \u03c3_S = \u03c3_daily\u00b7\u221a30): fraction of zero-crossings that reach \u00b1\u03b8 before re-crossing \u2248 E[one-step overshoot]/\u03b8 with one-step std = \u03c3_daily\u00b7\u221a2 = 0.258 \u03c3_S \u2192 \u03b8 = 0.5\u03c3_S removes roughly 40\u201350% of flips, \u03b8 = 1\u03c3_S roughly 70\u201375% (heuristic; simulate/measure, do not assume).\n\nCOST PER BP AND SHARPE SLOPE: annual turnover T_a = 56.6 (survivor) / 55.5 (PIT) \u2192 cost/yr = T_a\u00b7c\u00b71e-4 = 0.566%/yr per bp; 21 bp \u2192 11.89%/yr (PORTFOLIO_RESULT.md:79), 11.65% PIT (POWERED_RESULT.md:88). Book vol from the record's own tier spread: net@8 \u2212 net@21 = 1.09 \u2212 0.97 = 0.12 for \u0394cost = 13\u00b756.6 bp = 7.36%/yr \u2192 \u03c3_book \u2248 61%/yr (cross-check: ln(21.69)/4.6 yr = 0.669/yr log-return at Sharpe 1.09 \u2192 daily \u03c3 3.21% \u2192 61%). PIT: 0.67 \u2212 0.56 = 0.11 for 7.2%/yr \u2192 \u03c3 \u2248 66%. Hence \u0394Sharpe per bp of realized per-side cost = 0.0085\u20130.0093. 21\u219210 bp: +0.09 to +0.10; 21\u21925: +0.14 to +0.15; 21\u21920: +0.18 to +0.20 (= gross \u2212 net@21 = 0.74 \u2212 0.56 on PIT, exactly the whole stack).\n\nCEILING BY COMPOSITION: H=3 (turnover \u00d70.62) with realized c \u2248 12 bp (blended maker/taker, below) \u2192 drag 55.5\u00b70.62\u00b712 bp = 4.1%/yr, saving 7.5%/yr \u2192 +0.11 \u2192 PIT net \u2248 +0.67. Add \u03b8=0.5\u03c3_S (flips \u00d70.55 on top) \u2192 drag \u2248 2.3%/yr \u2192 +0.14 \u2192 PIT \u2248 +0.70. The gross bound is +0.74 (net@0, POWERED_RESULT.md:57); the bar is +0.97; PIT CI [\u22120.13,+1.23] at 21 bp and [\u22120.01,+1.34] at 8 bp both straddle 0. On 2024\u201326: PIT gross BULL24 +0.13, CHOP25 +0.22 (POWERED_RESULT.md:55-56); 2026H1 net@8 \u22121.659 (LEDGER row 898) \u2192 gross \u2248 \u22121.5; c \u2192 0 cannot change the sign. Note the survivor H=3 row's +0.38 net@21 uplift (0.97\u21921.35, PORTFOLIO_RESULT.md:68) exceeds its cost-only component (+0.07 from 38% less turnover at 21 bp); the other +0.3 is a gross path change from sampling every third day \u2014 unreplicated on PIT, treat as luck until measured.\n\nFEE/SPREAD ARITHMETIC (Kraken schedule effective 2026-07-09, fetched): maker/taker by 30-day volume: $100k+ 0.12/0.25; $250k+ 0.10/0.22; $500k+ 0.08/0.20; $1M+ 0.06/0.18; $2.5M+ 0.04/0.15; $5M+ 0.02/0.12; $10M+ 0.00/0.10 (tier 1 is 0.40/0.80). Monthly volume of this book = 0.155\u00b730\u00b7book = 4.65\u00b7book, so the record's taker16 presumes the $1\u20132.5M/month band \u2192 book \u2248 $215k\u2013540k; below ~$100k of book the honest taker fee is 22\u201338 bp and the whole record is optimistic. Maker\u2212taker gap at the relevant tiers: 10\u201313 bp/side. Spread on majors from the 907 fixture (2026-08-27 20:49Z, wire_fixture_kraken_v2_2026-08-27.jsonl): ETH/USD 2505.81/2505.97 = 0.64 bp full spread (record median 0.11 USD = 0.44 bp; frozen 0.01 = 0.04 bp), BTC/USD 79989.2/79989.3 = 0.0125 bp; top-of-book size ETH 0.35\u20135.1 ETH ($0.9k\u2013$12.8k), BTC 0.4/0.27 BTC ($32k/$21k) \u2192 a $2.5\u201310k clip (1\u20132% of a $250\u2013500k book) crosses at \u22480\u20131 bp slippage on majors, so 'slip5' is 5\u2013400\u00d7 the major-pair half-spread and is only defensible as an alt-weighted guess (alt spreads are not in the DB; assumption 5\u201350 bp).\n\nRECOVERABLE RANGE (assumptions: $250\u2013500k book, 64 assets, 1\u20132% clips, post at touch, 24 h deadline, remainder crossed): majors 21 \u2192 5\u20137 bp (maker 4\u20136 + spread/AS \u00b11) \u2248 65\u201375% recovered; alts 21 \u2192 10\u201320 bp \u2248 5\u201350%; 1/n blend where alts dominate the count: 21 \u2192 10\u201314 bp \u2248 33\u201350% recovered \u2192 +0.06 to +0.10 Sharpe at the slope above.\n\nUNCHARGED DRIFT TURNOVER: regime_series charges only \u03a3|target_t \u2212 target_{t\u2212H}|; holding 1/n dollar weights requires daily trades \u2248 \u03a3_i w_i|r_i \u2212 r_p| \u2248 0.8\u00b7\u03c3_xs,daily; at 3\u20134% daily cross-sectional dispersion this is 2.4\u20133.2%/day = +9\u201312\u00d7/yr on top of 55.5 \u2192 +1.9\u20132.5%/yr at 21 bp \u2192 \u22120.03 to \u22120.04 Sharpe not in any published number (hold-shares avoids it but changes gross: 830 SPEC.md:95-98).\n\nTIMING RISK OF INTRADAY PATIENCE: the traded slice is 0.155 of gross; delaying it half a day adds variance \u2248 0.155\u00b2\u00b70.5\u00b7\u03c3_mkt,d\u00b2 = 0.024\u00b70.5\u00b70.03\u00b2 \u2248 1.1e-5 vs \u03c3_book,d\u00b2 \u2248 1.0e-3 \u2192 ~1% variance, ~0.5% Sharpe dilution; zero expected cost because the book has no intraday forecast.\n\nMEMO CORRECTION: lore/fable_direction_memo_2026-09-03.md:174-186 states a 5 vs 10 bp adverse-selection difference is '\u22480.3\u20130.5 Sharpe-points/yr' on a 60%-vol book; the arithmetic is 5 bp \u00b7 56.6 = 2.8%/yr \u00f7 0.61 = 0.046 Sharpe \u2014 the memo overstates by ~8\u201310\u00d7; its qualitative conclusion (second-order) stands a fortiori.",
+ "profit_source": "cost_reduction",
+ "bear_positive_without_forecast": {
+  "answer": "no",
+  "argument": "Execution and turnover tactics have identically zero drift: net_t = gross_t \u2212 turn_t\u00b7c (trader/backtest.py:188-190) and the family only shrinks the second term. The sign of the bear P&L is inherited from the gross book, which is the 30-day sign rule's forecast (BEAR22 gross +1.22 PIT, POWERED_RESULT.md:57; 2026H1 gross \u2248 \u22121.5 from LEDGER 898's net@8 \u22121.659). Cutting c from 21 to 0 bp on the 2026H1 book moves it by at most +0.2 and leaves it deeply negative; on BEAR22 it was positive before any tactic. The only component with a gross effect \u2014 constant-$ (1/n) rebalancing vs hold-shares, measured at BEAR22 gross +1.218 vs +0.225 in 830/E0 (experiments/830_corridor/SPEC.md:95-98) \u2014 is positive in a bear precisely because re-shorting a winning short is a bet on trend persistence inside the position; that is a forecast dressed as accounting, and the honest classification is that BEAR-positivity is not obtainable from this family without one."
+ },
+ "literature": [
+  {
+   "ref": "Magill & Constantinides 1976, 'Portfolio selection with transactions costs', J. Economic Theory",
+   "claim": "Under proportional costs the optimal policy is a no-trade region: do nothing while the portfolio is inside it, trade minimally to its boundary when outside \u2014 the theoretical basis for bands/hysteresis rather than continuous rebalancing.",
+   "numbers": "No numbers used; qualitative structure only.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Davis & Norman 1990, 'Portfolio selection with transaction costs', Mathematics of Operations Research 15(4)",
+   "claim": "Rigorous free-boundary (HJB) solution of the Merton problem with proportional costs; optimal strategy keeps the risky fraction inside a wedge and trades only at its edges (minimal trading).",
+   "numbers": "None used.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "G\u00e2rleanu & Pedersen 2013, 'Dynamic Trading with Predictable Returns and Transaction Costs', Journal of Finance 68(6):2309-2340",
+   "claim": "Closed-form dynamic policy under quadratic costs: aim in front of the target, trade partially toward the aim, weight slower-decaying signals more; commodity-futures implementation beats naive benchmarks net of costs. Relevant here as the controller TASK_915 already adopts; this family supplies its realized cost parameter \u039b.",
+   "numbers": "None relied on beyond structure.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Almgren & Chriss 2000, 'Optimal Execution of Portfolio Transactions', Journal of Risk 3(2)",
+   "claim": "Mean-variance execution: trade schedule trades permanent/temporary impact against timing risk; with negligible impact (our $2.5-10k clips vs eight- to nine-figure daily volume) the AC optimum is immediate execution \u2014 AC therefore does NOT justify patience here; the case for patience must come from fee/spread capture, which AC does not model.",
+   "numbers": "Key parameter = volatility \u00d7 risk aversion / temporary-impact coefficient; impact term \u2248 0 for this book.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Gu\u00e9ant, Lehalle & Fernandez-Tapia 2012, 'Optimal Portfolio Liquidation with Limit Orders', SIAM J. Financial Mathematics 3(1):740-764 (arXiv 1106.3279)",
+   "claim": "Liquidation with limit orders: choose posting depth \u03b4 against fill intensity \u03bb(\u03b4) under non-execution risk and price risk, with a terminal market order at the deadline; usable 'to liquidate over a few hours' \u2014 the correct frame for a pre-decided daily trade list executed passively with a deadline.",
+   "numbers": "None used.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Cartea, Jaimungal & Penalva 2015, 'Algorithmic and High-Frequency Trading', Cambridge UP (execution-with-limit-orders chapters)",
+   "claim": "Limit-order execution balances fast fill against adverse selection: fill probability is highest exactly when price is about to move through you; deadline forces market orders; latency erodes the value of imbalance signals \u2014 distinguishes informed (897-type) from uninformed passive execution.",
+   "numbers": "None used.",
+   "depth": "search-snippet"
+  },
+  {
+   "ref": "Novy-Marx & Velikov 2016, 'A Taxonomy of Anomalies and Their Trading Costs', Review of Financial Studies 29(1):104-147",
+   "claim": "Of three cost-mitigation techniques (cheap-to-trade universe, lower rebalancing frequency, buy/hold spread 'banding'), banding is the most effective \u2014 similar cost cuts with better signal exposure than lower frequency; strategies with <50%/month turnover mostly survive costs, few above do.",
+   "numbers": "50%/month turnover threshold; the 819 book runs \u2248465%/month (0.155/day \u00d7 30).",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Baltas & Kosowski 2012/2020, 'Demystifying Time-Series Momentum Strategies: Volatility Estimators, Trading Rules and Pairwise Correlations' (SSRN 2140091; JFE 2020)",
+   "claim": "More efficient volatility estimation and trend detection cut TSMOM turnover by more than one third without statistically significant performance loss; turnover can only be reduced so far before performance falls.",
+   "numbers": ">1/3 turnover reduction at no significant Sharpe loss.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Tini\u00e7, \u015eensoy, Akyildirim & Corbet 2023, 'Adverse selection in cryptocurrency markets', Journal of Financial Research (Bitfinex order/trade data)",
+   "claim": "Adverse-selection component averages \u224810% of the effective spread for major cryptocurrencies; largest in dollar terms for BTC.",
+   "numbers": "AS \u2248 10% of effective spread \u2192 on a 0.4-0.6 bp ETH/BTC spread, well under 0.1 bp; even 100% of spread is <1 bp on majors.",
+   "depth": "abstract-level"
+  },
+  {
+   "ref": "Hansen, Kim & Kimbrough 2021, 'Periodicity in Cryptocurrency Volatility and Liquidity', arXiv 2109.12142 (BTC, ETH; Coinbase Pro, Binance, Uniswap V2; 2019-2021)",
+   "claim": "Hour-of-day illiquidity (Amihud-type) is ~30% above average during East-Asian night on Binance and ranges ~80-150% of the daily mean on Coinbase Pro (peak illiquidity 10 UTC, most activity ~16 UTC); volatility peaks ~16 UTC, trough ~5 UTC; their literature review (Dyhrberg et al. 2018; Aleti & Mizrach 2021) places the lowest spreads in US/London overlap hours and wider spreads when CME BTC futures are closed. Implication: the book's 00:00 UTC decision/execution time is not the liquid window; a trend rule is time-of-day agnostic, so the daily boundary can be moved to ~13-17 UTC at zero signal cost.",
+   "numbers": "Illiquidity ratio 0.8-1.5 (Coinbase), +30% (Binance nights); volatility peak 16 UTC / trough 5 UTC.",
+   "depth": "full"
+  },
+  {
+   "ref": "Kraken fee schedule (kraken.com/features/fee-schedule) and support article 'Cross-platform fee tier changes', effective 2026-07-09 (fetched 2026-09-04)",
+   "claim": "Spot maker/taker by 30-day volume (or futures volume / assets-on-platform, whichever is best): tier 1 0.40/0.80%; $10k+ 0.22/0.38; $50k+ 0.15/0.30; $100k+ 0.12/0.25; $250k+ 0.10/0.22; $500k+ 0.08/0.20; $1M+ 0.06/0.18; $2.5M+ 0.04/0.15; $5M+ 0.02/0.12; $10M+ 0.00/0.10. Third-party sites still quote the pre-July-2026 schedule (0.25/0.40 base; 0.16 taker at $2.5-5M) \u2014 the record's 'taker16' is that old tier.",
+   "numbers": "Maker-taker gap 10-13 bp/side across the $100k-$5M tiers; taker16 \u2192 book \u2248 $215-540k at 4.65\u00d7 book/month.",
+   "depth": "full"
+  },
+  {
+   "ref": "Kaiko Research 2023-06-01, 'A Cheatsheet for Bid-Ask Spreads'",
+   "claim": "Kraken's BTC-USD spreads are 'the lowest in the business' among USD pairs; DOGE-USD on Kraken rivals ETH; no numeric spreads given for alts or by time of day \u2014 alt spread assumptions above are therefore unverified.",
+   "numbers": "None numeric.",
+   "depth": "abstract-level"
+  }
+ ],
+ "repo_overlap": [
+  {
+   "receipt": "trader/backtest.py:224 (turn = \u03a3|pos_t \u2212 pos_{t\u2212H}|), :188-190 (net = gross \u2212 turn\u00b7c), :205-227 (regime_series)",
+   "relation": "The exact cost model this family attacks; charges only target-weight changes, so constant-$ drift rebalancing is uncharged (open doubt below)."
+  },
+  {
+   "receipt": "trader/strategy.py:60-77 (sign signal), :123-135 (1/n_present weights), :137-154 (pos = w\u00b7s)",
+   "relation": "Construction that makes turnover \u2248 all sign flips (2/n each) and makes a |\u0394pos| band inert; hysteresis must sit on the signal, not the position."
+  },
+  {
+   "receipt": "trader/config.py:100 (H_rebal=1), :128 (RiskConfig.rebalance_band=0.002, default OFF), :135 (PaperConfig.cost_bp_per_side=21 = taker16+slip5); trader/risk.py:62, :113 (apply_rebalance_band)",
+   "relation": "A rebalance band already exists in the overlay but at 0.2% it cannot bite on flips of 0.73-5.1%; the 21 bp constant is the number to replace with a realized one."
+  },
+  {
+   "receipt": "runs/819_single_asset/PORTFOLIO_RESULT.md:36 (turn 0.155), :68 (H=3d: net@8 +1.42, net@21 +1.35, BEAR22 +0.91, CI [+0.51,+2.24]), :79 (56.6\u00d7/yr, 11.89%/yr @21), :82-83 (execute-at-close assumption; 'no market impact or partial-fill modelling'); portfolio.py:887 (H=3 cell computed, its turnover never printed)",
+   "relation": "The record's only H sweep: H=3 beat H=1 on survivors by +0.38 net@21, of which only \u2248+0.07 is cost; turnover at H=3 unmeasured \u2014 the kill experiment fills this."
+  },
+  {
+   "receipt": "runs/819_single_asset/POWERED_RESULT.md:55-57 (PIT: BULL24 gross +0.13, CHOP25 +0.22, FULL turn 0.152 gross +0.74 net@8 +0.67 net@21 +0.56), :88 (55.5\u00d7/yr, 11.65%/yr @21)",
+   "relation": "Sets the ceiling: the whole cost stack is +0.18 on PIT; 2024-25 gross is \u22480."
+  },
+  {
+   "receipt": "experiments/LEDGER.md:103 (898/trend-decay: 2024 +0.041, 2025 +0.663, 2026H1 \u22121.659 net@8; long-flat 2026H1 \u22125.221)",
+   "relation": "The gross this family would lift is measured \u22480/negative on unseen years; cost tactics cannot change its sign."
+  },
+  {
+   "receipt": "experiments/830_corridor/SPEC.md:43-44 (flip = two env decisions), :89-91 (renormalised 1/n vs fixed weights 0.956\u21920.612; flip-lag +0.14), :95-98 (hold-shares BEAR22 gross +0.225 vs constant-$ +1.218)",
+   "relation": "Only measurement in the record of an execution/accounting tactic changing gross; flip-lag (a one-day delay) HELPED +0.14 \u2014 evidence that the decision-time/lag axis is non-trivial and unexplored."
+  },
+  {
+   "receipt": "tasks/TASK_820_SHIP_TREND_CTA.md:13-14, :28; tasks/TASK_823_VPS_MICROLIVE_CTA.md:76",
+   "relation": "820 flags execute-at-close as an assumption and names turnover 'the main cost drag'; 823 already proposed H=3d and a wider band for micro-live \u2014 never measured."
+  },
+  {
+   "receipt": "tasks/TASK_809_DECISION_RULE_RESCUE.md:49, :55 (hysteresis + maker arm); LEDGER.md:105 (897/809-corrected: 0/864 at any fee; adv=5 alone +204\u2192\u2212634)",
+   "relation": "Prior hysteresis/maker attempt was at MINUTE scale with an informed signal \u2014 the regime this brief distinguishes from uninformed daily execution."
+  },
+  {
+   "receipt": "mcts_trader/env/jax_trading_env.py:158, :1626, :1648 (vector_rebalance_deadband, default 0.1\u00b7w_unit); tasks/TASK_840:45-46; TASK_843:39 (incremental netting); TASK_842:50 (maker/taker split for limit legs explicitly out of scope)",
+   "relation": "The env already implements a deadband and netting; maker/taker economics were deliberately never modelled anywhere in-tree."
+  },
+  {
+   "receipt": "experiments/907_live_fill_probe/PREREGISTRATION.md (estimand 1 markout deciles 1m-1h, touch-conditional = optimistic bound; estimand 2 fill-rate bounds); lore/notes_2026-09-01.md:17-19 (BTC 46.5% frozen mid); lore/handoff_2026-09-02_factory_run_50.md:78-94 (frozen-mid falsification; ETH median spread 0.11, 0.01 frozen); tasks/TASK_907_LIVE_FILL_PROBE.md:231-235 (receipt lag 2.4-8.7 s); wire_fixture_kraken_v2_2026-08-27.jsonl (ETH 2505.81/2505.97, BTC 79989.2/79989.3 snapshot)",
+   "relation": "907's shadow orders are posted unconditionally, so its estimand IS the unconditional adverse selection of an uninformed passive order on four majors \u2014 the right input for daily execution on those pairs; it cannot give queue-position fill rates, deadline residuals, alt spreads, or the fee tier."
+  },
+  {
+   "receipt": "lore/fable_direction_memo_2026-09-03.md:174-186 (907 second-order; '0.3-0.5 Sharpe-points/yr' for 5 vs 10 bp AS), :277-285 (GP \u039b calibrated so a full rebalance costs 21 bp); tasks/DECISIONS.md:11 (D79 adopts memo; TASK_915 seeded)",
+   "relation": "This family is the natural supplier of TASK_915's realized-cost parameter; the memo's 0.3-0.5 figure is arithmetically ~8-10\u00d7 too high (should read \u22480.05)."
+  }
+ ],
+ "controllability": "Maximal, and that is the family's real merit. The policy is a deterministic pipeline with four scalar knobs: decision hour (00:00 UTC vs a 13-17 UTC boundary), stride H \u2208 {1,2,3,5}, hysteresis \u03b8 on the 30-day return, and an execution schedule (post at touch for T hours, cross the remainder). Action space per asset per day is {hold, flip long\u2194short, enter/exit}, with turnover bounded by construction at 2/n per flip and an optional hard daily cap; every order is explainable ex post from (signal value, \u03b8, prior position, fill log), and the realized cost is a per-fill ledger quantity, not an assumption. Auditability matches the record's existing gate discipline (unmodified cell_metrics scorer, seed 819, n_boot 2000). What is lost: (a) any gross uplift \u2014 the family cannot add drift, so 'better hold on policy' here means a cheaper and more stable book, not a more profitable signal; (b) the ability to react intraday (the trade list is frozen at the decision time; timing risk is ~1% variance, negligible); (c) at hysteresis \u03b8 \u2265 1\u03c3 the book holds stale signs longer and the BEAR22 short entries arrive later \u2014 a measurable gross cost, not a free lunch; (d) passive fills on alts are uncertain, so realized cost is stochastic and must be reported as a distribution per liquidity tier, not a constant.",
+ "compute": "Zero GPU, on either host. The H \u00d7 \u03b8 \u00d7 accounting sweep is trader/ numpy on the existing PIT daily panel (runs/819_single_asset/_close_pit_daily.npz, extended via ohlcv_daily): 819 Phase 2 scored 8 cells in 24 s, so 48 cells \u00d7 4 tiers \u00d7 3 accounting modes is minutes of CPU inside the standard safe_run wrapper on gpu-server. The 907 read is a pre-registered read of an artifact the factory is already producing (B2 row); no new capture. Engineering: \u2264150 LOC (hysteresis signal variant + drift-inclusive turnover accounting + hold-shares gross) outside the parity path, ~1-2 engineer-days. The operator's 64 GB GPUs are irrelevant to this family; stating that plainly is part of the answer.",
+ "kill_experiment": {
+  "design": "Pre-registered 48-cell grid on the PIT 273-asset daily panel 2018-10\u21922026-06 (dead coins included, 819 POWERED builder): H \u2208 {1,2,3,5} \u00d7 hysteresis \u03b8 \u2208 {0, 0.25, 0.5, 1.0}\u00b7\u03c3\u0302_S (\u03c3\u0302_S = causal trailing-30d daily vol \u00d7 \u221a30; \u03b8=0 reproduces the frozen 819 rule bit-for-bit as the parity check) \u00d7 accounting \u2208 {as-shipped target-weight turnover; drift-inclusive turnover (charge \u03a3_i|w_i(1+r_i)/(1+r_p) \u2212 w_i| every day held); hold-shares (no drift trades, gross from share holdings)}. Score each cell at c \u2208 {5, 8, 12, 21} bp with the unmodified trader.backtest.cell_metrics (seed 819, n_boot 2000), by regime and by calendar year (2024, 2025, 2026H1 separately), Bonferroni over 48. Additionally report the turnover decomposition per cell: flip share, renormalisation share, drift share. Second leg, zero compute: pre-register a read of the 907 B2 artifact's estimand-1 median and p90 at 5m and 1h for ETH/SOL/XRP (BTC only if its frozen-mid runs clear D77) as the realized adverse-selection input for majors, and its touch/trade-cross fill bounds as the optimistic fill-rate input.",
+  "instrument": "trader/ engine (trader/backtest.py cell_metrics + regime_series unmodified; new sibling module for the hysteresis signal and the two alternative accountings, parity-checked against the \u03b8=0/H=1/as-shipped cell), PIT panel from runs/819_single_asset/powered.py builder extended through TASK_899's ohlcv_daily seam; epoch stamped per LEDGER.md:28-41. 907 artifact as rendered by experiments/907_live_fill_probe/render.py after B2 ships (D65-amend-2 four horizons), read only.",
+  "pass_fail": "PASS (family is a line): some cell on unseen 2024-01\u21922026-06 reads net@12 \u2265 +0.97 with bootstrap CI lo > 0, positive in 2026H1 and BEAR22 (in-sample form check), gross \u2265 0.5 median held. Expected outcome: FAIL, because PIT gross is +0.13/+0.22 in 2024/2025 and \u2248 \u22121.5 in 2026H1 and no cost tactic changes sign. Pre-registered secondary band that decides the family's fate: (a) if max over cells of [net@21(cell) \u2212 net@21(H=1, \u03b8=0)] on FULL PIT \u2264 +0.20 (the whole cost stack), the family is CAPPED as cost-only and is folded into TASK_915 as the \u039b/turnover module \u2014 no further row; (b) if any cell exceeds +0.20 the excess is a GROSS effect of the H/\u03b8 path and gets its own adversarial pass (30-agent-conduct rule) before anything is claimed; (c) drift-inclusive accounting must move net@21 by \u22120.02 to \u22120.06; if it moves it by more than \u22120.10 the record's 21 bp book is materially optimistic on turnover and every prior 819/898 number needs a footnote. 907 leg: median AS(1h) on ETH/SOL/XRP \u2264 2 bp \u2192 realized maker cost \u2248 maker fee + \u22642 bp is credible for majors; > 5 bp \u2192 passive posting buys only the fee gap and the '21\u21925-7 bp on majors' claim is withdrawn.",
+  "cost": "CPU minutes on gpu-server (safe_run), ~1-2 engineer-days of code plus a 1-page SPEC; the 907 read is free once B2 ships. No GPU, no new data capture, no server-side state beyond a results JSON."
+ },
+ "honest_odds": "P(this family alone clears the goalposts \u2014 unseen years, net@21 \u2265 +0.97 with CI lo > 0, BEAR-positive, \u22653 seeds) \u2248 0-2%. Reasoning: the family's ceiling is the gross of whatever book it executes; on the only cost-honest PIT read that gross is +0.74 over 2018-2025 (below the +0.97 bar even at zero cost) and \u22480 to \u22121.5 on 2024-2026H1 (POWERED_RESULT.md:55-57; LEDGER 898). At 0.0085-0.0093 Sharpe per bp of realized cost and a 38-55% turnover cut, the mechanically available uplift is +0.10 to +0.15, which cannot bridge either gap. P(the family delivers \u2265 +0.10 net Sharpe on top of any gross that exists) \u2248 60-70% \u2014 the fee gap (10-13 bp/side) and the H=3/hysteresis turnover reduction are arithmetic, not hypotheses; the uncertainty is alt fill rates and the uncharged drift turnover (\u22120.03 to \u22120.04) partially offsetting it. P(the H/\u03b8 path changes gross by more than \u00b10.2 on PIT) \u2248 25%, and if it does it is a forecast-shaped effect that needs its own panel, not a tactic. Net: worth running as a CPU-minutes cost module for TASK_915's controller; not worth a queue row as a direction.",
+ "open_doubts": [
+  "The flip/renormalisation decomposition (\u224895/5) is analytic, not measured; the kill experiment must print it. Trend persistence and the present-mask flicker on dead coins could shift it a few percent either way.",
+  "Alt spreads on Kraken are not in the repo (the DB has no quotes) and the literature read gives only qualitative rankings; the 'slip5' baseline and the 10-20 bp alt estimate are assumptions. A one-day REST snapshot of top-of-book for the 64/273 universe would settle it and is cheap, but it is new data collection and was not in scope here.",
+  "Uncharged drift turnover of the constant-$ book (estimated +9-12\u00d7/yr, \u22120.03 to \u22120.04 Sharpe at 21 bp) has never been measured; if daily cross-sectional dispersion is above 4% the record's turnover is understated by >20%.",
+  "Hold-shares vs constant-$ changed BEAR22 gross by ~1 Sharpe in 830/E0 (+0.225 vs +1.218); whether that is a genuine within-position rebalancing effect or a bet on trend persistence is undetermined, and it is the one lever in this family that could masquerade as edge.",
+  "The survivor H=3 result (+1.35 vs +0.97 net@21) is n=1 on a survivor universe with unmeasured turnover; +0.3 of it is unexplained by cost and must be treated as luck until the PIT sweep reproduces it across H \u2208 {2,3,5}.",
+  "Kraken's July-2026 schedule qualifies tiers by 30-day volume OR assets-on-platform; the realized maker/taker tier for a $250-500k book depends on which qualifies and is an operator fact, not a repo fact.",
+  "907's touch-conditional markouts are an optimistic bound on adverse selection and say nothing about queue position; the true passive fill rate over a 24 h deadline on alts is unknown and is the main uncertainty in the 33-50% recoverable range.",
+  "The direction memo's '0.3-0.5 Sharpe-points/yr for 5 vs 10 bp adverse selection' (memo:1.4) is arithmetically ~0.05; the planner should correct it in the record so the second-order argument is not later read as first-order.",
+  "Moving the daily boundary from 00:00 UTC to ~13-17 UTC changes which 30-day returns the sign rule sees; a trend rule is nominally time-of-day invariant (819 Phase 1 found duration invariance), but the PIT gross at a different boundary has never been measured and could move by sampling noise of the same order as the H=3 surprise.",
+  "Everything above is scoped to the trend book because it is the only cost-honest book in the record; if TASK_915's G-A passes, the family's numbers must be recomputed at that book's turnover, which under GP partial trading will be lower than 55\u00d7/yr and will shrink the cost stack further."
+ ]
+}
