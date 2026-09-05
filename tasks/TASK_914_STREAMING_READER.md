@@ -1,3 +1,30 @@
+> **STATUS (2026-09-05): HALTED at the cycle limit (run 53) — NOT because the code is wrong.**
+> The reader itself is **CLEAN and independently verified**: correctness found nothing across 16
+> resume-path fixtures, 11 read_capture fixtures and 400 fuzz trials; the flow-verifier proved
+> **artifact byte-identity on the real 1.44 GB capture** and **selftest 12/12** full-repo; the
+> regression lens independently re-derived field-level identity and proved it non-vacuous by
+> mutation. Measured **peak RSS 12.34 GB -> 1.46 GB** (8.44x on CPython 3.14, 10.42x on 3.10 —
+> the spread is the interpreter, both figures reproduce).
+>
+> **Two MAJORs remain, BOTH confined to the new `test_streaming_reader.py`, none in `capture.py`:**
+> (1) `:162` the child-baseline ceiling is ~5x above the point where deflation eats the bound —
+> a real duplicated full-file pass PASSES at 154-166 B/event under a 58-64 MB child baseline;
+> (2) `:332-342` the structural guard patches only `builtins.open`, but **`io.open` IS
+> `builtins.open`**, so a bypassing second traversal certifies `traversals=1.000`.
+>
+> Cycle budget spent 3/3 (MAJOR -> BLOCKER -> 2 MAJOR). **D76's closing-pass exception does not
+> apply** — closing (2) needs a new mechanism, i.e. a new solution attempt. **Gated on D82**
+> (three scope options, operator's call). Work preserved:
+> `lore/handoff_2026-09-05_factory_run_53_914_halt.patch` (sha256 `a2577008...`, apply-check OK
+> vs `5010a1b`). Full record: `lore/handoff_2026-09-05_factory_run_53.md`.
+>
+> **Corrected in-flight (do not re-inherit the old numbers):** the spec's *"O(1) memory per
+> aggregation"* is **FALSE** — `all_ts`/`data_ts` are irreducibly O(events); growth is **LINEAR
+> in events**, measured, and only the slope moved. The `<4 GB` gate is therefore ONE POINT on a
+> line that recrosses it at roughly a 4 GiB capture (~12.1 days at the measured wall-clock rate);
+> the 32 GiB safe_run cap moves from ~9.3 days out to ~97 days. Acceptance (iii)'s "302" is the
+> correct HEAD baseline; the suite is 304 with both new tests.
+
 # TASK_914 — streaming reader for the 907 capture format
 
 **Status**: PROPOSED 2026-09-01 (planner; seeded from run 49's flag: the reader loads the whole
