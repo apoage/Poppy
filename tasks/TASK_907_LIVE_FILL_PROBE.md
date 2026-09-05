@@ -1,3 +1,67 @@
+> **STATUS (2026-09-05, factory run 52): ADDENDUM B2 PATCH ROUND 4 — HALTED PERMANENTLY. D78's
+> PRE-COMMITTED STOP HAS FIRED. NOT SHIPPED, NOTHING COMMITTED. The row goes to the PROVENANCE
+> RE-CUT; there is no fifth patch round and none was attempted.** Verification demonstrated NEW
+> instances of the named recurring shapes from THREE independent lenses plus the orchestrator's own
+> real-capture measurement. Seeded as **D81** (D80 was taken by a concurrent planner grooming). Work preserved:
+> `lore/handoff_2026-09-05_factory_run_52_907B2_round4.patch` (5596 lines, sha256 `e0d8f5d5…`,
+> byte-equal to the live tree, `git apply --check` OK vs `5ca8698`). Suite 362 → 387, selftest
+> 12/12, fixture `b0f8de8b…` unchanged, 10 stashes intact. Full record:
+> `lore/handoff_2026-09-05_factory_run_52.md`.
+>
+> **WHAT ROUND 4 GENUINELY ACHIEVED — reusable, and it reverses run 51's halt measurement.** The
+> orchestrator's capped real-capture render (rc=0, 3m32s, peak RSS 14.83 GB under a 22G cap)
+> **publishes ALL FOUR PAIRS** where run 51 measured 4-of-4 EXCLUDED and published nothing: BTC 26
+> unexplained intervals/worst 15.6s/0.0952%, ETH 47/17.2s/0.1758%, SOL 8/15.2s/0.0307%, XRP
+> 40/19.6s/0.1532% — every verdict `DISCLOSED — market stillness, publishes`. **Max |markout| in any
+> estimand-1 cell: 9.95 bp** (run 51 published 7996.97). All four pre-registered horizons populated
+> for every pair, zero `not-evaluable`. Reconciliation exact: published + every drop reason = 4 ×
+> touch fills, to the unit, on all four pairs. B-iv clean on 9 independently-built fixtures across
+> two lenses; `build_argparser` byte-identical; nodes 362 → 387 with no test loosened. **Shape 3 did
+> NOT recur** (three lenses re-derived the `--capture`-loop enumeration). BLOCKERs 1–3 are
+> substantively closed.
+>
+> **WHY IT HALTED — the new instances.** (1) **The frozen-top run is BLIND to recorded gaps**
+> (SHAPE 1, orchestrator-measured on the real capture): **63 of 67 FLAGGED runs overlap a recorded
+> gap and 63 of 67 are MORE THAN HALF disclosed outage** — typically 96–99%, worst 99.7%; every
+> flagged run on ETH, SOL and XRP; the recurring 61.5s signature is D74's own journal-stall regime.
+> D77's primary defect signal is therefore 94% *"the book looked unchanged because we were
+> disconnected"*, and the artifact's 82/54/122/52 excluded posts rest on it. Base A/B: the same
+> geometry is `NOT ASSESSED`/unflagged at base and **FLAGGED** in round 4 — the construction is
+> inherited from `stale_runs`, the flagging CONSEQUENCE is created by this round. (2) **The endpoint
+> fix inverts the baseline RATE** (SHAPE 1, correctness lens): widening the run also widens the
+> baseline exclusion, and removing inside-the-book trades RAISES `baseline_rate` — measured base
+> 0.4783 FLAGS a run that round 4 calls **`clean`** at 0.5500, publishing 74 previously-excluded
+> samples at rc=0 and moving a published 1h mean −471.80 → −450.15 bp. **Fail-OPEN.** (3) **The
+> defect-silence exclusion gates 2 of its 4 inputs** (SHAPES 1+2 on code this round created,
+> fail-closed lens): the limit's own print is never tested, so a limit priced inside a
+> defect-flagged interval publishes **+2298 bp at rc=0**, moving a published 1m mean 0.453 → 8.689 bp
+> across the disclosure box's own 5 bp line — under a sentence claiming the exclusion "reaches EVERY
+> published number". (4) **The new "none" sentence contradicts the exclusion 30 lines away**
+> (SHAPE 2, found convergently by two lenses): the run-51 verdict-column contradiction re-created
+> three lines below the cell that was fixed to remove it.
+>
+> **PANEL SPLIT, recorded:** correctness / fail-closed / regression all DO-NOT-SHIP; the
+> flow-verifier says SHIP and states its own limit ("behavioral verification of the 9 named flows,
+> not a full line-by-line code review"). All nine of its flows really do pass — which is exactly why
+> the round looks shippable from the artifact alone. The mutation security lens was NOT run (the row
+> halted before its solo slot); disclosed.
+>
+> **ORCHESTRATOR ERRORS, on record.** The round-4 brief itself asserted the defective claim
+> ("superset of before → baseline shrinks → fail-closed direction") — denominated in POPULATION for a
+> gate that divides by a RATE. **Third consecutive run whose brief mis-stated or under-specified a
+> DENOMINATION** (run 50: what a flagged run should DO; run 51: D77's granularity; run 52: this).
+> The brief also never considered recorded gaps and produced four B-iv fixtures with zero
+> `GapRecord`s, and failed to warn the panel that the sanctioned real-capture read was in flight
+> (the flow-verifier attempted to kill it).
+>
+> **THE RE-CUT'S FIRST REQUIREMENT IS NOW MEASURED, NOT THEORISED: every interval the instrument
+> reasons about must carry whether the instrument was OBSERVING across it.** `covers()` already does
+> this for markouts; the frozen-run detector, the outside-book baseline and the silence gate do not.
+> One such mechanism subsumes all three shape-1 findings. **Intermediate available if D65's number is
+> wanted sooner:** publish estimand 1 with gap-aware exclusion and WITHOUT the 2b defect-signal
+> machinery, disclosing the frozen-run signal as withdrawn — the probe demonstrably publishes four
+> pairs × four horizons at a 9.95 bp maximum. That is a SCOPE decision for the operator, not a fifth
+> patch round.
 > **STATUS (2026-09-02, factory run 51): ADDENDUM B2 HALTED at cycle 3 of 3 — CYCLE BUDGET
 > FULLY SPENT. NOT SHIPPED, NOTHING COMMITTED. Blocked on D78, not on a ruled decision.
 > ⚠️ D78 + D77-AMEND RULED 2026-09-02 (operator) — THE ROW RESUMES AS PATCH ROUND 4: fix the

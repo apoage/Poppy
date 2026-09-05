@@ -41,8 +41,9 @@ OHLC endpoint serves a rolling ~720-candle window per interval (12h for minutes,
 dump zips (the gdown retry pattern exists; needs new file ids when published). Ingest into the
 DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
 until then. GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 + D78 (new, run 51 — 907 B2's halt: patch four more instances, or re-cut
-the row around one provenance mechanism?) + D80 (SEEDED 2026-09-05, planner — three parts:
+**OPEN decisions: D43 + **D81** (new, run 52 — 907 B2 round 4 HALTED PERMANENTLY when D78's
+pre-committed stop fired; the re-cut's scope, a narrower-instrument intermediate, and a
+factory-process rule about denomination in briefs) + D80 (SEEDED 2026-09-05, planner — three parts:
 (i) the operator's ACTUAL Kraken 30d fee tier, the record's "fee16" is not on the current
 ladder; (ii) whether the `docs/pathway.md` goalpost NUMBER is restated net of margin-rollover
 borrow — the benchmark book is ~50% short in BEAR22 and borrow ≈ 22%/yr on alts is never
@@ -77,7 +78,21 @@ other users and services — disturb NO process on it. No restarts, no tuning, n
 kill, no write-probes; planner/factory work on srv is pure reads plus the sanctioned
 safe_run-capped jobs (the capture, the suites). Remediation of anything box-level is a
 recommendation to the operator, never an action.**
-_**Row 1 (907 B2) is GATED on D78 as of run 51 — do NOT take it.** Its cycle budget is fully
+_**Row 1 (907 B2) is CLOSED TO PATCHING as of run 52 (2026-09-05) — do NOT take it, and do NOT open a
+fifth patch round.** D78's pre-committed stop FIRED. Round 4 closed all four named BLOCKERs and REVERSED
+run 51's halt measurement — the real capture now publishes ALL FOUR pairs, all four horizons, max
+|markout| **9.95 bp** (run 51: 7996.97 bp), rc=0 at 14.83 GB peak RSS — but verification found NEW
+instances of the named shapes from THREE lenses plus an orchestrator real-capture measurement:
+(1) the frozen-top run is BLIND to recorded gaps, so **63 of 67 flagged runs are more than half
+disclosed outage** and D77's primary defect signal is ~94% disconnect; (2) the endpoint fix INVERTS the
+outside-book baseline RATE and un-flags defective runs FAIL-OPEN; (3) the new defect-silence gate omits
+the limit print and published **+2298 bp at rc=0**; (4) a new "none" sentence contradicts the exclusion
+30 lines away. The row now waits on **D81**. Work preserved
+(`lore/handoff_2026-09-05_factory_run_52_907B2_round4.patch`, sha256 `e0d8f5d5…`, 5596 lines,
+apply-check OK vs `1cd2c70`); suite 387, B-iv/B-v/B-vi clean, shape 3 did NOT recur — all reusable on
+the re-cut. Full record: `lore/handoff_2026-09-05_factory_run_52.md`._
+
+_(run-51 note, superseded by the above:)_ _**Row 1 (907 B2) was GATED on D78 as of run 51.** Its cycle budget is fully
 spent (3 of 3) and cycle 3 returned four BLOCKERs; the banner on the task file carries them and
 the halt reasoning. D65-amend-2 and D77 are ruled and implemented — the block is D78's question,
 not a missing ruling. Measured on the real capture with the shipped code: **all four pairs are
@@ -86,7 +101,13 @@ a multi-day pair. Work preserved (`lore/handoff_2026-09-02_factory_run_51_907B2_
 sha256 `785577cb…`); B-iv, B-v, B-vi and the security pass all VERIFIED GREEN and are reusable on
 resume rather than rebuildable._
 
-_Next takeable: **TASK_907 Addendum B2 PATCH ROUND 4** (row 1, restored 2026-09-03: shipping 914
+_**Next takeable: `tasks/TASK_914_STREAMING_READER.md`.** The 907 B2 lane is closed to patching pending
+D81, and the collision that put B2 first is gone: round 4's declared base is spent, so 914's rewrite of
+`read_capture` + `_pair_coverage` has no permanent-halt round to merge into. Run 52 re-measured 914's
+case first-hand — the real-capture render peaked at **14.83 GB RSS in 3m32s** under a 22G cap: feasible,
+and still the largest recurring cost in this lane. Any re-cut under D81 needs several such reads._
+
+_(superseded run-51 note:)_ _Next takeable: **TASK_907 Addendum B2 PATCH ROUND 4** (row 1, restored 2026-09-03: shipping 914
 first would invalidate round 4's base patch — see the row note; 914's RSS case was cost, not
 feasibility — run 51 proved the reads fit the cap. Original 914 rationale kept for the row:) run 51 sharpened its case: `read_capture` peak RSS on the real capture measured **14.83 GB** first-hand, and cycle
 3 added **+10.3%** on top (`trade_price_series` + `trade_lag_events` + `by_hour` + `all_lags`
@@ -109,8 +130,8 @@ self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 |---|------|------|------|
 | ~~1~~ | ~~`tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md`~~ **SHIPPED run 48 (`2d56873`)** | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
 | 2 | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73)~~ **SHIPPED run 49 (`1360250`)** | M | 302 tests, B-iv byte-identical on 6 independent captures, fixture unchanged. B1-vii discharged: the live capture renders (after fixing the recorder's own ~12µs gap-end ts artifact + merge seam — 584 intrusions → 0). **The render's findings: 20m/1h horizons structurally 0-sample (longest gap-free stretch 561.8s; D65-amend RULED: two horizons suffice); BTC/USD 46.5% frozen mid — B2's failure mode in the real data.** |
-| 1 | `tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4 per D78; D77-amend in force) (**ROW 1 TAKEABLE — restored; base = the run-51 halt patch against current HEAD, no merge**) | S | Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`, applies vs current HEAD by definition — the dirty tree IS it); reuse B-iv/B-v/B-vi/security-clean. |
-| 2 | `tasks/TASK_914_STREAMING_READER.md` (**AFTER B2 round 4**; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
+| ~~1~~ | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4)~~ **HALTED PERMANENTLY run 52 — D78's pre-committed stop FIRED (3 lenses + an orchestrator real-capture measurement found new shape instances). GATED on D81; NO fifth patch round. Round 4 nonetheless REVERSED run 51's halt measurement — all four pairs publish, max |markout| 9.95 bp — and its B-iv/B-v/B-vi work is reusable on the re-cut.** | S | Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`, applies vs current HEAD by definition — the dirty tree IS it); reuse B-iv/B-v/B-vi/security-clean. |
+| 2 | `tasks/TASK_914_STREAMING_READER.md` (**NOW THE TAKEABLE 907-LANE ROW (run 52): the B2 collision is GONE — round 4's declared base is spent and that lane is gated on D81, so there is no permanent-halt round to hand-merge into**; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
 | 3 | `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (913's residue — the spec IS the task file) | S | **GATE OPEN (capture closed 2026-09-01 10:00):** implement the single-writer-thread + batched-fsync design (R1–R6) the shipped spec already carries — pure code, no hardware involvement. Includes the `close()` ordering fix (`recorder.py:874/875`) and the honest loss class. Any FUTURE capture requires this + 914 first. |
 | 4 | `tasks/TASK_916_COST_TRUTH_PACK.md` (NEW 2026-09-05 — harvest row; lands BEFORE 915) | XS/S | Borrow charge (flag-gated, OFF = bit-identical) + fee-tier honesty ("fee16" is not on the current ladder) + restated benchmark: the +0.97/+0.56 bar is ~50% short in BEAR22 and margin rollover (22–88%/yr on shorted notional) is NEVER charged in the record. Seeds D80. Restatement can only make bars harder, never easier. |
 | 5 | `tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md` (**D79 — the direction row; adopted 2026-09-03**; amended 2026-09-05: loops-panel hygiene folded + 916 precondition) | M | The predictability ceiling + GP book per `lore/fable_direction_memo_2026-09-03.md` §4 (the memo IS the spec; the task file carries the gates). Ends the daily-OHLC question two-sidedly: PASS → closed-form trader on the winning cell; FAIL → pre-committed OHLC-repeal recommendation + data-row pivot. **PRECONDITIONS: the 899 staged-daily INGEST lands first (planner-owned — the 2026H1 cells need the seam) AND 916's restated cost stack.** CPU-only, ≤2 CPU-days, 14-day kill date. |
