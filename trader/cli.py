@@ -32,6 +32,136 @@ def _fmt(v, p=2, sign=True):
     return f"{v:+.{p}f}" if sign else f"{v:.{p}f}"
 
 
+def _isolated_rcfg(which):
+    """TASK_920 leg 4: isolate ONE default-off RiskConfig overlay mechanism instead of all
+    three together, by neutralizing the other two (dd thresholds pushed past -100%, so dd
+    (always in (-1,0]) never trips them; per-asset cap raised to 1.0, above the gross cap so
+    it never binds; rebalance band zeroed so it never skips a trade). 'all' (default) returns
+    RiskConfig(enabled=True) unchanged — the pre-920 --overlay behavior."""
+    base = config.RiskConfig(enabled=True)
+    if which == "all":
+        return base
+    if which == "cap":
+        return config.RiskConfig(enabled=True, per_asset_cap=base.per_asset_cap,
+                                  dd_halve=-2.0, dd_flat=-2.0, rebalance_band=0.0)
+    if which == "dd":
+        return config.RiskConfig(enabled=True, per_asset_cap=1.0,
+                                  dd_halve=base.dd_halve, dd_flat=base.dd_flat,
+                                  dd_deep_scale=base.dd_deep_scale, rebalance_band=0.0)
+    if which == "band":
+        return config.RiskConfig(enabled=True, per_asset_cap=1.0, dd_halve=-2.0, dd_flat=-2.0,
+                                  rebalance_band=base.rebalance_band)
+    raise ValueError(f"unknown --overlay-only {which!r}")
+
+
+# (cli flag, args attribute, legacy default) for the three honesty-pack legs.
+_HONESTY_FLAGS = (("--bh-book", "bh_book", "legacy-label"),
+                  ("--accounting", "accounting", "log"),
+                  ("--charge-drift-rebalance", "charge_drift_rebalance", False))
+
+
+def _unsupported_combo(args):
+    """TASK_920 fix pass (run 53 cycle 3): flag combinations this build does NOT implement.
+    Returns a refusal message (str) or None when the combination is supported.
+
+    Both cases below were previously accepted SILENTLY — exit 0, empty stderr, and a printed
+    number that was not the one requested:
+
+      (a) any honesty-pack flag (legs 1-3) together with `--overlay`. `_print_honesty_pack`
+          is called from the two overlay-OFF branches of `cmd_backtest` only, so the overlay
+          branch dropped the request and printed its OWN `B&H` column — the LEGACY per-bar
+          equal-DOLLAR reweight figure this task exists to declare "not buy-and-hold"
+          (-0.15 on the pinned npz panel, OPPOSITE IN SIGN to the +0.29 true-B&H book the
+          operator asked for). `--bh-book`'s own help text promises "REFUSES (non-zero exit,
+          no number printed) if that book is undefined"; under `--overlay` the refusal
+          machinery was never reached, so it could neither honour nor refuse the request.
+
+      (b) `--overlay-only` without `--overlay`. Leg 4's entire yield IS the isolated-overlay
+          Sharpe; without `--overlay` the plain overlay-OFF report printed instead (+1.09 on
+          the pinned panel), so a harness reading that line would record the overlay-OFF
+          number as the cap-only result.
+
+    REFUSAL, not a note (cf. the `--include-dead` note in `cmd_backtest`): a note is enough
+    when the printed number is still correctly labelled, and neither of these is — the figure
+    on stdout is actively MISLABELED, so there is nothing safe to leave there. Wiring the
+    honesty pack into the overlay branch is a real feature (the overlay path scores its own
+    positions through `run_overlay_backtest`, not the `_decision_grid` the pack is built on)
+    and is deliberately left as FOLLOW-UP work; until it exists the combination is refused
+    loudly rather than dropped quietly."""
+    if args.overlay_only != "all" and not args.overlay:
+        return (f"[backtest] REFUSING: --overlay-only={args.overlay_only} requires --overlay "
+                f"(TASK_920 leg 4 isolates a mechanism of the risk overlay, so there is "
+                f"nothing to isolate with the overlay OFF). Continuing would print the plain "
+                f"overlay-OFF report and silently drop the isolation, which is the entire "
+                f"number this flag exists to produce. No figure printed. Re-run with "
+                f"--overlay --overlay-only {args.overlay_only}.")
+    if args.overlay:
+        dropped = [flag for flag, attr, dflt in _HONESTY_FLAGS if getattr(args, attr) != dflt]
+        if dropped:
+            return (f"[backtest] REFUSING: {', '.join(dropped)} "
+                    f"{'is' if len(dropped) == 1 else 'are'} not implemented together "
+                    f"with --overlay (TASK_920 legs 1-3 are wired into the overlay-OFF report "
+                    f"only). Continuing would DROP the request and print the legacy per-bar "
+                    f"equal-dollar-reweight `B&H` column instead — the mislabeled figure this "
+                    f"task exists to remove, and the opposite sign to the true-B&H book on the "
+                    f"pinned panel. No figure printed. Re-run the honesty pack without "
+                    f"--overlay (the canon overlay-OFF report is what it augments).")
+    return None
+
+
+def _print_honesty_pack(args, logc, ts_d, net_bps, r_lo, r_hi):
+    """TASK_920 legs 1-3: print the requested reporting-only overlays. No-op (prints nothing)
+    when every flag is at its legacy default.
+
+    Returns True normally; False when an overlay REFUSED to produce a number (the fail-loud
+    path of bt.true_bh_series — an undefined buy-and-hold book). The caller turns that into a
+    non-zero exit code: no honesty-pack figure is printed, and the run does not read as clean.
+    The canon numbers printed ABOVE this call are unaffected and remain valid."""
+    if args.bh_book == "legacy-label" and args.accounting == "log" and not args.charge_drift_rebalance:
+        return True
+    try:
+        rep = bt.honesty_pack_report(logc, ts_d, config.STRATEGY, r_lo, r_hi, net_bps,
+                                      bh_book=args.bh_book, accounting=args.accounting,
+                                      charge_drift_rebalance=args.charge_drift_rebalance)
+    except ValueError as e:
+        print(f"[backtest] TASK_920 overlay REFUSED — no number produced: {e}", file=sys.stderr)
+        return False
+    if rep is None:
+        print("[backtest] honesty-pack overlays: window too thin, skipped", file=sys.stderr)
+        return True
+    print("\n  --- TASK_920 scorer-honesty overlays (reporting-only; canon numbers above unchanged) ---")
+    w = rep["window"]
+    print(f"  window: {w['first_entry']} -> {w['last_exit']} ({w['n']} decisions, H={w['H']}d, "
+          f"rows {w['row_lo']}..{w['row_hi']}) — every figure below is denominated on THIS span")
+    if "bh_book" in rep:
+        b = rep["bh_book"]
+        print(f"  --bh-book true-bh: B&H Sharpe {_fmt(b['sharpe'])} (fixed shares, annual "
+              f"re-form)  equity x{b['mult']:.2f}")
+        # Delisting convention is DISCLOSED, never chosen silently (fix pass, run 53 cycle 3).
+        ph = b["phantom"]
+        print(f"    delisting convention: a holding the present-mask has RETIRED is marked at "
+              f"its frozen last price until the next annual re-form (not written off). "
+              f"Non-present share of book value: {ph['phantom_share_final']*100:.2f}% at the "
+              f"last row ({ph['phantom_value_final']:.4f} of {ph['book_value_final']:.4f}), "
+              f"{ph['phantom_share_max']*100:.2f}% max ({ph['phantom_day_max']}). The "
+              f"alternative convention (delisting = total loss) is an operator modelling "
+              f"call; this figure is computed under the one named here.")
+    if "accounting" in rep:
+        a = rep["accounting"]
+        print(f"  --accounting simple: gross Sharpe {_fmt(a['gross_sharpe'])}  "
+              f"net@{net_bps} Sharpe {_fmt(a['net_sharpe'])}  "
+              f"(vs log accounting: {a['bp_per_day']:+.2f} bp/day, Sharpe delta {a['sharpe_delta']:+.3f})")
+    if "drift_rebalance" in rep:
+        d = rep["drift_rebalance"]
+        trip = "  [G2 TRIPWIRE: net@21 moved > -0.10 -- disclosure, not re-run]" if d["tripwire"] else ""
+        print(f"  --charge-drift-rebalance: ann_turn {d['ann_turn_canon']:.1f}x -> "
+              f"{d['ann_turn_drift']:.1f}x ({d['turn_multiple']:.2f}x); net@21 Sharpe "
+              f"{_fmt(d['sharpe_canon21'])} -> {_fmt(d['sharpe_drift21'])} "
+              f"(delta {d['sharpe_delta21']:+.3f}); turnover share target-change="
+              f"{d['share_target_change']*100:.0f}% drift-retrim={d['share_drift']*100:.0f}%{trip}")
+    return True
+
+
 # =============================================================================
 # commands
 # =============================================================================
@@ -75,6 +205,12 @@ def cmd_parity(args):
 
 
 def cmd_backtest(args):
+    # Refuse unimplemented flag combinations BEFORE anything is loaded or printed, so the
+    # refusal cannot be mistaken for a report (TASK_920 fix pass — see _unsupported_combo).
+    refusal = _unsupported_combo(args)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 2
     config.set_backend(args.backend)
     net_bps = args.net_bps
     score_start = bt._to_epoch(args.score_start) if args.score_start else None
@@ -130,6 +266,9 @@ def cmd_backtest(args):
         print(f"  per-regime net@8: " + "  ".join(
             f"{n}={_fmt(cell['reg'][n]['net8']) if cell['reg'].get(n) else ' -'}"
             for n in config.REG_NAMES if n != "FULL"))
+        r_lo, r_hi = bt.regime_rows(ts_d)["FULL"]
+        if not _print_honesty_pack(args, logc, ts_d, net_bps, r_lo, r_hi):
+            return 1
     elif not args.overlay:
         d = bt.window_metrics(logc, ts_d, score_start, score_end, config.STRATEGY)
         if d is None:
@@ -146,8 +285,12 @@ def cmd_backtest(args):
                   f"equity x{d[f'mult{c}']:.2f}  maxDD {d[f'maxdd{c}']*100:+.1f}%")
         print(f"  B&H over window: x{d['mult_bh']:.2f} (Sharpe {_fmt(d['bh'])})  "
               f"ann_turn {d['ann_turn']:.1f}x")
+        r_lo = int(np.searchsorted(ts_d, score_start)) if score_start is not None else 0
+        r_hi = int(np.searchsorted(ts_d, score_end)) if score_end is not None else ts_d.size
+        if not _print_honesty_pack(args, logc, ts_d, net_bps, r_lo, r_hi):
+            return 1
     else:
-        rcfg = config.RiskConfig(enabled=True)
+        rcfg = _isolated_rcfg(args.overlay_only)
         r = bt.run_overlay_backtest(logc, ts_d, config.STRATEGY, rcfg,
                                     equity_cost_bp=float(net_bps),
                                     lo_ts=score_start, hi_ts=score_end)
@@ -161,6 +304,9 @@ def cmd_backtest(args):
         maxdd = float(np.min(eq / peak - 1.0))
         tag = "WINDOW" if windowed else "FULL"
         print(f"[backtest] n_decisions={r['n']}")
+        if args.overlay_only != "all":
+            print(f"[backtest] --overlay-only={args.overlay_only} (TASK_920 leg 4: isolated "
+                  f"overlay, other two mechanisms neutralized)")
         print(f"\n  {tag} (overlay ON, dd_mode={r['dd_mode']})  net@{net_bps} Sharpe {_fmt(sh)} "
               f"CI[{ci[0]:+.2f},{ci[1]:+.2f}]  gross {_fmt(bt._sharpe(g, period))}  "
               f"B&H {_fmt(bt._sharpe(bh, period))}")
@@ -246,6 +392,28 @@ def build_parser():
                     help="db source: include dead/delisted assets (agg1m-only, no kraken_rest "
                          "rows) for survivorship-honest historical windows; present-mask "
                          "retires their constant post-delisting tails")
+    pb.add_argument("--bh-book", choices=["legacy-label", "true-bh"], default="legacy-label",
+                    help="TASK_920 leg 1: B&H accounting. legacy-label (default) is the "
+                         "existing column -- per-bar equal-DOLLAR reweight, zero turnover "
+                         "charged; NOT buy-and-hold. true-bh computes a real buy-and-hold "
+                         "book (fixed shares, annual re-form) and REFUSES (non-zero exit, no "
+                         "number printed) if that book is undefined -- no asset present on a "
+                         "calendar-year re-form row, or a held asset priced non-finite")
+    pb.add_argument("--accounting", choices=["log", "simple"], default="log",
+                    help="TASK_920 leg 2: gross/net return accounting. log (default) is the "
+                         "canon 819/820 summed-log-return convention (cannot see a "
+                         "rebalancing premium by construction). simple uses dollar-weighted "
+                         "SIMPLE returns instead")
+    pb.add_argument("--charge-drift-rebalance", action="store_true",
+                    help="TASK_920 leg 3: also charge the turnover needed to re-trim "
+                         "constant-dollar POSITION DRIFT between rebalances (uncharged by "
+                         "default, target-weight changes only); prints the target-change "
+                         "vs drift-retrim decomposition")
+    pb.add_argument("--overlay-only", choices=["all", "cap", "dd", "band"], default="all",
+                    help="TASK_920 leg 4 (with --overlay only): isolate ONE risk-overlay "
+                         "mechanism -- cap (5%% per-asset cap) | dd (shadow-scale DD "
+                         "throttle) | band (0.2%% rebalance band) -- instead of all (default, "
+                         "pre-920 --overlay behavior, all three together)")
 
     sub.add_parser("parity", help="gate 1a: reproduce the 819 Phase-2 best cell")
 

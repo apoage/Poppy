@@ -460,3 +460,303 @@ PARITY_TARGETS = [
     ("FULL maxDD@8bp", ("FULL", "maxdd8"), -0.3776, 0.01),
     ("BEAR22 net@8 Sharpe", ("BEAR22", "net8"), 1.3622, 0.05),
 ]
+
+
+# =============================================================================
+# TASK_920 scorer honesty pack — REPORTING-ONLY overlays.
+#
+# Every function below is new and additive: none is called from compute_full_cell,
+# cell_metrics, window_metrics, regime_series, or run_overlay_backtest, so gate 1a
+# (`parity`) and the default `backtest` report are computed by EXACTLY the pre-920 code
+# path regardless of what lives here (G1: OFF = bit-identical). These are wired into the
+# CLI ONLY behind new flags that default to the legacy behavior (trader/cli.py).
+# =============================================================================
+
+def _decision_grid(logc, scfg, r_lo, r_hi, xp=None):
+    """Build the frozen-strategy positions and the SAME H-strided entry grid [lo, hi] that
+    regime_series derives internally (lo=max(warm,r_lo), hi=min(r_hi-H, T-1-H)), materialized
+    to numpy. Returns (logc_np, pos_np, pres_np, t, H, warm) or None if the window is too
+    thin — the identical thinness contract regime_series enforces (kept in lockstep
+    deliberately; this is glue for the honesty-pack overlays below, not a new scoring path)."""
+    pos, pres, w, warm = strategy.positions_from_config(logc, scfg, xp=xp)
+    logc_np = config.to_numpy(logc)
+    pos_np = config.to_numpy(pos)
+    pres_np = np.asarray(pres)
+    T = logc_np.shape[0]
+    H = scfg.H_rebal
+    lo = max(warm, r_lo)
+    hi = min(r_hi - H, T - 1 - H)
+    if hi - lo < H:
+        return None
+    t = np.arange(lo, hi + 1, H)
+    if t.size < 6:
+        return None
+    return logc_np, pos_np, pres_np, t, H, warm
+
+
+def _utc_day(ts):
+    """epoch seconds -> 'YYYY-MM-DD' (UTC). Reporting/diagnostics only."""
+    return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _book_value(shares, px):
+    """Mark a share book to prices `px`. Columns holding EXACTLY zero shares contribute
+    exactly 0.0 even where their price is NaN — a plain `shares * px` gives 0 * NaN = NaN
+    there and poisons the whole sum from an asset the book does not even hold. So a
+    non-finite result here means a HELD asset had a bad price, which true_bh_series raises
+    on rather than flooring (see its fail-loud contract).
+
+    DELISTING CONVENTION (fix pass, run 53 cycle 3 — regression-lens MINOR). "Held" here is
+    denominated in SHARES, not in presence: this function never consults `pres`, so a column
+    the present-mask has RETIRED (the constant ffilled post-delisting tail, the LUNA shape at
+    trader/data.py:328-331) keeps marking the book at its frozen last price until the next
+    calendar-year re-form recycles that value into live assets. That is the "liquidate at last
+    print" convention, and the defensible alternative — a delisted holding is a total loss,
+    i.e. mask by `pres` — is a MODELLING decision for the operator, not something this pass
+    picks silently. So the convention is left AS IS and made VISIBLE instead:
+    true_bh_series(..., return_diag=True) measures the non-present share of book value and
+    the CLI prints it beside every true-B&H figure. Measured on the pinned npz panel: 3.55% of
+    terminal book value (0.1007 of 2.8382), 3.77% max (2025-08-02); `--source db
+    --include-dead` 2021->2024 is smaller still. Unbounded in principle for a concentrated or
+    high-mortality window, which is why it is disclosed every time rather than dismissed."""
+    return float(np.sum(shares * np.where(shares != 0.0, px, 0.0)))
+
+
+def true_bh_series(logc, pres, ts_sub, t, H, return_diag=False):
+    """B4 / leg 1 (--bh-book true-bh): a TRUE buy-and-hold book — fixed SHARES, re-formed to
+    equal-dollar-weight over present assets only once per calendar year — as opposed to the
+    legacy 'B&H' column (regime_series' `bh`), which re-normalizes to equal DOLLAR weight
+    EVERY decision and charges it zero turnover (not buy-and-hold at all; see task file).
+
+    Walks a share-count equity curve V bar-by-bar over [t.min(), t.max()+H] (numpy, since this
+    needs actual calendar dates from ts_sub, not just row deltas): initial equal-dollar buy at
+    the first row, re-form at the first row of every subsequent calendar year. Zero turnover is
+    charged at re-forms (same convention as the legacy column) since this reports the buy-and-
+    hold BENCHMARK, not a traded strategy. Returns bh[k] = log(V[t[k]+H]) - log(V[t[k]]),
+    aligned to `t` (same shape/units as regime_series' bh).
+
+    FAIL-LOUD CONTRACT (fix pass, run 53 cycle 2 — correctness-lens MAJOR). Two ways the book
+    can become undefined, and NEITHER is floored or absorbed any more; both raise ValueError:
+
+      1. `n == 0` at a RE-FORM row (no asset present on the exact row a calendar year rolls
+         over). The pre-fix code set `shares = 0` there, which is an ABSORBING state: every
+         later re-form then marks the book at cur_val = 0, so logV sat at log(1e-300) ~= -690
+         for the entire remainder of the series — no NaN, no warning, a silently wrong Sharpe
+         and equity multiple. Note the trigger is denominated in the presence count AT A
+         RE-FORM ROW, not in general sparsity: an all-absent NON-re-form row is harmless (the
+         book simply holds its existing shares) and is deliberately NOT an error.
+      2. A non-finite or non-positive book value at any row — i.e. a HELD asset priced NaN /
+         <= 0. `max(v, 1e-300)` used to floor exactly this into a plausible-looking number.
+
+    Both raise instead of returning a number because this figure is QUOTED: absence read as a
+    value is the failure mode this whole task exists to remove, so the caller must lose the
+    B&H column, never silently receive a wrong one.
+
+    DISCLOSURE (fix pass, run 53 cycle 3 — regression-lens MINOR). `return_diag=True` also
+    returns a dict measuring how much of the book is marked on RETIRED (non-present) columns,
+    i.e. how much of the reported figure rests on the "liquidate at last print" delisting
+    convention documented on _book_value. The convention itself is UNCHANGED — the bh series
+    returned is byte-identical with and without the flag — because which convention is right
+    is the operator's modelling call; this pass only stops it being invisible. Keys:
+    phantom_share_final / phantom_share_max (fraction of book value on non-present holdings at
+    the last walked row, and its maximum over the walk), phantom_row_max / phantom_day_max
+    (where the maximum occurred), book_value_final / phantom_value_final (the absolute pair
+    the final share is computed from). A phantom share of 0 means every marked holding was
+    still present, i.e. the convention never bound and the figure is convention-free."""
+    price = np.exp(logc)
+    row_lo = int(t.min())
+    row_hi = int(t.max()) + H
+    years = np.fromiter(
+        (_dt.datetime.fromtimestamp(int(ts_sub[r]), tz=_dt.timezone.utc).year
+         for r in range(row_lo, row_hi + 1)),
+        dtype=np.int64, count=row_hi - row_lo + 1,
+    )
+    A = price.shape[1]
+    shares = np.zeros(A)
+    logV = np.empty(row_hi - row_lo + 1)
+    prev_year = None
+    ph_share_final = 0.0
+    ph_value_final = 0.0
+    ph_share_max = 0.0
+    ph_row_max = row_lo
+    for k, row in enumerate(range(row_lo, row_hi + 1)):
+        cur_year = years[k]
+        if prev_year is None or cur_year != prev_year:
+            cur_val = _book_value(shares, price[row]) if prev_year is not None else 1.0
+            p = pres[row]
+            n = int(np.sum(p))
+            if n == 0:
+                raise ValueError(
+                    f"true_bh_series: NO asset is present at the calendar-year re-form row "
+                    f"{row} ({_utc_day(ts_sub[row])}, year {int(cur_year)}) — a buy-and-hold "
+                    f"book cannot be formed there, and zeroing it is an ABSORBING state that "
+                    f"would silently floor the rest of the series at log(1e-300). Refusing to "
+                    f"report a true-B&H number. Move the window past the gap "
+                    f"(--score-start/--score-end) or use --bh-book legacy-label."
+                )
+            if not np.isfinite(cur_val) or cur_val <= 0.0:
+                raise ValueError(
+                    f"true_bh_series: book value {cur_val!r} at the calendar-year re-form row "
+                    f"{row} ({_utc_day(ts_sub[row])}) — a held asset is priced non-finite or "
+                    f"<= 0. Refusing to re-form the book from an undefined value."
+                )
+            shares = np.where(p, (cur_val / n) / np.maximum(price[row], 1e-300), 0.0)
+            prev_year = cur_year
+        v = _book_value(shares, price[row])
+        if not np.isfinite(v) or v <= 0.0:
+            raise ValueError(
+                f"true_bh_series: buy-and-hold book value {v!r} at row {row} "
+                f"({_utc_day(ts_sub[row])}) — a HELD asset is priced non-finite or <= 0. "
+                f"Refusing to report a B&H number floored out of an undefined value."
+            )
+        logV[k] = np.log(v)
+        if return_diag:
+            # v is finite and > 0 here (checked above), so every HELD column has a good
+            # price and this sum needs no NaN guard of its own.
+            phantom = np.asarray(shares != 0.0) & ~np.asarray(pres[row], dtype=bool)
+            ph_value_final = float(np.sum(shares[phantom] * price[row][phantom]))
+            ph_share_final = ph_value_final / v
+            if ph_share_final > ph_share_max:
+                ph_share_max = ph_share_final
+                ph_row_max = row
+    idx0 = t - row_lo
+    idx1 = idx0 + H
+    bh = logV[idx1] - logV[idx0]
+    if not return_diag:
+        return bh
+    return bh, {"phantom_share_final": ph_share_final,
+                "phantom_share_max": ph_share_max,
+                "phantom_row_max": int(ph_row_max),
+                "phantom_day_max": _utc_day(ts_sub[ph_row_max]),
+                "phantom_value_final": ph_value_final,
+                "book_value_final": float(np.exp(logV[-1]))}
+
+
+def gross_simple_series(logc, pos, t, H):
+    """B2 / leg 2 (--accounting simple): dollar-weighted SIMPLE forward return per decision,
+    gross_t = Sum_i pos[t,i] * (exp(logc[t+H,i]-logc[t,i]) - 1) — as opposed to the canon
+    log-summed gross (regime_series: Sum_i pos[t,i]*(logc[t+H,i]-logc[t,i])). A weighted sum
+    of SIMPLE per-asset returns is the return a book actually realizes when it holds those
+    dollar weights over [t, t+H]; a weighted sum of LOG returns is a linear approximation
+    that misses the Jensen's-inequality gap between them — the rebalancing/diversification
+    premium the task's leg 2 refers to."""
+    fwd_log = logc[t + H] - logc[t]
+    fwd_log = np.where(np.isfinite(fwd_log), fwd_log, 0.0)
+    simp = np.exp(fwd_log) - 1.0
+    return np.sum(pos[t] * simp, axis=1)
+
+
+def drift_retrim_turnover(pos, t, H, logc):
+    """B3 / leg 3 (--charge-drift-rebalance): decompose real-world turnover into (a) the
+    TARGET-WEIGHT-CHANGE component already charged by regime_series' `turn`
+    (Sum_i |pos[t,i]-pos[t-H,i]|) and (b) a currently-UNCHARGED constant-dollar DRIFT-RETRIM
+    component — the trade needed to correct the OLD target's natural price drift over
+    [t-H, t] even when the target itself does not change: drift_i = pos[t-H,i] *
+    (exp(logc[t,i]-logc[t-H,i]) - 1), i.e. the per-asset price-return move of the prior
+    period's dollar allocation (first-order approximation: ignores compounding against
+    realized portfolio-level P&L, disclosed here and in the report). Returns
+    (target_change_turn, drift_turn), each shaped like regime_series' `turn`; the canon
+    charged turnover is target_change_turn (bit-identical to regime_series); a book that also
+    charges drift-retrim pays target_change_turn + drift_turn.
+
+    DIRECTION OF THE APPROXIMATION (fix pass, run 53 cycle 2 — this is stronger than
+    "approximate", and it is the true claim): charging target_change_turn + drift_turn is a
+    triangle-inequality UPPER BOUND on the turnover of the single COMBINED trade a real desk
+    would send, because per asset |dtarget_i - drift_i| <= |dtarget_i| + |drift_i|. So the
+    disclosed cost can only ever OVERSTATE the drift-retrim charge, never understate it —
+    a conservative bound of KNOWN sign, not an approximation of unknown direction. Measured
+    on the pinned npz book: disclosed mean turnover 0.1923 vs netted single-combined-trade
+    0.1878 (~1.9% overstatement), net@21 Sharpe delta -0.046 disclosed vs -0.042 netted;
+    both are inside the -0.10 G2 tripwire, so the bound's slack changes no gate outcome.
+    ST14 pins the inequality itself on a planted panel."""
+    pos_t = pos[t]
+    pos_prev = pos[t - H]
+    fwd_prev = logc[t] - logc[t - H]
+    fwd_prev = np.where(np.isfinite(fwd_prev), fwd_prev, 0.0)
+    drift = pos_prev * (np.exp(fwd_prev) - 1.0)
+    target_change_turn = np.sum(np.abs(pos_t - pos_prev), axis=1)
+    drift_turn = np.sum(np.abs(drift), axis=1)
+    return target_change_turn, drift_turn
+
+
+def honesty_pack_report(logc, ts_sub, scfg, r_lo, r_hi, net_bps, bh_book="legacy-label",
+                         accounting="log", charge_drift_rebalance=False, xp=None):
+    """TASK_920 legs 1-3, packaged: computes only the overlays requested (every arg left at
+    its default is a no-op — no key in the returned dict), on the IDENTICAL decision grid
+    (_decision_grid) the canon FULL/WINDOW report scores, via the new functions above. Never
+    calls regime_series/cell_metrics/window_metrics, so the canon numbers this augments are
+    computed by unmodified pre-920 code. Returns None if the window is too thin (same
+    thinness contract as regime_series), or a dict with any of 'bh_book', 'accounting',
+    'drift_rebalance' — PLUS a 'window' key naming the exact span every figure in it is
+    denominated on (fix pass, run 53 cycle 2: 'the 2022 bear window' has two defensible
+    readings — calendar-2022 and the BEAR22 regime window 2021-11-10..2022-12-31,
+    config.REGIMES — with visibly different numbers, so no figure here is reported without
+    its window attached).
+
+    Raises ValueError (from true_bh_series) rather than returning a floored number when the
+    requested true-B&H book is undefined; the CLI turns that into a refusal + non-zero exit."""
+    if bh_book == "legacy-label" and accounting == "log" and not charge_drift_rebalance:
+        return None
+    grid = _decision_grid(logc, scfg, r_lo, r_hi, xp=xp)
+    if grid is None:
+        return None
+    logc_np, pos_np, pres_np, t, H, warm = grid
+    ts_sub = np.asarray(ts_sub)
+    period = H * K
+    out = {}
+
+    if bh_book == "true-bh":
+        bh_true, bh_diag = true_bh_series(logc_np, pres_np, ts_sub, t, H, return_diag=True)
+        out["bh_book"] = {"sharpe": _sharpe(bh_true, period),
+                           "cum": float(np.sum(bh_true)),
+                           "mult": float(np.exp(np.sum(bh_true))),
+                           # delisting-convention disclosure, MEASURED on this very walk —
+                           # see _book_value / true_bh_series. Never omitted: the caller
+                           # prints it beside the figure so the convention is never silent.
+                           "phantom": bh_diag}
+
+    if accounting == "simple":
+        fwd_log = logc_np[t + H] - logc_np[t]
+        fwd_log = np.where(np.isfinite(fwd_log), fwd_log, 0.0)
+        gross_log = np.sum(pos_np[t] * fwd_log, axis=1)
+        gross_simple = gross_simple_series(logc_np, pos_np, t, H)
+        turn = np.sum(np.abs(pos_np[t] - pos_np[t - H]), axis=1)
+        net_log = net_series(gross_log, turn, net_bps)
+        net_simple = net_series(gross_simple, turn, net_bps)
+        out["accounting"] = {
+            "gross_sharpe": _sharpe(gross_simple, period),
+            "net_sharpe": _sharpe(net_simple, period),
+            "bp_per_day": float(np.mean(gross_simple - gross_log)) * 1e4 / H,
+            "sharpe_delta": _sharpe(net_simple, period) - _sharpe(net_log, period),
+        }
+
+    if charge_drift_rebalance:
+        target_change_turn, drift_turn = drift_retrim_turnover(pos_np, t, H, logc_np)
+        fwd = logc_np[t + H] - logc_np[t]
+        fwd = np.where(np.isfinite(fwd), fwd, 0.0)
+        gross = np.sum(pos_np[t] * fwd, axis=1)
+        turn_drifted = target_change_turn + drift_turn
+        sh_canon21 = _sharpe(net_series(gross, target_change_turn, 21), period)
+        sh_drift21 = _sharpe(net_series(gross, turn_drifted, 21), period)
+        years = (t.size * H * K) / MINUTES_PER_YEAR
+        ann_turn_canon = float(np.sum(target_change_turn) / years) if years > 0 else float("nan")
+        ann_turn_drift = float(np.sum(turn_drifted) / years) if years > 0 else float("nan")
+        share_drift = float(np.sum(drift_turn) / max(np.sum(turn_drifted), 1e-300))
+        out["drift_rebalance"] = {
+            "ann_turn_canon": ann_turn_canon, "ann_turn_drift": ann_turn_drift,
+            "turn_multiple": (ann_turn_drift / ann_turn_canon) if ann_turn_canon > 0 else float("nan"),
+            "sharpe_canon21": sh_canon21, "sharpe_drift21": sh_drift21,
+            "sharpe_delta21": sh_drift21 - sh_canon21,
+            "share_drift": share_drift, "share_target_change": 1.0 - share_drift,
+            "tripwire": (sh_drift21 - sh_canon21) < -0.10,
+        }
+    if not out:
+        return None
+    # Denomination of every figure above: the EXACT scored span, not a named regime label.
+    out["window"] = {
+        "n": int(t.size), "H": int(H),
+        "row_lo": int(t[0]), "row_hi": int(t[-1]) + H,
+        "first_entry": _utc_day(ts_sub[int(t[0])]),
+        "last_exit": _utc_day(ts_sub[int(t[-1]) + H]),
+    }
+    return out

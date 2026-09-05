@@ -3,6 +3,72 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_920 — the scorer's four honesty corrections, flag-gated OFF, and the overlay attribution that had never been written down
+
+- **What shipped.** Legs 1-4 of the scorer honesty pack in `trader/`: `--bh-book {legacy-label,
+  true-bh}`, `--accounting {log,simple}`, `--charge-drift-rebalance`, and
+  `--overlay --overlay-only {cap,dd,band}`. **Every flag defaults to the legacy value and G1
+  (OFF = byte-identical) was re-derived independently by two lenses**, each of which first planted
+  poison to prove its own harness could fail: content-sha256 identical on `parity` (`93c7d2f7`),
+  `backtest` (`e5c47eee`), the 2023 window (`9b281243`) and `--overlay` (`0f5a055d`). Every new
+  helper is unreachable from `compute_full_cell`/`cell_metrics`/`window_metrics`/`regime_series`/
+  `run_overlay_backtest`, and `cmd_parity`'s subparser adds no new arguments at all, so gate 1a
+  cannot see the flags even in principle. Selftest **12 -> 16 checks**.
+
+- **The number this row existed to produce.** TASK_820's gate-2 overlay attribution, never written
+  down before: at `--net-bps 21` on the frozen trend book, the entire overlay Sharpe cost is the
+  **shadow-scale DD throttle** (+0.97 -> **+0.61**, 378 half-steps, 53 deep). The 5% per-asset cap
+  and the 0.2% rebalance band are **inert at their configured defaults**. That is a finding and not
+  a wiring bug: the book's measured `max|pos|` is **0.03846** across all 1,673 decisions (39 assets
+  equal-weight, ~26 active), genuinely below a 5% cap — and the mechanisms were proven live by
+  forcing them to bite (cap at 0.03 -> 353/1673 capped steps, Sharpe 0.967->0.931; band at 0.03 ->
+  0.967->0.893). "The cap never binds" and "the cap was never applied" produce an identical table;
+  only one is a finding, and the difference was measured rather than assumed.
+
+- **Two of the task's own quoted magnitudes did not survive measurement, and the implementer said
+  so rather than building to them.** (1) The log-vs-simple accounting bias is quoted in the spec as
+  "≈ +0.3 Sharpe-equivalent (≈5 bp/day)"; measured on this book it is **-1.02 bp/day, Sharpe delta
+  -0.043** on FULL net@8 — opposite sign, ~7x smaller — while a bear window gives -13.09 bp/day
+  (BEAR22 regime) or -14.54 (calendar 2022). The quoted figure most plausibly describes a long-only
+  1/N rebalancing premium, not this long/short book's traded gross/net; the ~16x swing between
+  windows is inconsistent with a fixed passive premium. (2) "+9-12x/yr" drift turnover is
+  denomination-ambiguous — as a **multiple** the measurement is 1.24x (ann_turn 56.6 -> 70.2), as
+  **additive turns/yr** it is +13.6. **The G2 tripwire did NOT fire**: net@21 moves +0.97 -> +0.92
+  (delta **-0.046**), inside the pre-registered -0.10 threshold, so no disclosure obligation
+  attaches to prior 819/898 rows.
+
+- **A MAJOR found and closed, plus a sibling defect the panel never named.** `true_bh_series` had a
+  **zero-share fixed point**: with presence count `n == 0` at a calendar-year re-form row the share
+  vector zeroed and never recovered, silently collapsing the series to `log(1e-300) ~= -690`
+  (reproduced: `bh.min() = -691.25`, Sharpe -1.4358, equity multiple `6.817e-301`). Harmless on the
+  pinned npz (min presence 26/39) but live on `--source db --include-dead`, the survivorship-honest
+  path this task exists to serve. It now **refuses loudly** — `ValueError` naming the row and date,
+  caught at the CLI, no figure printed, exit 1. The fix pass then found the sibling: `0 * NaN = NaN`
+  for assets held in zero quantity, which `max(v, 1e-300)` floored into a plausible number —
+  **absence read as a value**, this program's signature failure. That floor is gone.
+
+- **The tests that should have existed.** There were none for `true_bh_series`,
+  `gross_simple_series`, `drift_retrim_turnover` or `_isolated_rcfg` — which is why the MAJOR
+  survived to the panel. ST13-ST16 add them, **each proven non-vacuous by planting the defect and
+  watching it go RED** (9 plants, all red, files restored to identical sha256). ST15 encodes the
+  `_isolated_rcfg` neutralization proof as a **3x3 identity matrix** over (capped, throttled,
+  banded) with an `all` row, so the probes are proven live rather than the isolations vacuously
+  inert. ST13-16 sit **above** the ST8 JAX import guard on purpose: below it they would silently
+  vanish on a JAX-less host — the same "a guard that cannot reach its own defect" shape this run
+  hit three times.
+
+- **Remainders (planner lane, deliberately not taken).** The task's G3 and its four record-fix
+  riders edit `lore/` and `experiments/LEDGER.md`, which the factory config assigns to
+  `lanes.planner_owns`. Also noted, not fixed: `honesty_pack_report` returning `None` on a thin
+  window still exits 0 with a stderr note; `_decision_grid` duplicates `regime_series`'s thinness
+  contract by comment only.
+
+- **Standing trap recorded for future runs.** "`parity` GATE 1a: PASS" is a materially weaker check
+  than byte-identity and must never be substituted for it — `PARITY_TARGETS`
+  (`trader/backtest.py:455-461`) checks six metrics and **`gross` is not among them**, while its
+  0.02 Sharpe tolerance absorbs a 1% fee-arithmetic error at 8 bp. Both poisons planted against the
+  canon path printed `PASS` on the parity line while the byte hash correctly moved.
+
 ## 2026-09-01 — TASK_907 Addendum B1 — declared-vs-observed at all five boundaries, and a 12-microsecond artifact that was holding the whole probe hostage
 
 - **What shipped.** Addendum B1 as D73 cut it, in `experiments/907_live_fill_probe/`: boundaries

@@ -23,6 +23,20 @@ and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gat
       invariant to policy_logits (pure-Q/E1); pw=1.0 => bit-identical to today; linear
       interpolation between; value_scale fail-loud in the inert true-env no-tail combo
       (JAX; same import guard as ST8)
+  ST13 TASK_920 true B&H book: closed-form single-asset case, shares HELD within a calendar
+      year, re-form on the first row of a year, and the MAJOR-1 guard — an all-absent RE-FORM
+      row (and a held-asset NaN price) REFUSE instead of silently flooring the series, plus
+      the measured non-present ("phantom") share of book value the delisting convention rests on
+  ST14 TASK_920 accounting overlays: simple-return gross closed form (the Jensen gap the log
+      convention scores at 0), drift-retrim decomposition closed form, and the disclosed
+      turnover's triangle-inequality UPPER BOUND on the combined trade
+  ST15 TASK_920 --overlay-only: the isolation matrix is the identity (each selector fires its
+      own mechanism and neither other one; 'all' fires all three)
+  ST16 TASK_920 CLI wiring: every new flag defaults to the legacy value, the honesty pack is a
+      silent no-op there (G1), a refusal never becomes a printed number, and the two
+      unimplemented flag COMBINATIONS refuse loudly instead of printing a mislabeled one
+      (ST13-ST16 are hermetic numpy and are placed WITH ST1-ST7, above the ST8 JAX import
+       guard, so a JAX-less host can never silently skip them)
   ST12 TASK_857 vhat-distilled deployable leaf: net_dependent True at pw0 (the v̂ leaf is the
       learned component) vs the vacuous true-env-no-tail pw0 (False); build_search maps
       'vhat-distilled' to the canon model leaf (bit-identical search); distill freeze partition
@@ -184,6 +198,332 @@ def self_tests():
     msgs.append(f"[ST7] shadow-DD throttle: V-shaped dd -55%->recovery; shadow_scale walks "
                 f"1.0->0.5->{rc_sh.dd_deep_scale} and RE-RAISES to {scales[-1]:.1f} (pos restored); "
                 f"legacy realized_flat dead-states at scale {scales2[-1]:.1f} — difference asserted")
+
+    # 13-15. TASK_920 scorer-honesty overlays. NUMBERED after ST12 but PLACED HERE on purpose:
+    #     they are hermetic numpy, and everything from ST8 down sits behind a JAX import guard
+    #     that `return`s early when the JAX stack is missing. Below that guard these would
+    #     silently vanish on a JAX-less host — exactly the "guard that cannot reach its own
+    #     defect" shape this fix pass exists to close.
+    import datetime as _dt920
+
+    def _mk_ts920(n_days, start="2020-01-01"):
+        """UTC-midnight daily epoch grid, n_days rows from `start`."""
+        t0 = int(_dt920.datetime.strptime(start, "%Y-%m-%d")
+                 .replace(tzinfo=_dt920.timezone.utc).timestamp())
+        return np.arange(t0, t0 + n_days * config.SEC_PER_DAY, config.SEC_PER_DAY, dtype=np.int64)
+
+    # 13. TRUE buy-and-hold book (bt.true_bh_series). Four properties, three of them
+    #     closed-form, plus the MAJOR-1 regression guard.
+    #     (a) single always-present asset -> B&H IS that asset's own log return, exactly;
+    #     (b) fixed SHARES held within a year: a two-asset book's within-year log return is
+    #         log(mean of the assets' GROSS simple returns), which is strictly ABOVE the
+    #         legacy per-bar equal-DOLLAR reweight value (mean of log returns) — i.e. the
+    #         column really is a held book, not a rebalanced one;
+    #     (c) re-form lands on the FIRST ROW OF A CALENDAR YEAR: an asset that only becomes
+    #         present in year 2 cannot move year-1 returns and must move year-2 returns;
+    #     (d) MAJOR-1: n == 0 AT A RE-FORM ROW raises (the old code zeroed the share vector —
+    #         an absorbing state that floored the rest of the series at log(1e-300) ~= -690,
+    #         silently). The trigger is denominated in presence AT A RE-FORM ROW, so an
+    #         all-absent NON-re-form row must NOT raise; both directions are asserted, and so
+    #         is the held-asset NaN-price refusal (0-share columns must never poison the sum).
+    T920 = 900                                     # 2020-01-01 .. ~2022-06, spans 3 years
+    ts920 = _mk_ts920(T920)
+    H920 = 1
+    t920 = np.arange(10, T920 - H920, 5)
+
+    # (a) one asset, always present
+    rng920 = np.random.RandomState(920)
+    logc_1 = np.cumsum(rng920.randn(T920, 1) * 0.01, axis=0) + 4.0
+    pres_1 = np.ones((T920, 1), dtype=bool)
+    bh_1 = bt.true_bh_series(logc_1, pres_1, ts920, t920, H920)
+    ref_1 = (logc_1[t920 + H920, 0] - logc_1[t920, 0])
+    assert np.allclose(bh_1, ref_1, atol=1e-12), \
+        "single-asset true B&H must equal that asset's own log return exactly"
+
+    # (b) two assets, held (not rebalanced) within one calendar year
+    logc_2 = np.zeros((T920, 2))
+    logc_2[:, 0] = np.linspace(0.0, 0.60, T920)     # +82% over the panel
+    logc_2[:, 1] = np.linspace(0.0, -0.40, T920)    # -33% over the panel
+    pres_2 = np.ones((T920, 2), dtype=bool)
+    y0, y1 = 5, 300                                 # both inside calendar 2020 (rows 0..365)
+    t_win = np.arange(y0, y1)                       # contiguous at H=1 so the sum telescopes
+    bh_2 = bt.true_bh_series(logc_2, pres_2, ts920, t_win, H920)
+    # the book is formed at row t_win.min() (first walked row) and HELD through the year
+    g0 = np.exp(logc_2[y0]); g1 = np.exp(logc_2[t_win[-1] + H920])
+    held_total = float(np.log(np.mean(g1 / g0)))            # equal-DOLLAR at form, then held
+    rebal_total = float(np.mean(np.log(g1 / g0)))           # legacy per-bar reweight
+    assert abs(float(np.sum(bh_2)) - held_total) < 1e-10, \
+        f"held-book within-year return must be log(mean gross), got {np.sum(bh_2)} vs {held_total}"
+    assert held_total > rebal_total + 1e-4, \
+        "held book must differ from the legacy per-bar equal-DOLLAR reweight (Jensen gap)"
+
+    # (c) the re-form is at the first row of a CALENDAR year
+    logc_3 = np.zeros((T920, 2))
+    logc_3[:, 0] = np.cumsum(np.full(T920, 0.0005))
+    logc_3[:, 1] = np.cumsum(np.full(T920, 0.0020))
+    pres_3 = np.ones((T920, 2), dtype=bool)
+    pres_3[:366, 1] = False                          # asset 1 absent for all of calendar 2020
+    bh_3 = bt.true_bh_series(logc_3, pres_3, ts920, t920, H920)
+    logc_3b = logc_3.copy()
+    logc_3b[:, 1] += np.cumsum(np.full(T920, 0.0030))   # perturb the year-2 joiner only
+    bh_3b = bt.true_bh_series(logc_3b, pres_3, ts920, t920, H920)
+    row_y2 = int(np.searchsorted(ts920, bt._to_epoch("2021-01-01")))
+    pre = t920 + H920 <= row_y2
+    assert np.allclose(bh_3[pre], bh_3b[pre], atol=1e-12), \
+        "an asset absent in calendar year 1 must not touch year-1 B&H returns"
+    assert not np.allclose(bh_3[~pre], bh_3b[~pre], atol=1e-9), \
+        "the year-2 re-form must pick the joiner up (year-2 returns must move)"
+
+    # (d) MAJOR-1 regression guard: all-absent RE-FORM row refuses; all-absent ordinary row
+    #     does not; a NaN price on a HELD asset refuses; a NaN on a 0-share asset does not.
+    pres_4 = np.ones((T920, 2), dtype=bool)
+    pres_4[row_y2] = False                           # exactly the calendar-2021 re-form row
+    try:
+        bt.true_bh_series(logc_3, pres_4, ts920, t920, H920)
+        raise AssertionError(
+            "MAJOR-1: an all-absent calendar-year RE-FORM row must raise, not zero the share "
+            "vector (the pre-fix code floored the rest of the series at log(1e-300)~=-690)")
+    except ValueError as e:
+        assert "re-form row" in str(e), f"refusal must name the re-form row, got: {e}"
+    pres_5 = np.ones((T920, 2), dtype=bool)
+    pres_5[row_y2 + 40] = False                      # all-absent, but NOT a re-form row
+    bh_5 = bt.true_bh_series(logc_3, pres_5, ts920, t920, H920)
+    assert np.all(np.isfinite(bh_5)) and bh_5.min() > -1.0, \
+        "an all-absent NON-re-form row must be harmless (the book just holds its shares)"
+    logc_6 = logc_3.copy()
+    logc_6[row_y2 + 40, 1] = np.nan                  # NaN on a HELD asset
+    try:
+        bt.true_bh_series(logc_6, pres_3, ts920, t920, H920)
+        raise AssertionError("a NaN price on a HELD asset must refuse, not be floored")
+    except ValueError as e:
+        assert "non-finite" in str(e), f"refusal must name the bad price, got: {e}"
+    logc_7 = logc_3.copy()
+    logc_7[100, 1] = np.nan                          # NaN on an asset the book holds 0 of
+    bh_7 = bt.true_bh_series(logc_7, pres_3, ts920, t920, H920)
+    assert np.all(np.isfinite(bh_7)), \
+        "a NaN on a ZERO-SHARE column must not poison the book value (0 * NaN)"
+    # (e) MINOR-2 disclosure (fix pass, run 53 cycle 3): the "liquidate at last print"
+    #     delisting convention is UNCHANGED but MEASURED. Flat prices (all logs 0 -> price 1)
+    #     make the arithmetic exact: form at row_lo with both assets present -> 0.5 shares
+    #     each; retire asset 1 mid-calendar-2020 -> exactly HALF the book value is then marked
+    #     on a non-present column; the 2021-01-01 re-form drops it -> phantom share 0 after.
+    #     Also asserts the diag is purely additive: the returned series is byte-identical.
+    logc_8 = np.zeros((T920, 2))                     # price == 1.0 everywhere
+    pres_8 = np.ones((T920, 2), dtype=bool)
+    row_del = 100                                    # inside calendar 2020, after row_lo=10
+    pres_8[row_del:, 1] = False                      # asset 1 delists and its tail freezes
+    bh_8a = bt.true_bh_series(logc_8, pres_8, ts920, t920, H920)
+    bh_8b, diag_8 = bt.true_bh_series(logc_8, pres_8, ts920, t920, H920, return_diag=True)
+    assert np.array_equal(bh_8a, bh_8b), \
+        "return_diag must be purely additive — the B&H series itself must not move"
+    assert abs(diag_8["phantom_share_max"] - 0.5) < 1e-12, \
+        f"a retired half of a flat 2-asset book must measure 0.5, got {diag_8}"
+    assert diag_8["phantom_row_max"] == row_del and diag_8["phantom_day_max"] == \
+        bt._utc_day(ts920[row_del]), f"the max must be located at the delisting row: {diag_8}"
+    assert diag_8["phantom_share_final"] == 0.0, \
+        "the calendar-year re-form drops a non-present column, so the final share must be 0"
+    _, diag_9 = bt.true_bh_series(logc_3, pres_3, ts920, t920, H920, return_diag=True)
+    assert diag_9["phantom_share_max"] == 0.0, \
+        "a book whose every held column stays present must disclose a phantom share of 0"
+
+    msgs.append("[ST13] TASK_920 true B&H book: single-asset case == that asset's log return "
+                "exactly; shares HELD within a calendar year (log-mean-gross, above the legacy "
+                "per-bar reweight); re-form lands on the first row of a calendar year; "
+                "MAJOR-1 guard: all-absent RE-FORM row and held-asset NaN both REFUSE, while "
+                "an all-absent non-re-form row and a zero-share NaN stay harmless; the "
+                "delisting convention is DISCLOSED — the non-present share of book value is "
+                "measured exactly (0.5 on a flat half-retired book, 0 when nothing retires) "
+                "and the diag is additive (series byte-identical)")
+
+    # 14. simple-return accounting (bt.gross_simple_series) + drift-retrim turnover
+    #     decomposition (bt.drift_retrim_turnover), both against closed forms, plus the
+    #     MINOR-2 property: target_change + drift is a triangle-inequality UPPER BOUND on the
+    #     single combined trade, so the disclosed cost can only OVERSTATE.
+    x = 0.20
+    logc_s = np.zeros((3, 2))
+    logc_s[1] = [x, -x]                              # +20% / -20% in LOG terms at t=1
+    logc_s[2] = [x, -x]
+    pos_s = np.tile(np.array([[0.5, 0.5]]), (3, 1))
+    t_s = np.array([0])
+    g_simple = bt.gross_simple_series(logc_s, pos_s, t_s, 1)
+    g_log = np.sum(pos_s[t_s] * (logc_s[t_s + 1] - logc_s[t_s]), axis=1)
+    assert abs(float(g_simple[0]) - (np.cosh(x) - 1.0)) < 1e-12, \
+        f"simple accounting closed form: 0.5(e^x-1)+0.5(e^-x-1) == cosh(x)-1, got {g_simple[0]}"
+    assert abs(float(g_log[0])) < 1e-15 and float(g_simple[0]) > 0.0, \
+        "the log convention scores this offsetting pair at exactly 0; simple sees the Jensen gap"
+
+    # drift-retrim closed form: unchanged target, one asset +10% -> pure drift, no target change
+    logc_d = np.zeros((3, 2))
+    logc_d[1] = [np.log(1.10), 0.0]
+    logc_d[2] = [np.log(1.10), 0.0]
+    pos_d = np.tile(np.array([[0.5, 0.5]]), (3, 1))
+    tc, dr = bt.drift_retrim_turnover(pos_d, np.array([1]), 1, logc_d)
+    assert abs(float(tc[0])) < 1e-15, "an unchanged target must charge ZERO target-change turnover"
+    assert abs(float(dr[0]) - 0.05) < 1e-12, \
+        f"drift turnover must be |0.5*0.10| = 0.05, got {dr[0]}"
+    # MINOR-2: upper-bound property on a random panel (|da - db| <= |da| + |db| per asset)
+    rng14 = np.random.RandomState(1420)
+    T14, A14 = 400, 6
+    logc_r = np.cumsum(rng14.randn(T14, A14) * 0.02, axis=0)
+    pos_r = rng14.randn(T14, A14) * 0.05
+    t_r = np.arange(20, T14 - 1, 3)
+    tc_r, dr_r = bt.drift_retrim_turnover(pos_r, t_r, 1, logc_r)
+    fwd_prev = logc_r[t_r] - logc_r[t_r - 1]
+    drift_i = pos_r[t_r - 1] * (np.exp(fwd_prev) - 1.0)
+    combined = np.sum(np.abs((pos_r[t_r] - pos_r[t_r - 1]) - drift_i), axis=1)
+    assert np.all(tc_r + dr_r >= combined - 1e-12), \
+        "MINOR-2: disclosed turnover must UPPER-BOUND the single combined trade (triangle ineq)"
+    assert float(np.mean(tc_r + dr_r)) > float(np.mean(combined)), \
+        "the bound must be strict on a random panel (it OVERSTATES, never understates)"
+    msgs.append(f"[ST14] TASK_920 accounting overlays: gross_simple == cosh(x)-1 on the "
+                f"offsetting pair the log convention scores at 0 (Jensen gap visible); "
+                f"drift_retrim splits an unchanged target into 0 target-change + 0.05 drift "
+                f"exactly; disclosed turnover UPPER-BOUNDS the combined trade "
+                f"({np.mean(tc_r+dr_r):.4f} >= {np.mean(combined):.4f}, MINOR-2)")
+
+    # 15. --overlay-only isolation (cli._isolated_rcfg). The claim under test is NOT "one
+    #     mechanism is configured" but "the OTHER TWO are genuinely NEUTRALIZED, and this one
+    #     is not" — so assert a 3x3 IDENTITY matrix of behaviour on three planted decisions,
+    #     one per mechanism, and check 'all' fires all three (which is what proves the probes
+    #     are live rather than the isolations being vacuously inert).
+    from . import cli as climod
+    from . import risk as riskmod15
+
+    base15 = config.RiskConfig(enabled=True)
+    assert climod._isolated_rcfg("all") == base15, \
+        "--overlay-only all must be the untouched pre-920 RiskConfig(enabled=True)"
+
+    def _probe(rcfg):
+        """(capped?, throttled?, banded?) on three planted decisions, one per mechanism."""
+        cap_out, _ = riskmod15.apply_overlay(np.array([0.10, -0.10]), np.zeros(2),
+                                             1.0, 1.0, 0, 0, rcfg)
+        dd_out, dd_info = riskmod15.apply_overlay(np.array([0.01, -0.01]), np.zeros(2),
+                                                  0.5, 1.0, 0, 0, rcfg)      # dd = -50%
+        band_out, _ = riskmod15.apply_overlay(np.full(2, 0.001), np.zeros(2),
+                                              1.0, 1.0, 0, 0, rcfg)
+        return (bool(np.max(np.abs(cap_out)) < 0.10 - 1e-12),
+                bool(dd_info["dd_scale"] < 1.0),
+                bool(np.all(band_out == 0.0)))
+
+    expect15 = {"cap": (True, False, False), "dd": (False, True, False),
+                "band": (False, False, True)}
+    got15 = {k: _probe(climod._isolated_rcfg(k)) for k in expect15}
+    assert got15 == expect15, f"--overlay-only isolation matrix must be the identity: {got15}"
+    assert _probe(base15) == (True, True, True), \
+        "the three probes must all fire under 'all' (else the isolations are vacuously inert)"
+
+    # the neutralizations are UNREACHABLE, not merely unlikely, on their own arguments:
+    for which in ("cap", "band"):
+        rc = climod._isolated_rcfg(which)
+        # dd = equity/hwm - 1 is bounded in (-1, 0] for a positive book, and both thresholds
+        # sit at -2.0, so no drawdown whatsoever can trip them.
+        assert rc.dd_halve <= -1.0 and rc.dd_flat <= -1.0
+        assert riskmod15.dd_scale(1e-300, 1e300, rc)[0] == 1.0, \
+            "dd thresholds past -100% must be unreachable at the worst possible drawdown"
+    for which in ("dd", "band"):
+        rc = climod._isolated_rcfg(which)
+        # per-asset cap 1.0 >= gross cap 1.0, so it cannot bind on a book with Sum|pos| <= 1.
+        assert rc.per_asset_cap >= config.STRATEGY.gross_cap
+        extreme = np.array([1.0, -1.0])
+        assert np.array_equal(riskmod15.apply_position_cap(extreme, rc.per_asset_cap), extreme)
+    for which in ("cap", "dd"):
+        rc = climod._isolated_rcfg(which)
+        # band 0.0: |delta| < 0.0 is false for every delta INCLUDING an exactly-zero one.
+        assert rc.rebalance_band == 0.0
+        tgt = np.array([0.3, -0.7])
+        assert np.array_equal(riskmod15.apply_rebalance_band(tgt, tgt.copy(), rc.rebalance_band), tgt)
+    try:
+        climod._isolated_rcfg("nope")
+        raise AssertionError("_isolated_rcfg must fail loud on an unknown selector")
+    except ValueError:
+        pass
+    msgs.append("[ST15] TASK_920 --overlay-only: isolation matrix is the IDENTITY over "
+                "(capped, throttled, banded) probes — each selector fires its own mechanism "
+                "and NEITHER other one, while 'all' fires all three (probes proven live); "
+                "neutralizations shown unreachable (dd thresholds past -100% vs dd in (-1,0]; "
+                "per-asset cap 1.0 >= gross cap; band 0.0 skips nothing)")
+
+    # 16. The CLI WIRING of the TASK_920 flags. MAJOR-1a's second half: nothing reached
+    #     cli.py argument parsing at all, so ST2 would keep passing even if a default were
+    #     flipped to a non-legacy value later — the exact latent trap G1 rests on. Pins
+    #     (a) every new flag's default is the legacy one, (b) at those defaults the honesty
+    #     pack prints NOTHING and reports success (the G1 no-op), (c) a refusal from
+    #     true_bh_series becomes a False return (-> non-zero exit), never a printed number.
+    import io as _io920, contextlib as _ctx920, argparse as _ap920
+
+    dflt = climod.build_parser().parse_args(["backtest"])
+    assert (dflt.bh_book, dflt.accounting, dflt.charge_drift_rebalance, dflt.overlay_only) \
+        == ("legacy-label", "log", False, "all"), \
+        f"TASK_920 flags must all default to the pre-920 legacy behaviour (G1), got {dflt}"
+
+    buf = _io920.StringIO()
+    with _ctx920.redirect_stdout(buf):
+        ok_default = climod._print_honesty_pack(dflt, logc_1, ts920, 8, 0, T920)
+    assert ok_default is True and buf.getvalue() == "", \
+        f"at default flags the honesty pack must print NOTHING and succeed, got {buf.getvalue()!r}"
+
+    def _raiser(*a, **k):
+        raise ValueError("planted: buy-and-hold book undefined")
+    args_true = _ap920.Namespace(bh_book="true-bh", accounting="log",
+                                 charge_drift_rebalance=False)
+    _real = bt.true_bh_series
+    try:
+        bt.true_bh_series = _raiser
+        buf2 = _io920.StringIO()
+        with _ctx920.redirect_stdout(buf2):
+            ok_refuse = climod._print_honesty_pack(args_true, logc_1, ts920, 8, 0, T920)
+    finally:
+        bt.true_bh_series = _real
+    assert ok_refuse is False, \
+        "a refused true-B&H book must return False (-> non-zero exit), not be swallowed"
+    assert "Sharpe" not in buf2.getvalue(), \
+        "a refused true-B&H book must print NO figure on stdout"
+
+    # (d) MAJOR (fix pass, run 53 cycle 3): the flag COMBINATIONS the build does not
+    #     implement. Both used to be accepted silently — exit 0, empty stderr, and a printed
+    #     number that was not the requested one. ST16 previously pinned only the all-defaults
+    #     no-op, which is exactly why nothing caught them. Driven through the real parser and
+    #     the real cmd_backtest (the guard returns before any panel is loaded, so this stays
+    #     hermetic), and asserted on all three of exit code, stdout and stderr.
+    def _refuses920(argv, must_name):
+        a920 = climod.build_parser().parse_args(argv)
+        assert climod._unsupported_combo(a920) is not None, \
+            f"{argv} must be refused, not silently dropped"
+        o920, e920 = _io920.StringIO(), _io920.StringIO()
+        with _ctx920.redirect_stdout(o920), _ctx920.redirect_stderr(e920):
+            rc920 = climod.cmd_backtest(a920)
+        assert rc920 != 0, f"{argv} must exit non-zero, got {rc920}"
+        assert o920.getvalue() == "", \
+            f"{argv} must print NO figure on stdout, got {o920.getvalue()!r}"
+        assert must_name in e920.getvalue(), \
+            f"the refusal for {argv} must name {must_name}, got {e920.getvalue()!r}"
+
+    # (a) every honesty-pack flag, one at a time, is refused under --overlay: it cannot be
+    #     honoured there, and continuing prints the legacy mislabeled `B&H` column instead.
+    _refuses920(["backtest", "--overlay", "--bh-book", "true-bh"], "--bh-book")
+    _refuses920(["backtest", "--overlay", "--accounting", "simple"], "--accounting")
+    _refuses920(["backtest", "--overlay", "--charge-drift-rebalance"], "--charge-drift-rebalance")
+    # (b) --overlay-only without --overlay: leg 4's number IS the isolated one.
+    for _sel920 in ("cap", "dd", "band"):
+        _refuses920(["backtest", "--overlay-only", _sel920], "--overlay-only")
+    # and the SUPPORTED combinations must stay supported — otherwise the guard above is a
+    # blanket refusal that passes this test vacuously while breaking every real invocation.
+    for _ok920 in (["backtest"],
+                   ["backtest", "--overlay"],
+                   ["backtest", "--overlay", "--overlay-only", "cap"],
+                   ["backtest", "--bh-book", "true-bh", "--accounting", "simple",
+                    "--charge-drift-rebalance"]):
+        assert climod._unsupported_combo(climod.build_parser().parse_args(_ok920)) is None, \
+            f"{_ok920} is a supported combination and must NOT be refused"
+
+    msgs.append("[ST16] TASK_920 CLI wiring: every new flag defaults to the legacy value; at "
+                "those defaults the honesty pack prints nothing and succeeds (the G1 no-op is "
+                "now TESTED, not assumed); a refusal from true_bh_series propagates as a "
+                "False return (non-zero exit) with no figure printed; and the two "
+                "unimplemented flag COMBINATIONS (any honesty flag with --overlay; "
+                "--overlay-only without --overlay) refuse loudly — non-zero exit, empty "
+                "stdout, stderr naming the dropped flag — while all four supported "
+                "combinations are still accepted")
 
     # 8. TASK_847 policy-prior candidate-set properties (Sampled-MuZero root proposal).
     #    The dithered-book proposal is policy-BLIND; the policy-prior scheme lays the K

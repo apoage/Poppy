@@ -1,3 +1,73 @@
+> **STATUS (2026-09-06): SHIPPED (run 53)**
+> Legs 1-4 shipped in `trader/`, every flag defaulting to legacy. **G1 (OFF = byte-identical)
+> re-derived independently by two lenses**, each proving its own harness non-vacuous by planting
+> poison first: `parity 93c7d2f7` · `backtest e5c47eee` · `windowed-2023 9b281243` ·
+> `overlay 0f5a055d`. Selftest **12 -> 16 checks**. Three cycles (MAJOR -> MAJOR -> close).
+>
+> **The number this row existed to produce (TASK_820 gate-2, never written down before):** at
+> `--net-bps 21` the ENTIRE overlay Sharpe cost is the **shadow-scale DD throttle**
+> (+0.97 -> **+0.61**, 378 half / 53 deep). The 5% per-asset cap and 0.2% band are **inert at
+> their configured defaults** — and that is a FINDING, not a wiring bug: the book's measured
+> `max|pos|` is **0.03846** over all 1,673 decisions, genuinely below a 5% cap, and both
+> mechanisms were proven live by forcing them to bite (cap at 0.03 -> 353/1673 capped,
+> 0.967->0.931; band at 0.03 -> 0.967->0.893).
+>
+> **Two of this task file's own quoted magnitudes did NOT survive measurement** (implementer said
+> so rather than building to them): (a) the log-vs-simple bias is quoted here as "≈ +0.3
+> Sharpe-equivalent (≈5 bp/day)" but measures **-1.02 bp/day / Sharpe -0.043** on FULL net@8 —
+> opposite sign, ~7x smaller (bear window: **-13.09 bp/day / -0.661** BEAR22 regime, or
+> **-14.54 / -0.713** calendar-2022 — state which, they differ); (b) "+9-12x/yr" drift turnover is
+> denomination-ambiguous — **1.24x as a multiple** (56.6 -> 70.2 ann_turn), **+13.6 as additive
+> turns/yr**. **G2 tripwire did NOT fire**: net@21 +0.97 -> +0.92 (delta **-0.046**, inside -0.10),
+> so no disclosure obligation attaches to prior 819/898 rows.
+>
+> **Defects found and closed by the panel, not by the author:** (1) `true_bh_series` had a
+> **zero-share fixed point** — `n == 0` at a calendar re-form row zeroed the share vector
+> permanently, silently collapsing the series to `log(1e-300)` (reproduced: `bh.min() = -691.25`,
+> Sharpe -1.4358). Live on `--source db --include-dead`, the survivorship-honest path this row
+> serves. Now REFUSES loudly. (2) Its sibling, found during the fix: `0 * NaN = NaN` for
+> zero-quantity holdings, floored by `max(v, 1e-300)` into a plausible number — **absence read as
+> a value**. Floor removed. (3) `--overlay` combined with any honesty flag **silently dropped the
+> request and printed the mislabeled legacy `B&H` column at exit 0**, opposite in sign to the
+> figure requested; `--overlay-only` was accepted without `--overlay`, which would have recorded
+> the overlay-OFF Sharpe as leg 4's isolated number. Both now refuse with **exit 2, zero stdout**.
+>
+> **Tests that should have existed:** there were NONE for `true_bh_series`, `gross_simple_series`,
+> `drift_retrim_turnover` or `_isolated_rcfg` — which is why (1) survived to the panel. ST13-ST16
+> add them, each proven non-vacuous by planting the defect and watching RED. ST15 encodes the
+> `_isolated_rcfg` proof as a **3x3 identity matrix** with an `all` row proving the probes live.
+> ST13-16 sit ABOVE the ST8 JAX guard on purpose — below it they would vanish on a JAX-less host.
+>
+> **Remainders (planner lane, deliberately not taken):** G3 + the four record-fix riders edit
+> `lore/` and `experiments/LEDGER.md`. **Two operator decisions seeded:** (i) the DELISTING
+> CONVENTION — `_book_value` marks a retired holding at its frozen last price until the next
+> annual re-form rather than writing it off; currently **3.55% of terminal book value** (3.77% max,
+> 2025-08-02), unbounded for a concentrated or high-mortality window. Now DISCLOSED on every
+> true-B&H line rather than silently applied; the alternative is an operator modelling call.
+> (ii) wiring the honesty pack under `--overlay` (currently refused) is its own queue row.
+>
+> **Standing trap recorded:** "`parity` GATE 1a: PASS" is materially WEAKER than byte-identity —
+> `PARITY_TARGETS` (`backtest.py:455-461`) checks six metrics and `gross` is not among them, and
+> its 0.02 Sharpe tolerance absorbs a 1% fee-arithmetic error at 8 bp. Never substitute one for
+> the other.
+>
+> **Surviving MINOR/NIT, named rather than swept (deciding lens, no BLOCKER/MAJOR):**
+> (i) `cli.py:140-148` the delisting-disclosure PRINT PATH has no regression guard — planting a
+> no-op there keeps selftest GREEN 16/16 while the convention silently vanishes from output. The
+> same "guard cannot reach its own defect" shape this run hit repeatedly. Nothing wrong today;
+> the remedy is simply unprotected against a later edit. (ii) `cli.py:91` `--overlay-only all`
+> without `--overlay` is accepted silently at exit 0 (cap/dd/band correctly refuse) — the one
+> value argparse cannot distinguish from its default; fix is a `default=None` sentinel.
+> (iii) `backtest.py:632-633` `phantom_day_max` names a date when the phantom share is identically
+> zero. (iv) `cli.py:129-131` the `rep is None` branch returns exit 0; verified UNREACHABLE today
+> because canon bails first, latent only.
+>
+> **Verification weight:** the deciding pass ran a **360-invocation exhaustive enumeration** of the
+> flag-combination space (248 refusals / 112 accepted) finding **zero** surviving silent-drops and
+> **zero** over-broad refusals, re-planted **15 poisons**, and re-derived every published figure
+> from scratch (true-B&H series matched to `maxabs 0.0`). Across three cycles the panel found what
+> the authors did not, every time.
+
 # TASK_920 — scorer honesty pack (the four corrections the panels verified)
 
 **Status**: PROPOSED 2026-09-05 (planner; four record corrections surfaced by the tactics panel
