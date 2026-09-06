@@ -1,3 +1,28 @@
+> **STATUS (2026-09-06): SHIPPED as `task916-cost-truth-pack` (`18d42d3`, factory run 54).**
+> All four legs landed. G1 OFF byte-identical verified twice in detached worktrees at HEAD
+> `191e2ef`; G2 table present (2 scenarios x 4 tiers x 2 panels, 144 cells, all move down);
+> G3 D80 seeded not ruled (`docs/pathway.md` untouched). Suite 16 -> 17 checks (ST17), proven
+> non-vacuous against 6/6 planted mutations. Verification: 4-lens panel -> fix pass (2 MINORs
+> closed: WBTC/TBTC alias bucketing, unregistered-window anchor) -> delta lens. No BLOCKER,
+> no MAJOR at any point.
+>
+> **Headline numbers.** net21 borrow-charged, low scenario: SURVIVOR FULL +0.967 -> +0.582,
+> PIT FULL +0.836 -> +0.424, PIT BEAR22 +0.990 -> +0.517, H=3d FULL +1.345 -> +0.934. At the
+> verified base taker tier (80bp) instead of the legacy 21bp, PIT FULL reads +0.279 -> -0.132.
+> Registered-window anchor reproduces n=2800 exactly: uncharged +0.5849, charged +0.2223 (low)
+> / -0.1402 (high) -> **the pre-committed consequence FIRES**; the borrow-inclusive bar is the
+> honest reference for TASK_915's G-B/G-C MARGINAL band. **Point estimates only** — the
+> bootstrap CI does not exclude +0.56 (low [-0.47,+0.90], high [-0.86,+0.56]); the artifact
+> carries this caveat and it must travel with the number.
+>
+> **REMAINDERS (not shipped, deliberately).** D80(ii) restating the `docs/pathway.md` goalpost
+> net of borrow and D80(iii) remain OPEN — operator's call; this row only publishes numbers.
+> The operator's actual 30d volume tier is still unrecorded, and it decides which ladder row is
+> honest. Margin OPENING fee and the 2% liquidation fee are NOT charged (no margin-call hook in
+> a backtest). `830 hold-shares BEAR22 (+1.218)` disclosed directionally only — lives in
+> `eval_vector`, out of scope. `XBTPY` deliberately left in the ALT bucket (dead-only universe,
+> ~0.0002 Sharpe effect, and its series diverges from XBT by 0.65-358x non-constant).
+
 # TASK_916 — cost truth pack: borrow charge, fee tier, restated benchmark
 
 **Status**: PROPOSED 2026-09-05 (planner; from `lore/harvest_dead_session_6b32cd7f_2026-09-05.md` —
