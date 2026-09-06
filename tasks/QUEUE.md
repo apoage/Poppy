@@ -21,18 +21,13 @@ the keepalive tripping AFTER stalls). **Box facts:** root = ext4 on SSD; hog can
 bitcoind (snap datadir on root), postgres, journald; nvme = the application volume (397G free,
 operator's call whether captures ever write there — secondary option only; the primary fix is
 dropping per-line fsync, post-capture per D67(b)).
-**Ready (physically ordered): 1 TASK_907 Addendum B2 PATCH ROUND 4 (per D78 + D77-amend;
-the LAST patch round) → 2 TASK_914 (streaming reader) → 3 write-hardening →
-4 TASK_916 (**cost truth pack** — borrow + fee tier + restated benchmark; re-prices the bar
-915 is graded against) → 5 TASK_915 (**D79 — the DIRECTION row**: the predictability ceiling +
-GP book; precondition = the 899 daily ingest AND 916's restated cost stack) →
-6 TASK_920 (scorer honesty flags; XS; OFF = bit-identical) → 7 TASK_918 (tactic-library hull
-ceiling — minutes of CPU, 85% prior it closes the selector class incl. MuZero-as-selector;
-gate = 899) → 8 TASK_917 (second-moment & event instruments: VR persistence, post-shock κ,
-post-listing event study, hourly IC surface) → 9 TASK_919 (execution/turnover module — the
-60–70%-odds +0.10–0.15 add; phase B double-gated on 907B2 + D80 rails) →
-10 TASK_881E (re-cut per D72: manifest-authority, simple) → 11 TASK_904B (two-phase writers) →
-12 TASK_908 (fixture pin-trust) → 13 TASK_906 (archival). FILLER: TASK_899 — **IN PROGRESS
+**Ready (physically ordered): 1 TASK_907 Addendum B2 (HALTED run 52, gated on D81 — do NOT take) →
+2 TASK_914 (HALTED run 53, gated on D82 — do NOT take; candidate fenced in tree) →
+3 write-hardening (**NEXT TAKEABLE**; pure code, gate open) → 4 TASK_916 (cost truth pack;
+takeable) → 5 TASK_915 (GATED: 899 ingest + 916) → 6 TASK_920 (**SHIPPED run 53**) →
+7 TASK_918 (GATED: 899 ingest) → 8 TASK_917 (takeable) → 9 TASK_919 (phase A takeable after
+916; phase B gated on D81(b)+D80(iii)) → 10 TASK_881E (re-cut per D72) → 11 TASK_904B →
+12 TASK_908 → 13 TASK_906. FILLER: TASK_899 — **IN PROGRESS
 planner-side (2026-08-31): the daily catch-up is STAGED** (`runs/858_backfill/api_2026-08-31/`
 — 56/56 canon pairs, 2026-06-21→08-31, seam-verified: 62 overlap rows vs the DB, ZERO
 mismatches; minute tails staged = the forward habit started). **Measured API constraint: the
@@ -41,17 +36,16 @@ OHLC endpoint serves a rolling ~720-candle window per interval (12h for minutes,
 dump zips (the gdown retry pattern exists; needs new file ids when published). Ingest into the
 DB happens AFTER the RO02 drive fix (append-only, diff report, both-hosts sync) — no DB writes
 until then. GATED: TASK_880 (D34+D35).**
-**OPEN decisions: D43 + **D81** (run 52 — **(c) the factory-process rule RULED 2026-09-05,
-operator; codified in `.claude/rules/30-agent-conduct.md`**; (a) the re-cut scope and (b) the
-narrower-instrument intermediate remain OPEN) + D80 (**(i) ANSWERED 2026-09-05, operator: holds
-a Kraken subscription — reads as Kraken+ ($4.99/mo, 0% on first $10k/mo volume) but the
-published terms EXCLUDE Pro/API trades from the waiver; verify at 916 leg 2 — see the D80
-row**; (ii) whether the `docs/pathway.md` goalpoint NUMBER is restated net of margin-rollover
-borrow — the benchmark book is ~50% short in BEAR22 and borrow ≈ 22%/yr on alts is never
-charged anywhere in the record; (iii) the 907 phase-2 rails conflict — a maker spec needs
-market-cross after timeout + rest windows, both forbidden by D65/D78 code. TASK_916 publishes
-the restated numbers either way; only the goalpoint number itself is the operator's.
-RO02-blocking spec: `lore/notes_2026-09-05.md` §2.)**
+**OPEN decisions: D43 + D81(a)/(b) + D82 (914 scope: ship the verified reader + corrected prose
++ row the two guard fixes, vs full halt vs reader-only; operator DEFERRED ruling 2026-09-06 —
+the wall stands, no default, no drift) + D83 (SEEDED 2026-09-06: run 53's two conduct-rule
+candidates — (i) verification instruments get their own adversarial pass; (ii) briefs state,
+per number asserted, the artifact+revision measured on; operator deferred) + D80 ((i) ANSWERED
+— Kraken+, Pro/API exclusion caveat, verify at 916 leg 2; (ii) goalpoint restatement and
+(iii) rails still open). The factory never guesses past an OPEN row — while these pend, work
+rows 3/4/8 (write-hardening, 916, 917).**
+
+
 
 **Groomed 2026-09-05 (planner — fable + dead-session harvest integrated as rows 916–920).**
 The three consultation lore files (`fable_direction_memo_2026-09-03`, `fable_tactics_panel_
@@ -103,11 +97,7 @@ a multi-day pair. Work preserved (`lore/handoff_2026-09-02_factory_run_51_907B2_
 sha256 `785577cb…`); B-iv, B-v, B-vi and the security pass all VERIFIED GREEN and are reusable on
 resume rather than rebuildable._
 
-_**Next takeable: `tasks/TASK_914_STREAMING_READER.md`.** The 907 B2 lane is closed to patching pending
-D81, and the collision that put B2 first is gone: round 4's declared base is spent, so 914's rewrite of
-`read_capture` + `_pair_coverage` has no permanent-halt round to merge into. Run 52 re-measured 914's
-case first-hand — the real-capture render peaked at **14.83 GB RSS in 3m32s** under a 22G cap: feasible,
-and still the largest recurring cost in this lane. Any re-cut under D81 needs several such reads._
+_**Next takeable: `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (row 3), then TASK_916 (row 4), then TASK_917 (row 8).** TASK_914 HALTED 3/3 in run 53 with the READER ITSELF VERIFIED CLEAN (byte-identical artifacts on the real capture, peak RSS 12.34 GB → 1.46 GB) — both MAJORs live only in the NEW `test_streaming_reader.py` (a guard that cannot reach its own defect, twice). The row is GATED on **D82**; do NOT re-take it, do NOT fix the guard (that is a new mechanism, outside D76's exception), do NOT commit or revert the candidate. **The tree deliberately carries the 914 candidate: `experiments/907_live_fill_probe/capture.py` (modified) + `test_streaming_reader.py` (untracked) — preserved per the runs-50–52 pattern; recoverable via `lore/handoff_2026-09-05_factory_run_53_914_halt.patch` (sha256 `a2577008…`). Treat those two paths as fenced: reads yes, writes no, until D82 rules.** TASK_920 SHIPPED run 53 (`f896b86`, tag `task920-scorer-honesty`)._
 
 _(superseded run-51 note:)_ _Next takeable: **TASK_907 Addendum B2 PATCH ROUND 4** (row 1, restored 2026-09-03: shipping 914
 first would invalidate round 4's base patch — see the row note; 914's RSS case was cost, not
@@ -133,11 +123,11 @@ self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 | ~~1~~ | ~~`tasks/TASK_913_JOURNAL_STALL_DIAGNOSIS.md`~~ **SHIPPED run 48 (`2d56873`)** | XS/S | D74(a): name the sda6-journal hog (bitcoind snap datadir is the prime suspect) with measurements through one or two `:X2:35` windows; spec the recorder write hardening for FUTURE captures (drop per-line fsync — bounded-loss argument required; nvme relocation recorded as the operator's secondary call, never defaulted). NO recorder changes while the capture lives (D67(b)). Evidence files already on srv (named in the task). |
 | 2 | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B1 — per D73)~~ **SHIPPED run 49 (`1360250`)** | M | 302 tests, B-iv byte-identical on 6 independent captures, fixture unchanged. B1-vii discharged: the live capture renders (after fixing the recorder's own ~12µs gap-end ts artifact + merge seam — 584 intrusions → 0). **The render's findings: 20m/1h horizons structurally 0-sample (longest gap-free stretch 561.8s; D65-amend RULED: two horizons suffice); BTC/USD 46.5% frozen mid — B2's failure mode in the real data.** |
 | ~~1~~ | ~~`tasks/TASK_907_LIVE_FILL_PROBE.md` (Addendum B2 — PATCH ROUND 4)~~ **HALTED PERMANENTLY run 52 — D78's pre-committed stop FIRED (3 lenses + an orchestrator real-capture measurement found new shape instances). GATED on D81; NO fifth patch round. Round 4 nonetheless REVERSED run 51's halt measurement — all four pairs publish, max |markout| 9.95 bp — and its B-iv/B-v/B-vi work is reusable on the re-cut.** | S | Fix the four named instances (flagged-span keepalive endpoint; MidQuote provenance gate; emission-policy detector bypass; D77 granularity per the amendment: interval-scoped exclusion, disclosure-not-void pair flag, two-sided backstop aggregate ≤1.0% AND worst interval ≤60s). **PRE-COMMITTED STOP: round 4 is the LAST — any new instance of the three recurring shapes halts permanently to the provenance re-cut.** Base = run-51 halt patch (sha `785577cb…`, applies vs current HEAD by definition — the dirty tree IS it); reuse B-iv/B-v/B-vi/security-clean. |
-| 2 | `tasks/TASK_914_STREAMING_READER.md` (**NOW THE TAKEABLE 907-LANE ROW (run 52): the B2 collision is GONE — round 4's declared base is spent and that lane is gated on D81, so there is no permanent-halt round to hand-merge into**; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
+| ~~2~~ | ~~`tasks/TASK_914_STREAMING_READER.md`~~ **HALTED 3/3 run 53 — the READER is verified clean (byte-identical on the real 1.44 GB capture, 12.34 → 1.46 GB RSS); both MAJORs are in the new `test_streaming_reader.py` (guards that structurally cannot reach their own defect). GATED on D82 — no fourth try, no guard-mechanism change without a ruling.** (Run-52 promotion rationale kept:) the B2 collision is GONE — round 4's declared base is spent and that lane is gated on D81, so there is no permanent-halt round to hand-merge into; planner reorder #2, 2026-09-03: the first promotion under-costed the merge — both rows rewrite `read_capture` + `_pair_coverage`, and shipping 914 first invalidates round 4's declared base patch, pushing a 3749-line hand-merge into the round with the permanent-halt trigger) | S | Reader streams line-by-line, O(1) memory: measured 14.83 GB peak RSS on the real capture. Gates: byte-identical artifacts (fixtures + the closed live capture), peak RSS < 4 GB. Ships AFTER B2 round 4 — B2's ~15 GB verification reads are PROVEN feasible under the 18 G cap (run 51 completed them; RSS was a cost concern, never a feasibility wall). |
 | 3 | `experiments/907_live_fill_probe/WRITE_HARDENING_SPEC.md` (913's residue — the spec IS the task file) | S | **GATE OPEN (capture closed 2026-09-01 10:00):** implement the single-writer-thread + batched-fsync design (R1–R6) the shipped spec already carries — pure code, no hardware involvement. Includes the `close()` ordering fix (`recorder.py:874/875`) and the honest loss class. Any FUTURE capture requires this + 914 first. |
 | 4 | `tasks/TASK_916_COST_TRUTH_PACK.md` (NEW 2026-09-05 — harvest row; lands BEFORE 915) | XS/S | Borrow charge (flag-gated, OFF = bit-identical) + fee-tier honesty ("fee16" is not on the current ladder) + restated benchmark: the +0.97/+0.56 bar is ~50% short in BEAR22 and margin rollover (22–88%/yr on shorted notional) is NEVER charged in the record. Seeds D80. Restatement can only make bars harder, never easier. |
 | 5 | `tasks/TASK_915_IC_CEILING_AND_GP_BOOK.md` (**D79 — the direction row; adopted 2026-09-03**; amended 2026-09-05: loops-panel hygiene folded + 916 precondition) | M | The predictability ceiling + GP book per `lore/fable_direction_memo_2026-09-03.md` §4 (the memo IS the spec; the task file carries the gates). Ends the daily-OHLC question two-sidedly: PASS → closed-form trader on the winning cell; FAIL → pre-committed OHLC-repeal recommendation + data-row pivot. **PRECONDITIONS: the 899 staged-daily INGEST lands first (planner-owned — the 2026H1 cells need the seam) AND 916's restated cost stack.** CPU-only, ≤2 CPU-days, 14-day kill date. |
-| 6 | `tasks/TASK_920_SCORER_HONESTY_PACK.md` (NEW 2026-09-05 — harvest row) | XS/S | Four verified scorer corrections, all flag-gated OFF = bit-identical: true B&H book (never computed — "B&H" is a zero-fee daily-rebalanced EW book), simple-return accounting (log-sum is ≈ +0.3 Sharpe-equivalent optimistic and blind to rebalancing premia), drift-re-trim charging (+9–12×/yr uncharged; pre-registered >−0.10 disclosure tripwire), RiskConfig rows recorded (closes TASK_820's missing gate-2 number). Plus record-fix riders (819 TEST B2 receipt, 898 cash-drag footnote, 892 re-trim concentration, 893 backfill assert). |
+| ~~6~~ | ~~`tasks/TASK_920_SCORER_HONESTY_PACK.md`~~ **SHIPPED run 53 (`f896b86`, tag `task920-scorer-honesty`; 3 cycles, 5 lens-passes, 360-invocation exhaustive enumeration, selftest 12 → 16). Findings: TASK_820's never-recorded gate-2 overlay number — the shadow-scale DD throttle is the ENTIRE overlay cost at net 21 (+0.97 → +0.61); the 5% cap + 0.2% band are inert at defaults (max|pos| 0.03846 — a measured finding, mechanisms proven live when forced). Measured corrections to the spec's estimates: log-vs-simple bias −1.02 bp/day / Sharpe −0.043 (NOT "+0.3"); drift tripwire −0.046, did not fire — no disclosure obligation on prior 819/898 rows.** | XS/S | Four verified scorer corrections, all flag-gated OFF = bit-identical: true B&H book (never computed — "B&H" is a zero-fee daily-rebalanced EW book), simple-return accounting (log-sum is ≈ +0.3 Sharpe-equivalent optimistic and blind to rebalancing premia), drift-re-trim charging (+9–12×/yr uncharged; pre-registered >−0.10 disclosure tripwire), RiskConfig rows recorded (closes TASK_820's missing gate-2 number). Plus record-fix riders (819 TEST B2 receipt, 898 cash-drag footnote, 892 re-trim concentration, 893 backfill assert). |
 | 7 | `tasks/TASK_918_TACTIC_LIBRARY_HULL_CEILING.md` (NEW 2026-09-05 — tactics row 1 upgraded; **gate = 899 ingest**) | XS/S | 8 tactic matrices incl. the never-measured 21d cross-sectional reversal (7d leg is time-series — label corrected). Comparators: hull, oracle, walk-forward, Hedge, **equal-weight blend (binding null)**, B0 strategy-momentum control; block-CI + SR0(N). **STEP-0 kill: hull < +0.97 closes the selector class — MuZero-as-selector included — in minutes (85% prior).** |
 | 8 | `tasks/TASK_917_SECOND_MOMENT_AND_EVENT_INSTRUMENTS.md` (NEW 2026-09-05 — mechanism-panel salvage; no hard gate) | S/M | Four independent CPU instruments, each self-nulling: VR-persistence ρ̄ (gates every regime idea; only market-level pooling can resolve it), post-shock κ table with FIRST-TRADED-PRINT entry (close-entry is bid-ask bounce), post-listing event study (never measured), hourly residual IC surface h∈{1..24}h (the never-tested 1h–6h band; break-even overlay built in; re-tests 816's +1.53 residual-TSMOM lead). ≤3 CPU-days total. |
 | 9 | `tasks/TASK_919_EXECUTION_TURNOVER_MODULE.md` (NEW 2026-09-05 — tactics row 2 upgraded; phase B double-gated) | S | Phase A: H×θ×accounting×tier grid on the frozen book (+hour-of-day 13–17 UTC arm, zero signal cost). **60–70% odds of +0.10–0.15 Sharpe on any surviving book — the only majority-odds additive item in the harvest.** Phase B (maker spec): gated on 907-B2 shipped (AS(1h) ≤ 2bp) AND D80(iii) rails ruling. |
