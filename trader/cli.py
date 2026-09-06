@@ -60,6 +60,32 @@ _HONESTY_FLAGS = (("--bh-book", "bh_book", "legacy-label"),
                   ("--charge-drift-rebalance", "charge_drift_rebalance", False))
 
 
+def _print_borrow_pack(args, logc, ts_d, net_bps, r_lo, r_hi, syms):
+    """TASK_916 leg 1/3: print the margin-rollover (borrow) charge, additively, on top of the
+    canon report printed ABOVE this call (unaffected). No-op when --borrow-model is the
+    default 'none' (G1: bit-identical OFF)."""
+    if args.borrow_model == "none":
+        return
+    rep = bt.borrow_window_report(logc, ts_d, config.STRATEGY, r_lo, r_hi, syms,
+                                  rate_scenario=args.borrow_rate_scenario)
+    if rep is None:
+        print("[backtest] borrow overlay: window too thin, skipped", file=sys.stderr)
+        return
+    print(f"\n  --- TASK_916 borrow charge (--borrow-model {args.borrow_model} "
+          f"--borrow-rate-scenario {args.borrow_rate_scenario}; reporting-only, canon numbers "
+          f"above unchanged) ---")
+    print(f"  mean short fraction of gross {rep['short_frac_mean']*100:.1f}%  "
+          f"borrow drag {rep['borrow_bp_per_day']:.3f} bp/day-equivalent")
+    print(f"    net@{net_bps} Sharpe {_fmt(rep.get(f'net{net_bps}'))} -> borrow-charged "
+          f"{_fmt(rep.get(f'net{net_bps}_borrow'))}")
+    for c in config.STRATEGY.costs_bp:
+        print(f"    net@{c:<2d}: Sharpe {_fmt(rep[f'net{c}'])} -> borrow-charged "
+              f"{_fmt(rep[f'net{c}_borrow'])}")
+    for c in config.STRATEGY.gate_costs:
+        print(f"    @{c}bp borrow-charged CI [{rep[f'ci{c}_borrow_lo']:+.2f},"
+              f"{rep[f'ci{c}_borrow_hi']:+.2f}]")
+
+
 def _unsupported_combo(args):
     """TASK_920 fix pass (run 53 cycle 3): flag combinations this build does NOT implement.
     Returns a refusal message (str) or None when the combination is supported.
@@ -106,6 +132,13 @@ def _unsupported_combo(args):
                     f"task exists to remove, and the opposite sign to the true-B&H book on the "
                     f"pinned panel. No figure printed. Re-run the honesty pack without "
                     f"--overlay (the canon overlay-OFF report is what it augments).")
+        if args.borrow_model != "none":
+            return (f"[backtest] REFUSING: --borrow-model {args.borrow_model} is not "
+                    f"implemented together with --overlay (TASK_916's borrow charge is wired "
+                    f"into the overlay-OFF report only, same reason as the TASK_920 honesty "
+                    f"pack — the overlay path scores its own positions through "
+                    f"run_overlay_backtest, not the _decision_grid the borrow report is built "
+                    f"on). No figure printed. Re-run the borrow charge without --overlay.")
     return None
 
 
@@ -269,6 +302,7 @@ def cmd_backtest(args):
         r_lo, r_hi = bt.regime_rows(ts_d)["FULL"]
         if not _print_honesty_pack(args, logc, ts_d, net_bps, r_lo, r_hi):
             return 1
+        _print_borrow_pack(args, logc, ts_d, net_bps, r_lo, r_hi, syms)
     elif not args.overlay:
         d = bt.window_metrics(logc, ts_d, score_start, score_end, config.STRATEGY)
         if d is None:
@@ -289,6 +323,7 @@ def cmd_backtest(args):
         r_hi = int(np.searchsorted(ts_d, score_end)) if score_end is not None else ts_d.size
         if not _print_honesty_pack(args, logc, ts_d, net_bps, r_lo, r_hi):
             return 1
+        _print_borrow_pack(args, logc, ts_d, net_bps, r_lo, r_hi, syms)
     else:
         rcfg = _isolated_rcfg(args.overlay_only)
         r = bt.run_overlay_backtest(logc, ts_d, config.STRATEGY, rcfg,
@@ -414,6 +449,17 @@ def build_parser():
                          "mechanism -- cap (5%% per-asset cap) | dd (shadow-scale DD "
                          "throttle) | band (0.2%% rebalance band) -- instead of all (default, "
                          "pre-920 --overlay behavior, all three together)")
+    pb.add_argument("--borrow-model", choices=["none", "kraken-margin"], default="none",
+                    help="TASK_916: margin-rollover (borrow) charge on SHORT exposure, per "
+                         "unit time held (D81(c) denominator -- shorted notional, NOT "
+                         "turnover). none (default) prints nothing, canon report unaffected "
+                         "(G1: bit-identical). kraken-margin adds a borrow-charged net(c) "
+                         "column + CI, reporting-only, below the canon report")
+    pb.add_argument("--borrow-rate-scenario", choices=["low", "high"], default="low",
+                    help="TASK_916 (with --borrow-model kraken-margin only): which end of "
+                         "Kraken's quoted per-asset-class rollover range to charge -- low = "
+                         "0.01%%/4h BTC, 0.02%%/4h alts (~21.9%%/~43.8%% annualized); high = "
+                         "0.02%%/4h BTC, 0.04%%/4h alts (~43.8%%/~87.6%% annualized)")
 
     sub.add_parser("parity", help="gate 1a: reproduce the 819 Phase-2 best cell")
 

@@ -41,6 +41,11 @@ and is import-GUARDED so it can only ever SKIP, never red the hermetic numpy gat
       learned component) vs the vacuous true-env-no-tail pw0 (False); build_search maps
       'vhat-distilled' to the canon model leaf (bit-identical search); distill freeze partition
       trains dynamics+value only (JAX; same import guard as ST8)
+  ST17 TASK_916 borrow charge: rate-scenario arithmetic (BTC/alt low/high), XBT-exact BTC
+      classification, borrow_cost_series closed form on a planted long/short panel, the
+      D81(c) direction invariant (net_series_with_borrow <= net_series pointwise, by
+      construction), and CLI wiring (--borrow-model defaults to 'none' = silent no-op, refuses
+      loudly under --overlay) — hermetic numpy, placed WITH ST1-ST7/ST13-16
 """
 
 import numpy as np
@@ -524,6 +529,120 @@ def self_tests():
                 "--overlay-only without --overlay) refuse loudly — non-zero exit, empty "
                 "stdout, stderr naming the dropped flag — while all four supported "
                 "combinations are still accepted")
+
+    # 17. TASK_916 borrow charge (margin rollover) — construction + CLI wiring.
+    #     (a) rate-scenario arithmetic: 0.01/0.02%/4h BTC, 0.02/0.04%/4h alts, annualized at
+    #         6 four-hour windows/day * 365 days/yr (2190).
+    assert abs(bt.BORROW_RATE_SCENARIOS["low"]["BTC"] - 0.219) < 1e-9
+    assert abs(bt.BORROW_RATE_SCENARIOS["low"]["ALT"] - 0.438) < 1e-9
+    assert abs(bt.BORROW_RATE_SCENARIOS["high"]["BTC"] - 0.438) < 1e-9
+    assert abs(bt.BORROW_RATE_SCENARIOS["high"]["ALT"] - 0.876) < 1e-9
+    #     (b) BTC classification: Kraken's ticker is XBT (verified against the 819 npz panel's
+    #         own `syms`), 'BTC' kept as a defensive alias; every other symbol is ALT-rated.
+    assert bt._is_btc("XBT") and bt._is_btc("BTC") and bt._is_btc("WBTC") and bt._is_btc("TBTC") \
+        and not bt._is_btc("ETH") and not bt._is_btc("XBTUSD") and not bt._is_btc("AIXBT"), \
+        "BTC classification must match XBT/BTC/WBTC/TBTC exactly, no substrings (AIXBT is an ALT)"
+
+    #     (b2) run-54 fix-pass addition: the SAME check against the REAL PIT panel symbol
+    #         universe `build_benchmark.py` scores (not just the hand-picked names above) --
+    #         the correctness-lens finding was precisely that "XBT-exact, no alias leakage"
+    #         had never been tested where the gap lives (WBTC/TBTC/AIXBT all live in that
+    #         panel). SKIPS (does not fail) if the verification fixture is absent, same
+    #         import-guard convention as ST8/ST9 -- a fixture-less host never reds the
+    #         hermetic numpy gate.
+    _fixture_db17 = config.REPO_ROOT / "fixtures" / "trading_fixture.db"
+    _st17b_note = "SKIPPED (fixtures/trading_fixture.db absent from this host)"
+    if _fixture_db17.exists():
+        from . import data as datamod17
+        _, _, _, syms17_real, _ = datamod17.load_db_backtest_panel(
+            db_path=str(_fixture_db17), include_dead=False)
+        assert {"WBTC", "TBTC", "AIXBT"} <= set(syms17_real), \
+            "fixture panel composition changed -- WBTC/TBTC/AIXBT expected in the active " \
+            "universe this check is meant to guard; re-derive the alias set if this fires"
+        assert bt._is_btc("WBTC") and bt._is_btc("TBTC") and not bt._is_btc("AIXBT"), \
+            "real PIT panel: WBTC/TBTC must classify BTC-rate, AIXBT must stay ALT-rate " \
+            "(genuine altcoin, ticker contains \"XBT\")"
+        _st17b_note = f"checked against the real {len(syms17_real)}-symbol active PIT panel " \
+                       "(WBTC/TBTC -> BTC-rate, AIXBT -> ALT-rate)"
+
+    #     (c) borrow_cost_series: hand-computed on a planted 3-asset pos matrix. Row t=0: XBT
+    #         short 0.4 (charged), ALT1 long 0.3 (NOT charged, long never pays borrow), ALT2
+    #         short 0.2 (charged). H=1 and H=3 both checked (linear in H/365).
+    syms17 = ["XBT", "ALT1", "ALT2"]
+    pos17 = np.array([[-0.4, 0.3, -0.2],
+                      [0.5, -0.1, 0.0],
+                      [-0.6, -0.6, 0.6]])
+    t17 = np.array([0, 1, 2])
+    for H17 in (1, 3):
+        got = bt.borrow_cost_series(pos17, syms17, t17, H17, rate_scenario="low")
+        rates17 = bt.BORROW_RATE_SCENARIOS["low"]
+        exp = np.array([
+            0.4 * rates17["BTC"] + 0.0 + 0.2 * rates17["ALT"],   # row0: XBT short + ALT2 short
+            0.0 + 0.1 * rates17["ALT"] + 0.0,                    # row1: only ALT1 short
+            0.6 * rates17["BTC"] + 0.6 * rates17["ALT"] + 0.0,   # row2: XBT + ALT1 short
+        ]) * (H17 / 365.0)
+        assert np.allclose(got, exp, atol=1e-12), \
+            f"H={H17}: borrow_cost_series must equal Sum_i max(-pos,0)*rate*(H/365), " \
+            f"got {got} vs {exp}"
+    #     zero short exposure anywhere -> zero borrow cost (a long-only book pays nothing).
+    pos_long_only = np.abs(pos17)
+    z = bt.borrow_cost_series(pos_long_only, syms17, t17, 1, rate_scenario="low")
+    assert np.allclose(z, 0.0), "a book with no short exposure must pay exactly 0 borrow cost"
+
+    #     (d) D81(c) direction invariant: net_series_with_borrow <= net_series pointwise,
+    #         on randomized gross/turn/borrow_cost >= 0 — the restatement can only make bars
+    #         harder, never easier, BY CONSTRUCTION (not merely by convention).
+    rng17 = np.random.RandomState(916)
+    gross17 = rng17.randn(200)
+    turn17 = np.abs(rng17.randn(200)) * 0.2
+    borrow17 = np.abs(rng17.randn(200)) * 0.01     # any nonnegative cost
+    for c17 in (0, 8, 21, 80):
+        plain = bt.net_series(gross17, turn17, c17)
+        charged = bt.net_series_with_borrow(gross17, turn17, c17, borrow17)
+        assert np.all(charged <= plain + 1e-15), \
+            f"net_series_with_borrow must be <= net_series pointwise at c={c17} (D81(c))"
+        assert np.allclose(plain - charged, borrow17), \
+            "the borrow-charged net series must differ from the plain one by EXACTLY borrow_cost"
+
+    #     (e) CLI wiring: --borrow-model defaults to 'none'; at the default, _print_borrow_pack
+    #         is a silent no-op (G1); --borrow-model kraken-margin refuses under --overlay
+    #         (same reason as the TASK_920 honesty pack — no _decision_grid there).
+    from . import cli as climod916
+    import io as _io916, contextlib as _ctx916
+
+    dflt916 = climod916.build_parser().parse_args(["backtest"])
+    assert dflt916.borrow_model == "none" and dflt916.borrow_rate_scenario == "low", \
+        f"--borrow-model must default to 'none' (G1), got {dflt916}"
+    buf916 = _io916.StringIO()
+    with _ctx916.redirect_stdout(buf916):
+        climod916._print_borrow_pack(dflt916, logc_1, ts920, 8, 0, T920, ["A"])
+    assert buf916.getvalue() == "", \
+        f"at --borrow-model none the borrow pack must print NOTHING, got {buf916.getvalue()!r}"
+
+    a916 = climod916.build_parser().parse_args(
+        ["backtest", "--overlay", "--borrow-model", "kraken-margin"])
+    assert climod916._unsupported_combo(a916) is not None, \
+        "--borrow-model kraken-margin under --overlay must be refused, not silently dropped"
+    o916, e916 = _io916.StringIO(), _io916.StringIO()
+    with _ctx916.redirect_stdout(o916), _ctx916.redirect_stderr(e916):
+        rc916 = climod916.cmd_backtest(a916)
+    assert rc916 != 0 and o916.getvalue() == "" and "--borrow-model" in e916.getvalue(), \
+        f"the --overlay + kraken-margin refusal must exit non-zero with no stdout figure, " \
+        f"got rc={rc916} stdout={o916.getvalue()!r} stderr={e916.getvalue()!r}"
+    assert climod916._unsupported_combo(
+        climod916.build_parser().parse_args(["backtest", "--borrow-model", "kraken-margin"])
+    ) is None, "--borrow-model kraken-margin WITHOUT --overlay is supported and must not refuse"
+
+    msgs.append("[ST17] TASK_916 borrow charge: rate-scenario arithmetic matches the task's "
+                "own BTC-low/alt-low/alt-high figures (21.9%/43.8%/87.6% annualized); BTC "
+                "classification is XBT/WBTC/TBTC-exact (no substring/alias leakage, AIXBT "
+                f"stays ALT) -- {_st17b_note}; "
+                "borrow_cost_series equals Sum_i max(-pos,0)*rate*(H/365) on a planted "
+                "mixed long/short panel at H={1,3}, and is exactly 0 for a long-only book; "
+                "net_series_with_borrow is <= net_series pointwise by EXACTLY the borrow cost "
+                "(D81(c) direction enforced by construction); CLI --borrow-model defaults to "
+                "'none' (silent no-op, G1) and refuses loudly (non-zero exit, no stdout "
+                "figure) when combined with --overlay")
 
     # 8. TASK_847 policy-prior candidate-set properties (Sampled-MuZero root proposal).
     #    The dithered-book proposal is policy-BLIND; the policy-prior scheme lays the K

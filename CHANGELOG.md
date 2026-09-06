@@ -3,6 +3,66 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_916 — the cost truth pack: margin borrow charged, the fee tier verified against Kraken's live ladder, and the benchmark restated on both
+
+- **What shipped.** Four legs in `trader/`: `--borrow-model {none,kraken-margin}` and
+  `--borrow-rate-scenario {low,high}` charging Kraken margin rollover on shorted notional
+  (`backtest.py:763-892`), the restated benchmark generator
+  (`experiments/916_cost_truth/build_benchmark.py`), the registered-window anchor reproduction
+  (`experiments/916_cost_truth/anchor_reproduction.py`), and the disclosure ledger below.
+  Default is `none` and **G1 (OFF = byte-identical) was verified twice independently**, each
+  time in a detached worktree at pre-916 HEAD `191e2ef`: identical sha256
+  `e5c47eee` on `backtest`, and byte-identical `parity` and `--overlay`. Selftest **16 -> 17**
+  checks (ST17). `cli.py`'s `--borrow-model` exists only on the `backtest` subparser, so
+  `parity` (gate 1a) cannot see the flag even in principle.
+
+- **The denominations, because this row exists to stop them being conflated.** Fee/slippage is
+  charged per **turnover** (bp/side x notional traded); borrow is charged per **shorted notional
+  x time held** (0.01-0.02%/4h BTC, 0.02-0.04%/4h alts; `_ANNUALIZE_4H = 6*365 = 2190`).
+  Book-level drag is `short_fraction x notional_rate`, verified on real data: PIT FULL measures
+  24.84%/yr against `short_frac 0.570 x ALT-low 43.8% = 24.96%` — the code weights per asset, it
+  does not apply a flat rate to capital.
+
+- **The number this row existed to produce.** The benchmark bar was borrow-uncorrected on both
+  sides. Restated, net21 borrow-charged (low scenario): SURVIVOR FULL **+0.967 -> +0.582**, PIT
+  FULL **+0.836 -> +0.424**, PIT BEAR22 **+0.990 -> +0.517**, H=3d FULL **+1.345 -> +0.934**. At
+  the **verified base taker tier (80bp)** rather than the legacy 21bp assumption, PIT FULL reads
+  **+0.279 -> -0.132** — a book that is mildly positive under the record's cost assumption is
+  negative once the honest tier and borrow are both charged. All 144 charged-vs-uncharged cells
+  move down; zero exceptions.
+
+- **The registered-window anchor, and the honest limit on it.** The `+0.56` PIT reference
+  reproduces at **n=2800 exactly** on `powered.py`'s registered span `[2018-01-01, 2025-09-01)`:
+  uncharged net21 **+0.5849**, charged **+0.2223** (low) / **-0.1402** (high). This **triggers the
+  task's pre-committed consequence** — the borrow-inclusive bar becomes the honest reference for
+  TASK_915's G-B/G-C MARGINAL band. **Caveat carried in the artifact itself and not to be dropped
+  when citing it:** that is a statement about POINT ESTIMATES. The bootstrap CI does not exclude
+  +0.56 (low `[-0.47,+0.90]`, high `[-0.86,+0.56]`, upper bound exactly at the bar), and the
+  recorded reference is equally wide (`+0.56 CI[-0.13,+1.23]`) — an instrument-wide property,
+  not a defect introduced here.
+
+- **Leg 2 discharges D80(i)'s "re-verify at 916 leg 2" instruction.** Against primary sources:
+  the **Kraken+ waiver excludes Kraken Pro / API trades** (app/web Buy-Sell-Convert only), so an
+  API-traded book gets nothing from the subscription and the honest tier is the Pro ladder. The
+  July-2026 ladder is confirmed exactly as harvested, plus three intermediate tiers the harvest
+  omitted ($2.5k 0.30/0.60, $10k 0.22/0.38, $25k 0.20/0.35), and tier can now qualify on
+  "Assets on Platform" as an alternative to 30d volume. Margin rollover schedule confirmed.
+  **Not modelled, disclosed:** the one-time margin opening fee and the 2% liquidation fee — a
+  backtest has no margin-call hook to hang the latter on.
+
+- **Disclosure ledger.** Three incompatible fee assumptions coexist in the record:
+  `POWERED_RESULT.md:7`'s "taker16+slip5" = 21bp, `TASK_897:284`'s attainable maker set
+  `{8,16}bp`, and the verified Level-1 ladder at **40/80bp** — 2-5x higher than either, for an
+  account under $2,500/30d volume. Every `net@21` column below ~$100k/30d is optimistic.
+  `830 hold-shares BEAR22 (+1.218)` is disclosed directionally only (lives in `eval_vector`,
+  out of scope); its BEAR22 short fraction measures 70-72%, so it moves down.
+
+- **Remainders.** D80(ii) (whether `docs/pathway.md`'s goalpost is restated net of borrow) and
+  D80(iii) stay OPEN — the goalpost is the operator's. The operator's actual 30d volume tier is
+  still unrecorded, which is what decides the honest ladder row. `XBTPY` (dead-only universe,
+  max weight 0.44%, ~0.0002 Sharpe effect) is left in the ALT bucket deliberately: its price
+  series diverges from XBT by 0.65-358x non-constant, so it is not BTC-tracking.
+
 ## 2026-09-06 — TASK_920 — the scorer's four honesty corrections, flag-gated OFF, and the overlay attribution that had never been written down
 
 - **What shipped.** Legs 1-4 of the scorer honesty pack in `trader/`: `--bh-book {legacy-label,

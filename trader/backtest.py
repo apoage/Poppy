@@ -760,3 +760,132 @@ def honesty_pack_report(logc, ts_sub, scfg, r_lo, r_hi, net_bps, bh_book="legacy
         "last_exit": _utc_day(ts_sub[int(t[-1]) + H]),
     }
     return out
+
+
+# =============================================================================
+# TASK_916 cost truth pack — margin-rollover (borrow) charge, REPORTING-ONLY overlay.
+#
+# Additive, same contract as the TASK_920 honesty pack above: nothing here is called from
+# compute_full_cell, cell_metrics, window_metrics, regime_series, or run_overlay_backtest, so
+# gate 1a (`parity`) and the default `backtest` report are computed by EXACTLY the pre-916
+# code path regardless of what lives here (G1: --borrow-model none, the default, is
+# bit-identical). Wired into the CLI ONLY behind --borrow-model (trader/cli.py).
+#
+# D81(c) denominator: this is a cost per SHORTED NOTIONAL PER UNIT TIME, NOT per turnover —
+# it is charged even on a position held with zero turnover, which the fee model (net_series,
+# bp/side on turnover) never sees. The two cost families are summed, never conflated.
+# =============================================================================
+
+# Kraken margin rollover (dead-session harvest, fetched 2026-09-05 — UNVERIFIED against the
+# primary schedule by this pass; see TASK_916 report for what leg-2 verification established).
+# 0.01-0.02%/4h BTC, 0.02-0.04%/4h alts, annualized at 6 four-hour windows/day * 365 days/yr.
+# The 'low'/'high' scenario picks the low/high END OF EACH ASSET CLASS'S OWN quoted range (not
+# a mix-and-match across classes) -- BTC-low 0.01%/4h~=21.9%/yr, alt-low 0.02%/4h~=43.8%/yr,
+# alt-high 0.04%/4h~=87.6%/yr; matches the corrected arithmetic in the task file's "Why" #1.
+_ANNUALIZE_4H = 6 * 365  # 4h windows/day * days/yr = 2190
+BORROW_RATE_SCENARIOS = {
+    "low":  {"BTC": 0.0001 * _ANNUALIZE_4H, "ALT": 0.0002 * _ANNUALIZE_4H},   # ~21.9% / ~43.8%
+    "high": {"BTC": 0.0002 * _ANNUALIZE_4H, "ALT": 0.0004 * _ANNUALIZE_4H},   # ~43.8% / ~87.6%
+}
+
+
+# TASK_916 fix pass (run-54, correctness-lens finding): the PIT db-fixture panel (363-symbol
+# active universe `build_benchmark.py`'s "PIT (db/fixture)" panel scores) contains WBTC
+# (Wrapped Bitcoin) and TBTC (Threshold tBTC) -- both track BTC ~1:1, both are 'online' pairs
+# with real short exposure (verified 2026-09-06: WBTC ~48.9% of active bars short, weight up to
+# ~1.4%; TBTC ~47.6% short, weight up to ~2.3%). Pre-fix these fell through to the generic ALT
+# rate (2x-4x overcharge on their notional). Kept as an EXACT-match set, not a substring rule:
+# the same panel also holds AIXBT (a genuine altcoin whose ticker contains "XBT"), which a
+# substring rule would misclassify as BTC in the UNSAFE direction (undercharging its actual
+# ALT-rate borrow). ST17 (selftest.py) asserts this against the REAL fixture panel, not just
+# the hand-picked names here.
+_BTC_ALIASES = frozenset({"XBT", "BTC", "WBTC", "TBTC"})
+
+
+def _is_btc(sym):
+    """Kraken's BTC ticker is XBT (verified against runs/819_single_asset/_close_broad_daily.npz
+    `syms` and POWERED_RESULT.md's 2018-bear-carrier list, both XBT, never BTC); 'BTC' is kept
+    as a defensive alias only in case a future panel source normalizes differently. WBTC/TBTC
+    are wrapped/tokenized BTC (~1:1 tracking) found in the PIT db-fixture panel -- see
+    _BTC_ALIASES above for the verification. Exact match only, never substring: AIXBT (ticker
+    contains "XBT", genuine altcoin) must fall through to the ALT rate."""
+    return sym in _BTC_ALIASES
+
+
+def borrow_cost_series(pos, syms, t, H, rate_scenario="low"):
+    """TASK_916 leg 1: per-decision margin-rollover cost on SHORT exposure ONLY, charged on
+    shorted notional per unit time held (D81(c) denominator) -- never on turnover, never on
+    long exposure. cost_k = Sum_i max(-pos[t_k,i], 0) * rate_annual(i) * (H/365), where
+    rate_annual(i) is the BTC or ALT scenario rate for asset i's symbol. Always >= 0 (a book
+    with zero short exposure at t_k pays exactly 0 there), so subtracting it from a net return
+    series can only ever LOWER a Sharpe/return that has any short exposure, never raise one --
+    the D81(c) pre-committed direction (the restatement can only make bars harder). Returns an
+    array shaped like regime_series' `turn` (one value per decision)."""
+    rates = BORROW_RATE_SCENARIOS[rate_scenario]
+    is_btc = np.asarray([_is_btc(s) for s in syms], dtype=bool)
+    rate_vec = np.where(is_btc, rates["BTC"], rates["ALT"])
+    short_notional = np.maximum(-np.asarray(pos)[t], 0.0)          # (n_decisions, n_assets)
+    return short_notional @ rate_vec * (H / 365.0)
+
+
+def net_series_with_borrow(gross, turn, c_bp, borrow_cost):
+    """net(c) with the fee model (net_series: turnover * bp/side) PLUS the borrow charge on
+    top, both subtracted from the same gross series -- gross - turn*(c/1e4) - borrow_cost.
+    borrow_cost is elementwise >= 0 (see borrow_cost_series), so this is <= net_series(...)
+    pointwise on every decision: the D81(c) direction is enforced by construction, not just by
+    convention -- a caller cannot accidentally produce a borrow-inclusive number ABOVE its
+    uncorrected counterpart."""
+    return net_series(gross, turn, c_bp) - borrow_cost
+
+
+def borrow_window_report(logc, ts_sub, scfg, r_lo, r_hi, syms, costs_bp=None, gate_costs=None,
+                         rate_scenario="low", xp=None):
+    """TASK_916 leg 3 scorer: on the IDENTICAL H-strided decision grid the canon FULL/WINDOW
+    report scores (`_decision_grid`, unchanged from the TASK_920 pack -- never calls
+    regime_series/cell_metrics/window_metrics, so the canon numbers this augments are computed
+    by unmodified pre-916 code), report gross/turn (same construction regime_series uses
+    internally: gross_t=Sum_i pos[t,i]*fwd_i, turn_t=Sum_i|pos[t,i]-pos[t-H,i]|), the canon
+    net(c) column, AND a borrow-charged net(c) column per requested cost tier, plus a
+    borrow-charged bootstrap CI at the gate costs (same `_block_bootstrap_sharpe_ci` the canon
+    scorer uses, called on the borrow-inclusive net series). Returns None if the window is too
+    thin (identical thinness contract to regime_series/_decision_grid)."""
+    if costs_bp is None:
+        costs_bp = scfg.costs_bp
+    if gate_costs is None:
+        gate_costs = scfg.gate_costs
+    grid = _decision_grid(logc, scfg, r_lo, r_hi, xp=xp)
+    if grid is None:
+        return None
+    logc_np, pos_np, pres_np, t, H, warm = grid
+    fwd = logc_np[t + H] - logc_np[t]
+    fwd = np.where(np.isfinite(fwd), fwd, 0.0)
+    gross = np.sum(pos_np[t] * fwd, axis=1)
+    turn = np.sum(np.abs(pos_np[t] - pos_np[t - H]), axis=1)
+    borrow_cost = borrow_cost_series(pos_np, syms, t, H, rate_scenario=rate_scenario)
+    period = H * K
+    d = {"n": int(t.size), "H": int(H), "rate_scenario": rate_scenario,
+         "gross": _sharpe(gross, period), "turn": float(np.mean(turn)),
+         "borrow_bp_per_day": float(np.mean(borrow_cost)) * 1e4 / H,
+         "short_frac_mean": float(np.mean(np.sum(np.maximum(-pos_np[t], 0.0), axis=1) /
+                                          np.maximum(np.sum(np.abs(pos_np[t]), axis=1), 1e-300)))}
+    for c in costs_bp:
+        d[f"net{c}"] = _sharpe(net_series(gross, turn, c), period)
+        d[f"net{c}_borrow"] = _sharpe(net_series_with_borrow(gross, turn, c, borrow_cost), period)
+    for c in gate_costs:
+        nh = net_series_with_borrow(gross, turn, c, borrow_cost)
+        ci = _block_bootstrap_sharpe_ci(nh, period, period, scfg.n_boot, scfg.seed)
+        d[f"ci{c}_borrow_lo"], d[f"ci{c}_borrow_hi"] = float(ci[0]), float(ci[1])
+    return d
+
+
+def borrow_regime_report(logc, ts_sub, scfg, syms, rate_scenario="low"):
+    """TASK_916 leg 3 convenience: `borrow_window_report` over every named regime
+    (`config.REGIMES`), same window bounds `regime_rows` derives for the canon scorer. Returns
+    {regime_name: dict-or-None}."""
+    rows = regime_rows(np.asarray(ts_sub))
+    out = {}
+    for name in REG_NAMES:
+        r0, r1 = rows[name]
+        out[name] = borrow_window_report(logc, ts_sub, scfg, r0, r1, syms,
+                                         rate_scenario=rate_scenario)
+    return out
