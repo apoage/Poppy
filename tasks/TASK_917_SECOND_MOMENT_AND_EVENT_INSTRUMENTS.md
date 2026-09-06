@@ -1,3 +1,46 @@
+> **STATUS (2026-09-06): SHIPPED as `task917-instrument-pack` (`8f411d1`, factory run 54).**
+> All four instruments landed. **Production numbers, not fixture proxies** — `ohlcv_daily` is
+> byte-identical between the fixture and `trading_data.db` (sha256 `90d67f40…`, 499,430 rows),
+> independently re-hashed. Verification: 4 lenses (cycle 1) → BLOCKER + MAJOR → fix pass (opus)
+> → 2 lenses (cycle 2, opus) → 6 MAJOR on the fix's *arguments* → cycle-3 D76 closing pass,
+> no verdict changed. Suite 17/17 throughout.
+>
+> **P2 — KILL FIRED, ROBUST. The event-conditional liquidity-provision family is CLOSED.**
+> κ₃ = +0.0361, CI [−0.022,+0.094], 167 cascade cohorts (13.1/yr); threshold sweep 8→40 never
+> approaches the 0.18–0.20 line. Hedge round trip **338–356 bp** at 916's verified `base_taker80`
+> vs **+62.7 bp** capture. Placebo shows κ ≈ 0.036 is generic post-large-move behaviour, not
+> cascade-specific.
+>
+> **P1 — INCONCLUSIVE. The kill does NOT fire; regime-gating is UNMEASURED, not closed.**
+> Do NOT cite this row as closing gated trend/reversal, CPD switches or XS-AUTOCORR books.
+> Revision 1 fired on an un-inherited 180d block; 120d cells invert at +0.106…+0.213 with MORE
+> pairs (27–28 vs 18). Sweep spans ρ̄ ∈ [−0.342,+0.470]. **Decisive fact is power:** dispersion is
+> indistinguishable from estimator noise at all 11 block lengths, ceiling ~0.3 |ρ̄| with SE ≥ 0.14,
+> anchor power **~9–10%** to separate ρ̄=0.10 from 0 → no block length could have fired a
+> defensible kill. 0/44 cells exclude the line from above either. → **D84 OPEN.**
+>
+> **P3 — SURVIVES, placebo-clean.** Age-conditional IC **+0.0304, NW-t +4.15**, 946 dates,
+> 398-asset PIT panel, dead retained. Leakage audit refuted the listing-date-is-collection-start
+> hypothesis (2/398 assets; excluding them changes the IC to 6 dp); LOO market identical; NW t
+> stable 4.05–4.23 over lags 0–90; `include_dead=False` → +0.0279 / t 3.50. Operative null is
+> i.i.d. per-asset: **p = 0.0050 at the design minimum, z ≈ 5.5**. An **instrument reading**, not
+> a promotion candidate and not a reopened edge thread.
+>
+> **P4 — PREPARED, NOT RUN** (compute policy: expensive validation is scheduled). `--full`
+> refuses with exit 2 before opening a DB. **Pre-`--full` BLOCKER:** its local
+> `discover_universe()` omits the `source_filter="kraken_rest"` P1–P3 use, so it carries 8 real
+> assets as a 10-column panel (`TWX/USD`, `HOLE/USD` admitted) — it would measure a different
+> universe than P1–P3. Reconcile before any real invocation.
+>
+> **REMAINDERS.** D84 OPEN (P1's 0.10 threshold was inherited from `mech_B.md`'s *different*
+> statistic and never calibrated to this estimator). Estimator defects recorded, NOT fixed:
+> undisclosed **tiling-origin** free parameter (15.6% of origins put ρ̄ above the kill line);
+> numerator/denominator sample mismatch (own-null level 0.955, so the observed 0.904 is
+> **z = −0.70 from a random walk**, not a shortfall against the 1.024 breakeven);
+> E[VR_block] 0.765→0.908 across the grid, so R1 demanded unanimity across eleven different
+> estimands. The cycle-3 closing pass added null-construction code that was **not itself
+> adversarially reviewed** — corroborated by judges' independent implementations, flagged.
+
 # TASK_917 — second-moment & event-conditional instrument pack
 
 **Status**: PROPOSED 2026-09-05 (planner; salvage of the dead mechanism-design panel
