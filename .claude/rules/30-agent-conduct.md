@@ -88,3 +88,32 @@ in each case the implementer faithfully built what the brief asserted (run 52: a
 argument stated in population size for a gate that divides by a rate — fail-open in fact).
 The recurrence is the brief-writer's, not the implementer's, and no cycle limit binds it.
 
+
+## Verification instruments get their own adversarial pass (D83(i), ruled 2026-09-06)
+
+Every new guard, harness, or verification instrument is itself a claim, and gets the same
+adversarial treatment a diagnosis's replacement gets: **ask where the defect it cannot see
+sits, and prove the guard fires when the defect is planted exactly there.** A guard whose
+reach does not cover what its prose certifies is a MAJOR even when every test is green —
+"the cap never binds" and "the cap was never applied" produce identical tables (run 53's
+TASK_820 finding), and a rebuilt `builtins.open` name intercepts zero `io.open` calls while
+affirmatively certifying "traversals=1.000" for a double-traversing reader (run 53's 914).
+Measured recurrence: seven such guards/claims in run 55 alone across two rows; five were
+caught only by an adversarial lens, none by their author. Authors plant poisons where the
+mechanism is STRONG; the adversarial pass plants them where it is BLIND.
+
+## Every asserted number carries its artifact and revision (D83(ii), ruled 2026-09-06)
+
+A brief, spec, or task file that states a number must state, for that number, **the artifact
+and revision it was measured on** (file+sha, run, or instrument named). Unattributed numbers
+are provenance failures waiting to happen: all five factory errors in run 54 were numbers
+asserted without artifact+revision, and the planner's own task files inherited dead-panel
+estimates that measurement then cut down (a "+0.3 Sharpe" log-bias measured at −0.043; a
+"twice the cost stack" borrow line that was a 2× denomination error). Digest files and
+consultation summaries are LEADS, not numbers — recompute before quoting, or quote with the
+source named and the revision stated.
+
+**Staging rider (run-55 process note, adopted under D83): `git add -A` is forbidden while
+any deliberate fence stands in the tree** (a halted candidate, a preserved base). Stage by
+explicit path. Run 55's mid-ritual `git add -A` staged the fenced 914 files and was caught
+only by the staging listing.
