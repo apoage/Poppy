@@ -1,0 +1,337 @@
+{
+  "kill_fired": true,
+  "could_not_be_evaluated": false,
+  "verdict": "KILL FIRED",
+  "n_raw_events": 14978,
+  "n_no_next_print": 19,
+  "cascade_min_events": 15,
+  "n_usable_events_cascade": 7366,
+  "n_dates_cascade": 167,
+  "n_usable_events_any_date": 14959,
+  "n_dates_any_date": 2195,
+  "years": 12.747433264887064,
+  "dates_per_yr_cascade": 13.100676546391751,
+  "dates_per_yr_any_date": 172.19152706185565,
+  "by_horizon_cascade": {
+    "1": {
+      "n_cohorts": 167,
+      "n_events": 7357,
+      "kappa_pop": 0.01687717201940683,
+      "se_pop": 0.020940494301949157,
+      "ci_lo": -0.024166196812413516,
+      "ci_hi": 0.05792054085122718,
+      "tau2": 0.0665416323945571
+    },
+    "3": {
+      "n_cohorts": 167,
+      "n_events": 7360,
+      "kappa_pop": 0.036056622631943466,
+      "se_pop": 0.029631110130870754,
+      "ci_lo": -0.022020353224563208,
+      "ci_hi": 0.09413359848845014,
+      "tau2": 0.13258581337289851
+    },
+    "5": {
+      "n_cohorts": 167,
+      "n_events": 7354,
+      "kappa_pop": 0.013215802532326718,
+      "se_pop": 0.034703052662928176,
+      "ci_lo": -0.0548021806870125,
+      "ci_hi": 0.08123378575166594,
+      "tau2": 0.18015834094629807
+    }
+  },
+  "by_horizon_any_date": {
+    "1": {
+      "n_cohorts": 2194,
+      "n_events": 14942,
+      "kappa_pop": 0.07847632024014314,
+      "se_pop": 0.009214923100262541,
+      "ci_lo": 0.06041507096362857,
+      "ci_hi": 0.09653756951665772,
+      "tau2": 0.11945934953693989
+    },
+    "3": {
+      "n_cohorts": 2192,
+      "n_events": 14926,
+      "kappa_pop": 0.12290455346147973,
+      "se_pop": 0.010279627886122704,
+      "ci_lo": 0.10275648280467922,
+      "ci_hi": 0.14305262411828024,
+      "tau2": 0.12603191908172473
+    },
+    "5": {
+      "n_cohorts": 2187,
+      "n_events": 14901,
+      "kappa_pop": 0.1437366716386266,
+      "se_pop": 0.010171483287110934,
+      "ci_lo": 0.12380056439588917,
+      "ci_hi": 0.16367277888136403,
+      "tau2": 0.1079950488994598
+    }
+  },
+  "bounce_gap_deciles": [
+    {
+      "decile": 1,
+      "n": 737,
+      "mean_bounce_gap": 0.017654226161699708
+    },
+    {
+      "decile": 2,
+      "n": 736,
+      "mean_bounce_gap": 0.004263917517498939
+    },
+    {
+      "decile": 3,
+      "n": 737,
+      "mean_bounce_gap": 0.00019973244833992318
+    },
+    {
+      "decile": 4,
+      "n": 736,
+      "mean_bounce_gap": 0.0008247149170163038
+    },
+    {
+      "decile": 5,
+      "n": 737,
+      "mean_bounce_gap": 0.0005726605049460626
+    },
+    {
+      "decile": 6,
+      "n": 736,
+      "mean_bounce_gap": -0.00023446576318279954
+    },
+    {
+      "decile": 7,
+      "n": 737,
+      "mean_bounce_gap": -0.00026559077958933326
+    },
+    {
+      "decile": 8,
+      "n": 736,
+      "mean_bounce_gap": -0.00020698235253737286
+    },
+    {
+      "decile": 9,
+      "n": 737,
+      "mean_bounce_gap": 9.49147362082131e-05
+    },
+    {
+      "decile": 10,
+      "n": 737,
+      "mean_bounce_gap": 6.537975217064165e-05
+    }
+  ],
+  "hedge_costs": {
+    "legacy21": {
+      "fee_bp": 21.0,
+      "fee_total_bp": 84.0,
+      "h_days": 3,
+      "borrow_bp_low": 17.999999999999996,
+      "total_bp_low": 102.0,
+      "borrow_bp_high": 35.99999999999999,
+      "total_bp_high": 120.0
+    },
+    "base_taker80": {
+      "fee_bp": 80.0,
+      "fee_total_bp": 320.0,
+      "h_days": 3,
+      "borrow_bp_low": 17.999999999999996,
+      "total_bp_low": 338.0,
+      "borrow_bp_high": 35.99999999999999,
+      "total_bp_high": 356.0
+    },
+    "base_maker40": {
+      "fee_bp": 40.0,
+      "fee_total_bp": 160.0,
+      "h_days": 3,
+      "borrow_bp_low": 17.999999999999996,
+      "total_bp_low": 178.0,
+      "borrow_bp_high": 35.99999999999999,
+      "total_bp_high": 196.0
+    }
+  },
+  "kill_band": [
+    0.18,
+    0.2
+  ],
+  "headline_h": 3,
+  "revision": 3,
+  "closing_pass": {
+    "cycle": 3,
+    "scope": "corrected the PLACEBO and the arguments around it; the kill does NOT move \u2014 kappa_3, entry timing, fee denomination and the threshold sweep are byte-identical to revision 2",
+    "disclosure": "D76 convention \u2014 the deviation is disclosed in the verdict itself, not in a footnote",
+    "corrections": [
+      "(C) placebo draws were a sample-size mixture (4.8%-97% of observed event count); the operative distribution is now size-matched",
+      "(D) size-matched placebo sd validates the DerSimonian-Laird analytic SE (ratio ~1.05); the apparent excess dispersion was the mixture",
+      "(E) the 60-day volatility-cluster exclusion is IDLE, measured not assumed; the class that breaks the null is lifetime relocation",
+      "(F) the placebo is DESCRIPTIVE, not a gate, and is no longer counted as an independent agreeing channel (three channels, not four)",
+      "(G) the twin-estimator consistency check now REFUSES instead of warning",
+      "WITHDRAWN: revision 2's claim that '1/200 draws reaches 0.18, so the null has ~0.5% mass at or above the kill line'. That draw holds 426 events / 102 cohorts; size-matched, 0 draws reach 0.18."
+    ]
+  },
+  "threshold_sweep": [
+    {
+      "cascade_min_events": 8,
+      "n_dates": 431,
+      "dates_per_yr": 33.810728092783506,
+      "n_events": 10026,
+      "kappa_pop": 0.08451130059808287,
+      "ci_lo": 0.0481724626776603,
+      "ci_hi": 0.12085013851850544,
+      "n_cohorts": 430,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": true
+    },
+    {
+      "cascade_min_events": 10,
+      "n_dates": 303,
+      "dates_per_yr": 23.76949097938144,
+      "n_events": 8938,
+      "kappa_pop": 0.04920090414106699,
+      "ci_lo": 0.006325805440041556,
+      "ci_hi": 0.09207600284209241,
+      "n_cohorts": 302,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": true
+    },
+    {
+      "cascade_min_events": 12,
+      "n_dates": 227,
+      "dates_per_yr": 17.80750644329897,
+      "n_events": 8140,
+      "kappa_pop": 0.03067520870224368,
+      "ci_lo": -0.018932600999972692,
+      "ci_hi": 0.08028301840446005,
+      "n_cohorts": 226,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    },
+    {
+      "cascade_min_events": 15,
+      "n_dates": 167,
+      "dates_per_yr": 13.100676546391751,
+      "n_events": 7366,
+      "kappa_pop": 0.036056622631943466,
+      "ci_lo": -0.022020353224563208,
+      "ci_hi": 0.09413359848845014,
+      "n_cohorts": 167,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    },
+    {
+      "cascade_min_events": 20,
+      "n_dates": 112,
+      "dates_per_yr": 8.786082474226804,
+      "n_events": 6461,
+      "kappa_pop": 0.012060157839506092,
+      "ci_lo": -0.058170974023774,
+      "ci_hi": 0.08229128970278618,
+      "n_cohorts": 112,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    },
+    {
+      "cascade_min_events": 25,
+      "n_dates": 89,
+      "dates_per_yr": 6.981797680412371,
+      "n_events": 5960,
+      "kappa_pop": 0.004213378262316593,
+      "ci_lo": -0.07502232773008884,
+      "ci_hi": 0.08344908425472201,
+      "n_cohorts": 89,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    },
+    {
+      "cascade_min_events": 30,
+      "n_dates": 73,
+      "dates_per_yr": 5.726643041237113,
+      "n_events": 5525,
+      "kappa_pop": 0.011679595393962103,
+      "ci_lo": -0.07909000634082224,
+      "ci_hi": 0.10244919712874644,
+      "n_cohorts": 73,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    },
+    {
+      "cascade_min_events": 40,
+      "n_dates": 56,
+      "dates_per_yr": 4.393041237113402,
+      "n_events": 4937,
+      "kappa_pop": -0.027073212754110832,
+      "ci_lo": -0.13288133535174615,
+      "ci_hi": 0.07873490984352448,
+      "n_cohorts": 56,
+      "reaches_kill_line": false,
+      "ci_lo_above_zero": false
+    }
+  ],
+  "threshold_sweep_max_kappa": 0.08451130059808287,
+  "threshold_sweep_any_reaches_kill_line": false,
+  "placebo": {
+    "n_draws_raw": 200,
+    "min_shift_days": 60,
+    "span_days": 4653,
+    "seed": 917,
+    "observed_n_events": 7360,
+    "observed_n_cohorts": 167,
+    "size_match_tol": 0.9,
+    "size_mixture": {
+      "events_min": 356,
+      "events_median": 2124.5,
+      "events_max": 7174,
+      "cohorts_min": 82,
+      "cohorts_median": 139.0,
+      "cohorts_max": 167,
+      "frac_draws_under_half_observed_events": 0.68,
+      "smallest_draw_share_of_observed_events": 0.0483695652173913
+    },
+    "raw_mixture": {
+      "n_draws": 200,
+      "mean": -0.00560659668899546,
+      "sd": 0.04850201009286668,
+      "pct2_5": -0.10295447388714116,
+      "pct97_5": 0.09325163589668735,
+      "max_abs": 0.2056541853707716,
+      "n_ge_observed": 92,
+      "p_empirical": 0.4626865671641791,
+      "n_reaching_kill_line": 1,
+      "status": "NOT the operative distribution \u2014 a mixture over sample sizes spanning 4.8%-97% of the observed event count"
+    },
+    "size_matched": {
+      "n_draws": 12,
+      "tol": 0.9,
+      "criterion": "n_events >= tol*observed AND n_cohorts >= tol*observed",
+      "mean": 0.004768786393607938,
+      "sd": 0.03106307037057709,
+      "min": -0.04382544792915017,
+      "max": 0.0768428084033597,
+      "max_abs": 0.0768428084033597,
+      "n_ge_observed": 2,
+      "p_empirical": 0.23076923076923078,
+      "p_min_achievable": 0.07692307692307693,
+      "n_reaching_kill_line": 0,
+      "dersimonian_laird_se": 0.029631110130870754,
+      "sd_over_analytic_se": 1.0483262433767027
+    },
+    "near_offset_probe": {
+      "60": 0.001130323214033051,
+      "65": 0.0009747061785153054,
+      "70": 0.0060314146856135795,
+      "80": -0.002358663281789114
+    },
+    "near_offset_inside_exclusion": {
+      "n": 55,
+      "mean": 0.0018647326729739318,
+      "max_abs": 0.08054605352172764,
+      "n_reaching_kill_line": 0
+    },
+    "status": "DESCRIPTIVE, not a gate: both branches of the reading conclude the kill stands, and the size-matched design's minimum achievable p is far above 0.05"
+  },
+  "estimator_consistency_check": {
+    "original": 0.036056622631943466,
+    "vectorised": 0.03605662263194348
+  }
+}

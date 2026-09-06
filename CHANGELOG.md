@@ -3,6 +3,80 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_917 — second-moment & event instrument pack: one family closed, one regime-gating verdict refused for want of power, one surviving finding
+
+- **What shipped.** Four instruments in `experiments/917_second_moment_and_event_instruments/`
+  (`daily_panel.py` + `p1`–`p4` + `RESULTS.md` + `p{1,2,3}_result.json`). No canon surface
+  touched; `trader/`, `mcts_trader/`, TASK_915's frozen grid all unchanged. **These are
+  production numbers, not fixture proxies** — `ohlcv_daily` is byte-identical between
+  `fixtures/trading_fixture.db` and `trading_data.db` (sha256 `90d67f40…`, 499,430 rows both
+  sides), independently re-hashed by a verifier with its own script.
+
+- **P2 — KILL FIRED, robust. The event-conditional liquidity-provision family is closed.**
+  κ₃ = +0.0361, CI [−0.022,+0.094], 167 cascade cohorts (13.1/yr). It survived a threshold
+  sweep 8→40 where κ never approaches the 0.18–0.20 line anywhere — including the most
+  permissive setting, whose CI sits entirely above zero and is still 2× too small. Honest hedge
+  round trip using TASK_916's shipped ladder at `base_taker80`: **338–356 bp against +62.7 bp
+  expected capture.** A placebo (circular event-date shift, returns held fixed) shows
+  κ ≈ 0.036 is **generic post-large-move behaviour, not cascade-specific** — a cleaner reason to
+  close the family than the CI argument alone.
+
+- **P1 — INCONCLUSIVE. The kill does NOT fire, and the regime-gating family is NOT closed.**
+  This reversed twice under adversarial review and the reversals are the record worth keeping.
+  Revision 1 fired the kill on ρ̄ = −0.0315 at a **180-day block that no source pre-registered**;
+  a sweep showed 120-day cells at **+0.106…+0.213 with more pairs (27–28) than the headline's
+  18** — more power, opposite sign. Re-anchored to the 90-day convention inherited from
+  `mech_B.md`, the sweep spans **ρ̄ ∈ [−0.342, +0.470]**, 32/44 below the line, 12/44 above.
+  **The decisive fact is power, not parameter choice:** the observed block-VR dispersion is
+  indistinguishable from pure estimator noise at all 11 block lengths, the instrument's ceiling
+  is ~0.3 |ρ̄| with SE ≥ 0.14, and the anchor's power to separate ρ̄ = 0.10 from ρ̄ = 0 is **~9–10%**.
+  **P1 could not have fired a defensible kill at any block length.** The 0.10 threshold is
+  inherited from `mech_B.md`'s *different* statistic and was never calibrated to this estimator.
+  Also: 0/44 cells exclude the line from above — this is **not** evidence for persistence either.
+  Underpowered, neither dead nor alive. Gated trend/reversal, CPD switches and XS-AUTOCORR books
+  are **unmeasured, not closed** → **D84**.
+
+- **P3 — SURVIVES. The first placebo-clean positive reading since the 897 row declared every
+  measured surface closed.** Age-conditional IC of market-residual returns vs listing age
+  (age ∈ [0,89] d, h=1) = **+0.0304, NW-t +4.15**, 946 dates, on the 398-asset PIT panel with
+  dead coins retained. It withstood a full leakage audit: the listing-date-is-collection-start
+  hypothesis is **refuted** (only 2/398 assets start near panel start; excluding them changes
+  the IC to 6 decimals), leave-one-out market is identical (self-inclusion is provably inert —
+  the LOO residual is a per-date scalar rescale and Pearson is scale-invariant), NW t stable
+  4.05–4.23 across lags 0–90, and `include_dead=False` still gives +0.0279 / t 3.50.
+  Operative null is **i.i.d. per-asset** (the shipped `linspace` p-value was a function of grid
+  density — max|placebo| saturates at 0.0181 for B = 33…257): **p = 0.0050 at the design
+  minimum, z ≈ 5.5–5.6, 0/200 draws reach the observed IC.** Stated as what it is: a surviving
+  **instrument reading**, not a reopened edge thread and not a promotion candidate.
+
+- **P4 — prepared, deliberately not run** per the config invariant that expensive real-data
+  validation is scheduled, never polled in-loop. `--full` refuses with exit 2 *before* opening a
+  DB connection; `--estimate-cost` reports tens of minutes to ~2 h. **Pre-`--full` blocker
+  recorded:** its local `discover_universe()` omits the `source_filter="kraken_rest"` that P1–P3
+  use, so it carries 8 real assets as a 10-column panel (`TWX/USD`, `HOLE/USD` admitted) — it
+  would measure a different universe than P1–P3.
+
+- **Every placebo in this row was defective, in three different ways** — the reusable lesson.
+  P1's circular-shift null contained **exact copies of the statistic under test** (`s=1` and
+  `s=n−1` are bit-identical to the observed ρ̄), which bounded the minimum achievable p near 0.08
+  and made "none Bonferroni-significant at α=0.00625" a structural certainty rather than a fact
+  about the data. P2's relocated events onto dates where the asset had no print, silently
+  discarding events: median draw used **2124 of 7360**, and the "~0.5% null mass at the kill
+  line" claim came from a draw with 426 events — size-matched, **0/12 draws reach 0.18**, and the
+  DerSimonian-Laird analytic SE is validated (placebo sd 0.0311 vs 0.0296, ratio 1.05). P3's
+  saturated. A null must be **sample-matched, non-degenerate w.r.t. the statistic under test, and
+  must report its minimum achievable p.**
+
+- **Remainders.** **D84 OPEN** (P1's threshold was never calibrated to its estimator; the family
+  is unmeasured — build a properly-powered instrument or drop the line). Estimator defects
+  recorded but not fixed: an undisclosed **tiling-origin** free parameter (15.6% of origins put
+  ρ̄ above the kill line), a numerator/denominator sample mismatch (own-null level 0.955, so the
+  observed 0.904 is **z = −0.70 from a random walk**, not a shortfall against 1.024 breakeven),
+  and E[VR_block] running 0.765→0.908 across the grid so R1 demanded unanimity across eleven
+  different estimands. The cycle-3 closing pass added null-construction code that was not itself
+  adversarially reviewed — corroborated by judges' independent implementations, flagged for the
+  planner.
+
 ## 2026-09-06 — TASK_916 — the cost truth pack: margin borrow charged, the fee tier verified against Kraken's live ladder, and the benchmark restated on both
 
 - **What shipped.** Four legs in `trader/`: `--borrow-model {none,kraken-margin}` and

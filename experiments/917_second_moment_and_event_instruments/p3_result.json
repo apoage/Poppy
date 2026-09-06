@@ -1,0 +1,410 @@
+{
+  "revision": 3,
+  "closing_pass": {
+    "cycle": 3,
+    "scope": "corrected STATED ARGUMENTS proven defective by two adversarial judges; changed NO verdict (P3 still: KILL DID NOT FIRE, placebo-clean)",
+    "disclosure": "D76 convention \u2014 the deviation is disclosed in the verdict itself, not in a footnote",
+    "corrections": [
+      "the revision-2 'max|placebo| grows with B' scaling argument is FALSE for the linspace grid it was applied to (saturation table); replaced",
+      "an i.i.d. per-asset uniform-shift null is now the OPERATIVE placebo; the linspace grid is a labelled diagnostic",
+      "the degenerate-region exclusion is a PER-ASSET day-count condition, not a median-life fraction boundary"
+    ]
+  },
+  "n_listed_assets": 398,
+  "age_max": 89,
+  "horizon_days": 1,
+  "median_active_life_days": 1252.5,
+  "true_ic": {
+    "mean": 0.03036578064904026,
+    "nw_t": 4.147589238780107,
+    "n_dates": 946
+  },
+  "profile": [
+    {
+      "age_lo": 0,
+      "age_hi": 9,
+      "n": 3893,
+      "mean_resid_bp": -78.30362440488256
+    },
+    {
+      "age_lo": 10,
+      "age_hi": 19,
+      "n": 3926,
+      "mean_resid_bp": -43.83792563785167
+    },
+    {
+      "age_lo": 20,
+      "age_hi": 29,
+      "n": 3941,
+      "mean_resid_bp": -24.114381457380826
+    },
+    {
+      "age_lo": 30,
+      "age_hi": 44,
+      "n": 5930,
+      "mean_resid_bp": -12.219970279251617
+    },
+    {
+      "age_lo": 45,
+      "age_hi": 59,
+      "n": 5911,
+      "mean_resid_bp": -10.712130509263314
+    },
+    {
+      "age_lo": 60,
+      "age_hi": 74,
+      "n": 5909,
+      "mean_resid_bp": -16.689804997613173
+    },
+    {
+      "age_lo": 75,
+      "age_hi": 89,
+      "n": 5909,
+      "mean_resid_bp": -1.2959979838286824
+    }
+  ],
+  "placebo_operative_iid": {
+    "n_draws": 200,
+    "seed": 917,
+    "shift_frac_lo": 0.1,
+    "shift_frac_hi": 0.9,
+    "mean": 0.0009881507258036903,
+    "sd": 0.005316914852623072,
+    "max_abs_ic": 0.01629728542066105,
+    "q99_abs_ic": 0.0136753506307414,
+    "z_true_vs_null": 5.525315100493526,
+    "n_ge_observed": 0,
+    "p_empirical": 0.004975124378109453,
+    "p_min_achievable": 0.004975124378109453,
+    "n_assets_admissible": 397,
+    "n_assets_excluded_too_short": 1,
+    "max_self_copy_share_across_draws": 0.0,
+    "criterion": "NW-significant AND |true IC| > max|placebo IC| AND empirical p <= 0.05"
+  },
+  "placebo_diagnostic_linspace": {
+    "n_draws": 33,
+    "shift_frac_lo": 0.1,
+    "shift_frac_hi": 0.9,
+    "draws": [
+      {
+        "shift_frac": 0.1,
+        "mean_ic": 0.01399438360839292,
+        "nw_t": 1.8536829105420671,
+        "n_dates": 595,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.125,
+        "mean_ic": -0.006896907772674895,
+        "nw_t": -1.0873743519863521,
+        "n_dates": 524,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.15,
+        "mean_ic": -0.008305275993449738,
+        "nw_t": -1.1550543246731793,
+        "n_dates": 533,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.175,
+        "mean_ic": -0.0071508590498076926,
+        "nw_t": -0.8511990145027541,
+        "n_dates": 580,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.2,
+        "mean_ic": -0.006461460777880952,
+        "nw_t": -0.9758386033136646,
+        "n_dates": 590,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.225,
+        "mean_ic": -0.007507223635528977,
+        "nw_t": -1.177439443259601,
+        "n_dates": 596,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.25,
+        "mean_ic": 0.010993744796480277,
+        "nw_t": 1.7241143953927183,
+        "n_dates": 598,
+        "legacy_rev1_draw": true
+      },
+      {
+        "shift_frac": 0.275,
+        "mean_ic": 0.00874911923726914,
+        "nw_t": 1.5537865588446333,
+        "n_dates": 642,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.3,
+        "mean_ic": -0.003898039774008103,
+        "nw_t": -0.5776733302471726,
+        "n_dates": 693,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.325,
+        "mean_ic": -0.0016338541815234917,
+        "nw_t": -0.259477639236246,
+        "n_dates": 738,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.35,
+        "mean_ic": -0.002064733931134143,
+        "nw_t": -0.36661354605495095,
+        "n_dates": 779,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.375,
+        "mean_ic": -0.005503736356376816,
+        "nw_t": -0.8816323516095744,
+        "n_dates": 810,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.4,
+        "mean_ic": -0.004812662247134038,
+        "nw_t": -0.7088860090947239,
+        "n_dates": 810,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.425,
+        "mean_ic": 0.008913518023336483,
+        "nw_t": 1.3892244026673168,
+        "n_dates": 808,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.45,
+        "mean_ic": 0.000714313201157827,
+        "nw_t": 0.1081134228429375,
+        "n_dates": 843,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.475,
+        "mean_ic": 0.002500976928003109,
+        "nw_t": 0.3371560833436455,
+        "n_dates": 873,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.5,
+        "mean_ic": -0.014243183277778975,
+        "nw_t": -1.9757799871999844,
+        "n_dates": 921,
+        "legacy_rev1_draw": true
+      },
+      {
+        "shift_frac": 0.525,
+        "mean_ic": 0.0043918623261296535,
+        "nw_t": 0.6122208137686429,
+        "n_dates": 945,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.55,
+        "mean_ic": -0.006418693550762757,
+        "nw_t": -0.9449805648238443,
+        "n_dates": 958,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.575,
+        "mean_ic": 0.0026199424424404485,
+        "nw_t": 0.39753616307057965,
+        "n_dates": 936,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.6,
+        "mean_ic": 0.005199736817394,
+        "nw_t": 0.8394706162064483,
+        "n_dates": 967,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.625,
+        "mean_ic": 0.005330500063964218,
+        "nw_t": 0.8049629715346799,
+        "n_dates": 958,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.65,
+        "mean_ic": 0.0012294287907268953,
+        "nw_t": 0.1881441129694952,
+        "n_dates": 946,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.675,
+        "mean_ic": 0.008806731390258738,
+        "nw_t": 1.2417891124712583,
+        "n_dates": 967,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.7,
+        "mean_ic": 0.0007223742371637334,
+        "nw_t": 0.10345524484621209,
+        "n_dates": 955,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.725,
+        "mean_ic": 0.0043859589616771335,
+        "nw_t": 0.6053002156464962,
+        "n_dates": 946,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.75,
+        "mean_ic": -0.0023896606948409682,
+        "nw_t": -0.3866817726419376,
+        "n_dates": 966,
+        "legacy_rev1_draw": true
+      },
+      {
+        "shift_frac": 0.775,
+        "mean_ic": 0.006425120996393349,
+        "nw_t": 0.9002136304537125,
+        "n_dates": 956,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.8,
+        "mean_ic": 0.0028391652741950567,
+        "nw_t": 0.40702523604518853,
+        "n_dates": 940,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.825,
+        "mean_ic": -0.0014766209703340073,
+        "nw_t": -0.25791916705362655,
+        "n_dates": 935,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.85,
+        "mean_ic": -0.0027072787595837184,
+        "nw_t": -0.3983154862248689,
+        "n_dates": 937,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.875,
+        "mean_ic": 0.018051580986950966,
+        "nw_t": 2.7569585633144214,
+        "n_dates": 942,
+        "legacy_rev1_draw": false
+      },
+      {
+        "shift_frac": 0.9,
+        "mean_ic": 0.011952040268069572,
+        "nw_t": 1.9526115664123755,
+        "n_dates": 937,
+        "legacy_rev1_draw": false
+      }
+    ],
+    "max_abs_ic": 0.018051580986950966,
+    "n_ge_observed": 0,
+    "p_density_dependent": 0.029411764705882353,
+    "status": "DIAGNOSTIC ONLY \u2014 a deterministic densification of one scalar, not a sampling distribution; its 1/(1+B) p is a function of grid density",
+    "saturation_sweep": [
+      {
+        "B": 33,
+        "max_abs_ic": 0.018051580986950966,
+        "argmax_frac": 0.875,
+        "reported_p": 0.029411764705882353
+      },
+      {
+        "B": 65,
+        "max_abs_ic": 0.018051580986950966,
+        "argmax_frac": 0.875,
+        "reported_p": 0.015151515151515152
+      },
+      {
+        "B": 129,
+        "max_abs_ic": 0.018051580986950966,
+        "argmax_frac": 0.875,
+        "reported_p": 0.007692307692307693
+      },
+      {
+        "B": 257,
+        "max_abs_ic": 0.018051580986950966,
+        "argmax_frac": 0.875,
+        "reported_p": 0.003875968992248062
+      }
+    ],
+    "self_copy_contamination": [
+      {
+        "shift_frac": 0.1,
+        "self_copy_share": 0.15642726118244674,
+        "n_self_copy_cells": 5543,
+        "n_scored_cells": 35435
+      },
+      {
+        "shift_frac": 0.875,
+        "self_copy_share": 0.09266986185508881,
+        "n_self_copy_cells": 3287,
+        "n_scored_cells": 35470
+      },
+      {
+        "shift_frac": 0.9,
+        "self_copy_share": 0.15765065181121513,
+        "n_self_copy_cells": 5575,
+        "n_scored_cells": 35363
+      }
+    ],
+    "argmax_ic_self_copies_removed": 0.016675970967985662,
+    "argmax_n_dates_self_copies_removed": 920,
+    "strongest_draw": {
+      "shift_frac": 0.875,
+      "mean_ic": 0.018051580986950966,
+      "nw_t": 2.7569585633144214,
+      "n_dates": 942,
+      "legacy_rev1_draw": false
+    },
+    "rev1_clause_same_sign_ge_half": true
+  },
+  "degeneracy_rule": {
+    "operative": "per asset i: MIN_PLACEBO_DAYS <= shift_days_i <= L_i - MIN_PLACEBO_DAYS",
+    "min_placebo_days": 90,
+    "n_assets_admissible": 397,
+    "n_assets_no_valid_shift": 1,
+    "n_assets_life_under_720d": 138,
+    "superseded_rev2_rule": "|shift frac| outside [90/median_life, 1-90/median_life] = [0.0719,0.9281] \u2014 does not bind, because the shift is per-asset proportional"
+  },
+  "max_abs_placebo_ic": 0.01629728542066105,
+  "include_dead_sensitivity": {
+    "dead_retained": {
+      "mean_ic": 0.03036578064904026,
+      "nw_t": 4.147589238780107,
+      "n_dates": 946,
+      "n_assets": 398,
+      "n_listed": 398
+    },
+    "dead_excluded": {
+      "mean_ic": 0.02787702233372706,
+      "nw_t": 3.4984920367708554,
+      "n_dates": 901,
+      "n_assets": 363,
+      "n_listed": 363
+    }
+  },
+  "placebo_clean": true,
+  "kill_fired": false,
+  "verdict": "KILL DID NOT FIRE -- age-conditional IC survives, placebo-clean"
+}
