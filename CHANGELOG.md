@@ -3,6 +3,43 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-07 — TASK_921 — the two 914 guard mechanisms rebuilt (run 56, crossed midnight)
+
+- **What shipped.** `experiments/907_live_fill_probe/test_streaming_reader.py` only — **no production
+  code** (`git diff 3461b15 -- .../capture.py` is empty). Suite 326 -> **330 passing**;
+  `test_streaming_reader.py` 6 passed, 0 skipped; selftest 17/17.
+
+- **Guard 1, structural.** Run 53's guard rebound `builtins.open` and intercepted ZERO `io.open`
+  calls. The obvious replacement — intercept `os.open` — was measured NOT to work either:
+  `builtins.open`/`io.open`/`Path.open` never call the Python-level `os.open` name, because CPython's
+  `_io.FileIO` issues `openat`/`read` from C. The guard now traces the measurement child
+  (`strace -f -y`) and asserts exactly one open and `bytes_read == file_bytes`. It fails LOUD on a
+  zero-match parse — verified by planting one, which is the exact "certifies on having measured
+  nothing" shape the row existed to kill. Reach limits (mmap, sendfile/splice/copy_file_range,
+  pre-attach inherited fd, no-ptrace hosts) are stated in the file rather than implied.
+
+- **Guard 2, RSS cost.** `MAX_CHILD_BASELINE_BYTES` 64 MiB -> 24 MiB: silent-band deflation falls from
+  158% of honest-to-bound headroom to 36%. The gate is now N-aware AND direction-aware — the
+  N-derived limit binds only where the bound is fail-open; where deflation can only push toward RED,
+  the flat ceiling is an explicitly-labelled smoke check. Forced by measurement: the poison child's
+  module shim costs ~2.7 MB, making N=60,000 both the smallest N and the highest baseline, where a
+  naive N-derived limit would have cleared it by 1.046x — a guaranteed flake.
+
+- **Two D83(i) findings against this row's own guards**, both caught by adversarial lenses and both
+  closed: a derivation that named the wrong binding N (500,000, while the file's own poison runs at
+  60,000 where deflation is 302% of headroom), and the resulting assertion `used < headroom` being
+  UNSATISFIABLE wherever the N-derived branch binds — so the file's "holds by construction for any
+  future N" claim was false in exactly the regime the mechanism was added to cover.
+
+- **A rejected fix, recorded.** The orchestrator proposed relaxing to `used <= headroom`; the
+  implementer refused it as a tautology and was right (0 counterexamples in 100,000 random N). The
+  shipped assertion is per-branch and graded against the derivation's constants, not against the
+  helper's own return value.
+
+- **Residual.** `_HAVE_STRACE` is fail-open-to-skip: a ptrace-less host silently skips both structural
+  guards (a skip, never a false green). `gpu-server` has strace with `ptrace_scope=1`, so the guard
+  runs where suites belong. Converting skip -> failure is separate hardening.
+
 ## 2026-09-06 — TASK_881E — manifest authority binding: a `covers:` line now needs the run's own consent
 
 - **What shipped.** `tools/ckpt_gc.py` (+~470) + `mcts_trader/training/safe_checkpoint.py` +
