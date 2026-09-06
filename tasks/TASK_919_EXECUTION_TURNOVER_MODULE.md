@@ -1,3 +1,12 @@
+> **STATUS (2026-09-06): PHASE A SHIPPED as `task919a-execution-turnover-grid`.** Band question
+> **REFUSED FOR WANT OF POWER** (MDE 5.8–9.1× the ±0.20 band; 0/48 clear at α/48 on three windows)
+> → **D85**. Hold-shares advantage **UNRESOLVED** (construction-dependent; neither construction
+> clears zero). Surviving lead: **θ hysteresis = 50% of the candidate's uplift**, surviving
+> de-levering. Four record corrections (incl. this file's own BEAR22 anchor, quoted backwards).
+> **REMAINDERS:** phase B untouched (double-gated on D81 + D80(iii)); hour-of-day arm is
+> mechanism-only, real leg SCHEDULED (planner); four follow-ups rowed in `RESULTS.md`.
+> Full record: `experiments/919_execution_turnover/RESULTS.md` · 3 cycles + a disclosed D76 closing pass.
+
 # TASK_919 — execution/turnover module (the bankable +0.10–0.15)
 
 **Status**: PROPOSED 2026-09-05 (planner; = tactics-panel row 2 upgraded with the dead-panel

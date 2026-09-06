@@ -3,6 +3,61 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_919 phase A — execution/turnover grid: the band question refused for want of power, and the one candidate was leverage
+
+- **What shipped.** `experiments/919_execution_turnover/` — a 48-cell H × θ × accounting rebalance
+  grid over three windows (`grid_harness.py`, `render_tables.py`, `hour_of_day.py`,
+  `test_919_grid.py` at 16 checks, `RESULTS.md`, `result_919a.json`). **Zero edits to `trader/`**
+  across four passes (`git log -1 -- trader/` still `18d42d3`); selftest 17/17 throughout; fixture
+  `b0f8de8b…` never regenerated. `ohlcv_daily` is byte-identical between the fixture and
+  `trading_data.db` (sha256 `90d67f40eb2aee31…`, 499,430 rows, re-verified twice this run), so the
+  daily grid carries **production numbers, not fixture proxies**.
+
+- **The band question is REFUSED FOR WANT OF POWER.** SE(annualised gate Sharpe) = **0.447–0.457,
+  H-invariant** (n·H ≈ 1704 is constant across the H grid, exactly cancelling the √(365/H)
+  annualisation factor — a correctly designed invariance), derived two independent ways agreeing to
+  0.0023. MDE@80% = **1.152 raw (5.8× the ±0.20 band) / 1.815 Bonferroni (9.1×)**; measured cell
+  correlation (min 0.550, median 0.910) does not rescue it — the most favourable non-degenerate
+  pair (ρ=0.9837) still needs 1.6× the band. **0/48 cells clear +0.20 at α=0.05/48 on all three
+  windows; 46/48 UNDECIDED.** ~85× the sample would be needed. This conclusion is prior to and
+  independent of every code defect found — no re-implementation rescues it. → **D85**.
+
+- **The hold-shares advantage is UNRESOLVED, and the construction-dependence is itself the finding.**
+  The share-carrying book does not hold gross at 1 (Σ|w| 0.35–2.099 on PRIMARY, above 1.0 on 52% of
+  decisions, violating `StrategyConfig.gross_cap = 1.0`). Two de-levering constructions disagree in
+  **sign**: the shipped proxy `ret/G` (an exact rescaling of the *realised series*, holdings
+  untouched) collapses a +0.10…+0.29 advantage positive in 16/16 cells to −0.0346…+0.0320, 6/16
+  positive; a genuinely `gross_cap=1.0`-constrained book (renormalising *holdings*, so different
+  weights carry into k+1) gives +0.0039…+0.0571, positive in 16/16. **Neither clears zero** — paired
+  95% CIs at the frozen cell are raw +0.2794 [−0.088,+0.638], proxy −0.0326 [−0.282,+0.214],
+  constrained +0.0039 [−0.186,+0.204].
+
+- **The one execution-shaped survivor is θ.** Of the candidate cell's +0.6523 uplift over the frozen
+  cell, **+0.3263 (50%) is the pure θ-hysteresis effect** — available under canon target-weight
+  accounting and surviving de-levering entirely. De-levered the candidate falls to +0.3745
+  [+0.058,+0.697] and no longer clears +0.20, so candidate status is retracted; but the clearance
+  was leverage-**assisted**, not leverage-constituted. Cycle 3 had mislabelled this as leverage.
+
+- **Four corrections to the record**, all measured: the inherited analytic flip formula reproduces
+  none of its own quoted numbers except by coincidence at H=2 and was mis-denominated (correct model
+  `(2/π)·arccos((L−H)/L)/H`, a per-day turnover, not a flip probability); hysteresis at θ=0.5 removes
+  **73.1%** of flip turnover, not the recorded "40–50%"; TASK_919's spec quoted the hold-shares BEAR22
+  anchor **backwards** (confirmed against `830_corridor/SPEC.md:95-98` and LEDGER `830/E0`); and the
+  hold-shares attribution split does not clear its own noise floor (share-carry −0.0328, CI
+  [−0.6065,+0.5132]) — direction kept, split downgraded.
+
+- **Remainders.** Phase B untouched (double-gated on D81 + D80(iii)). Hour-of-day arm is
+  mechanism-only with a scheduled real-leg invocation — the fixture minute table holds 11 assets ×
+  3 months vs the source's 1,130 assets / 254,904,234 rows. Four follow-ups rowed, not built (borrow
+  column on `renormalised_to_gross1`; rebuilding the constrained gross-1 book, currently
+  single-sourced; keying the prose whitelist by value+context; an `hour_of_day` result JSON).
+
+- **Process.** 3 cycles + one **D76 closing pass**, disclosed in the artifact's own banner
+  (`RESULTS.md:7-11`) and in the verdict. Seven guards or claims were found this run that could not
+  reach what they certified — five caught only by an adversarial lens, none by its author, one of
+  them the orchestrator's own draft LEDGER row (caught by an estimator lens's pre-committed
+  condition). Direct evidence for D83(i).
+
 ## 2026-09-06 — TASK_917 — second-moment & event instrument pack: one family closed, one regime-gating verdict refused for want of power, one surviving finding
 
 - **What shipped.** Four instruments in `experiments/917_second_moment_and_event_instruments/`
