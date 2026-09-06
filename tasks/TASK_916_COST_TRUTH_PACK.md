@@ -13,9 +13,16 @@ this row re-prices the bar TASK_915 is graded against. CPU only.
    + 2% liquidation fee (Kraken fee schedule, fetched 2026-09-05 by the dead session;
    re-verify before relying). `trader/` has no margin cost; `borrow_rate_annual` defaults 0.0
    (`mcts_trader/env/jax_trading_env.py:115`); LEDGER/DECISIONS/pathway never mention rollover.
-   At alt rates and a 50%-short leg the drag ≈ 22%/yr ≈ **twice the entire 21 bp trading-cost
-   stack**. The +0.97 survivor / +0.56 PIT benchmark book is itself ~50% short in BEAR22 —
-   the bar is borrow-uncorrected on BOTH sides.
+   **[CORRECTION 2026-09-06, run-53 catch — the original text here compared "drag ≈ 22%/yr"
+   against the fee stack, using one number for two quantities (the D81(c) shape, in the
+   planner's own file). Correct arithmetic: book-level drag = short_fraction × notional
+   rate. At a ~50%-short book: BTC-low 0.5 × 22% = ~11%/yr — comparable to the trend book's
+   11.9%/yr fee stack (0.155/day × 21 bp); alt-low 0.5 × 44% = ~22%/yr ≈ 1.9× the stack;
+   alt-high 0.5 × 88% = ~44%/yr ≈ 3.7× the stack. The PIT book's short leg is mostly alts,
+   so the honest summary is "comparable-to-4× the fee stack, asset-mix dependent," and it
+   lands disproportionately in BEAR22 when the short leg is on — not a flat "twice."]** The
+   +0.97 survivor / +0.56 PIT benchmark book is itself ~50% short in BEAR22 — the bar is
+   borrow-uncorrected on BOTH sides; the restatement below charges both.
 2. **"fee16" does not exist on Kraken's current ladder** (schedule changed 2026-07-09;
    `POWERED_RESULT.md:7` calls 21 bp "taker16+slip5" vs `TASK_897:284` recording the attainable
    maker set as {8,16} bp — inconsistent). July-2026 ladder (fetched 2026-09-05, verify):

@@ -35,7 +35,13 @@ Consequences, now verified against every surviving design:
    is ~50% short in BEAR22. The +0.97/+0.56 bars and every "BEAR-positive" read
    (including 819's BEAR22 +1.10) need re-grading with borrow charged on both
    sides. At alt rates and a 50% short leg the drag is ≈22%/yr ≈ twice the
-   whole 21 bp trading-cost stack.
+   whole 21 bp trading-cost stack. **[CORRECTION 2026-09-06 (run-53 catch): "22%/yr" here
+   conflated the BTC-low NOTIONAL rate with the book-level drag — one number, two
+   quantities. Correct: drag = short_fraction × notional rate; at a 50%-short book that is
+   ~11%/yr (BTC-low, comparable to the 11.9%/yr fee stack) through ~22%/yr (alt-low, ≈1.9×)
+   to ~44%/yr (alt-high, ≈3.7×). Honest summary: comparable-to-4× the fee stack,
+   asset-mix dependent, concentrated in BEAR22. The operational claim (never charged; both
+   sides must be restated) is unchanged.]**
 2. **Every continuous market-neutral / β-hedged design dies or is wounded on
    this arithmetic alone**: ARC-GP (borrow drag 1.3–6× its entire learned
    increment), Valerian hourly book (effective round trip on shorts 24–48 bp ⇒
