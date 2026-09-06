@@ -3,6 +3,38 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_913 scope 2/3 (write-hardening) — the recorder's write path comes off the event loop
+
+- **What shipped.** `experiments/907_live_fill_probe/capture.py` + `recorder.py` +
+  `test_write_hardening.py` (22 tests). `CaptureWriter._write` no longer writes inline: it
+  serialises JSON on the calling (asyncio loop) thread and `put_nowait`s onto ONE bounded
+  `queue.Queue`; ONE daemon worker thread does `write()`/`flush()`/`os.fsync()`. Gap and meta
+  records get a PRIORITY fsync (issued immediately, never waited on); everything else gets one
+  `flush()` per record and at most one `fsync()` per `fsync_interval_s` (default 30.0, tracked on
+  `time.monotonic()`). Suite 304 -> 326; `python -m trader selftest` 17/17; fixture `b0f8de8b...`
+  untouched.
+
+- **Why.** A device-level outage (typically ~61s, range 38-93s, triggered by `udisksd`'s 600s SMART
+  poll per `JOURNAL_STALL_DIAGNOSIS.md`) blocked the recorder inside `os.fsync()` on the event-loop
+  thread, so the websocket keepalive (`ping_timeout=15`) could not be answered and the peer closed
+  the connection. The fix does not stop the stalls — nothing in userspace can — it **converts a
+  data-loss event into a latency event**: buffered writes return immediately, the loop keeps
+  servicing the socket across the outage, and frames are held in RAM rather than dropped.
+
+- **New in-format record.** `GAP_REASONS` grows 7 -> 9, additively: `emission_silence` (the honest
+  replacement for `clock_jump`, which measured emission silence rather than any clock jump —
+  `clock_jump` stays in the set so historical captures keep parsing) and `writer_overflow`.
+
+- **Decision-changing finding, caught by verification rather than by the author.** An overflow
+  episode active at `close()` lost both `meta_end` and its `writer_overflow` disclosure **silently**
+  — the exact 893 failure mode (missing data presented as observed time) this format exists to
+  prevent, reintroduced through a new door and invisible to all 13 tests shipped with cycle 1.
+  Reproduced independently by the orchestrator before the fix, and again after.
+
+- **Remainders (named, not hidden).** `_abort_construction()`'s live-worker branch is dead code as
+  wired and untested. `RecorderConfig.__post_init__` still does not range-check
+  `heartbeat_timeout_s`, so `--heartbeat-timeout-s nan` is caught only in the writer.
+
 ## 2026-09-06 — TASK_919 phase A — execution/turnover grid: the band question refused for want of power, and the one candidate was leverage
 
 - **What shipped.** `experiments/919_execution_turnover/` — a 48-cell H × θ × accounting rebalance

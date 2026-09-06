@@ -39,11 +39,19 @@ timestamps would let successive gap records describe overlapping spans on two di
 clocks, and no amount of interval arithmetic can repair a ledger whose entries are denominated
 differently. One clock, chosen for the one thing the ledger is about.
 
-Crash safety: every line is flushed and fsynced individually, so a kill mid-write can only ever
-truncate the LAST line, never corrupt an earlier one. The reader tolerates and reports a
-truncated trailing line rather than raising. Resumption always writes a ``gap`` record spanning
-"last known event time" -> "process restart time" BEFORE any new data line, because a resumed
-recorder genuinely does not know what happened on the wire while it was down.
+Crash safety (TASK_913 write-hardening): every line is ``flush()``ed individually by the ONE
+dedicated writer thread — see ``CaptureWriter`` — so a kill mid-write can only ever truncate the
+LAST line, never corrupt an earlier one; the reader tolerates and reports a truncated trailing
+line rather than raising. ``os.fsync()`` is no longer per-line: a gap or meta record gets one
+right away (priority, not synchronous — the writer thread never makes the caller wait for it),
+everything else at most once per ``fsync_interval_s`` (default 30s). This trades a small,
+disclosed bound on crash-durability loss (WRITE_HARDENING_SPEC.md §2.2-§2.3) for never blocking
+the caller's thread on a stalled device (§2.0) — the previous per-line-fsync design is what
+coupled recorder liveness directly to device hardware stalls. Records still sitting in the
+writer's queue at the instant of a SIGKILL are lost outright (never `write()`n at all); this is
+disclosed the same way a crash always has been, below. Resumption always writes a ``gap`` record
+spanning "last known event time" -> "process restart time" BEFORE any new data line, because a
+resumed recorder genuinely does not know what happened on the wire while it was down.
 
 Exclusive writer: ``CaptureWriter`` takes an advisory exclusive ``flock`` on the capture file.
 Two recorder processes pointed at the same ``--out`` is a realistic operator error over a
@@ -93,10 +101,16 @@ from __future__ import annotations
 
 import json
 import bisect
+import logging
 import math
 import os
+import queue
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, TextIO, Tuple
+
+logger = logging.getLogger("907_live_fill_probe.capture")
 
 try:  # pragma: no cover — POSIX only; the probe runs on Linux (workstation + gpu-server)
     import fcntl
@@ -106,6 +120,13 @@ except ImportError:  # pragma: no cover
 GAP_REASONS = frozenset({
     "disconnect", "seq_discontinuity", "heartbeat_timeout", "clock_jump", "resume",
     "schema_drift", "book_checksum_mismatch",
+    # TASK_913 write-hardening (post-907-capture): ADDITIVE ONLY — `clock_jump` stays in the
+    # set (deprecated/legacy; old and in-flight captures already contain it and must keep
+    # parsing), and new code writes `emission_silence` instead (see recorder.py's `_consume` —
+    # §5 of WRITE_HARDENING_SPEC.md: the label was an honest rename, the mechanism it detects
+    # never changed). `writer_overflow` is the ONE new reason the writer itself can produce, on
+    # its own behalf rather than a caller's, when the bounded write queue overflows (§2.0.2).
+    "emission_silence", "writer_overflow",
 })
 
 #: The ONLY clock basis this format accepts for gap accounting (see the module docstring).
@@ -321,6 +342,86 @@ class GapRecord:
         }
 
 
+#: TASK_913 write-hardening (WRITE_HARDENING_SPEC.md §2.0). Chosen design: a single dedicated
+#: daemon writer thread behind ONE bounded `queue.Queue` with ONE consumer — never `fsync()`,
+#: nor any other potentially-device-blocking syscall, on the thread that called `write_*`
+#: (R1/R2). For the production caller (`recorder.py`) that thread is the asyncio event loop;
+#: for a synchronous test/CLI caller it is whatever thread called in. The design is uniform
+#: either way — `CaptureWriter` does not know or care which.
+#:
+#: Sized against the measured worst case (§2.0): 30.25 rec/s x a 93s device outage ~= 2,813
+#: records, so 100,000 covers roughly 55 minutes of continuous device absence.
+DEFAULT_QUEUE_MAXSIZE = 100_000
+
+#: §2.0.2: at most one overflow-disclosure record can ever be outstanding (the writer coalesces
+#: a whole overflow episode into one `gap`, and a new episode cannot start until the previous
+#: one's disclosure has been enqueued — that is what ends it). One reserved slot is therefore
+#: provably sufficient; see `CaptureWriter._enqueue`.
+OVERFLOW_RESERVE = 1
+
+#: §2.2: `os.fsync()` at most once per this many wall-clock seconds, tracked on
+#: `time.monotonic()`, for every record type EXCEPT the priority set below (§2.1). A
+#: constructor parameter (not a bare module constant) so tests can drive the mechanism with a
+#: fake clock without hard-coding the production default — see §2.2's "N is a constructor
+#: parameter defaulting to 30.0" note.
+DEFAULT_FSYNC_INTERVAL_S = 30.0
+
+#: R5: how long `CaptureWriter.close()` waits for the worker thread to drain and exit before
+#: giving up on joining it. Past this, close() returns WITHOUT closing the fd (see `close`).
+DEFAULT_CLOSE_JOIN_TIMEOUT_S = 5.0
+
+#: How long `drain()` parks on the queue's own `all_tasks_done` condition between liveness
+#: re-checks. Not a timeout on `drain()` itself (a healthy worker is woken from, not waited out —
+#: the condition is notified on every `task_done()`); it is only the interval at which a DEAD
+#: worker is noticed. See `drain()`.
+_DRAIN_POLL_S = 0.02
+
+#: §2.1: these record types get a PRIORITY fsync — issued by the worker immediately after
+#: writing the record, ahead of the periodic deadline, WITHOUT the loop waiting for it to
+#: complete. Not "synchronous": see §2.1 for why waiting buys nothing here.
+#:
+#: FOUR types, not §2.1's literal "only three points". `meta_resume` is a DELIBERATE divergence
+#: from the spec's enumeration, added because §2.1's own STATED RATIONALE for `meta_start`
+#: applies to it verbatim: it is written once per process lifetime, it is built by the very same
+#: `_declaration_fields()` call, and it carries the declared pair/channel set that
+#: `CaptureMetadata.assert_complete` reads. §2.1 predates B1/run-45, which added `meta_resume`
+#: specifically so a session-2 config change is not silently lost; enumerating three types was
+#: an omission, not a decision.
+#:
+#: The exposure this closes is narrower than it looks, and is stated honestly rather than
+#: overstated: `os.fsync(fd)` syncs the WHOLE file, so in the common case the resume gap written
+#: immediately after `meta_resume` (`__init__`'s else-branch) carries a priority fsync that
+#: covers the preceding `meta_resume` line for free. The real hole is the branch where NO resume
+#: gap is written — `if last_ts is not None and now > last_ts` — i.e. a previous session that
+#: crashed before recording ANY data event (`_EVENT_TYPES_FOR_LAST_TS` = book/trade/heartbeat/
+#: gap): repeated failed reconnects, or a kill before the first frame. That session-2 startup
+#: issued ZERO fsyncs before this fix. `test_write_hardening.py` pins exactly that branch; a test
+#: on the masked common case would pass with or without this member and would certify nothing.
+_PRIORITY_RECORD_TYPES = frozenset({"gap", "meta_start", "meta_resume", "meta_end"})
+
+#: Sentinel enqueued by `close()` to tell the worker thread "stop once you've drained everything
+#: already queued ahead of you". A private object identity, not a string, so it can never
+#: collide with a real `(line, is_priority)` tuple.
+_STOP = object()
+
+
+def _record_overflow_ts(obj: Dict[str, Any]) -> float:
+    """The timestamp used to bound a `writer_overflow` disclosure gap (§2.0.2 point 3) — read
+    straight off the record already serialized on the calling thread (no extra clock read, no
+    new clock basis). Falls back to the current time only for the one record shape that
+    genuinely carries no timestamp of its own (`meta_start`, which cannot itself be lost to
+    overflow in practice — it is always the very first record written).
+    """
+    ts = obj.get("ts")
+    if ts is None:
+        ts = obj.get("end_ts")
+    if ts is None:
+        ts = obj.get("start_ts")
+    if ts is None:
+        return _now()
+    return float(ts)
+
+
 class CaptureWriter:
     """Append-only writer. One process, one capture file. Resumable.
 
@@ -331,6 +432,28 @@ class CaptureWriter:
     reader requires each of them to carry at least one event (see
     `CaptureMetadata.assert_complete`). Synthetic/replay fixtures may omit it, in which case
     the reader falls back to "at least one data event of any kind".
+
+    WRITE-HARDENING (TASK_913, WRITE_HARDENING_SPEC.md §2.0). `write_book`/`write_trade`/etc.
+    validate and JSON-serialize on the CALLING thread (pure CPU — this is where a validator's
+    error message is meaningful) and then hand the line to ONE dedicated daemon worker thread
+    over ONE bounded `queue.Queue`. The worker is the ONLY thing that ever calls `write()`,
+    `flush()` or `os.fsync()` on the underlying file — R1/R2: no fsync, and no other
+    potentially-device-blocking syscall, ever runs on the caller's thread. FIFO + single
+    consumer means records reach the file in EXACTLY the order the caller produced them (R3),
+    which is what the whole gap ledger depends on.
+
+    A gap or meta record gets a PRIORITY fsync, issued by the worker right after it is written
+    (§2.1); everything else gets `flush()` on every record but `fsync()` only once per
+    `fsync_interval_s` (§2.2) — `flush()` is never batched, because that is what keeps a record
+    visible to a concurrent reader (`health_probe.copy_capture`) the instant it is written,
+    independent of the fsync cadence (§6).
+
+    A write-path fault (`OSError`/`EIO`) is latched by the worker and re-raised on every
+    subsequent call from the caller's thread, including from `close()` (R4) — the writer never
+    silently keeps accepting records into a queue nobody drains. The bounded queue itself never
+    blocks a caller and never silently drops: overflow coalesces into one `writer_overflow` gap,
+    disclosed on the falling edge (§2.0.2). `close()` never blocks unboundedly and never closes
+    the fd out from under a worker that is still inside `write()`/`fsync()` (R5).
     """
 
     def __init__(self, path: str, pairs: List[str], capture_id: str,
@@ -338,13 +461,49 @@ class CaptureWriter:
                  channels: Optional[List[str]] = None,
                  heartbeat_timeout_s: Optional[float] = None,
                  book_emission_policy: Optional[str] = None,
-                 book_keepalive_s: Optional[float] = None):
+                 book_keepalive_s: Optional[float] = None,
+                 queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
+                 fsync_interval_s: float = DEFAULT_FSYNC_INTERVAL_S,
+                 close_join_timeout_s: float = DEFAULT_CLOSE_JOIN_TIMEOUT_S,
+                 monotonic_clock: Optional[Any] = None):
         self.path = path
         self.channels = list(channels) if channels is not None else None
         self._is_resume = os.path.exists(path) and os.path.getsize(path) > 0
         self._fh: TextIO = open(path, "a", buffering=1)
         self._lock_held = False
         self._acquire_exclusive_lock()
+
+        # §2.0: the queue + worker thread must exist before the FIRST `_write` call below
+        # (`meta_start`/`meta_resume`), since every write — including those — now goes through
+        # them.
+        self._queue: "queue.Queue" = queue.Queue(maxsize=queue_maxsize)
+        self._fsync_interval_s = float(fsync_interval_s)
+        self._close_join_timeout_s = float(close_join_timeout_s)
+        #: The clock the worker's periodic-fsync deadline (§2.2) is tracked on. Injectable —
+        #: same idiom as `LiveRecorder(clock=...)` — so §7's tests can drive the cadence with a
+        #: fake clock without hard-coding `time.monotonic` or monkeypatching the stdlib `time`
+        #: module (which would also perturb `queue.Queue`/`threading.Thread`'s own internal
+        #: timeouts). Defaults to the real `time.monotonic`.
+        self._monotonic = monotonic_clock if monotonic_clock is not None else time.monotonic
+        self._last_fsync_monotonic = self._monotonic()
+        #: R4 — the worker's first unrecoverable exception, latched so every later call from
+        #: the caller's thread (including `close()`) re-raises it rather than silently queuing
+        #: into a dead writer.
+        self._worker_error: Optional[BaseException] = None
+        #: §2.0.2 overflow bookkeeping. Touched ONLY by the producer (calling) thread — there is
+        #: exactly one caller of `_enqueue` at a time by construction (one `CaptureWriter` is one
+        #: process's one writer), so no lock is needed around these.
+        self._overflow_active = False
+        self._overflow_n_dropped = 0
+        self._overflow_first_drop_ts: Optional[float] = None
+        self._overflow_last_drop_ts: Optional[float] = None
+        #: Cumulative across the whole session and NEVER reset by `_enqueue_overflow_gap` (which
+        #: zeroes the per-episode counters). `close()`'s degrade log reports it, because "0 record
+        #: (s) dropped" read off a just-reset per-episode counter would be an actively misleading
+        #: number on precisely the path whose defect was silence.
+        self._overflow_total_dropped = 0
+        self._worker = threading.Thread(target=self._worker_loop,
+                                         name="CaptureWriter-worker", daemon=True)
 
         def _declaration_fields(record_type: str) -> Dict[str, Any]:
             """The subscription-config fields common to `meta_start` and `meta_resume` (B1,
@@ -378,26 +537,93 @@ class CaptureWriter:
                     book_keepalive_s, "book_keepalive_s", f"{path}: {record_type}")
             return fields
 
-        if not self._is_resume:
-            meta = _declaration_fields("meta_start")
-            meta["format_version"] = CURRENT_FORMAT_VERSION
-            meta["clock_basis"] = CLOCK_BASIS
-            self._write(meta)
-        else:
-            # B1 (run-45): declare THIS session's config into the capture BEFORE the resume gap,
-            # so a reader sees "session 2 declared X" as a fact about the capture rather than
-            # losing it the moment the process exits. `ts` is informational provenance only —
-            # `meta_resume` is not in `_EVENT_TYPES_FOR_LAST_TS`, so it never enters gap
-            # arithmetic, exactly like `meta_start`.
-            now = _now()
-            resume_meta = _declaration_fields("meta_resume")
-            resume_meta["ts"] = now
-            self._write(resume_meta)
-            last_ts = _last_event_ts(path)
-            if last_ts is not None and now > last_ts:
-                self.write_gap(GapRecord(last_ts, now, resume_gap_reason,
-                                          detail="recorder restarted; wire state during the "
-                                                 "outage is unknown"))
+        # CONSTRUCTION ORDER (run-55 cycle-2 fix). Everything that can RAISE — validation
+        # (`_require_finite`), `_last_event_ts`'s file scan, `GapRecord.__post_init__`, and JSON
+        # serialization — happens HERE, before `self._worker.start()`, so the worker thread only
+        # ever comes into existence once construction can no longer fail.
+        #
+        # Why: the worker's target is the bound method `self._worker_loop`, so a started thread
+        # keeps `self` and `self._fh` alive. If `__init__` raised AFTER `start()` with nothing
+        # enqueued and no `_STOP` sent, the thread parked on `self._queue.get()` for the life of
+        # the process, holding the fd AND the exclusive flock — and a second `CaptureWriter` on
+        # the same path in the same process then failed with "another process already holds the
+        # exclusive capture lock", self-deadlocked against its own leaked thread. Before the
+        # write-hardening this same failure was merely a leaked fd that refcounting closed
+        # promptly. Reachable in practice: `--heartbeat-timeout-s nan` is `type=float` with no
+        # range check and `RecorderConfig.__post_init__` does not validate it, so an operator
+        # typo lands in `_declaration_fields` -> `_require_finite` -> `ValueError`.
+        startup: List[Tuple[str, bool, float]] = []
+        try:
+            if not self._is_resume:
+                meta = _declaration_fields("meta_start")
+                meta["format_version"] = CURRENT_FORMAT_VERSION
+                meta["clock_basis"] = CLOCK_BASIS
+                startup.append(self._prepare(meta))
+            else:
+                # B1 (run-45): declare THIS session's config into the capture BEFORE the resume
+                # gap, so a reader sees "session 2 declared X" as a fact about the capture rather
+                # than losing it the moment the process exits. `ts` is informational provenance
+                # only — `meta_resume` is not in `_EVENT_TYPES_FOR_LAST_TS`, so it never enters
+                # gap arithmetic, exactly like `meta_start`.
+                now = _now()
+                resume_meta = _declaration_fields("meta_resume")
+                resume_meta["ts"] = now
+                startup.append(self._prepare(resume_meta))
+                last_ts = _last_event_ts(path)
+                if last_ts is not None and now > last_ts:
+                    startup.append(self._prepare(
+                        GapRecord(last_ts, now, resume_gap_reason,
+                                   detail="recorder restarted; wire state during the "
+                                          "outage is unknown").to_line()))
+        except BaseException:
+            # No worker exists yet and nothing was enqueued: release the flock and the fd so a
+            # retry (or a second writer on the same path) is not locked out by a corpse.
+            self._release_file()
+            raise
+
+        self._worker.start()
+        try:
+            for line, is_priority, ts_for_overflow in startup:
+                self._enqueue(line, is_priority, ts_for_overflow)
+        except BaseException:
+            # Nothing here is expected to raise (the queue is empty, so admission cannot
+            # overflow) EXCEPT R4's re-raise of a fault the worker latched on the first startup
+            # record — e.g. an already-failing device. Tear the worker down within the R5 bound
+            # rather than leaving it parked on `get()` holding the fd and the flock.
+            self._abort_construction()
+            raise
+
+    def _release_file(self) -> None:
+        """Release the exclusive flock (if held) and close the fd. Callers MUST have established
+        that no worker thread can still be inside `write(fd)`/`fsync(fd)` — closing the fd frees
+        the descriptor number for reuse, which is the cross-file corruption hazard R5 names.
+        """
+        if self._lock_held and fcntl is not None:
+            try:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+            except OSError:  # pragma: no cover — closing the fd releases it regardless
+                pass
+            self._lock_held = False
+        self._fh.close()
+
+    def _abort_construction(self) -> None:
+        """Construction failed after the worker started: stop-signal it, join within the R5
+        bound, and release the fd + flock — but ONLY if it actually exited (R5's
+        no-close-under-a-live-worker rule binds here exactly as it does in `close()`).
+        """
+        try:
+            self._queue.put_nowait(_STOP)
+        except queue.Full:  # pragma: no cover — the queue is empty on this path
+            pass
+        self._worker.join(timeout=self._close_join_timeout_s)
+        if self._worker.is_alive():  # pragma: no cover — requires a device stall mid-__init__
+            logger.critical(
+                "907 capture writer %s: construction failed AND the worker thread is still "
+                "blocked %.1fs later — leaving the fd open and the flock held for process exit "
+                "to reap, rather than freeing a descriptor number a live thread may still use.",
+                self.path, self._close_join_timeout_s)
+            return
+        self._release_file()
 
     def _acquire_exclusive_lock(self) -> None:
         if fcntl is None:  # pragma: no cover — non-POSIX fallback
@@ -415,9 +641,149 @@ class CaptureWriter:
         self._lock_held = True
 
     def _write(self, obj: Dict[str, Any]) -> None:
-        self._fh.write(json.dumps(obj, separators=(",", ":"), allow_nan=False) + "\n")
-        self._fh.flush()
-        os.fsync(self._fh.fileno())
+        """Validate/serialize on the CALLING thread, then hand the line to the worker (§2.0).
+
+        Never writes, flushes or fsyncs anything itself — that is the worker's job, on its own
+        dedicated thread, so this method (and therefore every `write_*` above it) can be called
+        safely from an asyncio event loop without ever blocking it on a device.
+        """
+        self._enqueue(*self._prepare(obj))
+
+    @staticmethod
+    def _prepare(obj: Dict[str, Any]) -> Tuple[str, bool, float]:
+        """Serialize + classify a record, with no side effects and no queue interaction — the
+        whole "can raise" half of `_write`, split out so `__init__` can run it BEFORE the worker
+        thread exists (see the construction-order note there).
+        """
+        line = json.dumps(obj, separators=(",", ":"), allow_nan=False) + "\n"
+        return line, obj.get("type") in _PRIORITY_RECORD_TYPES, _record_overflow_ts(obj)
+
+    def _enqueue(self, line: str, is_priority: bool, ts_for_overflow: float) -> None:
+        """§2.0.2: admit onto the queue while there is room for the ONE reserved overflow-
+        disclosure slot; otherwise drop and accumulate, coalescing into a single `writer_overflow`
+        gap disclosed on the falling edge (the first admitted record after the episode ends).
+
+        R4: a worker that has already latched a fatal error is NEVER handed another record —
+        that would be silent data loss into a queue nobody drains.
+        """
+        if self._worker_error is not None:
+            raise self._worker_error
+        if self._queue.qsize() < self._queue.maxsize - OVERFLOW_RESERVE:
+            if self._overflow_active:
+                self._enqueue_overflow_gap()
+            try:
+                self._queue.put_nowait((line, is_priority))
+                return
+            except queue.Full:  # pragma: no cover — see class docstring: producer/consumer race
+                pass  # fall through and count it as an ordinary overflow drop
+        self._overflow_active = True
+        if self._overflow_first_drop_ts is None:
+            self._overflow_first_drop_ts = ts_for_overflow
+        self._overflow_last_drop_ts = ts_for_overflow
+        self._overflow_n_dropped += 1
+        self._overflow_total_dropped += 1
+
+    def _enqueue_overflow_gap(self) -> None:
+        """§2.0.2 points 4/6: the falling-edge disclosure. Enqueued OUT OF THE RESERVED SLOT,
+        ahead of the record that triggered it (the caller of this method admits its own record
+        immediately afterward) — via a direct `put_nowait`, NOT by re-entering
+        `write_gap`/`_write`/`_enqueue`, which would hit the very same admission check and
+        recurse.
+        """
+        n = self._overflow_n_dropped
+        first_ts = self._overflow_first_drop_ts
+        last_ts = self._overflow_last_drop_ts
+        gap = GapRecord(
+            first_ts, last_ts, "writer_overflow",
+            detail=f"writer queue overflow: {n} record(s) dropped between ts={first_ts!r} and "
+                   f"ts={last_ts!r} while the bounded write queue (maxsize="
+                   f"{self._queue.maxsize}) was full — coalesced into one disclosure on the "
+                   f"falling edge")
+        line = json.dumps(gap.to_line(), separators=(",", ":"), allow_nan=False) + "\n"
+        self._queue.put_nowait((line, True))  # priority fsync, same as any other gap (§2.1)
+        self._overflow_active = False
+        self._overflow_n_dropped = 0
+        self._overflow_first_drop_ts = None
+        self._overflow_last_drop_ts = None
+
+    def _worker_loop(self) -> None:
+        """The ONE consumer of the ONE queue. R3 (record order = call order) holds because this
+        is the only thread that ever writes to `self._fh`, consuming strictly FIFO.
+
+        R1/R2 bind the CALLER's thread, not this one: this thread exists specifically so that
+        `write()`, `flush()` and `os.fsync()` — all of which may block on a stalled device — run
+        somewhere other than the asyncio event loop.
+        """
+        fd = self._fh.fileno()
+        while True:
+            item = self._queue.get()
+            if item is _STOP:
+                self._queue.task_done()
+                return
+            line, is_priority = item
+            try:
+                self._fh.write(line)
+                self._fh.flush()  # §2.2 proviso: ONE flush per record, NEVER batched — this is
+                                   # what keeps a record visible to a concurrent reader the
+                                   # instant it is written, independent of the fsync cadence.
+                now_mono = self._monotonic()
+                if is_priority:
+                    # §2.1: priority, not synchronous — fsync right away, but the loop above
+                    # never waits for it; it already returned into the caller before this ran.
+                    os.fsync(fd)
+                    self._last_fsync_monotonic = now_mono
+                elif now_mono - self._last_fsync_monotonic >= self._fsync_interval_s:
+                    os.fsync(fd)
+                    self._last_fsync_monotonic = now_mono
+            except Exception as exc:  # noqa: BLE001 — R4: latch, never swallow
+                self._worker_error = exc
+                self._queue.task_done()
+                return
+            self._queue.task_done()
+
+    def drain(self) -> None:
+        """TEST-ONLY synchronisation point (§7's determinism note): block until the worker has
+        applied every record enqueued so far, **or until the worker is known to be dead**.
+        Assert AFTER a drain, never on a `time.sleep()` — a worker that woke on a timer instead
+        of draining the queue would still pass a sleep-based test, which is exactly the mutation
+        this method exists to make impossible to hide behind.
+
+        THE DEAD-WORKER CASE, stated precisely because the docstring used to overstate this
+        method's reach (D83(i)). When the worker hits a fatal write error (R4) it calls
+        `task_done()` for the item that raised and RETURNS — anything still queued behind it is
+        never dequeued and never marked done, so `unfinished_tasks` never reaches zero and a bare
+        `self._queue.join()` blocks FOREVER. That is a harness hazard, not a production one
+        (`close()` joins the worker THREAD, not the queue), but it turns the natural "burst of
+        writes, inject a failure, then `drain()`" test into a silent indefinite hang instead of a
+        fast legible failure. So: this polls, and once the worker has latched an error or exited,
+        it RETURNS rather than waiting on a worker that will never run again.
+
+        It deliberately does NOT discard the backlog and does NOT raise. The undrained records
+        stay on the queue so `queue_depth()` keeps reporting them honestly — that count is what
+        R6's CRITICAL log and R5's `close()` disclose — and the latched fault still surfaces the
+        way R4 specifies, on the next `write_*`/`close()` call.
+        """
+        q = self._queue
+        while True:
+            with q.all_tasks_done:
+                if q.unfinished_tasks == 0:
+                    return
+                if self._worker_error is None and self._worker.is_alive():
+                    q.all_tasks_done.wait(timeout=_DRAIN_POLL_S)
+                    continue
+                undrained = q.unfinished_tasks
+            logger.warning(
+                "907 capture writer %s: drain() returning with %d record(s) still queued — the "
+                "worker thread has latched a fatal write error and will never apply them. They "
+                "are NOT written and NOT discarded; the latched fault surfaces on the next "
+                "write_*/close() call (R4).", self.path, undrained)
+            return
+
+    def queue_depth(self) -> int:
+        """Best-effort count of records enqueued but not yet applied by the worker — what R6's
+        CRITICAL log and R5's `close()` both report as the "undrained" count.
+        """
+        return self._queue.qsize()
 
     def write_book(self, pair: str, ts: float, bid: float, ask: float,
                     bid_sz: float, ask_sz: float) -> None:
@@ -462,15 +828,128 @@ class CaptureWriter:
         self._write(gap.to_line())
 
     def close(self, clean: bool = True) -> None:
+        """R5. Enqueues `meta_end` (if `clean`), signals the worker to stop once it has drained
+        everything queued ahead of that signal, and joins it within a bounded timeout.
+
+        Never blocks unboundedly: if the worker is still inside `write()`/`fsync()` past the
+        timeout (a device stall in progress — expected roughly one shutdown in ten at the
+        measured ~10% duty cycle), this returns WITHOUT closing the fd or releasing the flock —
+        closing the fd here would free the descriptor number for reuse while the worker thread
+        may still be inside `fsync(fd)`/`write(fd)`, a cross-file corruption bug far worse than
+        the tail this is trying to save. The daemon thread and the fd are then left for process
+        exit to reap. Either way, no `meta_end` reaches the file in that case, so a reader's
+        `closed_cleanly` honestly reads False — the tail genuinely is unknown.
+
+        R4: a latched write-path fault is re-raised here too, never swallowed, but only AFTER
+        the worker has been signalled, joined (or found still blocked) and the fd handled.
+
+        AN ACTIVE OVERFLOW EPISODE IS RESOLVED HERE TOO (run-55 cycle-2 fix — §2.0.2's binding
+        rule, "on overflow the implementation MUST NOT drop silently"). `_enqueue` only resolves
+        an episode when a NEW record is admitted through the normal gate. `close()`'s own
+        `meta_end` goes through that same gate, so at a full queue the `meta_end` was itself
+        folded into the drop count and the `_STOP` sentinel — not a record — resolved nothing:
+        an episode active at close time vanished with no gap, no exception and no log naming it.
+        That is the 893 failure mode (missing data presented as observed time) coming back
+        through a new door. The reserved slot (`OVERFLOW_RESERVE = 1`) exists precisely so the
+        coalesced `writer_overflow` gap always has somewhere to go; this path uses it.
+        """
+        # One explicit budget for BOTH bounded waits below, on the real monotonic clock — NOT
+        # `self._monotonic`, which tests inject as a frozen fake for the fsync cadence and which
+        # would turn a bound into a hang. R5 holds: total wall time here is bounded by
+        # 2 x close_join_timeout_s in the worst case, and by design it is spent only when the
+        # worker is genuinely blocked on a device.
+        deadline = time.monotonic() + self._close_join_timeout_s
+
+        if self._overflow_active:
+            n_dropped = self._overflow_n_dropped
+            if self._worker_error is not None or not self._worker.is_alive():
+                # Nothing will ever drain the queue, so no in-format disclosure is possible.
+                # LOUD, not silent — that is the whole point of this branch.
+                logger.critical(
+                    "907 capture writer %s: %d record(s) were dropped to writer-queue overflow "
+                    "and CANNOT be disclosed in-format — the worker thread is dead, so no gap "
+                    "record can reach the file. %d record(s) undrained. The next session's "
+                    "resume gap spans a superset of the loss (§2.0.2 point 8).",
+                    self.path, n_dropped, self.queue_depth())
+            else:
+                try:
+                    self._enqueue_overflow_gap()
+                except queue.Full:  # pragma: no cover — the reserve makes this unreachable
+                    logger.critical(
+                        "907 capture writer %s: the reserved overflow slot was unavailable at "
+                        "close() — %d dropped record(s) undisclosed in-format.",
+                        self.path, n_dropped)
+
         if clean:
-            self._write({"type": "meta_end", "ts": _now()})
-        if self._lock_held and fcntl is not None:
-            try:
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            except OSError:  # pragma: no cover — closing the fd releases it regardless
-                pass
-            self._lock_held = False
-        self._fh.close()
+            if self._worker_error is not None:
+                # The worker is already dead (R4) — no meta_end can reach the file. Honest:
+                # `closed_cleanly` must read False, because the tail genuinely is unknown.
+                clean = False
+            else:
+                line, is_priority, _ = self._prepare({"type": "meta_end", "ts": _now()})
+                if not self._put_bounded((line, is_priority), deadline):
+                    # §2.0.2's rule again: a degrade is acceptable, SILENCE is not.
+                    clean = False
+                    logger.critical(
+                        "907 capture writer %s: could not admit meta_end within %.1fs — the "
+                        "write queue is full and the worker is not draining it. %d record(s) "
+                        "undrained; %d record(s) already dropped to overflow this session. "
+                        "closed_cleanly will read False.",
+                        self.path, self._close_join_timeout_s, self.queue_depth(),
+                        self._overflow_total_dropped)
+        if not self._put_bounded(_STOP, deadline):
+            logger.critical(
+                "907 capture writer %s: could not admit the stop sentinel within %.1fs — the "
+                "worker will not be told to exit and is left as a daemon thread for process "
+                "exit to reap; %d record(s) undrained.",
+                self.path, self._close_join_timeout_s, self.queue_depth())
+        self._worker.join(timeout=self._close_join_timeout_s)
+        if self._worker.is_alive():
+            logger.critical(
+                "907 capture writer %s: worker thread still blocked %.1fs after close() — "
+                "leaving the fd open and the worker running as a daemon thread; %d record(s) "
+                "undrained. closed_cleanly will read False.",
+                self.path, self._close_join_timeout_s, self.queue_depth())
+            return
+        self._release_file()
+        if self._worker_error is not None:
+            raise self._worker_error
+
+    def _put_bounded(self, item: Any, deadline: float) -> bool:
+        """R5's EXPLICIT bound. Admit `item` onto the queue, waiting at most until `deadline`
+        (a `time.monotonic()` reading). Returns True iff it was admitted.
+
+        §2.0 grants `close()` a bounded blocking wait — `LiveRecorder.close` runs from `main()`'s
+        `finally` AFTER `asyncio.run()` has returned, so there is no live event loop to stall.
+        That gift is specific to that call site, so the wait stays BOUNDED and explicit rather
+        than assuming no loop exists: if a `close()` path is ever reached while a loop is live,
+        R1 costs at most `close_join_timeout_s`, not forever.
+
+        A worker that has latched a fault or already exited will never make room, so the budget
+        is not spent waiting on it.
+
+        This is the ONE path allowed to consume the `OVERFLOW_RESERVE` slot for a non-disclosure
+        record, and only because it is terminal: by the time it runs, any active episode has
+        already been disclosed above, `_overflow_active` is False, and no further caller record
+        will ever be admitted — so no future disclosure can be left without a slot. The reserve
+        is NOT enlarged and the bound is NOT enlarged; §2.0.2 point 2's sufficiency argument is
+        untouched.
+        """
+        try:
+            self._queue.put_nowait(item)
+            return True
+        except queue.Full:
+            pass
+        if self._worker_error is not None or not self._worker.is_alive():
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            self._queue.put(item, timeout=remaining)
+            return True
+        except queue.Full:
+            return False
 
 
 def _now() -> float:

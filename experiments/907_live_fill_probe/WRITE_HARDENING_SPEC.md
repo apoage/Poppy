@@ -1,3 +1,37 @@
+> **STATUS (2026-09-06): SHIPPED as `task913-write-hardening`** — implemented in full
+> (R1-R6, §2.0/§2.0.1/§2.0.2, §2.1, §2.2, §5, and all eleven §7 tests). Suite
+> `experiments/907_live_fill_probe/` 304 -> 326 passing; `python -m trader selftest` 17/17.
+> Verified by a five-lens panel + a scoped cycle-2 re-verification: 1 BLOCKER + 4 MAJOR found
+> and closed, ten reverse-mutations caught, artifacts byte-identical to `e49bea0` except the
+> intended `clock_jump` -> `emission_silence` rename.
+>
+> **Two deliberate divergences from this document's literal text, both measured:**
+> 1. **`_PRIORITY_RECORD_TYPES` has FOUR members, not §2.1's "only three points"** —
+>    `meta_resume` is included. §2.1's own rationale for `meta_start` (written once per process
+>    lifetime; carries the declared pair/channel set `assert_complete` depends on) applies to
+>    `meta_resume` verbatim, since both are built by `_declaration_fields()`. Measured exposure:
+>    `os.fsync` syncs the whole fd, so the following resume gap normally covers `meta_resume` for
+>    free; the real hole is the branch where NO resume gap is written (`last_ts is None`, i.e. the
+>    previous session crashed before recording any data event), measured at **zero fsyncs** at
+>    session start.
+> 2. **§2.0.2's overflow disclosure also fires on the `close()` path.** As written, §2.0.2 only
+>    resolves an episode when a NEW record is admitted; `close()`'s own `meta_end` went through the
+>    same gate and was folded into the drop count, so an overflow episode active at close time lost
+>    both `meta_end` and the `writer_overflow` gap **silently** — the 893 failure mode, reintroduced.
+>    `close()` now resolves the episode into the reserved slot first, then admits `meta_end` through
+>    a bounded put. If `meta_end` still cannot be admitted, `clean=False` plus a CRITICAL naming the
+>    undrained depth and session drop count. Worst-case `close()` wall time is therefore
+>    `2 x close_join_timeout_s`, measured at 2.001s for a 1.0s timeout.
+>
+> **Known remainders (neither blocking, both named rather than hidden):**
+> - `_abort_construction()`'s live-worker branch is unreachable from its only call site (by the time
+>   `_worker_error` is set the worker has already exited) and has no test coverage. Dead defensive
+>   code today; a future change to `_worker_loop`'s error handling would silently re-arm it.
+> - `RecorderConfig.__post_init__` validates `book_keepalive_s` but not `heartbeat_timeout_s`, and
+>   `--heartbeat-timeout-s` is `type=float` with no range check, so `nan` still reaches
+>   `CaptureWriter` (now as a clean `ValueError` with nothing stranded). A range check at the
+>   config/argparse boundary is the better home.
+
 # TASK_913 scope 2/3 — recorder write-hardening SPEC (post-capture)
 
 Status: SPEC ONLY. No code in `capture.py` or `recorder.py` changes as part of this file — the

@@ -151,6 +151,44 @@ class _GapAlreadyRecorded(ConnectionError):
     """
 
 
+#: R6 point 1 mandates that the CRITICAL log and `CaptureWriteFailed`'s message carry the repr of
+#: BOTH the write error and the transport exception it was trying to disclose. Neither repr is
+#: bounded by anything: a transport library is free to put a whole frame (or a whole response
+#: body) in an exception message, and `CaptureWriteFailed` propagates out of `main()` uncaught
+#: into the process traceback. A 5 MB exception message was measured reaching both verbatim. That
+#: is a defect in the REQUIREMENT, not a deviation from it — the disclosure is what matters, not
+#: the megabytes — so the repr is interpolated through `_bounded_repr` with an explicit
+#: truncation marker. 2,000 characters is far beyond any real errno/transport message while
+#: keeping one log line one log line.
+_MAX_EXC_REPR_CHARS = 2_000
+
+
+def _bounded_repr(exc: BaseException, limit: int = _MAX_EXC_REPR_CHARS) -> str:
+    """`repr(exc)`, truncated to `limit` characters with an explicit marker naming the full
+    length — so a truncated disclosure is visibly truncated rather than quietly short.
+    """
+    try:
+        text = repr(exc)
+    except Exception:  # noqa: BLE001 — a broken __repr__ must not break the disclosure itself
+        return f"<unreprable {type(exc).__name__}>"
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... [truncated; {len(text)} chars total]"
+
+
+class CaptureWriteFailed(RuntimeError):
+    """TASK_913 write-hardening, R6: the write path (the `CaptureWriter` worker thread, §2.0) is
+    dead, and `run()`'s own attempt to DISCLOSE that via a `_record_gap` call has itself hit the
+    same latched error. TERMINAL — subclasses `RuntimeError` (like `SubscriptionConfigMismatch`)
+    deliberately, and is added to the never-launder clause below for the same reason: without
+    that, the broad `except Exception` would launder a dead writer into an ordinary
+    "disconnect" gap + backoff + retry, against a writer that can no longer accept a gap record
+    or anything else. Carries the transport exception `_record_gap` was trying to disclose in
+    its message, and the original write fault as `__cause__` (see `run()`'s except-Exception
+    handler).
+    """
+
+
 class SubscriptionConfigMismatch(RuntimeError):
     """TERMINAL, non-transient: the venue's own subscribe ACK named symbols this recorder's
     configuration never declared, and did so again on every one of
@@ -712,19 +750,48 @@ class LiveRecorder:
                                 exc, backoff)
                 await self._sleep(backoff)
                 backoff = min(backoff * 2, self.cfg.backoff_max_s)
-            except (NotImplementedError, Phase2RefusalError, RailViolation):
+            except (NotImplementedError, Phase2RefusalError, RailViolation, CaptureWriteFailed):
                 # D68/TASK_910 scope 2: these classes signal a deliberate safety refusal, not a
                 # transport failure. `NotImplementedError` -> `RuntimeError` -> `Exception`, and
-                # `Phase2RefusalError`/`RailViolation` both subclass `RuntimeError` too, so the
-                # broad `except Exception` below WOULD catch and launder any of them into an
-                # ordinary "disconnect" gap + backoff + retry if this clause were removed or
-                # narrowed — 902 measured that narrowing an `except` clause here is illusory
-                # (the broad catch stays broad; only the classes that must never be silently
-                # retried get pulled out ahead of it). Re-raise, do not narrow.
+                # `Phase2RefusalError`/`RailViolation`/`CaptureWriteFailed` (TASK_913 R6) all
+                # subclass `RuntimeError` too, so the broad `except Exception` below WOULD catch
+                # and launder any of them into an ordinary "disconnect" gap + backoff + retry if
+                # this clause were removed or narrowed — 902 measured that narrowing an `except`
+                # clause here is illusory (the broad catch stays broad; only the classes that
+                # must never be silently retried get pulled out ahead of it). Re-raise, do not
+                # narrow.
                 raise
             except Exception as exc:  # noqa: BLE001 — any transport failure triggers a gap
-                self._record_gap("disconnect", f"{type(exc).__name__}: {exc}",
-                                  dark_until_next_event=True)
+                try:
+                    self._record_gap("disconnect", f"{type(exc).__name__}: {exc}",
+                                      dark_until_next_event=True)
+                except Exception as write_exc:
+                    # TASK_913 R6 (WRITE_HARDENING_SPEC.md §2.0.1): the write path itself is
+                    # dead — the very call meant to DISCLOSE this transport failure hit the
+                    # writer's own latched fault. MUST NOT retry, MUST NOT back off, MUST NOT
+                    # fall through to another loop iteration: a dead writer cannot accept a gap
+                    # record, `meta_end`, or anything else, so continuing would only re-attempt
+                    # writes into a queue nobody drains. One typed exception leaves `run()`
+                    # instead of a bare write error escaping this except body a second time.
+                    # `_bounded_repr`, not `%r`: see `_MAX_EXC_REPR_CHARS`. This log line is the
+                    # ONLY place (i) the write error + errno, (ii) the transport exception and
+                    # (iii) the undrained queue depth ever reach a human — §2.0.1's disclosure is
+                    # explicitly out-of-band and deferred, because nothing further can reach the
+                    # file. It is load-bearing disclosure, and
+                    # `test_write_hardening.py`'s R6-log guard asserts on it with a NON-ZERO
+                    # undrained depth (D83(i): plant the poison where the guard is blind — a
+                    # depth-0 assertion would pass against a hard-coded 0).
+                    logger.critical(
+                        "907 recorder: WRITE PATH DEAD while trying to disclose a transport "
+                        "failure — write error (errno=%s): %s; transport exception it was "
+                        "trying to disclose: %s; writer undrained queue depth: %s. Stopping — "
+                        "no further record can reach this capture.",
+                        getattr(write_exc, "errno", None), _bounded_repr(write_exc),
+                        _bounded_repr(exc), self._writer.queue_depth())
+                    self._stop = True
+                    raise CaptureWriteFailed(
+                        f"write path failed while trying to disclose a transport failure "
+                        f"({_bounded_repr(exc)}): {_bounded_repr(write_exc)}") from write_exc
                 logger.warning("907 recorder: connection attempt %d failed (%s); backing off "
                                 "%.1fs before retry — NOT a silent healthy tick", self.attempts,
                                 exc, backoff)
@@ -756,8 +823,20 @@ class LiveRecorder:
                 # `now=now` (run-49): the SAME sample this frame's events are stamped with at
                 # `_parse_frame` below, so the event terminating this jump lands ON the gap's
                 # `end_ts`, never microseconds inside it.
-                self._record_gap("clock_jump", f"local clock advanced {now - prev:.1f}s "
-                                                f"between consecutive recv() calls", now=now)
+                #
+                # TASK_913 write-hardening §5: `self._clock` is ordinary wall-clock
+                # (`time.time`), not an NTP-jump detector — what this actually measures is
+                # elapsed wall-clock time since the last event was processed, exceeding the
+                # heartbeat-timeout expectation. Renamed `clock_jump` -> `emission_silence` to
+                # describe what was actually measured rather than a mechanism (an NTP-style
+                # clock correction) this code does not detect. ADDITIVE ONLY: `GAP_REASONS`
+                # keeps `clock_jump` for old/in-flight captures (`capture.py`); only what NEW
+                # code writes changes.
+                self._record_gap(
+                    "emission_silence",
+                    f"no event processed for {now - prev:.1f}s "
+                    f"(> heartbeat_timeout_s={self.cfg.heartbeat_timeout_s}s) — emission "
+                    f"silence, not a system clock jump", now=now)
             self._frames_since_last_event += 1
             self._frames_since_counters_flush += 1
             try:
@@ -1050,8 +1129,20 @@ class LiveRecorder:
         self._flush_counters(now)
 
     def close(self, clean: bool = True) -> None:
-        self._flush_counters(self._clock())
-        self._writer.close(clean=clean)
+        """R6 point 3: `self._writer.close(...)` MUST ALWAYS run, even when flushing counters
+        fails (the write path is already dead — R4). Before this reorder, `_flush_counters`
+        raising here (`recorder.py:874` in the pre-913 layout) preceded `self._writer.close(...)`
+        and skipped it entirely: the §2.0 worker thread was never stop-signalled, never joined,
+        its undrained count never reported, and the fd discipline (R5) never ran.
+        """
+        try:
+            self._flush_counters(self._clock())
+        except Exception:
+            logger.critical("907 recorder: failed to flush counters on close() — the write "
+                             "path is already dead; closed_cleanly will read False.",
+                             exc_info=True)
+            clean = False      # no meta_end is possible; closed_cleanly must read False
+        self._writer.close(clean=clean)   # may re-raise the latched error — that is R4
 
 
 def build_argparser():

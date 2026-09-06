@@ -96,6 +96,7 @@ def test_truncated_trailing_line_is_tolerated_not_corruption(tmp_path):
     p = tmp_path / "cap.jsonl"
     w = CaptureWriter(str(p), ["BTC/USD"], "cap-1")
     w.write_trade("BTC/USD", 100.0, 1.0, 1.0, "buy")
+    w.drain()  # TASK_913: wait for the write-hardening worker thread to land this record
     w._fh.close()  # simulate a kill: no clean close, and now append a partial write
     with open(p, "a") as fh:
         fh.write('{"type": "trade", "pair": "BTC/USD", "ts": 101.0, "pri')  # truncated, no \n
@@ -119,6 +120,7 @@ def test_resume_writes_gap_spanning_the_outage(tmp_path):
     p = tmp_path / "cap.jsonl"
     w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1")
     w1.write_trade("BTC/USD", 100.0, 1.0, 1.0, "buy")
+    w1.drain()  # TASK_913: wait for the write-hardening worker thread to land this record
     w1._fh.close()  # simulated kill — no clean close
 
     calls = {"n": 0}
@@ -489,6 +491,7 @@ def test_a_pair_declared_only_in_a_RESUMED_session_reconciles_and_refuses_when_d
     w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1", channels=["book", "trade"])
     w1.write_trade("BTC/USD", 100.0, 50000.0, 0.1, "buy")
     w1.write_book("BTC/USD", 100.5, 50000.0, 50001.0, 1.0, 1.0)
+    w1.drain()  # TASK_913: wait for the write-hardening worker thread to land these records
     w1._fh.close()  # simulated kill — no clean close, matching a real restart
 
     import capture as capture_mod
@@ -537,6 +540,7 @@ def test_a_pair_added_on_a_RESUMED_session_and_delivered_cleanly_is_not_misdiagn
     w1 = CaptureWriter(str(p), ["BTC/USD"], "cap-1", channels=["book", "trade"])
     w1.write_trade("BTC/USD", 100.0, 50000.0, 0.1, "buy")
     w1.write_book("BTC/USD", 100.5, 50000.0, 50001.0, 1.0, 1.0)
+    w1.drain()  # TASK_913: wait for the write-hardening worker thread to land these records
     w1._fh.close()
 
     import capture as capture_mod

@@ -912,7 +912,11 @@ def test_a_clock_jump_gap_ends_exactly_at_the_event_that_terminated_it(tmp_path)
     rows = [json.loads(line) for line in open(out) if line.strip()]
     trades = [r for r in rows if r["type"] == "trade"]
     gaps = [r for r in rows if r["type"] == "gap"]
-    jumps = [g for g in gaps if g["reason"] == "clock_jump"]
+    # TASK_913 write-hardening §5: the recorder's live detector now WRITES `emission_silence`
+    # (an honest rename — the mechanism measured here always was "no event processed for N
+    # seconds", never an NTP-style clock correction). `clock_jump` stays in `GAP_REASONS` only
+    # for reading OLD/in-flight captures; this test drives the recorder's actual write path.
+    jumps = [g for g in gaps if g["reason"] == "emission_silence"]
     assert len(trades) == 2, "both frames were recorded — the jump must not swallow an event"
     assert len(jumps) == 1, "the clock jump was detected exactly once"
     jump = jumps[0]
