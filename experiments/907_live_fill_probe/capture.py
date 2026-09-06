@@ -501,25 +501,68 @@ def _last_event_ts(path: str) -> Optional[float]:
     return last_ts
 
 
-def _iter_lines_tolerant(path: str) -> Iterator[Dict[str, Any]]:
-    """Yield parsed JSON lines, silently dropping ONLY a truncated/corrupt trailing line.
+_NO_PENDING = object()  #: sentinel — "the buffered line failed to parse", distinct from any obj
+
+
+def _iter_lines_tolerant(path: str,
+                          truncated_tail_out: Optional[List[bool]] = None,
+                          ) -> Iterator[Dict[str, Any]]:
+    """Yield parsed JSON lines, streaming the file in ONE forward pass, silently dropping ONLY a
+    truncated/corrupt trailing line.
 
     A non-trailing corrupt line is a real format violation and raises; the guarantee this
     format offers is "a kill mid-write cannot corrupt already-captured data", not "any
     corruption anywhere is tolerated".
+
+    TASK_914: this used to `fh.readlines()` the whole file before yielding anything — one of the
+    three full-file materializations behind the reader's O(file) RSS. A streaming pass has no
+    `len(lines)`, so "is this the last physical line" (the condition tolerance is keyed to) is
+    decided with a one-line lookahead instead: each line's parse outcome is buffered and only
+    resolved (yielded, or raised as non-trailing corruption) once the NEXT physical line has been
+    read — at which point it is certain the buffered one was not last. Blank lines are inert at
+    every position (never yielded, never raise, never trigger tolerance) exactly as before; only
+    a non-blank line's "lastness" matters.
+
+    `truncated_tail_out`, if given, is a single-element list used purely as an out-parameter: it
+    is set to `True` iff the file's own last physical line is non-blank and fails to parse —
+    folding what `_file_has_truncated_tail` used to get from its OWN second `readlines()` pass
+    into this same single pass (T2). Left `False` (its initial value) otherwise.
     """
+    if truncated_tail_out is not None:
+        truncated_tail_out[0] = False
+    have_pending = False
+    pending_is_blank = False
+    pending_obj: Any = _NO_PENDING
+    pending_line_no = -1
     with open(path, "r") as fh:
-        lines = fh.readlines()
-    for i, line in enumerate(lines):
-        line = line.rstrip("\n")
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except json.JSONDecodeError:
-            if i == len(lines) - 1:
-                continue  # truncated trailing write from a kill — tolerated, not corruption
-            raise CaptureFormatError(f"{path}: corrupt non-trailing line {i} is not valid JSON")
+        for line_no, raw in enumerate(fh):
+            if have_pending:
+                # A further physical line exists, so the buffered one is confirmed non-trailing.
+                if pending_is_blank:
+                    pass
+                elif pending_obj is not _NO_PENDING:
+                    yield pending_obj
+                else:
+                    raise CaptureFormatError(
+                        f"{path}: corrupt non-trailing line {pending_line_no} is not valid JSON")
+            stripped = raw.rstrip("\n")
+            pending_is_blank = not stripped
+            pending_obj = _NO_PENDING
+            if not pending_is_blank:
+                try:
+                    pending_obj = json.loads(stripped)
+                except json.JSONDecodeError:
+                    pending_obj = _NO_PENDING
+            pending_line_no = line_no
+            have_pending = True
+    if have_pending:
+        # EOF: resolve the true last physical line.
+        if pending_is_blank:
+            pass
+        elif pending_obj is not _NO_PENDING:
+            yield pending_obj
+        elif truncated_tail_out is not None:
+            truncated_tail_out[0] = True  # truncated trailing write — tolerated, not corruption
 
 
 @dataclass(frozen=True)
@@ -1315,9 +1358,17 @@ def read_capture(path: str,
     #: this structure: that exclusion is the fix for the run-44 BLOCKER.
     data_ts: Dict[str, Dict[str, List[float]]] = {}
     recorded_gaps: List[GapRecord] = []
-    lines = list(_iter_lines_tolerant(path))
-    if lines and _file_has_truncated_tail(path):
-        meta.truncated_tail = True
+    # TASK_914: stream the file in ONE forward pass rather than materializing every line (as a
+    # raw string, then again as a parsed dict) before this loop starts — that was the largest
+    # single term in the reader's RSS. `_iter_lines_tolerant` now does its own one-line lookahead
+    # (see its docstring) and reports whether the file's own last physical line was a tolerated
+    # truncation via `tail_status`, folding in what used to be `_file_has_truncated_tail`'s
+    # separate second `readlines()` pass. `got_any_line` mirrors the old `lines` (the fully
+    # materialized parsed list) being non-empty — the truncated-tail flag only takes effect if at
+    # least one line was actually parsed, exactly as before (an all-corrupt-tolerated-tail file
+    # produced no `lines` and so never called `_file_has_truncated_tail` at all).
+    tail_status: List[bool] = [False]
+    got_any_line = False
 
     pairs_seen: set = set()
     # B1 (run-45): the declared side of gate (iv) is the UNION of every writer session's
@@ -1391,7 +1442,8 @@ def read_capture(path: str,
                 f"is exactly the kind of unattributable event gate (iv) cannot reason about.")
         data_ts.setdefault(pair, {}).setdefault(channel, []).append(ts)
         pairs_seen.add(pair)
-    for obj in lines:
+    for obj in _iter_lines_tolerant(path, truncated_tail_out=tail_status):
+        got_any_line = True
         t = obj.get("type")
         if t == "meta_start":
             meta.had_meta_start = True
@@ -1526,6 +1578,8 @@ def read_capture(path: str,
             recorded_gaps.append(g)
         else:
             raise CaptureFormatError(f"{path}: unknown record type {t!r}")
+
+    meta.truncated_tail = got_any_line and tail_status[0]
 
     # B1 (run-45): `declared_pairs`/`channels` are the UNION across every writer session that
     # declared one — `meta_start` plus every `meta_resume` — never session 1's alone. A
@@ -1722,21 +1776,6 @@ def read_capture(path: str,
         }
     meta.coverage_evaluated = True
     return meta
-
-
-def _file_has_truncated_tail(path: str) -> bool:
-    with open(path, "r") as fh:
-        lines = fh.readlines()
-    if not lines:
-        return False
-    last = lines[-1].rstrip("\n")
-    if not last:
-        return False
-    try:
-        json.loads(last)
-        return False
-    except json.JSONDecodeError:
-        return True
 
 
 def _merge_gap_spans(gaps: List[GapRecord]) -> Tuple[List[Tuple[float, float]], int, int]:
