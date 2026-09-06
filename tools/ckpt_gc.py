@@ -89,9 +89,13 @@ SAFETY (all enforced, not documented-and-hoped)
   D64 documents, with no override and no acknowledgement. This is DISCLOSED, not fixed: gating the
   in-run pruner into refusing would make every live training run stop pruning, which is a worse
   outcome than the disclosed gap — D64 deliberately shipped TASK_881D rather than blocking
-  training. Closing it properly is TASK_881E's authority binding (recommended to the planner, not
-  done here). Read "the ``--apply`` freeze" anywhere in this file as "the offline CLI's ``--apply``
-  freeze".
+  training. TASK_881E/D70 closes this properly: the authority binding (``resolve_bound_coverage``
+  below) is now DEFAULT ON for both deleters — this CLI (``--bind-authority``, on unless
+  ``--no-bind-authority`` is given) and the in-run pruner (``prune_run_dir_by_score(...,
+  authority_binding=True)``, its own new default — see ``mcts_trader/training/safe_checkpoint.py``).
+  Read "the ``--apply`` freeze" anywhere in this file as "the offline CLI's ``--apply`` freeze";
+  the freeze itself is a SEPARATE, still-standing gate (D64's code gate) that this row does not
+  lift.
 * a run dir with no manifest coverage is refused wholesale (see above) — checked BEFORE anything
   else, including the disk floor. THIS one is shared: the in-run pruner performs the same
   no-coverage refusal through the same ``resolve_coverage``, so the coverage refusal covers both
@@ -940,6 +944,301 @@ def resolve_coverage(run_dirs: list[str], named: set[str],
         dangling = [p for p in missing if p == rp or p.startswith(prefix)]
         out[rd] = bool(under) and not dangling and any(os.path.exists(p) for p in under)
     return out
+
+
+# ======================================================================================
+# TASK_881E — AUTHORITY BINDING (D72's re-cut, replacing D64's original id-correlation option).
+# Everything below is NEW: `resolve_coverage` above is UNTOUCHED, byte for byte, and stays the
+# whole of gate (i)'s predicate on its own. The binding lives here as a CONJUNCT applied ON TOP
+# of it (`resolve_bound_coverage`), never as a rewrite of it — see that function's docstring for
+# the "can only ever REMOVE coverage" argument, which follows from `resolve_bound_coverage`
+# calling `resolve_coverage` first and only ever flipping a True to False afterward, never the
+# reverse.
+#
+# D72 (operator, 2026-08-29) KILLED the original id-correlation design — matching a NUMBER
+# extracted from the citing manifest's `experiments/<id>/` directory name against a NUMBER
+# extracted from the run dir's OWN path — after run 46 proved it provably ambiguous:
+# `runs/875_wf/f1_s0` and `runs/000_smoke/adhoc_debug_run` decompose IDENTICALLY under every
+# rule tried (leaf None, first segment None, union of one digit-led segment each), yet one must
+# cover and the other must refuse, and no function of either path string tells them apart. D72's
+# words, verbatim intent: "explicit own declaration but simple ... run is run on given config ...
+# if there is a branch that needs this it needs own module, not a[n] auth system." REJECTED by
+# name in the same ruling: a central registry, `owns:` blocks, marker files, promote-pin
+# ceremony — and (this row's own scope item) any further name-derived rule.
+#
+# WHAT REPLACES IT: authority = THE RUN DIR'S OWN CREATION RECORD — a PROTECTED.txt/SPEC.md
+# physically written INSIDE the run's own tree (AT `run_dir` itself, or at any ancestor of it up
+# to, but never above, whichever configured checkpoint root it is nested under —
+# `_own_manifest_entries`) that itself NAMES the citing `experiments/<id>/` back (equal to, or an
+# ancestor of, that experiment's own directory or manifest file — `_own_manifest_names`). This
+# reuses the IDENTICAL, UNCHANGED 881I parse functions (`_read_manifest_text`,
+# `parse_protected_txt`, `parse_spec_manifest` — the grammar is not reopened, D63) at a second
+# CALL SITE, not a second implementation, and needs no new directive keyword: `covers:`/
+# `protect:` already take a path, and the run's own manifest simply names the experiment
+# directory (or its manifest file) as that path. Nothing is inferred from any path's NAME or
+# NUMBER anywhere in this mechanism — the wall that killed the previous design cannot recur here
+# because run-dir-owns-experiment is now read off an EXPLICIT, on-disk, human-written
+# declaration, physically located where D72 says authority must live, never off which digits a
+# directory happens to start with. `runs/000_smoke/adhoc_debug_run` and `runs/875_wf/f1_s0`
+# therefore decompose DIFFERENTLY under this rule precisely because they can carry (or omit)
+# this record independently of their names — see gate (iv)'s fixture.
+#
+# THIS IS A NEW, STRICTER PREDICATE, not a rediscovery of an existing one: NO run dir under
+# `runs/` or `jax_ckpt_fast/` currently carries a PROTECTED.txt/SPEC.md of its own — every
+# existing grant lives exclusively in `experiments/<id>/`. Binding-ON therefore removes ALL of
+# today's coverage until an operator writes the run's own record for whichever dirs still need
+# protecting; D70's "expect the diff to be large-by-construction (legacy unmanifested dirs lose
+# standing entirely)" is satisfied at the limit. This is the fail-closed direction scope item 3
+# requires: additive-only, never a new grant.
+#
+# GATE (ii) — THE ENUMERATION, STATED HERE RATHER THAN DEFERRED (D83(ii): a number carries the
+# artifact and revision it was measured on). Measured 2026-09-06 on host `workstation` against this
+# working tree's `tools/ckpt_gc.py` (the TASK_881E cycle-2 revision), as a READ-ONLY dry-run scan
+# — `--roots jax_ckpt_fast runs --experiments-dir experiments`, run twice, once with the binding
+# ON (default) and once with `--no-bind-authority`, differencing the `REFUSE run dir` lines.
+# Reproduced independently three times (two verification-panel members and the orchestrator).
+#
+#   REFUSED run dirs: 15 (binding OFF)  ->  18 (binding ON).  DELTA = 3, and exactly these three
+#   run dirs lose the standing they have today; nothing else on this corpus changes:
+#       runs/832_e5        (cited by experiments/832_linear_imprint/PROTECTED.txt)
+#       runs/861_imprint   (cited by experiments/861_search_teacher_imprint/PROTECTED.txt)
+#       runs/861_ref       (cited by experiments/861_search_teacher_imprint/PROTECTED.txt)
+#   None of the three carries a PROTECTED.txt/SPEC.md of its own, which is why each refuses.
+#
+# HOST/MOUNT CAVEAT, load-bearing for the ABSOLUTE counts (not for the delta): on `workstation` the
+# `jax_ckpt_fast` root is a BROKEN symlink (it points at `/mnt/scratch/...` while the
+# live automount is `/run/mnt/scratch/...`), so it contributed 0 run dirs to the scan
+# above. Re-measured the same day with the real automount passed directly as a root (read-only
+# dry run, the symlink itself left alone): binding OFF 15 -> 21, binding ON 18 -> 24, i.e. the
+# refused universe grows by 6 and the 3-dir DELTA attributable to the binding is UNCHANGED,
+# because none of the six additional dirs is manifest-covered at all. Re-measure the absolute
+# counts on any host where that symlink resolves; the DELTA is the number this row is
+# accountable for.
+#
+# Restoring coverage to those three is an OPERATOR action (write each run's own creation record),
+# deliberately NOT this row's — D72: "Undeclared/legacy dirs (no manifest) refuse ... refusing
+# more, never less."
+#
+# WIRED IN BY DEFAULT since D70 (2026-08-28, planner ruling — OVERRIDES config.json's general
+# "new behavior ships flag-gated, default OFF" invariant for THIS row: D70's own text is "a
+# flag-gated safety binding on a remote deleter is a safety feature that is off ... this row
+# changes no numeric — it narrows who may authorize a delete"). `main()`'s `--bind-authority` is
+# ON unless `--no-bind-authority` is explicitly given (the named, test-only escape hatch D70
+# requires), and `resolve_bound_coverage(..., citations=None)` — reached only via that escape
+# hatch, or by a caller (like the in-run pruner, see safe_checkpoint.py) that passes
+# `authority_binding=False` explicitly — returns `resolve_coverage`'s own result completely
+# unchanged. Every pre-881E test built on placeholder ids (`999_x`/`e1`/`hostile_unrelated`/...)
+# covering unrelated-by-name run dirs ON PURPOSE, to isolate coverage from correlation, opts into
+# that unbound behaviour via the escape hatch (D70's required classification: fixture
+# CONVENIENCE, not a real protection relationship — see the TASK_881E task report for the
+# test-by-test breakdown). TASK_881E ships the binding ON and PROVES it (gate i's repro); the
+# `--apply` freeze itself lifts on a LATER, separate action per D64's own ruling ("only when
+# 881E ships AND 880's D35 gate opens"), not by this row — D72 explicitly DECOUPLES the two.
+# ======================================================================================
+
+
+def _own_manifest_entries(run_dir: str, roots: list[str]) -> list[ManifestEntry]:
+    """The run dir's OWN 881i-ingested manifest (D72: "the run dir's own creation record") —
+    every ``protect:``/``covers:`` entry found in a PROTECTED.txt/SPEC.md physically located AT
+    ``run_dir`` itself, or at any ancestor of it, up to (never above) the DEEPEST configured
+    checkpoint root that contains it — deepest, not first-listed, so that nested roots cannot
+    make the verdict depend on the order ``roots`` happens to arrive in (see the comment on the
+    selection loop). This is the one new fact the D72 binding reads that the
+    flat namespace never checked: a manifest declared somewhere else, under `experiments/<id>/`
+    — however well-formed, however truthfully it names this run dir — is NOT this run dir's own
+    record. Only a manifest a human placed IN the run's own tree (the natural place to write
+    "this belongs to experiment X" at the time the run was created, or reviewed after the fact)
+    counts.
+
+    Uses the SAME, UNCHANGED 881I parse functions (``_read_manifest_text``,
+    ``parse_protected_txt``, ``parse_spec_manifest``) — a second CALL SITE for 881I's settled
+    grammar, never a second implementation of it (D63 is not reopened). A symlinked manifest
+    basename, an unreadable file, or a malformed line withdraws THAT FILE's entries the same way
+    ``load_manifests`` already withdraws a malformed manifest elsewhere: fail-closed, silently
+    contributing nothing rather than raising — a raise here would reach the in-run pruner's
+    ``apply=True`` path and could flip ``train_jax_fast.py``'s exit code, which scope item 4
+    forbids.
+
+    Returns ``[]`` when `run_dir` resolves under no configured root, or when no manifest of its
+    own exists anywhere between it and its root — D72's "undeclared = refuse" default,
+    unconditionally: a run dir with no manifest of its own is owned by nobody.
+    """
+    rp = os.path.realpath(run_dir)
+    # LONGEST matching prefix, never the first match (TASK_881E cycle-2 MAJOR). `roots` is an
+    # operator-ordered list and CAN nest — `_dedupe_nested_scan_dirs` exists precisely because
+    # nesting is an operational reality for `--experiments-dir`, and that discipline was simply
+    # never extended to `--roots`. Taking the first containing root made this function's verdict
+    # depend on ARGUMENT ORDER: with `outer/inner/run_dir` and a PROTECTED.txt at `outer/`,
+    # `roots=[outer, inner]` walked up to `outer` and found it (authorize) while
+    # `roots=[inner, outer]` stopped at `inner` and found nothing (refuse) — identical bytes on
+    # disk, opposite authority verdicts, i.e. the docstring's "up to but never above its
+    # configured checkpoint root" was not even well-defined. The longest match is both the
+    # DETERMINISTIC choice and the fail-closed one: the deepest containing root is the shortest
+    # walk, so it can only ever find FEWER own-manifests than any shallower root would, which is
+    # the "refuses more, never less" direction D72 requires.
+    owning_root = None
+    for r in roots:
+        rr = os.path.realpath(r)
+        if rp == rr or rp.startswith(rr + os.sep):
+            if owning_root is None or len(rr) > len(owning_root):
+                owning_root = rr
+    if owning_root is None:
+        return []
+    entries: list[ManifestEntry] = []
+    cur = rp
+    while True:
+        for base in MANIFEST_BASENAMES:
+            mpath = os.path.join(cur, base)
+            if os.path.isfile(mpath) and not os.path.islink(mpath):
+                text, _err = _read_manifest_text(mpath)
+                if text is None:
+                    continue
+                if base == "PROTECTED.txt":
+                    ents, _spans, malformed = parse_protected_txt(text, mpath)
+                else:
+                    ents, _spans, malformed = parse_spec_manifest(text, mpath)
+                if not malformed:
+                    entries.extend(ents)
+        if cur == owning_root:
+            break
+        cur = os.path.dirname(cur)
+    return entries
+
+
+# `ManifestSet.citations`' own, and only, line shape (`load_manifests`'s `_classify`): one
+# whitespace-free `entry.path` token (the manifest grammar guarantees this — 881G's item
+# micro-grammar never accepts a second token), so this format can never be produced with a
+# literal ' <- ' inside the path half, and parsing it back out here is safe. This file alone
+# produces this text; nothing external ever feeds it.
+_CITATION_LINE_RE = re.compile(r"^(?:protect|covers): \S+ <- (.+):(\d+)$")
+
+
+def _citation_sources(citation_lines: list[str]) -> set[str]:
+    """The manifest SOURCE FILE(s) (``experiments/<id>/PROTECTED.txt``-style paths, exactly as
+    ``ManifestEntry.source`` recorded them) that cited this granted path, read back out of
+    `ManifestSet.citations`'s own format (see `_CITATION_LINE_RE`). Never reduced to an "id" —
+    D72 removes id-extraction entirely; the raw source path is compared directly against the
+    run's own manifest entries in `_own_manifest_names`."""
+    out = set()
+    for line in citation_lines:
+        m = _CITATION_LINE_RE.match(line)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def _own_manifest_names(own_entries: list[ManifestEntry], citing_source: str) -> bool:
+    """Does the run's own manifest (`own_entries`, from `_own_manifest_entries`) name the citing
+    manifest — the requesting experiment — as creator? An entry counts if its realpath'd path
+    equals, or is an ancestor of, either the citing manifest FILE itself or its containing
+    experiment directory. The natural way to write "this run belongs to experiments/<id>" is a
+    `covers: experiments/<id>` (or `protect: experiments/<id>/PROTECTED.txt`) line inside the
+    run's own manifest — no id, no number, ever extracted from either side; both paths are
+    compared exactly as `resolve_coverage` already compares any other manifest path."""
+    citing_file = os.path.realpath(citing_source)
+    citing_dir = os.path.dirname(citing_file)
+    for e in own_entries:
+        erp = os.path.realpath(e.path)
+        for target in (citing_file, citing_dir):
+            if erp == target or target.startswith(erp + os.sep):
+                return True
+    return False
+
+
+def _named_entries_under(run_dir: str, named: set[str]) -> list[str]:
+    """The subset of `named` that grants coverage to `run_dir` — the same test
+    `resolve_coverage` runs inline (kept as a private duplicate rather than a shared helper so
+    `resolve_coverage` itself stays byte-for-byte untouched; see the section banner)."""
+    rp = os.path.realpath(run_dir)
+    prefix = rp + os.sep
+    return [p for p in named if p == rp or p.startswith(prefix)]
+
+
+def _path_authorized(p: str, run_dir: str, citations: dict[str, list[str]],
+                     roots: list[str]) -> bool:
+    """Is granted path `p` authorized to cover `run_dir` under the D72 binding? A path with NO
+    citation (an operator `--protect-file` entry, never manifest-sourced) is untouched by the
+    binding — scope item 1 binds `covers:`/`protect:` MANIFEST entries only. A manifest-sourced
+    path is authorized only if `run_dir` carries its OWN manifest (`_own_manifest_entries`) that
+    names AT LEAST ONE of the citing manifests as creator (fail-closed: no own manifest at all
+    authorizes nothing, regardless of what any OTHER manifest claims about this run dir)."""
+    cite_lines = citations.get(p, [])
+    if not cite_lines:
+        return True
+    own_entries = _own_manifest_entries(run_dir, roots)
+    if not own_entries:
+        return False
+    sources = _citation_sources(cite_lines)
+    return any(_own_manifest_names(own_entries, src) for src in sources)
+
+
+def resolve_bound_coverage(run_dirs: list[str], named: set[str], missing: set[str] | None = None,
+                           *, citations: dict[str, list[str]] | None = None,
+                           roots: list[str] | None = None) -> dict[str, bool]:
+    """`resolve_coverage`'s own predicate, ANDed with the TASK_881E/D72 authority binding.
+
+    ADDITIVE BY CONSTRUCTION, not by care: this function's first act is to call
+    `resolve_coverage(run_dirs, named, missing)` UNCHANGED and use its dict as the starting
+    point. `citations` omitted short-circuits to returning that dict EXACTLY — the binding is
+    off. When given, a run dir already `False` stays `False` (no `and` can revive it), and one
+    already `True` can only be pulled DOWN to `False` by the `any(_path_authorized(...))` check
+    below, never pushed up: there is no branch anywhere in this function that sets a dir `True`
+    the base predicate marked `False`. So for every `rd`, `bound[rd] => resolve_coverage(...)[rd]`
+    holds by inspection, which is the "can only ever REMOVE coverage" guarantee scope item 3
+    requires.
+
+    `roots` is the CONFIGURED checkpoint roots, threaded down to `_own_manifest_entries` so the
+    run's own manifest is looked for in the right tree (the same roots the offline `--roots` /
+    the in-run pruner's own `roots=` already use). It is keyword-optional ONLY so that omitting
+    it cannot raise inside the in-run pruner's `apply=True` path (a raise there flips
+    `train_jax_fast.py`'s exit code); omitting it while the binding is ACTIVE finds no owning
+    root for any run dir and therefore REFUSES every manifest-sourced grant. Fail-closed in the
+    "refuses more" direction, never in the granting one.
+    """
+    coverage = resolve_coverage(run_dirs, named, missing)
+    if citations is None:
+        return coverage
+    roots = list(roots) if roots else []
+    out = {}
+    for rd in run_dirs:
+        if not coverage[rd]:
+            out[rd] = False
+            continue
+        under = _named_entries_under(rd, named)
+        out[rd] = any(_path_authorized(p, rd, citations, roots) for p in under)
+    return out
+
+
+def authority_binding_refusal_hint(run_dir: str, roots: list[str], named: set[str],
+                                   citations: dict[str, list[str]]) -> str:
+    """Scope item 2 — actionable refusal text naming what WOULD confer standing over `run_dir`
+    under D72's binding: a manifest physically written INSIDE this run dir's own tree (at
+    `run_dir` itself, or an ancestor of it up to its checkpoint root) that names the citing
+    experiment back — never "add a line under any experiments/<id>/", which is D64's own attack
+    shape and is exactly what this binding refuses. Callers must only use this once the binding
+    is ACTUALLY active — with no binding, any manifest anywhere currently has standing, and this
+    text would be false."""
+    under = _named_entries_under(run_dir, named)
+    citing_sources: set[str] = set()
+    for p in under:
+        citing_sources |= _citation_sources(citations.get(p, []))
+    own_entries = _own_manifest_entries(run_dir, roots)
+    if not own_entries:
+        standing = (f"this run dir carries no PROTECTED.txt/SPEC.md of its own anywhere between "
+                    f"it and its configured checkpoint root — write one INSIDE {run_dir} (or an "
+                    f"ancestor of it under one of the configured roots) with a "
+                    f"`covers:`/`protect:` line naming the citing experiment's own directory or "
+                    f"manifest file; that is the run's own creation record TASK_881E (D72) "
+                    f"requires")
+    else:
+        standing = (f"this run dir's own manifest exists but does not name the citing "
+                    f"experiment back — add a `covers:`/`protect:` line to it naming that "
+                    f"experiment's own directory or manifest file (D72: the run's own record "
+                    f"must name the requesting experiment as creator)")
+    if citing_sources:
+        return (f"{sorted(citing_sources)} names this run dir but has no declared relationship "
+                f"to it under TASK_881E's authority binding (D72) — {standing}")
+    return f"no manifest names it at all — {standing}"
 
 
 _BRACE_EXPANSION_CAP = 64
@@ -3436,6 +3735,60 @@ def _scan_dir_arg(value: str) -> str:
     return value
 
 
+# ======================================================================================
+# SAFETY-FLAG SPELLING DISCIPLINE — shared by EVERY safety flag in this file.
+#
+# WHY THIS IS ONE HELPER AND NOT TWO COPIES (TASK_881E cycle-2 BLOCKER, the root cause).
+# `main()`'s parser is built WITHOUT `allow_abbrev=False` (deliberately — see the ABBREVIATION
+# RESISTANCE note below: disabling it globally breaks every HEAD abbreviation, `--c` ->
+# `--critical-free-gb` most visibly, which is a canon-parity change AND a live pin in
+# test_ckpt_881i_manifest_ingestion.py). argparse therefore resolves any UNAMBIGUOUS long-option
+# prefix. D64's override was hardened against that in the 881D resume — and then TASK_881E added
+# `--no-bind-authority`, the escape hatch that DISARMS the whole D72 authority binding, and it
+# inherited NONE of that discipline: `--no-bind-authority` was the only long option in this file
+# beginning with `n`, so a bare `--n` resolved to it. Measured on a scratch tree
+# (2026-09-06, this working tree, `runs/target_run` covered only by a hostile
+# `experiments/hostile_unrelated/PROTECTED.txt`): the correct production `--apply` invocation
+# REFUSED and kept all three checkpoints; the SAME invocation plus two extra keystrokes `--n`
+# turned the binding off and DELETED `checkpoint_1` and `checkpoint_2`. Two keystrokes reopened
+# byte-for-byte the pre-D64 hole TASK_881E exists to close.
+#
+# The recurrence — not the individual hole — is the defect: the D64 override carried three
+# hand-rolled defenses inline and the next safety flag added to this file simply did not get
+# them. So the token-enumeration rule now lives ONCE, here, and both flags call it. Any FUTURE
+# safety flag added to this file must call `_safety_flag_spelled_in_full` (or, for a valued
+# option, `_safety_flag_occurrences`) rather than re-deriving the rule; pinned by
+# tools/tests/test_ckpt_881e_authority_binding.py's `test_every_safety_flag_uses_the_shared_
+# spelling_discipline`, which enumerates the safety flags and fails when one skips it.
+# ======================================================================================
+
+
+def _safety_flag_occurrences(flag: str, argv: list[str]) -> list[str]:
+    """Every token in the RAW `argv` that argparse could resolve to the long option `flag` — the
+    full name and every prefix of it, `--flag=value` split so only the NAME is ever compared (a
+    token that merely appears inside some OTHER option's VALUE can never register). Returned in
+    argv order, as SPELLED, because the spelling is the whole point: the parsed namespace records
+    an option's value and cannot say by what spelling it arrived.
+
+    `len(name) > 2` drops a bare `--` (argparse's end-of-options marker), which is a prefix of
+    every long option and would otherwise register as an occurrence of all of them."""
+    return [name for name in (tok.split("=", 1)[0] for tok in argv)
+            if len(name) > 2 and name.startswith("--") and flag.startswith(name)]
+
+
+def _safety_flag_spelled_in_full(flag: str, argv: list[str]) -> bool:
+    """Was `flag` given EXACTLY ONCE and spelled IN FULL? This is the discipline every safety
+    flag in this file must pass before it is honoured — an argparse abbreviation (`--n`, `--no`,
+    `--no-bind`, ...) answers False, and so does a repetition, even an all-full-spelling one.
+
+    Written as an equality against the whole occurrence list rather than an `any()` deliberately:
+    with two occurrences argparse keeps only ONE of them (the last, for a valued option), so an
+    `any()` lets one token vouch for a DIFFERENT token's effect — the measured cycle-3 D64
+    split-token bypass. The invariant is not "a full spelling appears" but "the occurrence that
+    takes effect IS the full spelling"."""
+    return _safety_flag_occurrences(flag, argv) == [flag]
+
+
 # D64 (2026-08-25, planner ruling; TASK_881D resume): the `--apply` freeze becomes a CODE gate,
 # not a written convention. Refusal text AND the arming predicate both live here, as their own
 # top-level names, for two reasons: the wording is reviewable independent of `main()`'s control
@@ -3618,11 +3971,10 @@ def _d64_apply_refusal_reason(a, argv):
     if not getattr(a, "apply", False) or getattr(a, "verify_manifests", False):
         return None
     # Every argv token argparse could resolve to this option: the full name and every prefix of
-    # it. `--flag=value` is split so only the NAME is ever compared — a token that merely appears
-    # inside some OTHER option's value cannot register as an occurrence.
-    occurrences = [name for name in (tok.split("=", 1)[0] for tok in argv)
-                   if len(name) > 2 and name.startswith("--")
-                   and _D64_OVERRIDE_FLAG.startswith(name)]
+    # it. The enumeration itself lives in `_safety_flag_occurrences` (SAFETY-FLAG SPELLING
+    # DISCIPLINE, above) because `--no-bind-authority` needs the IDENTICAL rule and inheriting it
+    # by call, not by copy, is what stops the next safety flag shipping without it.
+    occurrences = _safety_flag_occurrences(_D64_OVERRIDE_FLAG, argv)
     if len(occurrences) > 1:
         return _D64_REPEATED_OVERRIDE_REFUSAL
     # Exactly one occurrence, and it is the full spelling. Written as an equality against the
@@ -3635,6 +3987,52 @@ def _d64_apply_refusal_reason(a, argv):
     if value is not None:
         return _D64_WRONG_TOKEN_REFUSAL
     return _D64_APPLY_FREEZE_REFUSAL
+
+
+# TASK_881E cycle-2 BLOCKER — the escape hatch that DISARMS the D72 authority binding gets the
+# same raw-argv spelling discipline the D64 override has, via the SAME helper (see the
+# SAFETY-FLAG SPELLING DISCIPLINE section). One spelling of the flag name, used by
+# `add_argument` and by the gate, so the two can never drift apart.
+_BIND_AUTHORITY_OFF_FLAG = "--no-bind-authority"
+
+_BIND_AUTHORITY_ABBREVIATION_ADVISORY = (
+    f"[ckpt_gc] IGNORING an abbreviated/repeated {_BIND_AUTHORITY_OFF_FLAG} — the TASK_881E "
+    f"(D72) authority binding STAYS ON. This escape hatch must be given EXACTLY ONCE and spelled "
+    f"IN FULL as {_BIND_AUTHORITY_OFF_FLAG}: this parser keeps argparse's long-option "
+    f"abbreviation enabled (deliberately — see the ABBREVIATION RESISTANCE note in this file), "
+    f"and no other long option here begins with 'n', so a bare '--n' would otherwise resolve to "
+    f"it and silently restore the pre-881E flat coverage namespace that D64 froze --apply over. "
+    f"Failing CLOSED instead: the run continues with the binding ON, which can only REFUSE more "
+    f"run dirs, never delete more. Nothing was deleted on account of this flag."
+)
+
+
+def _bind_authority_setting(a, argv) -> tuple[bool, str | None]:
+    """Should the TASK_881E/D72 authority binding be ACTIVE for this invocation, and is there an
+    advisory to print? Returns ``(bind_authority, advisory_or_None)``.
+
+    `a` is the parsed namespace; `argv` is the RAW argument vector (`sys.argv[1:]`) — the
+    namespace records only that `bind_authority` became False, never by what SPELLING, and the
+    spelling is exactly what this gate exists to police.
+
+    The binding is DEFAULT ON (D70) and is turned off ONLY by `--no-bind-authority` given exactly
+    once and spelled in full. Every shorter spelling argparse would resolve to it (`--n`, `--no`,
+    `--no-b`, `--no-bind`, ...) FAILS CLOSED: the binding stays ON and an advisory is printed.
+
+    WHY FAIL-CLOSED-AND-CONTINUE, not exit 2 (the D64 gate's response to the same abbreviation
+    class): the two flags point in OPPOSITE safety directions. D64's override ARMS an
+    irreversible deleter, so the only safe response to an ambiguous spelling is to refuse the
+    whole run. This flag DISARMS a check; the safe response is simply not to disarm it, which is
+    the tool's own default and can only ever refuse MORE run dirs than the operator asked for —
+    never delete more. Exiting 2 would additionally break dry-run invocations that abbreviate,
+    for no safety gain. The advisory is loud, on stderr, and states the consequence, so this is
+    not a silent correction.
+    """
+    if getattr(a, "bind_authority", True):
+        return True, None
+    if _safety_flag_spelled_in_full(_BIND_AUTHORITY_OFF_FLAG, argv):
+        return False, None
+    return True, _BIND_AUTHORITY_ABBREVIATION_ADVISORY
 
 
 def main() -> int:
@@ -3716,6 +4114,35 @@ def main() -> int:
     ap.add_argument("--write-index", action="store_true",
                     help="write the auditable checkpoints_index.json per run dir "
                          "(implied by --apply)")
+    # TASK_881E — the authority binding. D70 (2026-08-28, planner ruling, OVERRIDES the task
+    # file's own "flag-gated, default OFF" framing and config.json's general invariant for THIS
+    # row specifically): "a flag-gated safety binding on a remote deleter is a safety feature
+    # that is off" — this changes no canon NUMERIC, only who may authorize a delete, so it ships
+    # DEFAULT ON. First letter 'b' is unused by every other long option, so `--bind-authority`
+    # cannot steal an abbreviation any HEAD prefix resolves to (see the NAMING CONSTRAINT note
+    # above --experiments-dir/--verify-manifests); `--no-bind-authority` is the named,
+    # explicit, TEST-ONLY escape hatch D70 requires — production callers should never pass it.
+    ap.add_argument("--bind-authority", dest="bind_authority", action="store_true",
+                    help="TASK_881E (D64/D70/D72): require the run dir's OWN "
+                         "PROTECTED.txt/SPEC.md (physically inside its own tree) to name the "
+                         "citing covers:/protect: entry's manifest back before that entry may "
+                         "grant coverage over it. Additive only — can only REMOVE coverage a "
+                         "manifest would otherwise grant, never add any. DEFAULT ON since D70 "
+                         "(2026-08-28) — this flag is now a no-op spelled out for clarity; use "
+                         "--no-bind-authority to opt OUT.")
+    # Spelled via `_BIND_AUTHORITY_OFF_FLAG` rather than re-typed, so the gate that polices this
+    # flag's spelling (`_bind_authority_setting`) and the flag itself can never drift apart —
+    # the same "exactly one spelling" discipline `_D64_OVERRIDE_FLAG` already uses below.
+    ap.add_argument(_BIND_AUTHORITY_OFF_FLAG, dest="bind_authority", action="store_false",
+                    help="TEST-ONLY escape hatch (D70, 2026-08-28): explicitly opt OUT of the "
+                         "TASK_881E authority binding and restore the pre-881E flat coverage "
+                         "namespace (any covers:/protect: entry, from any manifest id, anywhere "
+                         "under a scanned directory, covers). Exists so fixtures built on "
+                         "placeholder manifest ids (999_x, hostile_unrelated, e1, ...) as pure "
+                         "coverage-isolation convenience can keep doing so without asserting a "
+                         "correlation relationship they were never designed to have. Production "
+                         "callers must not pass this.")
+    ap.set_defaults(bind_authority=True)
     ap.add_argument("--apply", action="store_true", help="actually delete (default: dry run)")
     # D64 (2026-08-25, planner ruling; TASK_881D resume) — the `--apply` FREEZE IS NOW CODE, not
     # a written convention. Spelled `--i-have-read-d64-and-accept-the-unbound-coverage-risk`
@@ -3752,6 +4179,16 @@ def main() -> int:
     if _d64 is not None:
         print(_d64, file=sys.stderr)
         return 2
+
+    # TASK_881E cycle-2 BLOCKER — the SAME raw-argv spelling discipline, applied to the binding's
+    # test-only escape hatch. Immediately after the D64 gate and before ANY filesystem work, for
+    # the same reason: `main()` is content-unchecked by `_881D_KNOWN_REWRITES`, so the predicate
+    # lives in the pinned top-level `_bind_authority_setting`, never inline here. Writes the
+    # decision BACK onto the namespace so every downstream reader of `a.bind_authority` (there
+    # are three) sees the policed value and none can accidentally read the raw parse.
+    a.bind_authority, _bind_advisory = _bind_authority_setting(a, sys.argv[1:])
+    if _bind_advisory is not None:
+        print(_bind_advisory, file=sys.stderr)
 
     # D53 (881G): detect whether `--experiments-dir` was EXPLICITLY given, without touching the
     # frozen `ap.add_argument("--experiments-dir", ..., default=["experiments"], ...)` line above
@@ -3926,7 +4363,15 @@ def main() -> int:
               "listed above is invisible from this root but visible when rooted at directly.",
               file=sys.stderr)
 
-    coverage = resolve_coverage(list(runs.keys()), named, missing_named)
+    # TASK_881E/D70/D72: the authority binding is ON BY DEFAULT (`bind_authority` defaults True —
+    # see `--bind-authority`/`--no-bind-authority` above); only the named test-only escape hatch
+    # (`--no-bind-authority`) reaches the `citations=None` branch, which is byte-for-byte what
+    # `resolve_coverage(list(runs.keys()), named, missing_named)` returns on its own (see
+    # `resolve_bound_coverage`'s docstring) — the pre-881E/pre-D70 behavior.
+    coverage = resolve_bound_coverage(
+        list(runs.keys()), named, missing_named,
+        citations=(manifests.citations if a.bind_authority else None),
+        roots=(roots if a.bind_authority else None))
     resolved_runs = {rd: ck for rd, ck in runs.items() if coverage.get(rd)}
     unresolved_runs = {rd: ck for rd, ck in runs.items() if not coverage.get(rd)}
 
@@ -3939,6 +4384,16 @@ def main() -> int:
     # was silently destroying score data on the very trees it was protecting.
     index_rows: dict[str, list[dict]] = {}
     for rd in sorted(unresolved_runs):
+        # TASK_881E scope item 2: under the (default-ON, D70) binding the generic "an
+        # experiments/<id>/PROTECTED.txt" (any id) is exactly D64's attack shape, so name the
+        # manifest that WOULD have standing instead. Only reachable via the `--no-bind-authority`
+        # test-only escape hatch does the OLD wording still print — and only there is it still
+        # accurate, since with the binding truly off any id does have standing.
+        if a.bind_authority:
+            hint = authority_binding_refusal_hint(rd, roots, named, manifests.citations)
+            print(f"[ckpt_gc] REFUSE run dir {rd}: {hint}. Nothing under {rd} will be pruned "
+                  f"or written until then, dry-run or --apply.")
+            continue
         print(f"[ckpt_gc] REFUSE run dir {rd}: no manifest declares coverage for it (or a "
               f"manifest entry pointing into it names a path that does not exist) — "
               f"add a `protect: <path>` (real checkpoints, cited from a LEDGER/SPEC "

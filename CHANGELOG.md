@@ -3,6 +3,39 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-06 — TASK_881E — manifest authority binding: a `covers:` line now needs the run's own consent
+
+- **What shipped.** `tools/ckpt_gc.py` (+~470) + `mcts_trader/training/safe_checkpoint.py` +
+  `tools/tests/test_ckpt_881e_authority_binding.py` (new). D72's ruling in code: a
+  `covers:`/`protect:` grant from `experiments/<id>/` is honoured over a run dir ONLY where that run
+  dir's own 881i-ingested manifest (`PROTECTED.txt`/`SPEC.md`, at the dir or an ancestor up to its
+  configured root) names the citing experiment back. No name-derived rules, no registry, no marker
+  files. Additive only — the binding can REMOVE coverage, never add it. Six ckpt suites
+  `1 failed / 453 passed` -> **545 passed, 1 skipped**; selftest 17/17.
+
+- **Gate (ii) enumeration.** REFUSE 15 -> 18; the three dirs losing standing are `runs/832_e5`,
+  `runs/861_imprint`, `runs/861_ref`. Measured on `workstation` at HEAD `3461b15`, where
+  `jax_ckpt_fast` is a broken symlink contributing 0 dirs; with the mount resolved, OFF 21 -> ON 24,
+  same delta. **Zero run dirs are eligible for the scored-deletion path on this corpus** — D72's
+  pre-registered outcome ("refusing more, never less"), not a defect. The `--apply` freeze is
+  untouched and stays behind 880's D35 gate.
+
+- **Decision-changing finding.** The `--no-bind-authority` escape hatch shipped reachable by the
+  bare abbreviation **`--n`**, silently disarming the whole binding — proven by an actual deletion
+  of two checkpoints on a scratch tree, and invisible to all 28 tests cycle 1 shipped. The same file
+  had already hardened its sibling D64 override against precisely this. Both gates now share one
+  spelling discipline, because the recurrence was the defect.
+
+- **Also fixed.** A pre-existing RED at `e49bea0`
+  (`test_apply_behaviour_is_parity_with_head_on_a_scratch_tree`, whose HEAD-control leg was never
+  armed with the D64 override) — and then a second-order version of the same trap, where the test
+  would have gone red again the moment this row was committed and `_head_source()` began returning
+  this very code. Order-dependent owning-root selection (first-match -> longest-prefix) closed too.
+
+- **Remainders (named).** `--bind-authority` remains freely abbreviable (harmless, sets the default);
+  `_safety_flag_occurrences` reads argv positionally, proven non-exploitable in the fail-open
+  direction; `--roots` still lacks a nested-root dedupe.
+
 ## 2026-09-06 — TASK_913 scope 2/3 (write-hardening) — the recorder's write path comes off the event loop
 
 - **What shipped.** `experiments/907_live_fill_probe/capture.py` + `recorder.py` +

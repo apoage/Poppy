@@ -90,7 +90,14 @@ def _mk_ckpt(root, name, mtime=None):
 
 
 def _run_gc(args, cwd):
-    return subprocess.run([sys.executable, GC_PATH] + args, cwd=cwd,
+    # TASK_881E/D70 (2026-08-28): the authority binding is DEFAULT ON since D70's ruling. This
+    # suite's placeholder manifest ids (999_x, e1, hostile_unrelated, my_run, ...) are fixture
+    # CONVENIENCE for testing D64/gate-i/ii/iii/iv/v mechanics that are ORTHOGONAL to authority
+    # correlation (that is exclusively test_ckpt_881e_authority_binding.py's job) -- none of them
+    # encode a real protection relationship. `--no-bind-authority` is the named, test-only escape
+    # hatch D70 requires: applied here, once, at this suite's single subprocess entry point, so
+    # this suite keeps exercising exactly what it always exercised rather than the new binding.
+    return subprocess.run([sys.executable, GC_PATH] + args + ["--no-bind-authority"], cwd=cwd,
                           capture_output=True, text=True)
 
 
@@ -523,8 +530,18 @@ D64_GATE_DIGESTS = {
     # RE-PINNED cycle 3: the gate grew the EXACTLY-ONCE multiplicity rule (the split-token
     # BLOCKER — see `_D64_REPEATED_SHAPES` above). Cycle-2 digest was
     # d0ae868964b4c0f909664c43b06752a733ee63f6330a86406b53eb22f78191ab.
+    #
+    # RE-PINNED AGAIN by TASK_881E cycle 2 (2026-09-06). SANCTIONED CHANGE, and deliberately the
+    # SMALLEST one that closes its BLOCKER: the four-line inline argv-token enumeration is now a
+    # call to `_safety_flag_occurrences` (ckpt_gc.py's SAFETY-FLAG SPELLING DISCIPLINE section).
+    # The RULE is unchanged — same tokens, same order, same `len(name) > 2` guard — it simply
+    # lives in one place now, because `--no-bind-authority` shipped WITHOUT this discipline and
+    # was armed by a bare `--n`, i.e. the recurrence, not the individual hole, was the defect.
+    # Every behavioural test in this section, and every mutation anchor below, is untouched:
+    # `occurrences`, the multiplicity rule and `spelled_in_full` keep their exact bytes.
+    # Cycle-3 digest was e29f1a266709b45f3046fdd30fde38338718982905b7e431696e8230a4ea920c.
     "_d64_apply_refusal_reason":
-        "e29f1a266709b45f3046fdd30fde38338718982905b7e431696e8230a4ea920c",
+        "f5eccefb9695f3cb65ec9e1f9aae5958c557402b302fa6a6b47bce7fed0dd886",
     "_D64_OVERRIDE_FLAG":
         "df7e8778cced5d9a2670315e3cc1c3ff5a4a3381813ee8696482fea479c9f8f6",
     "_D64_OVERRIDE_TOKEN":
@@ -613,9 +630,12 @@ def test_the_cycle3_split_token_closure_is_doubly_redundant_and_both_halves_are_
     variant = tmp_path / "ckpt_gc_variant.py"
     variant.write_text(src)
     run_dir = _d64_hostile_tree(tmp_path)
+    # TASK_881E/D70 escape hatch: this mutation test is about the D64 override multiplicity
+    # rule, not authority correlation — 'hostile_unrelated' is fixture convenience here too.
     r = subprocess.run([sys.executable, str(variant), "--apply"]
                        + [f"{D64_OVERRIDE_FLAG}=NOT_THE_TOKEN", f"--i={D64_OVERRIDE_TOKEN}"]
-                       + _D64_APPLY_ARGS, cwd=str(tmp_path), capture_output=True, text=True)
+                       + _D64_APPLY_ARGS + ["--no-bind-authority"],
+                       cwd=str(tmp_path), capture_output=True, text=True)
     if expect_bypass:
         assert r.returncode == 0, r.stdout + r.stderr
         assert "mode=APPLY" in r.stdout, r.stdout
@@ -833,9 +853,11 @@ def test_gate_iii_offline_and_inrun_deleters_agree(tmp_path, monkeypatch):
         f.write(json.dumps({"epoch": 1, "score": 0.1, "path": drop_old, "step": 100}) + "\n")
 
     # In-run pruner, dry-run, pointed at the sandbox roots/experiments — never the real ones.
+    # TASK_881E/D70 escape hatch: '999_x'/'my_run' is fixture convenience for gate (iii) parity,
+    # not a real protection relationship — see this file's `_run_gc` comment.
     msgs, had_failure = sc.prune_run_dir_by_score(
         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
-        keep_best=1, keep_latest=1, keep_unscored=0, apply=False)
+        keep_best=1, keep_latest=1, keep_unscored=0, apply=False, authority_binding=False)
     assert not had_failure
     in_run_would_delete = {m for m in msgs if "would delete" in m}
     assert any("checkpoint_100" in m for m in in_run_would_delete)
@@ -861,7 +883,7 @@ def test_gate_iii_ttl_rescan_picks_up_manifest_added_mid_run(tmp_path, monkeypat
     # No manifest yet -> refused.
     msgs, _ = sc.prune_run_dir_by_score(
         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), ttl_seconds=0.05,
-        apply=False)
+        apply=False, authority_binding=False)
     assert any("REFUSE" in m for m in msgs)
 
     # A manifest is dropped mid-"run" (SERVER.md's documented normal workflow).
@@ -880,7 +902,7 @@ def test_gate_iii_ttl_rescan_picks_up_manifest_added_mid_run(tmp_path, monkeypat
     time.sleep(0.06)
     msgs2, _ = sc.prune_run_dir_by_score(
         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),), ttl_seconds=0.05,
-        apply=False)
+        apply=False, authority_binding=False)
     assert not any("REFUSE" in m for m in msgs2), (
         f"manifest added mid-run must be honoured within the TTL: {msgs2}")
     sc._reset_protection_cache_for_test()
@@ -1506,7 +1528,7 @@ def test_major_d_parity_offline_and_inrun_agree_on_a_symlinked_checkpoint_root(t
     msgs, had_failure = sc.prune_run_dir_by_score(
         str(tmp_path / "ckroot" / "run_a"), roots=(str(tmp_path / "ckroot"),),
         scan_dirs=(str(exp_root),), keep_best=0, keep_latest=1, keep_unscored=0,
-        under_floor=True, apply=True)
+        under_floor=True, apply=True, authority_binding=False)
     assert not had_failure, msgs
     assert not any("REFUSE" in m for m in msgs), msgs
     assert not os.path.isdir(old) and os.path.isdir(new), (
@@ -1538,7 +1560,8 @@ def test_inrun_pruner_refuses_a_symlinked_run_dir_the_offline_tool_cannot_see(tm
 
     msgs, had_failure = sc.prune_run_dir_by_score(
         str(link), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
-        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
+        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
+        authority_binding=False)
     assert not had_failure
     assert any("ESCAPE" in m for m in msgs), msgs
     assert os.path.isdir(old) and os.path.isdir(new), (
@@ -1804,7 +1827,8 @@ def test_blocker_a_inrun_pruner_refusal_also_leaves_the_index_alone(tmp_path, mo
     msgs, had_failure = sc.prune_run_dir_by_score(
         str(run_dir), roots=(str(tmp_path / "runs"),),
         scan_dirs=(str(tmp_path / "experiments"),),
-        keep_best=1, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
+        keep_best=1, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
+        authority_binding=False)
     assert not had_failure
     assert any("REFUSED" in m for m in msgs), msgs
     assert _index_scores(run_dir) == before, (
@@ -2068,7 +2092,8 @@ def test_minor_non_utf8_scores_file_does_not_raise_out_of_the_inrun_pruner(tmp_p
         f.write(b'{"epoch": 1, "score": \xff\xfe 3.0}\n')
     msgs, had_failure = sc.prune_run_dir_by_score(          # must not raise
         str(run_dir), roots=(str(runs_root),), scan_dirs=(str(exp_root),),
-        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True)
+        keep_best=0, keep_latest=1, keep_unscored=0, under_floor=True, apply=True,
+        authority_binding=False)
     assert any("REFUSED" in m for m in msgs), msgs
     assert os.path.isdir(str(run_dir / "snapshot_ep1"))
     sc._reset_protection_cache_for_test()
@@ -2204,12 +2229,15 @@ def test_red_when_the_deleting_call_reads_the_ttl_cache_at_its_real_drop_site(tm
         "    named, protect, missing = get_protection(roots, scan_dirs, ttl_seconds, "
         "force_rescan=False)")
 
-    mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3, apply=False)
+    # TASK_881E/D70 escape hatch: 'e1'/'r1' is fixture convenience for the TTL-cache mutation
+    # under test, not a real protection relationship.
+    mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3, apply=False,
+                                  authority_binding=False)
     (tmp_path / "experiments" / "e1").mkdir(parents=True)
     (tmp_path / "experiments" / "e1" / "PROTECTED.txt").write_text(
         "protect: runs/r1/snapshot_ep10\n")
     msgs, _ = mutant.prune_run_dir_by_score(str(run_dir), under_floor=False, keep_best=3,
-                                            apply=True)
+                                            apply=True, authority_binding=False)
     assert not os.path.isdir(str(run_dir / "snapshot_ep10")), (
         "the mutation did not reproduce the BLOCKER: " + "\n".join(msgs))
     assert any("DELETE" in m for m in msgs), msgs

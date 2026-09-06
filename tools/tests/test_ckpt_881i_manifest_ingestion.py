@@ -1701,6 +1701,16 @@ _881D_KNOWN_REWRITES = (
     "main",
     "_run_manifest_check",
     "load_manifests",
+    # TASK_881E cycle 2 (2026-09-06): five lines inside `_d64_apply_refusal_reason` — the inline
+    # argv-token enumeration and its two comment lines — become a call to
+    # `_safety_flag_occurrences`, because `--no-bind-authority` needed the IDENTICAL rule and
+    # copying it is how that flag shipped with no abbreviation defence at all (the cycle-2
+    # BLOCKER). Adding the name here does NOT loosen the policing of this function: it is
+    # separately byte-identity pinned, to a digest, by
+    # test_ckpt_881_protection_model.py::D64_GATE_DIGESTS, which is a strictly TIGHTER check than
+    # this one (it notices additions, not only removals) and which was re-pinned in the same
+    # cycle with the reason recorded next to the digest.
+    "_d64_apply_refusal_reason",
 )
 
 
@@ -1793,6 +1803,16 @@ def _apply_tree(root):
     (root / "experiments" / "some_run_exp").mkdir(parents=True)
     (root / "experiments" / "some_run_exp" / "PROTECTED.txt").write_text(
         f"covers: {run}\n")
+    # TASK_881E/D72 (cycle-2 MAJOR): the run dir carries its OWN creation record naming the
+    # citing experiment back, so the authority binding AUTHORIZES this grant and is a NO-OP on
+    # this fixture. That is what makes the parity test below independent of what `HEAD` means at
+    # collection time: neither leg needs `--no-bind-authority`, so the test cannot go red the
+    # moment this row is committed and `_head_source()` starts returning a tool that binds by
+    # default. This file is invisible to `load_manifests` (only `--experiments-dir`, default
+    # `experiments`, is scanned — `runs/` never is), so `named`, and therefore HEAD's behaviour,
+    # is completely unchanged by its presence; only `_own_manifest_entries`, which reads the run
+    # dir's own tree directly, ever sees it.
+    (run / "PROTECTED.txt").write_text(f"covers: {root / 'experiments' / 'some_run_exp'}\n")
     return root
 
 
@@ -1810,10 +1830,29 @@ def test_apply_behaviour_is_parity_with_head_on_a_scratch_tree(tmp_path):
     a, b = _apply_tree(tmp_path / "a"), _apply_tree(tmp_path / "b")
     assert _survivors(a) == _survivors(b)
 
-    ra = _cli_script(str(head_tool), "--roots", "runs", "--keep-best", "2", "--apply",
-                     cwd=str(a), timeout=30)
     # D64: the override now REQUIRES its exact literal value and refuses an abbreviated option
     # spelling — imported from the protection-model suite so there is one spelling repo-wide.
+    # Both legs run against the SAME source (`_head_source()` is `git show HEAD:tools/ckpt_gc.py`
+    # and the tree is clean, so HEAD and candidate are byte-identical here) and MUST be armed
+    # IDENTICALLY, or the "control" and "candidate" legs are not actually controlling for
+    # anything: an orchestrator-diagnosed BLOCKER (2026-09-06) found `ra` below omitting
+    # `_pm.D64_OVERRIDE` entirely while `rb` carried it, so HEAD's tool refused at the D64 freeze
+    # gate (rc=2) and the candidate did not (rc=0) — a control-leg defect in THIS test, not a
+    # behavioural divergence (`.claude/rules/20-verification-rig.md`: "a clean worktree can lie
+    # to you"). Fixed by arming `ra` with the SAME override, not by weakening the rc==0==0
+    # assertion below to tolerate a mismatch.
+    ra = _cli_script(str(head_tool), "--roots", "runs", "--keep-best", "2", "--apply",
+                     _pm.D64_OVERRIDE, cwd=str(a), timeout=30)
+    # TASK_881E/D72, cycle-2 MAJOR — NO escape hatch here, on purpose. Cycle 1 passed
+    # `--no-bind-authority` on this leg only, justified by "HEAD predates the authority binding
+    # entirely". That premise EXPIRES the moment this row is committed: `_head_source()` is
+    # `git show HEAD:tools/ckpt_gc.py`, so post-commit HEAD IS this tool, `ra` would bind by
+    # default while `rb` did not, and the survivors assertion below would fail with no underlying
+    # regression at all (measured 2026-09-06 by running both legs against the working-tree tool:
+    # 5 survivors vs 2). Fixed at the FIXTURE instead — `_apply_tree` now writes the run dir's
+    # own creation record, so the binding authorizes this grant and both legs behave identically
+    # whether or not the tool they run has a binding. Both legs are therefore armed IDENTICALLY,
+    # which is also what the orchestrator-diagnosed control-leg defect above demanded.
     rb = _cli("--roots", "runs", "--keep-best", "2", "--apply",
              _pm.D64_OVERRIDE, cwd=str(b), timeout=30)
 
@@ -1847,6 +1886,59 @@ def test_apply_behaviour_is_parity_with_head_on_a_scratch_tree(tmp_path):
                 and not l.startswith("[ckpt_gc] reclaimed")
                 and not l.startswith("[ckpt_gc] would reclaim")]
     assert _norm(ra.stdout, a) == _norm(rb.stdout, b)
+
+
+# TASK_881E cycle-2 MAJOR, made DURABLE. The parity test above compares against
+# `git show HEAD:tools/ckpt_gc.py`, so its control leg CHANGES MEANING the moment this row is
+# committed — and cycle 1's arrangement (an `--no-bind-authority` on the candidate leg only,
+# justified by "HEAD predates the binding") would then have gone red on the suite's very next
+# collection, a guaranteed false failure with no underlying regression. Measured 2026-09-06 by
+# running both legs against the working-tree tool: the cycle-1 arrangement left 5 snapshots on the
+# `ra` leg and 2 on `rb`. This test freezes the property that closes it — the parity fixture is
+# authorised UNDER THE BINDING, so both legs agree whatever the tool they run does about D72 —
+# by running the SAME two legs with the working-tree source standing in for HEAD. It stays
+# meaningful after the commit too (it then simply duplicates the real comparison honestly).
+
+def test_apply_parity_holds_when_head_becomes_this_very_commit(tmp_path):
+    """`_head_source()` is `git show HEAD:tools/ckpt_gc.py`. Substitute the WORKING TREE source
+    for it — i.e. simulate this row already being committed — and the parity assertion must still
+    hold. If it does not, the parity test above is a time bomb, not a check."""
+    head_tool = tmp_path / "as_if_committed_ckpt_gc.py"
+    head_tool.write_text(open(CKPT_GC).read())
+
+    a, b = _apply_tree(tmp_path / "a"), _apply_tree(tmp_path / "b")
+    ra = _cli_script(str(head_tool), "--roots", "runs", "--keep-best", "2", "--apply",
+                     _pm.D64_OVERRIDE, cwd=str(a), timeout=30)
+    rb = _cli("--roots", "runs", "--keep-best", "2", "--apply",
+              _pm.D64_OVERRIDE, cwd=str(b), timeout=30)
+    assert ra.returncode == rb.returncode == 0, ra.stdout + ra.stderr + rb.stdout + rb.stderr
+    _AUDIT = {"checkpoints_index.json", "prunes.jsonl", "PROTECTED.txt", "scores.jsonl"}
+    sa = [s for s in _survivors(a) if s not in _AUDIT]
+    sb = [s for s in _survivors(b) if s not in _AUDIT]
+    assert sa == sb, f"post-commit HEAD kept {sa}, candidate keeps {sb}"
+    assert sa == ["snapshot_ep10", "snapshot_ep50"], sa
+    # ...and the run dir really was AUTHORISED, not merely refused identically on both legs (a
+    # refuse/refuse pair would satisfy the equality above while testing no arithmetic at all).
+    assert "REFUSE run dir" not in rb.stdout, rb.stdout
+
+
+def test_the_parity_fixture_is_authorised_by_the_binding_not_by_an_escape_hatch(tmp_path):
+    """WHY the test above can drop `--no-bind-authority`: `_apply_tree` now writes the run dir's
+    own creation record, so `resolve_bound_coverage` authorises the grant on its own. Asserted
+    directly rather than inferred from the parity result, and paired with the negative — remove
+    the own record and the same tree refuses — so this cannot pass on a fixture where the binding
+    is vacuous."""
+    root = _apply_tree(tmp_path / "t")
+    r = _cli("--roots", "runs", "--min-free-gb", "1e18", cwd=str(root), timeout=30)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "REFUSE run dir" not in r.stdout, r.stdout
+
+    bare = _apply_tree(tmp_path / "u")
+    (bare / "runs" / "some_run" / "PROTECTED.txt").unlink()
+    r2 = _cli("--roots", "runs", "--min-free-gb", "1e18", cwd=str(bare), timeout=30)
+    assert "REFUSE run dir runs/some_run" in r2.stdout, (
+        f"without its own creation record the same tree must refuse, else the binding is a "
+        f"no-op on this fixture for the wrong reason: {r2.stdout}")
 
 
 def test_verify_manifests_returns_before_any_root_resolution_or_deletion(tmp_path):

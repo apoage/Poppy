@@ -53,6 +53,29 @@ WHAT *IS* SHARED, so the disclosure is not read as "the in-run pruner has no pro
 the no-coverage refusal itself (``resolve_coverage`` in ``prune_run_dir_by_score``), the
 ``protect:``/``covers:`` manifest semantics, ``plan()``'s retention arithmetic, the stale-scan
 refusal, and the force-rescan-before-delete rule. What is NOT shared is the D64 freeze.
+
+TASK_881E UPDATE (2026-08-27, DEFAULT flipped 2026-08-28 per D70, MECHANISM RE-CUT 2026-09-06 per
+D72): the authority binding recommended above now EXISTS — ``tools/ckpt_gc.py``'s
+``resolve_bound_coverage`` — and this module's ``prune_run_dir_by_score`` takes it through its
+``authority_binding`` parameter. D72 (operator, 2026-08-29) replaced the original id-correlation
+design with a SIMPLER one after it proved provably ambiguous: authority is now the run dir's OWN
+creation record — a PROTECTED.txt/SPEC.md physically written inside the run's own tree that
+names the citing experiment back (see ``tools/ckpt_gc.py``'s "TASK_881E — AUTHORITY BINDING"
+section for the full mechanism; no id/number is ever extracted from any path). D70 (2026-08-28,
+planner ruling, OVERRIDES config.json's general "new behavior ships flag-gated, default OFF"
+invariant for THIS row: "a flag-gated safety binding on a remote deleter is a safety feature that
+is off ... default-OFF leaves the default path exactly as vulnerable as D64 measured") makes
+``authority_binding`` default **True** here too — the in-run pruner is called with a literal
+``apply=True`` on every score-retention save of every live training run, unconditionally, so
+leaving IT off by default would leave exactly the live, unattended path D70 is about still
+unbound. A caller that needs the pre-D70 flat-namespace behaviour (this row's own test suite,
+built on placeholder ids by the thousand) passes ``authority_binding=False`` explicitly — the
+named, test-only escape hatch. What THIS row proves is that turning it on cannot kill the
+training process: a binding-driven refusal reaches the exact same refuse-and-skip branch,
+``(msgs, False)``, that the no-manifest-at-all refusal already used — never ``had_failure=True``,
+never a raise, never an exit-code change on the training path. See ``prune_run_dir_by_score``'s
+own docstring for the parameter and ``tools/tests/test_ckpt_881e_authority_binding.py`` for the
+constructed proof.
 """
 
 import json
@@ -143,15 +166,16 @@ def retention_policy_available() -> Tuple[bool, str]:
 # `ttl_seconds` rather than "until the process exits". Module-level and NOT thread-safe by
 # design (this package has one in-run pruner call site per process).
 _PROTECTION_CACHE: Dict[str, Any] = {"named": set(), "protect": set(), "missing": set(),
+                                     "citations": {},   # TASK_881E — see collect_protection
                                      "ts": 0.0, "attempted": False, "stale": False}
 _DEFAULT_PROTECTION_TTL_SECONDS = 300.0
 
 
 def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
                        scan_dirs: Sequence[str] = ("experiments",)
-                       ) -> Optional[Tuple[set, set, set]]:
-    """One manifest + advisory scan, for IN-RUN use. -> ``(named, protect, missing)`` or
-    ``None`` on failure.
+                       ) -> Optional[Tuple[set, set, set, dict]]:
+    """One manifest + advisory scan, for IN-RUN use. -> ``(named, protect, missing, citations)``
+    or ``None`` on failure.
 
     ``named`` is the gate-(i) coverage set (manifest ``protect:``/``covers:`` paths only —
     never the advisory scan, exactly like ``tools/ckpt_gc.py``'s own ``resolve_coverage``).
@@ -162,6 +186,11 @@ def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
     one deleter refuses while the other prunes. (TASK_881D: sourced from ``manifests.dangling``
     — ``tools/ckpt_gc.py``'s 881I-shipped ``ManifestSet`` names this field ``dangling``, not
     ``missing``; this function's own return-tuple name is unchanged, only its source field.)
+    ``citations`` (TASK_881E) is ``manifests.citations`` verbatim — realpath -> [f"{kind}: "
+    f"{path} <- {source}:{lineno}", ...] — carried through so a deleting call can resolve the
+    TASK_881E authority binding (``gc.resolve_bound_coverage``) from the SAME scan that produced
+    ``named``/``missing``, never a second, separately-timed one (see this module's own docstring
+    on why a second scan of the same tree is the bug class this file exists to avoid).
 
     Returns ``None`` on ANY failure (module unloadable, incomplete manifest scan, incomplete
     advisory scan) rather than an empty result — the distinction is load-bearing: an empty
@@ -186,7 +215,7 @@ def collect_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
         logging.error(f"[ckpt-retention] advisory scan INCOMPLETE ({e}) — reporting failure")
         return None
     return (set(manifests.protect) | set(manifests.covers), set(manifests.protect) | scanned,
-            set(manifests.dangling))
+            set(manifests.dangling), dict(manifests.citations))
 
 
 def get_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
@@ -260,10 +289,19 @@ def get_protection(roots: Sequence[str] = ("jax_ckpt_fast", "runs"),
                 f"{ttl_seconds:.0f}s retries.")
         else:
             (_PROTECTION_CACHE["named"], _PROTECTION_CACHE["protect"],
-             _PROTECTION_CACHE["missing"]) = got
+             _PROTECTION_CACHE["missing"], _PROTECTION_CACHE["citations"]) = got
             _PROTECTION_CACHE["stale"] = False
     return (_PROTECTION_CACHE["named"], _PROTECTION_CACHE["protect"],
             _PROTECTION_CACHE["missing"])
+
+
+def get_protection_citations() -> dict:
+    """TASK_881E: the ``citations`` half of the SAME cached scan ``get_protection`` just served
+    — never a second, separately-timed manifest scan (see ``collect_protection``'s docstring).
+    ``get_protection``'s own return stays the 3-tuple it has always been (every existing caller,
+    including this module's own test suite, unpacks exactly 3 values); this accessor is the
+    additive way a caller opts into the 4th field without that signature changing under it."""
+    return _PROTECTION_CACHE["citations"]
 
 
 def protection_cache_is_stale() -> bool:
@@ -283,6 +321,7 @@ def _reset_protection_cache_for_test() -> None:
     _PROTECTION_CACHE["named"] = set()
     _PROTECTION_CACHE["protect"] = set()
     _PROTECTION_CACHE["missing"] = set()
+    _PROTECTION_CACHE["citations"] = {}
     _PROTECTION_CACHE["attempted"] = False
     _PROTECTION_CACHE["stale"] = False
     _PROTECTION_CACHE["ts"] = 0.0
@@ -293,7 +332,8 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
                            keep_best: int = 3, keep_latest: int = 1, keep_unscored: int = 2,
                            under_floor: bool = False,
                            ttl_seconds: float = _DEFAULT_PROTECTION_TTL_SECONDS,
-                           apply: bool = True) -> Tuple[List[str], bool]:
+                           apply: bool = True,
+                           authority_binding: bool = True) -> Tuple[List[str], bool]:
     """Prune ONE run dir using the EXACT SAME policy ``tools/ckpt_gc.py``'s offline ``plan()``
     uses — same function, same manifest/advisory sources.
 
@@ -324,6 +364,25 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
     training stop pruning, which D64's ruling explicitly preferred not to do by shipping TASK_881D
     rather than blocking training); closing it properly is TASK_881E's authority binding.
 
+    ``authority_binding`` (TASK_881E, default **True** since D70 2026-08-28, MECHANISM RE-CUT
+    2026-09-06 per D72 — see this module's own docstring): when True, coverage is resolved
+    through ``gc.resolve_bound_coverage`` instead of ``gc.resolve_coverage`` directly, ANDing in
+    the same run's-own-manifest check ``ckpt_gc.py --bind-authority`` applies offline, fed from
+    the SAME scan ``get_protection`` just ran (``get_protection_citations()`` — never a second,
+    separately-timed scan) and from THIS call's own ``roots``, which scope where
+    ``gc._own_manifest_entries`` looks for the run dir's own PROTECTED.txt/SPEC.md (the offline
+    tool passes its ``--roots`` at the same point, so the two deleters correlate identically). A
+    run dir with no manifest of its own anywhere between it and its checkpoint root correlates
+    with nothing and is REFUSED — fail-closed, never a grant. A run dir the binding refuses
+    reaches the EXACT SAME "REFUSE" branch, `return`, and `(msgs, False)` shape below that a
+    no-manifest-at-all refusal already used before this row — refuse-and-skip, never
+    `had_failure=True`, never an exception. That is the whole of scope item 4's "must not be
+    able to kill its parent training process": there is no new failure path, only a narrower
+    input to the one that already degrades safely. Passing ``authority_binding=False``
+    explicitly (the named, test-only escape hatch) reproduces this function's PRE-D70 behaviour
+    exactly (``resolve_bound_coverage`` with ``citations=None`` returns ``resolve_coverage``'s
+    own result unchanged).
+
     Returns ``(messages, had_failure)``. Never raises for a DESIGNED refusal (unresolved run
     dir, unavailable policy module, a stale protection cache) or for a failed delete — those are
     reported in ``messages``, and ``had_failure`` tells the caller whether a delete FAILED
@@ -346,12 +405,24 @@ def prune_run_dir_by_score(run_dir, roots: Sequence[str] = ("jax_ckpt_fast", "ru
                     f"has succeeded yet) — REFUSING to prune {run_dir} this call rather than "
                     f"delete against a possibly-incomplete protection set.")
         return msgs, False
-    coverage = gc.resolve_coverage([str(run_dir)], named, missing)
+    # TASK_881E/D70/D72: `authority_binding` (default True) ANDs the run's-own-manifest check
+    # onto coverage, fed from the citations half of the SAME scan `get_protection` just (re)ran
+    # above — see this function's own docstring. Explicitly False (the escape hatch),
+    # byte-for-byte `gc.resolve_coverage`'s own result.
+    coverage = gc.resolve_bound_coverage(
+        [str(run_dir)], named, missing,
+        citations=(get_protection_citations() if authority_binding else None),
+        roots=([str(r) for r in roots] if authority_binding else None))
     if not coverage.get(str(run_dir)):
-        msgs.append(f"  [CKPT] REFUSE {run_dir}: no manifest declares coverage for it, or a "
-                    f"manifest entry pointing into it names a path that does not exist — add "
-                    f"or fix a `protect:`/`covers:` entry in an experiments/<id>/PROTECTED.txt "
-                    f"or SPEC.md (see tools/ckpt_gc.py's module docstring). Nothing pruned.")
+        if authority_binding:
+            hint = gc.authority_binding_refusal_hint(
+                str(run_dir), [str(r) for r in roots], named, get_protection_citations())
+            msgs.append(f"  [CKPT] REFUSE {run_dir}: {hint}. Nothing pruned.")
+        else:
+            msgs.append(f"  [CKPT] REFUSE {run_dir}: no manifest declares coverage for it, or a "
+                        f"manifest entry pointing into it names a path that does not exist — add "
+                        f"or fix a `protect:`/`covers:` entry in an experiments/<id>/PROTECTED.txt "
+                        f"or SPEC.md (see tools/ckpt_gc.py's module docstring). Nothing pruned.")
         return msgs, False
     # TASK_881 MAJOR D — resolve IDENTICALLY to the offline tool. `gc.collect` realpaths an
     # explicitly-passed root, so an honest spelling (`jax_ckpt_fast/run_a`, where the root is a

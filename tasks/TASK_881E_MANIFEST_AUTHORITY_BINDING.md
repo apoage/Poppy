@@ -1,3 +1,43 @@
+> **STATUS (2026-09-06): SHIPPED as `task881e-manifest-authority-binding`** — D72's authority
+> binding is live in `tools/ckpt_gc.py` and in the in-run pruner. Six ckpt suites
+> `1 failed / 453 passed` -> **545 passed, 1 skipped, 0 failed**; `python -m trader selftest` 17/17.
+> Three cycles (the cycle limit), four-lens panel + two scoped re-verifications.
+>
+> **Gate (ii) — THE ENUMERATION (the diff this binding removes), measured dry-run, reproduced
+> independently three times:** REFUSE count **15 -> 18**. Exactly three run dirs lose standing:
+> `runs/832_e5` (cited by `experiments/832_linear_imprint/PROTECTED.txt`), `runs/861_imprint` and
+> `runs/861_ref` (both cited by `experiments/861_search_teacher_imprint/PROTECTED.txt`). None of
+> the three carries a `PROTECTED.txt`/`SPEC.md` of its own. **Provenance caveat (D83(ii)):**
+> measured on workstation `workstation` at HEAD `3461b15`, where `jax_ckpt_fast` is a BROKEN SYMLINK
+> (`/mnt/scratch/...` vs the real automount `/run/mnt/scratch/...`) and so
+> contributes 0 dirs; passing the resolved mount as a root gives **OFF 21 -> ON 24**, same 3-item
+> delta. The enumeration is also stated inline in `ckpt_gc.py` so it cannot go stale in a document.
+>
+> **Zero run dirs are eligible for the scored-deletion path on this corpus** — 0 of the 18 (24)
+> discovered dirs carry their own manifest. That is D72's pre-registered outcome, not a defect:
+> *"Undeclared/legacy dirs (no manifest) refuse — that is the status quo under the freeze, i.e.
+> manual operator delete; refusing more, never less."* The `--apply` freeze is untouched and stays
+> behind 880's D35 gate, so the deleter was already frozen regardless.
+>
+> **The BLOCKER this row shipped with, and why it matters beyond this row:** cycle 1's
+> `--no-bind-authority` escape hatch was reachable by the bare abbreviation **`--n`** (argparse
+> `allow_abbrev` left on; it is the only long option starting with `n`), silently disarming the
+> entire binding — verified by an actual deletion of two checkpoints on a scratch tree. The same
+> file had already hardened its sibling D64 override against exactly this with three independent
+> defenses. The recurrence, not the individual hole, was the defect, so the fix factored BOTH gates
+> onto one shared spelling discipline.
+>
+> **Operational follow-up, NOT part of this row:** for coverage ever to be non-empty again, run dirs
+> must start writing their own `PROTECTED.txt`/`SPEC.md`. Writing them into the three dirs above is
+> an operator action (D72: a mismatch is a FINDING to report), and a forward convention for new runs
+> is queue work, not a decision.
+>
+> **Known remainders (named, not hidden):** `--bind-authority` (the ON-direction flag) is still
+> freely abbreviable — harmless, it sets the default. `_safety_flag_occurrences` reads argv
+> positionally and cannot distinguish an option name from a value spelled like one; proven
+> non-exploitable in the fail-open direction (argparse consumes a registered flag token as the flag).
+> `--roots` still has no `_dedupe_nested_scan_dirs` equivalent, so nested roots are walked twice.
+
 # TASK_881E — authority binding for the manifest coverage predicate
 
 **Status**: RE-CUT 2026-08-29 (planner; **D72 RULED by operator** after run-46's provable wall:
