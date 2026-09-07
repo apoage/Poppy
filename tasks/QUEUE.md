@@ -41,7 +41,7 @@ powered rebuild vs drop) + D80(ii) (goalpoint restatement net of borrow — shar
 measured PIT FULL +0.279 → −0.132 at the honest tier) + D80(iii) (rails) + RO02 (unblocks the
 899 ingest → 915/918). RULED this session: D82(b) shipped `db8ed48`; D83 adopt-both codified;
 D85 folded. The factory never guesses past an OPEN row — while these pend, work rows 3/4/11
-(write-hardening, 921, 881E).**
+(write-hardening, 921, 881E).** **OPERATOR ITEMS: (a) `jax_ckpt_fast` broken symlink (`/media/...` vs automount `/run/media/...`) — ckpt scanners silently see 6 fewer dirs; mount-layout call, run 56 left it untouched. (b) RO02 — planner finding 2026-09-06: `trading_data.db` lives on NVMe root, NOT the SATA drive; the ingest gate looks over-broad for the workstation leg (see notes_2026-09-06 §11).**
 
 
 
@@ -134,6 +134,7 @@ self-defeats it) and NOT `smartctl` first (reading SMART is the trigger)._
 | 11 | `tasks/TASK_904B_CORRIDOR_TWO_PHASE_WRITERS.md` | M | Two-phase writers (decide every fold, then write) + residual bare-`open` readers. |
 | 12 | `tasks/TASK_908_FIXTURE_PIN_TRUST.md` | S | Cross-verify FIXTURE_IDENTITY.json against a locally-present fixture; wire `verify_or_die` into walkforward.py or document the exception. |
 | 13 | `tasks/TASK_906_OOS_NONSTATIONARITY.md` | M | Excess dispersion on the 809/897 series (archival; rebuild to spec — implementation lost to the run-42 incident). |
+| 14 | `tasks/TASK_922_PROTECTED_TXT_CONVENTION.md` (NEW 2026-09-06 — 881E's forward item) | XS | New-run convention: run dirs write their own `PROTECTED.txt` at creation; the deleter reads it as `covers:`-grade authority. Keeps the zero-eligible-deletion property by construction. `--apply` freeze untouched. |
 
 Superseded grooming history and the full text of shipped rows live in
 [`tasks/QUEUE_ARCHIVE.md`](QUEUE_ARCHIVE.md) — moved 2026-08-11, byte-for-byte, nothing summarised.
