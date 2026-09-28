@@ -26,8 +26,7 @@ dropping per-line fsync, post-capture per D67(b)).
 1 TASK_918 (**SHIPPED run 57 STEP-0 only, `task918-hull-step0`: prereg kill NOT FIRED at net@21 (+5.409), post-hoc honest-tier hulls −1.307/−0.897 → D86**) →
 2 TASK_924 (**SHIPPED run 57, `task924-exec-feasibility`: G1 PASS on B1 snapshot; prereg gate NON-DISCRIMINATING; gap-clipped frozen-mid BTC 30.42% → D87**) →
 3 TASK_923 (**SHIPPED run 57 phase A, `task923-listing-book-A`: UNDERPOWERED every exit; gross-positive vs placebo, net cost-dominated → D88**) →
-4 TASK_915 (AMENDED takeable — build + fixture smoke in-loop; the real ≤2-CPU-day run is
-SCHEDULED wrapped and NOT polled in-loop). If a row halts, take the next IN THIS LIST;
+4 TASK_915 (**SHIPPED run 57 G-A+G-B, `task915-ic-ceiling-GA-GB`: G-A 128/160 (109 survive 1-day skip), G-B FAIL for every survivor at 80 bp → D89; G-C not built**). If a row halts, take the next IN THIS LIST;
 rows 904B/908/906 stay ranked below and are NOT tonight's work. The factory prompt for this
 window lives at `lore/factory_prompt_2026-09-28.md`.**
 

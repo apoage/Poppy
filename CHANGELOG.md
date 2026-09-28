@@ -3,6 +3,25 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-28 — TASK_915 — IC ceiling sweep (G-A) + fundamental-law bound (G-B): signal exists, cost kills it (run 57)
+
+- **What shipped.** New module `experiments/915_ic_ceiling/` only (G-C GP book NOT built — named
+  remainder). SPEC `d9b7d405…` (errata → `59fb144b…`). Fixture ohlcv_daily (true O/H/L/C/V) + staged
+  858 CSVs, seam re-verified on all five columns (2,440 cells, 0 mismatches). 384 assets. sklearn
+  HistGBR for GBM, numpy log-signature (iisignature/lightgbm unavailable; disclosed). No DB writes.
+- **Official 160-cell run** (srv `/var/tmp/915-run`, 3433.7 s, `grid_results.json` sha `19eef63a…`):
+  G-A 128/160 pass; G-B binding 80 bp (borrow NOT charged — can only overstate): 127 FAIL, 1 MARGINAL
+  (`y4__h1__ALL__ridge` +0.693), 0 PASS.
+- **Same-close timing (post-hoc):** F1 features end at close_t and labels start at close_t. One-day-skip
+  re-score: 109/128 G-A passes survive (F2 24/24, F3 24/24, F4 24/27, ALL 24/26, F1 13/27; y4 0/10). The
+  MARGINAL cell dies (IC 0.0039). All 109 survivors FAIL G-B (best `y1__h21__ALL__gbm` +0.037, skip1 IC
+  0.1201, N_eff 57.2).
+- **MDE** t=3.0 / 3.6047: h1 0.0057/0.0069, h3 0.0128/0.0154, h7 0.0207/0.0248, h21 0.0367/0.0441 —
+  h7/h21 UNDERPOWERED vs 0.02 either way.
+- **Pre-committed consequence:** G-A passes / G-B fails → record the IC/N_eff/turnover triple;
+  breadth/cost are operator decisions; no trader build. → D89.
+- **Verification:** 2 cycles (implement sonnet, fix opus) + closing-pass claim downgrades; 40 tests.
+
 ## 2026-09-28 — TASK_923 — post-listing event book phase A: UNDERPOWERED at every exit; gross edge vs placebo, net cost-dominated (run 57)
 
 - **What shipped.** New module `experiments/923_post_listing_book/` only. SPEC sha `8c16e13a…` pinned

@@ -1,3 +1,10 @@
+> **STATUS (2026-09-28): SHIPPED G-A + G-B (run 57, tag `task915-ic-ceiling-GA-GB`); G-C NOT built.**
+> Official 160-cell run: G-A 128 pass; G-B at the 916-restated 80 bp tier 127 FAIL / 1 MARGINAL / 0 PASS
+> (borrow not charged — can only overstate). A 1-day-skip re-score (post-hoc; F1's same-close alignment)
+> leaves 109 G-A survivors — F2 range/vol and F3 cross-sectional fully survive — and ALL 109 FAIL G-B
+> (best +0.037). Pre-committed branch: signal exists, cost/breadth caps it → no trader build → **D89**.
+> Kill date (14 d from SPEC) is moot for G-A/G-B; G-C re-entry only if D89 changes the cost tier.
+
 # TASK_915 — predictability ceiling of the daily OHLC surface, then the GP book
 
 **Status**: PROPOSED 2026-09-03 (planner; adopted by operator instruction from
