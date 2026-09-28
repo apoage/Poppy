@@ -1,0 +1,157 @@
+{
+  "fixture_sha256": "b0f8de8b108b50521f301df1d0856aed72bc760c57b67a842fa62fa918206cf9",
+  "n_candidate_events": 397,
+  "n_excluded_left_censored": 1,
+  "age_star_days": 89,
+  "age_bucket_profile": [
+    {
+      "age_lo": 0,
+      "age_hi": 9,
+      "n": 3893,
+      "mean_bp": -78.30362440488256,
+      "sd_bp": 1169.2991085524907,
+      "se_bp": 18.740596787677195,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 10,
+      "age_hi": 19,
+      "n": 3926,
+      "mean_bp": -43.83792563785167,
+      "sd_bp": 713.3921044487062,
+      "se_bp": 11.38552734758548,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 20,
+      "age_hi": 29,
+      "n": 3941,
+      "mean_bp": -24.114381457380826,
+      "sd_bp": 667.1069524371194,
+      "se_bp": 10.626549005583337,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 30,
+      "age_hi": 44,
+      "n": 5930,
+      "mean_bp": -12.219970279251617,
+      "sd_bp": 651.513041337893,
+      "se_bp": 8.460494875010331,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 45,
+      "age_hi": 59,
+      "n": 5911,
+      "mean_bp": -10.712130509263314,
+      "sd_bp": 669.5113883803893,
+      "se_bp": 8.708181837817433,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 60,
+      "age_hi": 74,
+      "n": 5909,
+      "mean_bp": -16.689804997613173,
+      "sd_bp": 667.8277907829656,
+      "se_bp": 8.687753552801885,
+      "within_1se_of_zero": false
+    },
+    {
+      "age_lo": 75,
+      "age_hi": 89,
+      "n": 5909,
+      "mean_bp": -1.2959979838286824,
+      "sd_bp": 676.2936028063224,
+      "se_bp": 8.797885070984202,
+      "within_1se_of_zero": true
+    }
+  ],
+  "exit_family": [
+    {
+      "horizon_days": 5,
+      "label": "h5"
+    },
+    {
+      "horizon_days": 10,
+      "label": "h10"
+    },
+    {
+      "horizon_days": 21,
+      "label": "h21"
+    },
+    {
+      "horizon_days": 60,
+      "label": "h60"
+    },
+    {
+      "horizon_days": 89,
+      "label": "age_star(89d)"
+    }
+  ],
+  "power_by_horizon": [
+    {
+      "horizon_days": 5,
+      "label": "h5",
+      "n_events": 386,
+      "n_clusters": 134,
+      "gross_residual_mean_bp": 287.7964006153571,
+      "gross_residual_sd_bp": 1942.8100807145634,
+      "se_bp": 167.8332285630485,
+      "mde_bp": 470.20157314223667,
+      "underpowered_vs_band": true
+    },
+    {
+      "horizon_days": 10,
+      "label": "h10",
+      "n_events": 386,
+      "n_clusters": 135,
+      "gross_residual_mean_bp": 683.9321053286207,
+      "gross_residual_sd_bp": 2655.078031331284,
+      "se_bp": 228.5127332939386,
+      "mde_bp": 640.2012735962984,
+      "underpowered_vs_band": true
+    },
+    {
+      "horizon_days": 21,
+      "label": "h21",
+      "n_events": 388,
+      "n_clusters": 135,
+      "gross_residual_mean_bp": 1021.2804814567443,
+      "gross_residual_sd_bp": 3323.096481308604,
+      "se_bp": 286.0066073321931,
+      "mde_bp": 801.2761111018722,
+      "underpowered_vs_band": true
+    },
+    {
+      "horizon_days": 60,
+      "label": "h60",
+      "n_events": 387,
+      "n_clusters": 134,
+      "gross_residual_mean_bp": 1600.6483621683165,
+      "gross_residual_sd_bp": 5355.882833719339,
+      "se_bp": 462.6778071163359,
+      "mde_bp": 1296.2381444171267,
+      "underpowered_vs_band": true
+    },
+    {
+      "horizon_days": 89,
+      "label": "age_star(89d)",
+      "n_events": 386,
+      "n_clusters": 134,
+      "gross_residual_mean_bp": 1821.1038093301215,
+      "gross_residual_sd_bp": 6499.393507704941,
+      "se_bp": 561.4620836734781,
+      "mde_bp": 1572.9921736196163,
+      "underpowered_vs_band": true
+    }
+  ],
+  "band_bp": 100.0,
+  "mde_z": 2.8016,
+  "p3_provenance": {
+    "artifact": "experiments/917_second_moment_and_event_instruments/p3_result.json",
+    "sha256": "17dcf3cc424f81400ec9d210b788f8f5cf2b25b5fe3318efc1a247abb8e1e0c9",
+    "commit": "8f411d1"
+  }
+}

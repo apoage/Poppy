@@ -1,3 +1,9 @@
+> **STATUS (2026-09-28): SHIPPED phase A (run 57, tag `task923-listing-book-A`).** UNDERPOWERED at every
+> exit (D85, spec-time MDE 470–1573 bp vs +100 bp band). Direction is SHORT (P3 profile). Gross edge
+> separates from placebo at h21/h60/age* (pooled-SE z ≈ 2.9–3.2, thin); net at 80 bp/leg + borrow-high
+> every CI straddles zero. Capacity median ≈ $3.6k/event; shortability at listing unverified. First
+> "NULL" withdrawn (zero-centred criterion defect). Next step → **D88**.
+
 # TASK_923 — post-listing event book, phase A (Option A of the profitability recomposition)
 
 **Status**: PROPOSED 2026-09-28 (planner; operator handed unattended time off

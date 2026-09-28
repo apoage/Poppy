@@ -3,6 +3,23 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-28 — TASK_923 — post-listing event book phase A: UNDERPOWERED at every exit; gross edge vs placebo, net cost-dominated (run 57)
+
+- **What shipped.** New module `experiments/923_post_listing_book/` only. SPEC sha `8c16e13a…` pinned
+  before the first book run (prefix-pinned; two POST-HOC errata appended). Fixture read-only.
+- **Book:** SHORT the new listing, β=1 equal-weight hedge (P3's profile: age 0–9d residual −78.3 bp/day),
+  T+1 entry, exits {5,10,21,60,age*=89}, 80 bp/leg taker + borrow-high binding. 386–388 events, ~134
+  cohort-week clusters.
+- **D85 (spec time):** MDE 470 / 640 / 801 / 1296 / 1573 bp vs the +100 bp band → UNDERPOWERED at every
+  exit. Binding net means +7.8 / +283.9 / +357.3 / +0.6 / −474.9 bp, every CI straddles zero.
+- **G2 (post-hoc corrected to the task's wording):** gross real h21 +1021.3 (CI +284.6..+1758.0) vs
+  placebo ≈ 0; with an honest pooled SE, z = 1.59 / 2.68 / 3.17 / 3.11 / 2.91 vs 2.576 — the favourable
+  separation is real before costs but thin. The first "NULL" came from a zero-centred criterion and is
+  withdrawn. Population-mismatch confound refuted (1/397 events).
+- **Capacity:** median event liquidity ceiling ≈ $3.6k at 1% of first-5-day volume. Shortability at
+  listing unverified. Decision → D88.
+- **Verification:** 3 cycles (implement sonnet, fix opus, closing-pass transcription); 30 tests.
+
 ## 2026-09-28 — TASK_924 — execution-feasibility instrument over the closed 907 capture; pre-registered gate non-discriminating (run 57)
 
 - **What shipped.** New module `experiments/924_execution_feasibility/` only; 907 tree untouched (D81).
