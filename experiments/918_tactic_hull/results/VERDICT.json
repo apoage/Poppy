@@ -1,0 +1,44 @@
+{
+  "task": "TASK_918",
+  "preregistered": {
+    "denomination": "net@21, same-close",
+    "hull": 5.409242649555529,
+    "hull_ci_net21": [
+      4.186008729458102,
+      6.658483817844043
+    ],
+    "bar": 0.97,
+    "kill_fired": false
+  },
+  "posthoc_sensitivity": {
+    "honest_tier": "net80_borrow_low",
+    "honest_tier_hull": -1.3066195533320166,
+    "net21_chosen_hull_at_net80": -0.8180644256562685,
+    "t_plus_1_hull_net21": 1.3285183884037104,
+    "t_plus_1_hull_honest_tier": -0.8965038254683421,
+    "reoptimised_hulls_evaluated": {
+      "same_close__net21": 5.409242649555529,
+      "same_close__net80_borrow_low": -1.3066195533320166,
+      "t_plus_1__net21": 1.3285183884037104,
+      "t_plus_1__net80_borrow_low": -0.8965038254683421
+    },
+    "kill_would_fire_under": [
+      "same_close__net80_borrow_low",
+      "t_plus_1__net80_borrow_low"
+    ],
+    "bar_denomination_note": "the +0.97 bar was measured at net@21 same-close on 819's window; reading it against other tiers/timings is post-hoc, not a pre-registered gate"
+  },
+  "status": "PREREG_NOT_FIRED__POSTHOC_FRAGILE",
+  "cause_claim": "none — timing sensitivity measured; bid-ask-bounce NOT established",
+  "decision_owner": "operator (DECISIONS row)",
+  "sources": {
+    "step0_result.json": {
+      "sha256": "668a27ebbd89dd6a45b472254f9eb553728a0df52b2296f401a589e2828aad5a"
+    },
+    "sensitivity_posthoc.json": {
+      "sha256": "2526b9751ae638286a8c46df956a766bdc0a5fcf23be1254646e5cd6c0d3452f"
+    },
+    "spec_sha256": "5e96d23e5103b6483e5f11d2fb5166b60d55a6f33d98903f4dbe27f0b5e88316",
+    "readme": "README.md (headline section)"
+  }
+}

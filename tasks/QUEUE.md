@@ -23,7 +23,7 @@ operator's call whether captures ever write there — secondary option only; the
 dropping per-line fsync, post-capture per D67(b)).
 **Ready — TONIGHT'S STEERING (2026-09-28 planner, operator handed ~12h unattended time off
 `docs/profitability_paths_2026-09-28.md`; this order overrides rank, never invariants):
-1 TASK_918 (AMENDED takeable — read-only staged loader; STEP-0 first, let the kill fire) →
+1 TASK_918 (**SHIPPED run 57 STEP-0 only, `task918-hull-step0`: prereg kill NOT FIRED at net@21 (+5.409), post-hoc honest-tier hulls −1.307/−0.897 → D86**) →
 2 TASK_924 (NEW — execution-feasibility instrument, read-only over the srv capture) →
 3 TASK_923 (NEW — post-listing event book phase A, cost-honest, MDE-disciplined) →
 4 TASK_915 (AMENDED takeable — build + fixture smoke in-loop; the real ≤2-CPU-day run is

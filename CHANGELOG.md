@@ -3,6 +3,26 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-28 — TASK_918 — tactic-library hull STEP-0 delivered; pre-registered kill NOT FIRED, post-hoc fragile (run 57)
+
+- **What shipped.** New module `experiments/918_tactic_hull/` only (zero edits elsewhere; `trader/`
+  untouched). SPEC sha256 `5e96d23e…` pinned before the first scoring run. Data: fixture
+  `ohlcv_daily` (sha `b0f8de8b…`, full daily copy through 2026-07-06) + 31 staged 858 USD CSVs to
+  2026-08-31, seam re-verified at load (488 overlap rows, 0 mismatches; planted mismatch refuses).
+  398 assets (363 + 35 dead). No DB writes.
+- **Pre-registered STEP-0 (net@21, same-close):** hull **+5.409** (CI +4.186..+6.658, n=912 daily /
+  30 monthly) vs bar +0.97 → NOT FIRED. Carried by `reversal_21d_xs` (+4.445, hull weight 0.60).
+- **Post-hoc sensitivity (`results/sensitivity_posthoc.json`, `results/VERDICT.json`, labelled
+  POST-HOC):** honest tier (net80 + borrow-low), hull re-optimised at that tier: **−1.307**
+  same-close, **−0.897** T+1. T+1 (all arms delayed 1 day), hull re-optimised at net21: +1.329
+  (CI +0.073..+2.611; +0.36 over bar, inside MDE95 1.753). reversal_21d_xs T+1 net21 +0.733.
+  `status: PREREG_NOT_FIRED__POSTHOC_FRAGILE`; cause of the timing sensitivity NOT established.
+- **Not built:** walk-forward / Hedge / random-null / B0 comparators and PASS conjuncts (scope
+  decision → D86).
+- **Verification:** 2 cycles (implement sonnet, fix opus); panel correctness-leak + brief-direction
+  (cycle 1), correctness/fail-closed re-verify with planted defects (cycle 2). Selftest on the srv
+  staged copy 13 PASS / ST8 skipped (partial staging, not the full HEAD suite).
+
 ## 2026-09-07 — TASK_921 — the two 914 guard mechanisms rebuilt (run 56, crossed midnight)
 
 - **What shipped.** `experiments/907_live_fill_probe/test_streaming_reader.py` only — **no production

@@ -1,3 +1,11 @@
+> **STATUS (2026-09-28): SHIPPED — STEP-0 only (run 57, tag `task918-hull-step0`).** Pre-registered
+> kill (net@21, same-close) **NOT FIRED**: hull +5.409 (CI +4.186..+6.658) vs +0.97, carried by
+> `reversal_21d_xs`. POST-HOC fragile: hull re-optimised at the 916 honest tier (net80+borrow-low)
+> −1.307 same-close / −0.897 T+1; one-day execution delay drops reversal_21d_xs net21 +4.445 → +0.733.
+> Machine verdict: `experiments/918_tactic_hull/results/VERDICT.json`. **Remainder NOT built:** the
+> full comparator set + PASS conjuncts — whether to build them, or close the selector class on the
+> honest-tier read, is **D86** (operator).
+
 # TASK_918 — tactic library + convex-hull ceiling (the selector-class kill test)
 
 **Status**: PROPOSED 2026-09-05 (planner; = tactics-panel row 1, `lore/fable_tactics_panel_2026-09-04.md`
