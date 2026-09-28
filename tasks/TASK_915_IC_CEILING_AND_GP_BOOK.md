@@ -25,6 +25,11 @@ existing gate ladder.
 
 - **TASK_899's staged daily backfill INGESTED first** (the seam matters for 2026H1 cells) —
   planner-owned; the staged CSVs are ready.
+  **AMENDMENT 2026-09-17 (planner): satisfied READ-ONLY — load DB-daily (through 2026-06-21)
+  + the staged CSVs (`runs/858_backfill/api_2026-08-31/daily/`, seam-verified 2026-08-31,
+  62 overlap rows, zero mismatches) with an in-loader seam re-verification that refuses on
+  any mismatch; pin the loader + seam hash in the artifact. NO DB writes; the ingest itself
+  stays gated (RO02 / operator go-word) and is not needed for the seam.**
 - **TASK_916's restated cost stack landed first** (2026-09-05 amendment): G-B/G-C convert IC
   to net Sharpe through the 21 bp tier — the honest stack is tier + BORROW (margin rollover
   is real and never charged; the benchmark itself is short in BEAR22). Grade at the 916-restated

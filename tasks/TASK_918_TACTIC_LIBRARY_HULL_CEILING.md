@@ -2,6 +2,8 @@
 
 **Status**: PROPOSED 2026-09-05 (planner; = tactics-panel row 1, `lore/fable_tactics_panel_2026-09-04.md`
 §"Proposed rows", upgraded with the dead-panel refinements in `lore/harvest_6b32_appendix/tactics_gaps.md`).
+**AMENDED 2026-09-17 (planner, operator handed unattended time): the data precondition is
+satisfiable READ-ONLY — see the amendment block under Precondition below. TAKEABLE now.**
 **Size XS/S. Minutes of CPU. Risk: LOW — new module only, no canon surface. High closure value.**
 
 ## What it decides, one sentence
@@ -23,7 +25,19 @@ vol-targeted trend (covers the parked vol-target row — its analytic ceiling is
 
 Window 2024-01→2026-06 (**GATE: 899 daily ingest landed first** — else the unseen window
 shrinks to ~24 decisions; if 899 is blocked, run with window truncated at 2026-03 and DISCLOSE,
-never silently). Log AND simple returns both (the scorer's log-sum cannot see a rebalancing
+never silently).
+
+**AMENDMENT 2026-09-17 (planner) — preferred fallback, read-only, NO DB writes:** the staged
+daily catch-up (`runs/858_backfill/api_2026-08-31/daily/`, 56/56 canon pairs, seam-verified
+2026-08-31: 62 overlap rows vs the DB, zero mismatches; manifest.json carries per-pair
+first/last) is readable as FILES. The loader concatenates DB-daily (through 2026-06-21) +
+staged CSVs, RE-VERIFIES the seam at load time (re-derives the overlap-row check and refuses
+on any mismatch — the 2026-08-31 verification is a recorded fact, not a load-time
+assumption), and pins the loader + seam hash in the artifact. This satisfies the gate's
+substance (the 2026H1 seam) with zero DB writes; the DB INGEST itself stays gated (RO02 /
+operator go-word) and is NOT needed for this row. The task file's own truncate-at-2026-03
+fallback remains the LAST resort if even the staged files are unavailable. Fees: 916 SHIPPED
+(`18d42d3`) — the 916 tiers + borrow columns are mandatory, not optional. Log AND simple returns both (the scorer's log-sum cannot see a rebalancing
 premium by construction — `trader/backtest.py:221-227`). Fees at the tiers from 916 + borrow
 model when 916 ships; at minimum legacy 21 bp + a borrow-inclusive column. By-year reads
 (2024/2025/2026H1).
