@@ -99,6 +99,7 @@ from mcts_trader.jax_agent.adaptive_noise import AdaptiveNoiseController, NoiseC
 from mcts_trader.jax_agent.adaptive_fees import AdaptiveFeeController, FeeConfig
 from mcts_trader.jax_agent.adaptive_burn import AdaptiveBurnController, BurnConfig
 from mcts_trader.jax_agent.schedules import SimsSchedule
+from mcts_trader.training.run_declaration import create_protected_run_dir
 from mcts_trader.training.safe_checkpoint import (
     SafeCheckpointManager, append_checkpoint_score, prune_run_dir_by_score,
     retention_policy_available)
@@ -696,7 +697,10 @@ def main():
 
     all_rewards = []
     checkpoint_dir = os.path.abspath(f"jax_ckpt_fast/{config.name}")
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    # TASK_922: this checkpoint creation path only, not every ad hoc experiment creator.
+    # TrainingConfig has no task metadata; never infer a task id from config.name.
+    create_protected_run_dir(checkpoint_dir, name=config.name, task="unspecified",
+                             reason="Training checkpoints; retain pending explicit review")
 
     # ==== TASK_881: checkpoint retention (storage policy + explicit manifest protection) ====
     # 'recency' is the DEFAULT (D32/D35: the destructive score path only flips on after the

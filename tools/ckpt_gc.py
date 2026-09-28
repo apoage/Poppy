@@ -1037,6 +1037,56 @@ def resolve_coverage(run_dirs: list[str], named: set[str],
 # ======================================================================================
 
 
+def _own_manifest_dirs(run_dir: str, roots: list[str]):
+    """Walk from the run through its deepest configured root, inclusive (881E)."""
+    rp = os.path.realpath(run_dir)
+    candidates = [os.path.realpath(root) for root in roots]
+    owning_root = max((root for root in candidates
+                       if rp == root or rp.startswith(root + os.sep)),
+                      key=len, default=None)
+    if owning_root is None:
+        return
+    cur = rp
+    while True:
+        yield cur
+        if cur == owning_root:
+            break
+        cur = os.path.dirname(cur)
+
+
+def _run_declaration_refusal(run_dir: str, roots: list[str]) -> str | None:
+    """TASK_922: refuse MORE only; never turn a declaration into deletion consent.
+
+    Empty/comment-only PROTECTED.txt is self-protection. Existing directive-bearing
+    files retain 881E semantics; SPEC.md is not reinterpreted. Malformed, unreadable,
+    and nonregular markers refuse explicitly, even when another file grants consent.
+    Shared by the bound predicate and its offline/in-run diagnostic path.
+    """
+    for directory in _own_manifest_dirs(run_dir, roots):
+        path = os.path.join(directory, "PROTECTED.txt")
+        try:
+            os.lstat(path)  # exists() would silently drop a dangling symlink.
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return f"{path}: run declaration unreadable — REFUSED ({exc})"
+        refusal = manifest_shape_refusal(path)
+        if refusal:
+            return refusal  # Never open a directory, symlink, FIFO, socket, or device.
+        text, error = _read_manifest_text(path)
+        if text is None:
+            return f"{path}: run declaration unreadable — REFUSED ({error})"
+        entries, _spans, malformed = parse_protected_txt(text, path)
+        if malformed:
+            details = "; ".join(f"{line.source}:{line.lineno}: {line.raw!r}"
+                                for line in malformed)
+            return f"malformed PROTECTED.txt run declaration — REFUSED: {details}"
+        if not entries:
+            return (f"{path}: self-protected run declaration (no directives) — REFUSED; "
+                    "TASK_922 protection is not deletion consent")
+    return None
+
+
 def _own_manifest_entries(run_dir: str, roots: list[str]) -> list[ManifestEntry]:
     """The run dir's OWN 881i-ingested manifest (D72: "the run dir's own creation record") —
     every ``protect:``/``covers:`` entry found in a PROTECTED.txt/SPEC.md physically located AT
@@ -1187,6 +1237,11 @@ def resolve_bound_coverage(run_dirs: list[str], named: set[str], missing: set[st
     holds by inspection, which is the "can only ever REMOVE coverage" guarantee scope item 3
     requires.
 
+    TASK_922 also ANDs in the absence of a run-local self-protection/refusal declaration
+    (`_run_declaration_refusal`). This applies only with binding ON, before any grant can
+    authorize deletion, including uncited operator grants. Directive-bearing 881E consent
+    and SPEC.md parsing are unchanged; `citations=None` still bypasses every binding check.
+
     `roots` is the CONFIGURED checkpoint roots, threaded down to `_own_manifest_entries` so the
     run's own manifest is looked for in the right tree (the same roots the offline `--roots` /
     the in-run pruner's own `roots=` already use). It is keyword-optional ONLY so that omitting
@@ -1204,6 +1259,9 @@ def resolve_bound_coverage(run_dirs: list[str], named: set[str], missing: set[st
         if not coverage[rd]:
             out[rd] = False
             continue
+        if _run_declaration_refusal(rd, roots) is not None:
+            out[rd] = False
+            continue
         under = _named_entries_under(rd, named)
         out[rd] = any(_path_authorized(p, rd, citations, roots) for p in under)
     return out
@@ -1218,6 +1276,9 @@ def authority_binding_refusal_hint(run_dir: str, roots: list[str], named: set[st
     shape and is exactly what this binding refuses. Callers must only use this once the binding
     is ACTUALLY active — with no binding, any manifest anywhere currently has standing, and this
     text would be false."""
+    refusal = _run_declaration_refusal(run_dir, roots)
+    if refusal is not None:
+        return refusal
     under = _named_entries_under(run_dir, named)
     citing_sources: set[str] = set()
     for p in under:
