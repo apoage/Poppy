@@ -2,7 +2,7 @@
 
 **Status**: PROPOSED 2026-09-05 (planner; = tactics-panel row 1, `lore/fable_tactics_panel_2026-09-04.md`
 §"Proposed rows", upgraded with the dead-panel refinements in `lore/harvest_6b32_appendix/tactics_gaps.md`).
-**AMENDED 2026-09-17 (planner, operator handed unattended time): the data precondition is
+**AMENDED 2026-09-28 (planner, operator handed unattended time): the data precondition is
 satisfiable READ-ONLY — see the amendment block under Precondition below. TAKEABLE now.**
 **Size XS/S. Minutes of CPU. Risk: LOW — new module only, no canon surface. High closure value.**
 
@@ -27,7 +27,7 @@ Window 2024-01→2026-06 (**GATE: 899 daily ingest landed first** — else the u
 shrinks to ~24 decisions; if 899 is blocked, run with window truncated at 2026-03 and DISCLOSE,
 never silently).
 
-**AMENDMENT 2026-09-17 (planner) — preferred fallback, read-only, NO DB writes:** the staged
+**AMENDMENT 2026-09-28 (planner) — preferred fallback, read-only, NO DB writes:** the staged
 daily catch-up (`runs/858_backfill/api_2026-08-31/daily/`, 56/56 canon pairs, seam-verified
 2026-08-31: 62 overlap rows vs the DB, zero mismatches; manifest.json carries per-pair
 first/last) is readable as FILES. The loader concatenates DB-daily (through 2026-06-21) +

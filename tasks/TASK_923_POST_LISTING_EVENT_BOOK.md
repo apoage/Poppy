@@ -1,7 +1,7 @@
 # TASK_923 — post-listing event book, phase A (Option A of the profitability recomposition)
 
-**Status**: PROPOSED 2026-09-17 (planner; operator handed unattended time off
-`docs/profitability_paths_2026-09-17.md` — this is its Option A).
+**Status**: PROPOSED 2026-09-28 (planner; operator handed unattended time off
+`docs/profitability_paths_2026-09-28.md` — this is its Option A).
 **Size S. Risk: LOW compute (CPU-only, reads the existing DB read-only) — HIGH honesty
 weight: this is the first BOOK-shaped claim since 916 restated the cost stack, so every
 guard below is load-bearing.**

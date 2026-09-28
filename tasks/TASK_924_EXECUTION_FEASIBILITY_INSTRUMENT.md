@@ -1,7 +1,7 @@
 # TASK_924 — execution-feasibility instrument over the closed capture (Option B's pre-gate)
 
-**Status**: PROPOSED 2026-09-17 (planner; operator handed unattended time off
-`docs/profitability_paths_2026-09-17.md` — this is Option B's ungated half).
+**Status**: PROPOSED 2026-09-28 (planner; operator handed unattended time off
+`docs/profitability_paths_2026-09-28.md` — this is Option B's ungated half).
 **Size XS/S. Risk: LOW — new module in its own directory, READ-ONLY over the capture
 artifact; zero canon surface, zero DB access, no live anything.**
 **Verify: full.**

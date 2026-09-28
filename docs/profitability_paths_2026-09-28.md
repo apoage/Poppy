@@ -1,6 +1,6 @@
 # Profitability recomposition — where a net-positive system can come from
 
-**2026-09-17, interactive session (planner lane). PROPOSAL — not a queue row; nothing here
+**2026-09-28, interactive session (planner lane). PROPOSAL — not a queue row; nothing here
 is authorized to build. Every row it would seed needs the operator/planner framing call and,
 where it is an A/B on Sharpe, the D85 spec-time MDE gate.**
 
@@ -99,4 +99,4 @@ Recorded for completeness; the operator should treat it as a different system, n
 Every number above is a shipped, panel-verified record: 916 (`18d42d3`), 917 (`8f411d1`),
 919 phase A (`f16b310`), 907 B1 (`1360250`), 913/914/921 (`3461b15`/`db8ed48`/`6a1ab2f`),
 897 + the loops-panel harvest (QUEUE rows 5–7). Session context:
-`lore/notes_2026-09-17.md`. Nothing here overrides D85, D79, or the grooming rules.
+`lore/notes_2026-09-28.md`. Nothing here overrides D85, D79, or the grooming rules.

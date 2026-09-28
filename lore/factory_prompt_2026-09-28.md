@@ -1,4 +1,4 @@
-# Factory prompt — 2026-09-17 profitability-recomposition window (~12h unattended)
+# Factory prompt — 2026-09-28 profitability-recomposition window (~12h unattended)
 
 Paste everything below the line into the implementer session.
 
@@ -14,7 +14,7 @@ report, do not commit around unknown edits), `tasks/DECISIONS.md` (OPEN rows are
 
 **Steering (overrides queue rank, never invariants) — work exactly these rows, in order:**
 
-1. **TASK_918** (amended 2026-09-17 — read-only staged loader; run STEP-0 FIRST and let its
+1. **TASK_918** (amended 2026-09-28 — read-only staged loader; run STEP-0 FIRST and let its
    kill gate fire if it fires; the hull/oracle/blend numbers are the deliverable either way).
 2. **TASK_924** (execution-feasibility instrument — READ-ONLY over
    `~/captures/capture_907_main.jsonl` on gpu-server via the shipped 914 streaming reader;
@@ -37,7 +37,7 @@ If a row halts (cycles exhausted or a wall hits), take the next IN THIS LIST. Ro
   only; disturb no process; no restarts/kills/renice; NVML driver mismatch is pre-existing,
   ignore it.
 - **Suites run on gpu-server wrapped** (fresh scratch copy; genuine HEAD objects + tracked
-  corpus staged in, per the 922 verification recipe in `lore/notes_2026-09-17.md` §1);
+  corpus staged in, per the 922 verification recipe in `lore/notes_2026-09-28.md` §1);
   bare `pytest` on the workstation is refused. `py_compile` on the workstation is fine.
 - **No live orders, no exchange APIs, no keys.** Dry-run only.
 - **Any A/B- or verdict-shaped number**: MDE vs its pre-registered band computed AT SPEC

@@ -25,7 +25,7 @@ existing gate ladder.
 
 - **TASK_899's staged daily backfill INGESTED first** (the seam matters for 2026H1 cells) —
   planner-owned; the staged CSVs are ready.
-  **AMENDMENT 2026-09-17 (planner): satisfied READ-ONLY — load DB-daily (through 2026-06-21)
+  **AMENDMENT 2026-09-28 (planner): satisfied READ-ONLY — load DB-daily (through 2026-06-21)
   + the staged CSVs (`runs/858_backfill/api_2026-08-31/daily/`, seam-verified 2026-08-31,
   62 overlap rows, zero mismatches) with an in-loader seam re-verification that refuses on
   any mismatch; pin the loader + seam hash in the artifact. NO DB writes; the ingest itself

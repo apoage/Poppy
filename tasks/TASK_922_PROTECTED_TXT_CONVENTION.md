@@ -1,6 +1,7 @@
 # TASK_922 — PROTECTED.txt self-declaration convention (881E's forward item)
 
-**Status**: IMPLEMENTED 2026-09-17 (interactive; uncommitted, not deployed). Focused TASK_922
+**Status**: IMPLEMENTED 2026-09-28 (interactive; committed `185d3f7`, tag
+`task922-protected-runs`, NOT deployed). Focused TASK_922
 and protection regression suites: **543 passed, 1 skipped, 1 deselected** on gpu-server;
 independent flow verification and read-only review completed. Scope qualifications and
 verification limits below.
@@ -26,7 +27,7 @@ property then holds by construction rather than by 881i-era manifests that event
 - **G3**: the writer hook is one call in the run-dir creation path — no behavior change to
   any existing run (flag-off default where a hook cannot be inert).
 
-## Implementation and verification — 2026-09-17
+## Implementation and verification — 2026-09-28
 
 - `mcts_trader/training/run_declaration.py::create_protected_run_dir` creates a new directory
   and exclusive UTF-8 comment-only declaration (name, task, UTC date, reason). Existing
