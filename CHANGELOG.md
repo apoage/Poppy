@@ -3,6 +3,26 @@
 The dark-factory release ritual appends one entry per shipped task (newest first).
 Format: `## YYYY-MM-DD — <task> — <one-line what shipped>` + remainders if any.
 
+## 2026-09-28 — TASK_924 — execution-feasibility instrument over the closed 907 capture; pre-registered gate non-discriminating (run 57)
+
+- **What shipped.** New module `experiments/924_execution_feasibility/` only; 907 tree untouched (D81).
+  Read-only over srv `~/Trader/runs/907_live_fill_probe/capture_907_main.jsonl` (FINAL, 1,440,479,339 B,
+  sha `8b3f748d…`); G2 fingerprint unchanged across every pass; G3 peak RSS 1.499 GiB; 13 tests.
+- **G1 PASS on B1's own artifact.** The 1.248 GB snapshot B1 measured is the byte-identical first
+  1,248,413,957 bytes of the final file (sha `7aede82e…`); shipped and independent implementations give
+  127,070.878 / 273,233.044 s (target 127,071 / 273,233). On the final file both give 43.39% (BTC).
+- **Gap-clipping (post-hoc, ERRATA 2).** The shipped frozen-mid numerator is not clipped against recorded
+  gaps (`capture.py:2422-2436`; same gap-blindness D81 measured). 924's own gap-clipped (split-at-gap)
+  frozen-mid, final capture: BTC 30.42% / ETH 12.44% / SOL 3.66% / XRP 1.01% (gap-blind 43.39 / 23.36 /
+  14.38 / 9.79). Time-weighted quote survival p50/p90: BTC 32.5/160.5 s, ETH 11.4/94.4, SOL 5.5/33.4,
+  XRP 2.4/20.4. Median rel half-spread 0.0064 / 0.22 / 0.94 / 0.76 bp.
+- **Go/no-go:** pre-registered verdict UNBLOCKED_WITH_NUMBERS, but `status:
+  PREREG_UNBLOCKED__GATE_NON_DISCRIMINATING` — the recorder never emits one-sided rows
+  (`recorder.py:527-531`) and "AS(1h)" as specified is spread, not adverse selection. Establishes sub-bp
+  quoted spreads when live; does NOT establish small adverse selection. Decision → D87.
+- **Verification:** 2 cycles (implement sonnet + one resume for the G1 file-revision fix; fix opus);
+  panel correctness + fail-closed/brief (cycle 1), correctness/fail-closed re-verify (cycle 2).
+
 ## 2026-09-28 — TASK_918 — tactic-library hull STEP-0 delivered; pre-registered kill NOT FIRED, post-hoc fragile (run 57)
 
 - **What shipped.** New module `experiments/918_tactic_hull/` only (zero edits elsewhere; `trader/`

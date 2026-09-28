@@ -24,7 +24,7 @@ dropping per-line fsync, post-capture per D67(b)).
 **Ready — TONIGHT'S STEERING (2026-09-28 planner, operator handed ~12h unattended time off
 `docs/profitability_paths_2026-09-28.md`; this order overrides rank, never invariants):
 1 TASK_918 (**SHIPPED run 57 STEP-0 only, `task918-hull-step0`: prereg kill NOT FIRED at net@21 (+5.409), post-hoc honest-tier hulls −1.307/−0.897 → D86**) →
-2 TASK_924 (NEW — execution-feasibility instrument, read-only over the srv capture) →
+2 TASK_924 (**SHIPPED run 57, `task924-exec-feasibility`: G1 PASS on B1 snapshot; prereg gate NON-DISCRIMINATING; gap-clipped frozen-mid BTC 30.42% → D87**) →
 3 TASK_923 (NEW — post-listing event book phase A, cost-honest, MDE-disciplined) →
 4 TASK_915 (AMENDED takeable — build + fixture smoke in-loop; the real ≤2-CPU-day run is
 SCHEDULED wrapped and NOT polled in-loop). If a row halts, take the next IN THIS LIST;

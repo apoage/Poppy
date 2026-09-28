@@ -1,3 +1,10 @@
+> **STATUS (2026-09-28): SHIPPED (run 57, tag `task924-exec-feasibility`).** G1 PASS on B1's snapshot
+> (byte-identical prefix of the final capture); G2/G3 pass. Pre-registered verdict UNBLOCKED_WITH_NUMBERS
+> but the gate is NON-DISCRIMINATING (recorder suppresses one-sided rows; AS(1h) = spread, not markout).
+> Gap-clipped frozen-mid BTC 30.42% (gap-blind 43.39%); time-weighted survival p50 BTC 32.5 s. Path
+> correction: the capture is at srv `~/Trader/runs/907_live_fill_probe/`, not `~/captures/`. Option B
+> go/no-go → **D87** (operator).
+
 # TASK_924 — execution-feasibility instrument over the closed capture (Option B's pre-gate)
 
 **Status**: PROPOSED 2026-09-28 (planner; operator handed unattended time off
