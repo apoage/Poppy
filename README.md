@@ -47,6 +47,9 @@ Each row names the ledger entry it comes from (`experiments/LEDGER.md`, or `docs
 | Is there *any* signal in daily OHLC? | **Yes** — 109 cross-sectional IC cells survive a 1-day skip. **None** converts to net Sharpe at the honest 80 bp tier (best +0.037). Cost is the wall, not signal. | 915 → D89 |
 | Short new listings? | Gross +1021 bp at h21, separates from placebo; net CI straddles zero; median capacity ≈ **$3.6k** per event. | 923 → D88 |
 
+**Every experiment, reversal and unbuilt idea — by era, with numbers and sources — is in
+[`GRAVEYARD.md`](GRAVEYARD.md).** The table above is the headline; the graveyard is the record.
+
 Where it stopped: four open decisions (D86–D89 in `tasks/DECISIONS.md`), each a wall with
 numbers attached — no positive-expectancy strategy exists in the program at the honest cost tier.
 
@@ -109,6 +112,7 @@ SATA cable until an adversarial judge showed the causality was inverted
 
 | Start here | For |
 |---|---|
+| `GRAVEYARD.md` | Everything tried, by era: measured-and-failed, measured-and-worked, built-never-measured |
 | `docs/pathway.md` | The research design: hypotheses H1–H6, the rung ladder, kill/pivot logic |
 | `experiments/LEDGER.md` | One line per verdict, PASS or FAIL, with epoch caveats |
 | `docs/findings/README.md` | Long-form diagnoses, incl. the pre-ledger history |
