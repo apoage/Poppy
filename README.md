@@ -9,8 +9,10 @@ rotating crew of AI coding agents: 668 commits, ~445 task specs, ~80 experiment 
 The interesting part is not the engine — it is the measured record of *how* each idea failed,
 which is written down in more detail than most successes ever get.
 
-> This is an archive, not a product. No data, no checkpoints, no credentials are included.
-> Do not point `real_trade_jax.py` at real money.
+> **Not financial advice.** This is a research archive, not a product. Nothing in it is
+> profitable after costs, and the live-trading code (`real_trade_jax.py` and friends) is
+> unmaintained and known unprofitable — do not point it at real money. No data, checkpoints or
+> credentials are included. See [`DISCLAIMER.md`](DISCLAIMER.md).
 
 ---
 
@@ -152,4 +154,11 @@ will need your own hosts.
 
 ## License
 
-TBD.
+- **Code** (`*.py`, `*.sh`, `*.js`, `*.html`, `*.css`, configs and other source files):
+  [MIT](LICENSE).
+- **Documentation and writing** (`*.md` and other prose — `lore/`, `docs/`, `tasks/`,
+  `experiments/**/*.md`, `bloom/`, `GRAVEYARD.md`, this README):
+  [CC BY 4.0](LICENSE-docs) — reuse freely with attribution to apoage.
+
+Both come without warranty of any kind. Read [`DISCLAIMER.md`](DISCLAIMER.md) before running
+anything.
