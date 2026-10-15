@@ -142,3 +142,12 @@ backups/*
 archive/**
 !archive/**/
 !archive/**/MANIFEST_*.json
+
+# Public release: raw market data and captures are not distributed
+*.npy
+*.npz
+*.csv
+*.jsonl
+!agents/messages.jsonl
+*.zst
+*.pkl
