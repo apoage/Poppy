@@ -158,7 +158,7 @@ will need your own hosts.
   [MIT](LICENSE).
 - **Documentation and writing** (`*.md` and other prose — `lore/`, `docs/`, `tasks/`,
   `experiments/**/*.md`, `bloom/`, `GRAVEYARD.md`, this README):
-  [CC BY 4.0](LICENSE-docs) — reuse freely with attribution to Lukas (apoage).
+  [CC BY 4.0](LICENSE-docs) — reuse freely with attribution to Lukas Langsald.
 
 Both come without warranty of any kind. Read [`DISCLAIMER.md`](DISCLAIMER.md) before running
 anything.
